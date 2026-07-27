@@ -6,6 +6,7 @@
     "dev": "pnpm --filter @m365-copilot/proxy dev",
     "build": "pnpm -r build",
     "proxy": "node packages/proxy/bin/m365-proxy.mjs",
+    "probe:auth": "node scripts/auth-flow-probe.mjs",
     "pi": "bash scripts/pi-local.sh",
     "test": "pnpm test:unit",
     "test:unit": "pnpm build && npx vitest run",

@@ -24,6 +24,67 @@ Bench scorecards land in `scripts/bench/out/<label>-<ts>.json` — diff them.
 
 ---
 
+## Auth. SSO compatibility — Phase 0 (`scripts/auth-flow-probe.mjs`)
+
+### E-AUTH0 — Can the fixed first-party client use user-driven SSO? 🔴 BUILT, NOT RUN
+
+- **Hypotheses:** H-A1 through H-A4 in `hypotheses.md` §13.
+- **Why first:** the proxy uses Microsoft's fixed first-party Office Copilot client and
+  undocumented Sydney scopes. We must prove the supported interaction before replacing
+  the working credentials/TOTP path.
+- **Safety:** the probe is a dry-run unless `--execute` is present. It uses a new
+  throwaway MSAL cache under the OS temp directory, refuses the production cache,
+  redacts its JSON report, never reads `secrets.json`, and consumes **zero chat messages**.
+
+Inspect the plan without contacting Microsoft:
+
+```sh
+pnpm run probe:auth -- --method=browser
+pnpm run probe:auth -- --method=device-code --authority=organizations
+```
+
+Run each arm separately, from a real terminal:
+
+```sh
+# A1: preferred workstation flow — MSAL system-browser PKCE + loopback
+pnpm run probe:auth -- --method=browser --execute
+
+# A2: preferred SSH/headless flow — complete sign-in on any browser-capable device
+pnpm run probe:auth -- \
+  --method=device-code \
+  --authority=organizations \
+  --execute
+
+# A3: allow a second interaction if BAP/Power Platform cannot be acquired silently
+pnpm run probe:auth -- \
+  --method=device-code \
+  --authority=organizations \
+  --incremental-interaction \
+  --execute
+
+# Compatibility arm ONLY if browser loopback and device code both fail.
+# The user drives a visible isolated browser; the script never fills credentials.
+CHROMIUM_PATH="$(command -v chromium)" \
+pnpm run probe:auth -- --method=nativeclient-visible --execute
+```
+
+Repeat the browser/device-code arm with `--authority=common`,
+`--authority=organizations`, and (if appropriate) a tenant ID to settle H-A4.
+Use one arm per run so each begins with an independent cache.
+
+- **Read:** redacted reports land in `scripts/auth-flow-probe-out/run-*.json`.
+  For each audience, inspect `interactive`, `restartSilent`, and `silent`.
+  `status:"succeeded"` means every requested acquisition was available;
+  `status:"partial"` identifies the exact audience that needs another interaction.
+- **Do not publish raw caches.** The automatic cache is deleted after the report.
+  `--keep-cache` exists only for local restart diagnosis.
+- **Cost:** Entra token requests only, **0 M365 chat messages**.
+- **Afterward:** record tenant conditions, MSAL version, method, authority, sample
+  size, error code, and redacted report pointer in §13. Promote only confirmed
+  behavior to `m365-copilot-api.md`.
+
+---
+
 ## A. Tool-call compliance — the headline problem (baseline: 0/5, §8.12)
 
 The model prose-hallucinates instead of emitting tool JSON. Goal: any config that

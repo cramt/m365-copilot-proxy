@@ -25,6 +25,87 @@ than "we eyeballed one run." See §M (Methods) for the experimental rig.
 - §7 — Probe backlog, ordered by info-gain ÷ cost
 - §8 — Capability-expansion hypotheses (web-research dig: empty `optionsSets`, code interpreter, MCP actions, Claude tone, throttling levers, reference implementations)
 - §11 — Detection / anti-flagging science run (July 7 2026 — auto-reauth is loud AND probably useless)
+- §13 — SSO-first authentication compatibility matrix (July 27 2026)
+
+---
+
+## 13. July 27 2026 — SSO-first authentication compatibility matrix
+
+**Status:** probe built, live matrix not yet run. No claims in this section should be
+promoted to the API reference until backed by a redacted run result.
+
+**Premise.** Production auth is silent MSAL cache → stored email/password/TOTP →
+Playwright form automation. The desired architecture is silent cache → user-driven
+Microsoft SSO, with device code for headless hosts. The hard constraint is the fixed
+first-party Office Copilot client (`c0ab8ce9-e9a0-42e7-b064-33d422df41f1`) and its
+undocumented Sydney scopes; a normal project-owned app registration may not be able
+to request them.
+
+**Probe (BUILT, not run):** `scripts/auth-flow-probe.mjs`, runnable as E-AUTH0 in
+`docs/experiments.md`. The script is inert without `--execute`, uses an isolated
+throwaway cache, never reads `secrets.json`, writes only redacted token metadata,
+and makes no M365 chat request.
+
+### H-A1 — MSAL Node loopback/system-browser sign-in is accepted 🔴
+
+**Hypothesis.** The first-party client registration accepts the loopback redirect
+used by `PublicClientApplication.acquireTokenInteractive()`, allowing a normal system
+browser + PKCE flow without Playwright or application-handled credentials.
+
+**Prediction.** `--method=browser --execute` returns a Sydney token, persists it to
+the isolated cache, and a newly constructed MSAL client immediately acquires the same
+audience silently.
+
+**Falsification.** Entra rejects the loopback redirect (for example AADSTS50011), or
+MSAL cannot complete the callback even though user authentication succeeds.
+
+### H-A2 — Device-code sign-in is enabled for the first-party client 🔴
+
+**Hypothesis.** `acquireTokenByDeviceCode()` is allowed for the Office Copilot public
+client with an `organizations` or tenant-specific authority.
+
+**Prediction.** The device-code arm completes normal Microsoft authentication on
+another device and produces the same Sydney audience/scopes as the current PKCE path.
+
+**Falsification.** The client/tenant disallows device code, Conditional Access blocks
+the flow, or the resulting token lacks the required audience/scopes.
+
+### H-A3 — One interaction can prewarm agent-management audiences 🔴
+
+**Hypothesis.** After the first Chat interaction, the cached account/refresh-token
+state can silently acquire BAP and Power Platform tokens, because the fixed client is
+already preauthorized for them.
+
+**Prediction.** `bap.silent.ok` and `powerplatform.silent.ok` are both true without
+`--incremental-interaction`.
+
+**Falsification.** Either audience returns interaction-required/consent-required.
+If falsified, rerun with `--incremental-interaction` to learn whether sequential
+user-driven consent works and must become part of `auth login`.
+
+### H-A4 — `organizations` is the best default authority for SSO 🔴
+
+**Hypothesis.** Work/school Copilot accounts authenticate consistently through
+`organizations`, while retaining the same `tid`, `oid`, `aud`, and scopes as `common`.
+
+**Prediction.** Independent `common` and `organizations` runs both succeed for the
+same tenant/account; `organizations` avoids personal-account ambiguity.
+
+**Falsification.** Only `common` or a tenant-specific authority is accepted, or cache
+reuse/incremental acquisition differs materially.
+
+### Phase 0 decision gate
+
+- **A1 + A2 pass:** browser SSO becomes the workstation default; device code becomes
+  the headless default.
+- **A1 fails, A2 passes:** device code becomes the universal supported default.
+- **A3 fails but incremental interaction passes:** explicit login prewarms all three
+  audiences sequentially.
+- **A1 + A2 fail:** run `nativeclient-visible` once. It opens a visible isolated
+  browser and captures the existing native-client callback, but never fills forms.
+  Keep this only as a compatibility bridge.
+- **All user-driven methods fail:** stop the migration. Do not delete or silently
+  bypass the legacy path; investigate client-registration constraints first.
 
 ---
 
