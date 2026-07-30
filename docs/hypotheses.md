@@ -25,6 +25,8 @@ than "we eyeballed one run." See §M (Methods) for the experimental rig.
 - §7 — Probe backlog, ordered by info-gain ÷ cost
 - §8 — Capability-expansion hypotheses (web-research dig: empty `optionsSets`, code interpreter, MCP actions, Claude tone, throttling levers, reference implementations)
 - §11 — Detection / anti-flagging science run (July 7 2026 — auto-reauth is loud AND probably useless)
+- §12 — Multi-agent research dig (July 13 2026) + framing A/Bs, and §12.13: tool-less
+  requests silently execute in M365's sandbox and return a real (wrong-machine) transcript
 
 ---
 
@@ -2133,3 +2135,71 @@ across `fix-bug` + a confab-prone/shell-less task (softened's failure case), on 
 `gpt-5.5-think-deeper` and the magic model. If it holds, switch the default framing baseline→
 demo_only and the whole disengage→softened-retry round-trip becomes dead weight for the common
 case. n here is only 2 — strong signal, not yet ship-grade.
+
+---
+
+### 12.13 — Tool-less requests silently execute in M365's sandbox and return a REAL transcript 🟢 (July 30 2026, third-party report)
+
+**Source:** [#4](https://github.com/cramt/m365-copilot-proxy/issues/4), @mahmoudsallem, native
+Windows (`F:\opencode\copilot 365`). Asked the agent to create `notes.md`, got back what looks
+like a successful shell session — and no file on disk.
+
+The pasted output is the whole finding:
+
+```
+ls -la /mnt/data && echo ' --- FILE --- ' && cat /mnt/data/notes.md
+total 12
+drwxrwsrwx 2 root oai 4096 Jul 30 15:04 .
+11 Jul 30 15:04 notes.md
+```
+
+`/mnt/data`, owner `oai` — that's **M365's code-interpreter sandbox**, not the user's disk. The
+file really was created. In the sandbox. The user's `F:\` drive never saw it.
+
+**Mechanism — two individually-correct decisions that compose into a trap 🟢.** Both shipped
+deliberately in the §8.9 dig:
+
+1. The declarative agent attaches **only when the request carries tools**
+   (`model.ts:82`, `useAgent=hasTools`) — so a Claude tone on plain chat reaches real Claude
+   instead of being force-routed to GPT-5 (§8.9 H8.6).
+2. Code interpreter is **on by default whenever the agent is absent**
+   (`session.ts:455`, `!agentId && !M365_NO_CODE_INTERPRETER`) — free server-side compute on
+   the plain-chat path, deliberately kept off the tool path so it doesn't compete with tool-JSON
+   emission.
+
+Compose them: a harness that sends **no tools** gets the agent-less path, which has a live Python
+sandbox with a writable filesystem. The model does the only sensible thing available to it —
+runs the command in the one filesystem it can see — and reports honestly. Nobody lied.
+
+**Why this is worse than a confab.** Every detector in `handler.ts` (`looksLikeConfabulation`,
+`looksLikeHallucinatedCompletion`) keys on *prose that claims an action without a tool call*.
+Here there is no prose to catch: the model emits a genuine transcript with real `ls` output,
+plausible timestamps, and correct file sizes, because a real filesystem really was touched. The
+confab detectors are looking for a lie and this isn't one — it's a true statement about the wrong
+machine. §12.11's lesson repeats: the SOLVED-shaped output masks the failure.
+
+**Falsification / open questions (untested, n=1, no repro yet):**
+
+- Does this reproduce with `--tools` passed? Predicted **no** (agent attaches → no code
+  interpreter → shell-routing produces a local tool call). Waiting on the reporter to confirm
+  which invocation he used; if it reproduces *with* tools, the mechanism above is wrong and this
+  is a genuine routing bug.
+- Is it Windows-specific? The `F:\` prompt is the only native-Windows report we have, and
+  Windows is far less tested here than Linux. Predicted **not** Windows-specific — the routing
+  decision is server-side and platform-blind — but worth an explicit Linux repro.
+- Does `M365_NO_CODE_INTERPRETER=1` suppress it? Predicted **yes**, and that's the cheap
+  mitigation if we want one.
+
+**Candidate fixes, none shipped.** In rough order of cost:
+
+- **Detector:** treat `/mnt/data` or an `oai`-owned path in a tool-less response as a sandbox-
+  execution tell and warn. Cheap, narrow, catches exactly this shape.
+- **Docs:** the harness quickstart should say that `--tools` is what makes execution local. The
+  README currently shows it in the example but never states *why* it's load-bearing.
+- **Structural:** reconsider defaulting the code interpreter on when the caller looks like an
+  agent harness rather than a chat client. Note this trades away a real §8.9 win, so it needs a
+  reason better than one report.
+
+**Why it matters beyond the bug:** this is the first evidence that the agent-less path is not
+merely "less capable" but **actively misleading** for agent use — it answers filesystem
+questions confidently about a machine the user has never seen.
