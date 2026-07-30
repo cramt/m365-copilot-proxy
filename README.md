@@ -60,7 +60,10 @@ Each agent session reuses the same M365 conversation (same `sessionId` + `conver
 - Node.js 24+
 - pnpm 10+
 - An M365 account with Copilot access
-- TOTP-based MFA (the automated login needs the base32 secret)
+- TOTP-based MFA, with the base32 secret in hand — the automated login types the
+  6-digit code itself, so it needs the seed, not an app on your phone. See
+  [Getting the TOTP secret](#getting-the-totp-secret) (and the note after it if your
+  tenant doesn't offer TOTP at all).
 
 ### 1. Install
 
@@ -82,6 +85,53 @@ Create `~/.config/opencode-m365/secrets.json`:
   "mfaSecret": "YOUR_TOTP_BASE32_SECRET"
 }
 ```
+
+`mfaSecret` is the **base32 seed** your authenticator app derives its 6-digit codes
+from — not a code itself. It looks like `JBSWY3DPEHPK3PXP`: 16–32 characters, `A`–`Z`
+and `2`–`7` only, no spaces.
+
+#### Getting the TOTP secret
+
+**Already using a password manager for TOTP? Just read it back out.** 1Password,
+Bitwarden, KeePassXC, Aegis, Ente Auth and friends all keep the seed and will show it
+on demand — open the item's one-time-password field and reveal it. You'll get either a
+bare base32 string or an `otpauth://totp/...?secret=JBSWY3DPEHPK3PXP&...` URI; in the
+second case the `secret=` parameter is the bit you want. No re-enrollment needed.
+
+**If the seed is trapped in Microsoft Authenticator, enroll a second method.** That app
+deliberately never exposes it, and Microsoft's security-info page won't re-display the
+key after enrollment either — between them that's the only case where the seed is
+genuinely unrecoverable. Enroll a fresh entry and copy it on the way past:
+
+1. Go to <https://aka.ms/mfasetup> (**My Account → Security info**).
+2. **Add sign-in method → Authenticator app**.
+3. Click **"I want to use a different authenticator app"**. This step is the one that
+   matters — the default path assumes Microsoft Authenticator and registers a
+   push-only method with no seed you can extract.
+4. At the QR-code screen, click **"Can't scan image?"**. It reveals a **Secret key** —
+   that's your base32 string.
+5. Generate a code from it to finish enrollment — `oathtool --totp -b <secret>`, or
+   paste the seed into your password manager — and enter that code.
+
+Store it somewhere that will give it back (see above) so this is a one-time chore. The
+new entry sits alongside your existing sign-in methods; you don't have to remove
+Microsoft Authenticator.
+
+#### If your tenant has no TOTP option
+
+Plenty of tenants can't do the above, and then there is no seed to extract:
+
+- the authenticator-app / software-OATH method is disabled by tenant policy;
+- MFA is push / number-matching only, FIDO2, Windows Hello, or certificate-based;
+- sign-in is federated to a third-party IdP (Okta, Ping, Duo) that owns the MFA step.
+
+The stored-credentials flow above cannot work in those cases — the automated login has
+no code to type, and no amount of configuration fixes that. A user-driven fallback
+(visible browser, you complete MFA by hand once, tokens refresh silently afterwards) is
+tracked in [#4](https://github.com/cramt/m365-copilot-proxy/issues/4) and not shipped
+yet.
+
+#### First run
 
 On first run, the system does an automated browser login (via Playwright/Chromium) to get OAuth tokens. After that, tokens refresh silently from the MSAL cache.
 
