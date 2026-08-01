@@ -25,6 +25,8 @@ than "we eyeballed one run." See §M (Methods) for the experimental rig.
 - §7 — Probe backlog, ordered by info-gain ÷ cost
 - §8 — Capability-expansion hypotheses (web-research dig: empty `optionsSets`, code interpreter, MCP actions, Claude tone, throttling levers, reference implementations)
 - §11 — Detection / anti-flagging science run (July 7 2026 — auto-reauth is loud AND probably useless)
+- §14 — Image generation (Aug 1 2026): it works agent-less, the image IS the whole answer,
+  and three separate layers in our client throw it away; artifact sits behind non-Sydney auth
 - §13 — User-driven SSO auth for tenants with no automatable TOTP (July 29 2026,
   third-party): loopback redirect falsified, `nativeclient` corroborated by two forks
 - §12 — Multi-agent research dig (July 13 2026) + framing A/Bs, and §12.13: tool-less
@@ -2285,3 +2287,127 @@ shipping unverified auth code is how you turn a broken login into a broken login
 support thread. Two things to fix when it does land: the device-code half is H13.2 above, and
 it hardcodes `locale: "en-GB"` / `timezoneId: "Europe/Copenhagen"` — copied from the §11 F25
 anti-fingerprint config, which is right for this account and wrong for everyone else's.
+
+---
+
+## 14. Aug 1 2026 — image generation: it works, and we throw it away
+
+**Premise.** M365 Copilot generates images. The proxy has never exposed that. Before writing
+any client code, capture what Microsoft's own web client does — `scripts/m365-gui-capture.mjs`
+against the real GUI, one turn, one prompt ("Draw me a picture of a red bicycle leaning against
+a lighthouse at sunset"). Everything below is from that single capture, so the confidence
+ratings are honest about n=1.
+
+**Cost note before anyone reruns this.** Image generation draws on a **separate, scarcer budget**
+than the ~600-message conversation quota — two variants exist solely to signal it
+(`feature.EnableImageGenInsufficientTokensThrottled`,
+`feature.EnableImageGenSystemCapacityThrottled`). Chat turns are cheap; image turns are not.
+Design probes to extract maximum information per generated image, and never loop them.
+
+### F14.1 — Image generation works on this account, agent-less 🟢
+
+One prompt, no agent (`threadLevelGptId: {}`), tone `Magic`, and an image came back. Whatever
+else is open, the capability is present on a plain licensed account with no extra entitlement.
+
+### F14.2 — The image IS the answer; there is no text message 🟢
+
+The final `type:2` item carried **three** messages: the user's echo, a `Progress`/`EarlyProgress`
+("Hang on a sec…"), and a `Progress`/`GraphicArt`. **No `Chat` message at all** — not even a
+caption. So on today's proxy an image request yields an empty `answer` string. Not a truncation
+bug, not a Disengage: there is genuinely no text to collect.
+
+### F14.3 — The wire format 🟢
+
+The payload rides a bot message with `messageType: "Progress"`, `contentType: "GraphicArt"`,
+`contentOrigin: "ImageGeneration"`:
+
+```jsonc
+"contentGenerationProgressList": [{
+  "contentType": "image",
+  "size": "Xlimage", "orientation": "Landscape",
+  "pollUrl":  "<base64 JSON: {PollId, Intent, FileToken, SubIntent, Handled, InteractionId}>",
+  "fileToken": "359965a5-…",
+  "ImageReferenceUrls": ["https://designerapp.officeapps.live.com/designerapp/document.ashx?path=…"],
+  "status": 2
+}]
+```
+
+Two more fields on the same message are worth keeping:
+
+- `invocation` — the server's own tool call, in OpenAI function-call shape:
+  `{"function":{"name":"image_gen","arguments":"{\"orientation\":\"landscape\"}"},"id":"call_…","type":"function"}`.
+  Image gen is a **built-in server-side tool**, not a mode.
+- `pluginInfo` — `{id: "ImageGenerationV2PluginPromptInput", source: "BuiltIn", version: "1.1"}`.
+
+**Naming trap:** the `flux_v3_*` optionsSets are *not* Black Forest Labs Flux. `flux_v3` is
+BizChat's own orchestration codename — it also carries `flux_v3_references`,
+`flux_v3_progress_messages` etc., which have nothing to do with images. The generated artifact
+path is `…/DallEGeneratedImages/dalle-*.png`. Don't infer the model from the flag names.
+
+### F14.4 — Three independent layers in our client discard it 🟢
+
+Any one of these alone would be enough to lose the image. All three are live:
+
+1. **`allowedMessageTypes` is missing `GenerateGraphicArt`.** The GUI sends it; we don't. Per the
+   H-NATIVE-6 rule already documented in `session.ts`, *the server only sends frame types the
+   client declares it can handle* — so this may block image frames before anything else matters.
+2. **Zod strips the payload.** `BotMessage` (`schemas.ts`) declares no
+   `contentGenerationProgressList`, `contentType`, `invocation`, or `pluginInfo`, and zod objects
+   strip by default. `adaptiveCards` is declared but never read on the receive side.
+3. **The text collector rejects typed frames.** `session.ts`:
+   `if (m.author === "bot" && m.text && !m.messageType) advance(m.text)` — the GraphicArt message
+   has `messageType: "Progress"`, so it is dropped even if it survived 1 and 2.
+
+Consequence: **we cannot tell from logs whether image gen was ever already working through the
+proxy.** We were blind by construction, which is why this had to start with a raw GUI capture.
+
+### F14.5 — optionsSets gap 🟢
+
+GUI sends **33** optionsSets; we send **5** (code-interpreter, agent-less only). The image-related
+ones we never send: `cwc_flux_image`, `enable_gg_gpt`, `cwc_flux_v3`, `flux_v3_progress_messages`,
+`flux_v3_image_gen_enable_dimensions`, `…_non_watermarked_storage`, `…_icon_dimensions`,
+`…_system_text_with_params`, `…_designer_dimensions_meta_prompting_in_system_prompts`,
+`…_story`, plus the GPT-V/upload family (`cwcfluxgptv`, `gptvnorm2048`,
+`flux_v3_gptv_enable_upload_multi_image_in_turn_wo_ch`) which points at image *input* as a
+separate capability worth its own dig.
+
+`…_non_watermarked_storage` is notable: the GUI asks for an unwatermarked artifact.
+
+Our `VARIANTS` list is already fine — it carries `feature.enableGenerateGraphicArtOptionsSet`,
+`cdximagen`, `feature.EnableDesignEditorImageGrounding`, `feature.EnableDesignerEditor`. The gap
+is per-request optionsSets + allowedMessageTypes, not connection variants.
+
+### F14.6 — The image bytes sit behind a DIFFERENT auth boundary 🟢 (the blocker)
+
+`ImageReferenceUrls[0]` returns **401 unauthenticated and 401 with the Sydney token**. The host is
+`designerapp.officeapps.live.com` and the query carries `speCId`/`speType=Image` — SharePoint
+Embedded. So the chat credential does not open the artifact, and we cannot simply hand the URL to
+an OpenAI-compatible client either (their fetch would 401 too).
+
+This is the feasibility crux for `/v1/images/generations`: **the proxy must obtain the bytes
+itself** and re-emit them (base64 or self-hosted), which needs an auth path we don't have yet.
+
+### Open, in probe order (each ≤1 image credit)
+
+- **H14.1 — does adding `GenerateGraphicArt` + the flux optionsSets to *our* client produce an
+  image?** The single highest-value probe; everything downstream depends on it. Predict yes,
+  agent-less. 1 credit.
+- **H14.2 — what opens the Designer/SPE URL?** Costs **0 credits** (reuse a captured URL), so do
+  it before H14.1. Candidates, cheapest first: the persistent browser profile's
+  `officeapps.live.com` cookies (§11 H-R3 — likely already on disk, no new login); a Designer or
+  SPE/Graph audience from the same first-party client via `acquireTokenSilent` **only**; the
+  `pollUrl` + `fileToken` pair as the intended programmatic route. Note `getTokenForScope` falls
+  back to `runBrowserLogin` per scope — do **not** use it here, that is exactly the loud repeated
+  login §11 tells us to avoid.
+- **H14.3 — does image gen survive the agent path?** §12.13's pattern says capabilities attach to
+  the agent-less path; `agent.ts` hardcodes `generateImages: false` next to `codeInterpreter:
+  false`. If image gen is agent-less-only, it can never coexist with tool calling — which decides
+  whether this is a chat-completions feature or a separate `/v1/images/generations` endpoint.
+- **H14.4 — where does the image quota surface?** The throttling frame in this capture reported
+  only `numUserMessagesInConversation` (1/600) with nothing image-specific. Capture the
+  exhaustion frame opportunistically when it happens; do not burn credits to force it.
+
+### Incidental
+
+`session.ts` lists `"GenerateContentQuery"` **twice** in `allowedMessageTypes`. Harmless, but it
+should be one line when that array is next touched.

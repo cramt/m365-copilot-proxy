@@ -19,6 +19,10 @@ const chromium = pwMod.chromium ?? pwMod.default?.chromium;
 const { TOTP } = await import(`${ROOT}/node_modules/.pnpm/otpauth@9.5.0/node_modules/otpauth/dist/otpauth.esm.js`);
 
 const TASK = process.argv[2] || "Edit config.json so the port is 8080 instead of 3000. Leave every other field unchanged.";
+// Image generation runs far longer than a text turn, and its result frame lands
+// well past the first 60 — both defaults silently truncated the capture.
+const WAIT_MS = Number(process.env.M365_GUI_WAIT_MS ?? 22000);
+const FRAME_CAP = Number(process.env.M365_GUI_FRAME_CAP ?? 60);
 const RS = "\x1e";
 
 const browser = await chromium.launch({ headless: true, executablePath: process.env.CHROMIUM_PATH, args: ["--no-sandbox", "--disable-dev-shm-usage"] });
@@ -77,8 +81,8 @@ try {
     await page.keyboard.type(TASK, { delay: 8 });
     await page.waitForTimeout(600);
     await page.keyboard.press("Enter");
-    console.log("[gui] message sent; waiting for response/WS...");
-    await page.waitForTimeout(22000);
+    console.log(`[gui] message sent; waiting ${WAIT_MS}ms for response/WS...`);
+    await page.waitForTimeout(WAIT_MS);
   } else {
     console.log("[gui] NO composer found — capturing page text for diagnosis");
     const txt = await page.evaluate(() => document.body.innerText.slice(0, 800)).catch(() => "");
@@ -87,7 +91,7 @@ try {
   await page.screenshot({ path: join(OUT, "after-send.png"), fullPage: false }).catch(() => {});
 } catch (e) { console.log("[gui] ERR", e.message); }
 
-writeFileSync(join(OUT, "frames.json"), JSON.stringify({ chathubUrl, sawDisengaged, frameCount: frames.length, firstChatPayload, frames: frames.slice(0, 60) }, null, 2));
+writeFileSync(join(OUT, "frames.json"), JSON.stringify({ chathubUrl, sawDisengaged, frameCount: frames.length, firstChatPayload, frames: Number.isFinite(FRAME_CAP) && FRAME_CAP > 0 ? frames.slice(0, FRAME_CAP) : frames }, null, 2));
 console.log(`\n[gui] === RESULT === chathub=${chathubUrl ? "yes" : "NO"} disengaged=${sawDisengaged} frames=${frames.length} botText="${botText.slice(0, 80)}"`);
 if (chathubUrl) {
   try { const q = new URL(chathubUrl.replace(/^wss/, "https")).searchParams; console.log("[gui] WS query keys:", [...q.keys()].join(",")); console.log("[gui] variants:", q.get("variants")); } catch {}
