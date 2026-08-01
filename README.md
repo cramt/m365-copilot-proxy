@@ -264,6 +264,33 @@ without NixOS: `nix run github:cramt/m365-copilot-proxy -- 4141`.
 > injected prompt and can disengage from tools. Prefer `gpt-5.5-think-deeper`.
 > See [docs/m365-copilot-api.md](docs/m365-copilot-api.md) §5/§10.
 
+## Image generation
+
+M365 Copilot generates images through a built-in server-side tool, and the core
+package exposes it as one call. The picture comes back on a `GraphicArt` frame as
+a URL (never as chat text), and the bytes sit behind a separate auth boundary —
+`generateImage()` handles both, returning the image with bytes attached:
+
+```ts
+import { generateImage } from "@m365-copilot/core";
+
+const [img] = await generateImage("A minimalist flat-design logo of a lighthouse, teal and white.");
+// img.data      -> Buffer (real PNG, verified end-to-end)
+// img.base64    -> same bytes, ready for an OpenAI-style b64_json response
+// img.contentType, img.size, img.orientation
+```
+
+Runs its own agent-less session, so it never competes with tool calling. Uses the
+same login as chat; the artifact fetch uses a `designerappservice` token acquired
+silently from the existing cache. Protocol write-up: [docs/hypotheses.md §14](docs/hypotheses.md).
+
+> **Separate, scarcer budget.** Image generation draws on its own quota, distinct
+> from the ~600-message conversation limit. It's not metered by the chat throttle,
+> so treat image calls as the expensive ones.
+
+An OpenAI-compatible `POST /v1/images/generations` endpoint on top of this is the
+next step — the core API it needs is already in place.
+
 ## Authentication
 
 The auth flow uses Azure MSAL with PKCE:

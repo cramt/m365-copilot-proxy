@@ -25,8 +25,8 @@ than "we eyeballed one run." See §M (Methods) for the experimental rig.
 - §7 — Probe backlog, ordered by info-gain ÷ cost
 - §8 — Capability-expansion hypotheses (web-research dig: empty `optionsSets`, code interpreter, MCP actions, Claude tone, throttling levers, reference implementations)
 - §11 — Detection / anti-flagging science run (July 7 2026 — auto-reauth is loud AND probably useless)
-- §14 — Image generation (Aug 1 2026): it works agent-less, the image IS the whole answer,
-  and three separate layers in our client throw it away; artifact sits behind non-Sydney auth
+- §14 — Image generation (Aug 1 2026): SHIPPED. Works agent-less; the image IS the whole
+  answer; artifact opens with the designerappservice token. `core generateImage()`, live-verified
 - §13 — User-driven SSO auth for tenants with no automatable TOTP (July 29 2026,
   third-party): loopback redirect falsified, `nativeclient` corroborated by two forks
 - §12 — Multi-agent research dig (July 13 2026) + framing A/Bs, and §12.13: tool-less
@@ -2387,27 +2387,47 @@ an OpenAI-compatible client either (their fetch would 401 too).
 This is the feasibility crux for `/v1/images/generations`: **the proxy must obtain the bytes
 itself** and re-emit them (base64 or self-hosted), which needs an auth path we don't have yet.
 
-### Open, in probe order (each ≤1 image credit)
+### Resolved — the pipeline works end to end 🟢 (Aug 1 2026)
+
+Built into core (`image.ts`, `generateImage()`), one live generation through our OWN client (not
+the GUI), bytes downloaded and eyeballed — a correct teal lighthouse logo, 658 KB PNG, 24.7s.
 
 - **H14.1 — does adding `GenerateGraphicArt` + the flux optionsSets to *our* client produce an
-  image?** The single highest-value probe; everything downstream depends on it. Predict yes,
-  agent-less. 1 credit.
-- **H14.2 — what opens the Designer/SPE URL?** Costs **0 credits** (reuse a captured URL), so do
-  it before H14.1. Candidates, cheapest first: the persistent browser profile's
-  `officeapps.live.com` cookies (§11 H-R3 — likely already on disk, no new login); a Designer or
-  SPE/Graph audience from the same first-party client via `acquireTokenSilent` **only**; the
-  `pollUrl` + `fileToken` pair as the intended programmatic route. Note `getTokenForScope` falls
-  back to `runBrowserLogin` per scope — do **not** use it here, that is exactly the loud repeated
-  login §11 tells us to avoid.
-- **H14.3 — does image gen survive the agent path?** §12.13's pattern says capabilities attach to
-  the agent-less path; `agent.ts` hardcodes `generateImages: false` next to `codeInterpreter:
-  false`. If image gen is agent-less-only, it can never coexist with tool calling — which decides
-  whether this is a chat-completions feature or a separate `/v1/images/generations` endpoint.
-- **H14.4 — where does the image quota surface?** The throttling frame in this capture reported
-  only `numUserMessagesInConversation` (1/600) with nothing image-specific. Capture the
-  exhaustion frame opportunistically when it happens; do not burn credits to force it.
+  image? ✅ CONFIRMED.** Agent-less, tone Magic. `session.ts` now sends `IMAGE_GEN_OPTIONS_SETS`
+  + the `GenerateGraphicArt` allowedMessageType when `chat(..., {generateImages:true})`, captures
+  the GraphicArt frame into `stream.images`, and it Just Works. So this is a real capability of
+  the plain chat surface, not something only the first-party UI can reach.
+- **H14.2 — what opens the Designer/SPE URL? ✅ SOLVED, and simpler than feared.** Not cookies,
+  not a broker-only token: the artifact wants a bearer for
+  `https://designerappservice.officeapps.live.com/.default` (the **service** — my first 401s used
+  the artifact *host* `designerapp.officeapps.live.com`, which is `invalid_resource`). Our own
+  first-party client is preauthorized for it, so plain `acquireTokenSilent` returns it — an
+  RSA-OAEP **JWE** (opaque to us, we pass it through). Confirmed: 200, `image/png`, 2.3 MB. Wired
+  as `getImageArtifactToken()`. The `brk_client_id=4765445b…` in the GUI's request is Nested App
+  Auth brokering by the Office host; irrelevant to us since the grant is `client_id=c0ab8ce9`
+  `refresh_token`, which is exactly what our cache holds.
+- **H14.3 — does image gen survive the agent path?** Still **open**, but now moot for shipping:
+  `generateImage()` runs its own agent-less session, so image gen and tool calling never need to
+  share a turn. This stays the reason it belongs behind a separate `/v1/images/generations`
+  endpoint rather than inside a tool-calling chat completion. Not worth an image credit to settle.
+- **H14.4 — where does the image quota surface?** Still **open**. The one throttle frame we have
+  showed only `numUserMessagesInConversation` (1/600), nothing image-specific — yet a separate
+  image budget provably exists (the two `EnableImageGen…Throttled` variants, and the user
+  confirms a real cap). Capture the exhaustion frame opportunistically; do not burn credits to
+  force it. When we see it, the proxy should surface it as a distinct 429 rather than the chat
+  throttle.
 
-### Incidental
+### Follow-ups now that the core API exists
 
-`session.ts` lists `"GenerateContentQuery"` **twice** in `allowedMessageTypes`. Harmless, but it
-should be one line when that array is next touched.
+- **Proxy endpoint:** expose `generateImage()` as `POST /v1/images/generations` (OpenAI shape:
+  `{prompt, n, size, response_format}` → `{data:[{b64_json|url}]}`). `GeneratedImage.base64` is
+  already the `b64_json` value. `size`/`orientation` from the request map to the flux dimension
+  optionsSets. This is the piece that makes it usable from pi/openclaw.
+- **Image INPUT (vision) is a separate dig.** The capture also carried `cwcfluxgptv`,
+  `gptvnorm2048`, `flux_v3_gptv_enable_upload_multi_image_in_turn_wo_ch` — GPT-V / multi-image
+  upload. That's images *in*, not out; own hypothesis when we get there.
+
+### Incidental — fixed in the same change
+
+`session.ts` used to list `"GenerateContentQuery"` twice in `allowedMessageTypes`; the image-mode
+edit collapsed it to one.

@@ -18,6 +18,21 @@ const SCOPES = [
   "https://substrate.office.com/sydney/sydney.readwrite",
 ];
 
+// Generated-image bytes live on designerapp.officeapps.live.com behind SharePoint
+// Embedded (§14). The Sydney token 401s there; the artifact wants a token for the
+// designerapp *service*. Our own first-party client IS preauthorized for it (the
+// web client mints it via refresh_token), so acquireTokenSilent works — confirmed
+// fetching a 2.3 MB PNG. Note it's an RSA-OAEP JWE, opaque to us; we pass it through.
+const IMAGE_ARTIFACT_SCOPES = [
+  "https://designerappservice.officeapps.live.com/.default",
+];
+
+/** Token that authorizes fetching a generated-image artifact URL (§14). Silent
+ *  from the cached refresh token; falls back to the same automated login as chat. */
+export function getImageArtifactToken(): Promise<string | null> {
+  return getTokenForScope(IMAGE_ARTIFACT_SCOPES);
+}
+
 import { createLogger } from "./log.js";
 const log = createLogger("auth");
 

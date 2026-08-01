@@ -1,5 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { foldStreamText } from "./session.js";
+import { MessageUpdate } from "./schemas.js";
 
 /** Replay a sequence of raw M365 frames (deltas as {d}, snapshots as {s}) through
  *  foldStreamText and collect what would be streamed + the final buffered answer. */
@@ -61,5 +62,52 @@ describe("foldStreamText", () => {
     expect(r.streamed).toBe("xy");
     expect(r.answer).toBe("ZZZxy extra");
     expect(r.answer.startsWith(r.streamed)).toBe(false); // divergence recorded, not streamed
+  });
+});
+
+describe("GraphicArt image frame parsing (§14)", () => {
+  // The exact shape captured from a live GUI image turn — the fields zod used to
+  // strip. If BotMessage is ever re-tightened, this fails and the image is lost.
+  const graphicArtFrame = {
+    messages: [
+      {
+        text: "Loading image",
+        contentGenerationProgressList: [
+          {
+            contentType: "image",
+            size: "Xlimage",
+            orientation: "Landscape",
+            pollUrl: "eyJQb2xsSWQiOiJ4In0=",
+            fileToken: "359965a5-6ca9-409d-a4ca-43b0cc9cdf81",
+            ImageReferenceUrls: ["https://designerapp.officeapps.live.com/designerapp/document.ashx?path=%2Fx%2FDallEGeneratedImages%2Fdalle-abc.png"],
+            status: 2,
+          },
+        ],
+        contentType: "GraphicArt",
+        author: "bot",
+        messageType: "Progress",
+        contentOrigin: "ImageGeneration",
+      },
+    ],
+  };
+
+  it("retains the image payload instead of stripping it", () => {
+    const parsed = MessageUpdate.safeParse(graphicArtFrame);
+    expect(parsed.success).toBe(true);
+    const m = parsed.data!.messages[0] as any;
+    expect(m.contentType).toBe("GraphicArt");
+    const entry = m.contentGenerationProgressList[0];
+    expect(entry.ImageReferenceUrls[0]).toContain("DallEGeneratedImages");
+    expect(entry.fileToken).toBe("359965a5-6ca9-409d-a4ca-43b0cc9cdf81");
+    expect(entry.status).toBe(2);
+  });
+
+  it("still parses an ordinary text bot message with no image fields", () => {
+    const parsed = MessageUpdate.safeParse({
+      messages: [{ text: "just text", author: "bot", messageType: "Chat" }],
+    });
+    expect(parsed.success).toBe(true);
+    const m = parsed.data!.messages[0] as any;
+    expect(m.contentGenerationProgressList).toBeUndefined();
   });
 });

@@ -26,9 +26,26 @@ export const ClassifierScore = z.object({
   score: z.number(),
 });
 
+// One entry of a GraphicArt message's image payload (§14). The generated image
+// is delivered here, NOT as chat text — `ImageReferenceUrls` points at the bytes
+// on designerapp.officeapps.live.com (fetch needs the designerappservice token).
+export const ContentGenerationProgress = z.object({
+  contentType: z.string().optional(),       // "image"
+  size: z.string().optional(),              // "Xlimage"
+  orientation: z.string().optional(),       // "Landscape" | "Portrait" | "Square"
+  ImageReferenceUrls: z.array(z.string()).optional(),
+  fileToken: z.string().optional(),
+  pollUrl: z.string().optional(),
+  status: z.number().optional(),            // 2 = ready (observed)
+});
+
 export const BotMessage = z.object({
   text: z.string(),
   author: z.literal("bot"),
+  // Image generation payload. `contentType: "GraphicArt"` marks the bot message
+  // that carries generated images; the list holds one entry per image.
+  contentType: z.string().optional(),
+  contentGenerationProgressList: z.array(ContentGenerationProgress).optional(),
   responseIdentifier: z.string().optional(),
   createdAt: z.string().optional(),
   timestamp: z.string().optional(),

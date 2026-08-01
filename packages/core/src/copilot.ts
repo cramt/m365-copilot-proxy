@@ -72,9 +72,25 @@ export function decodeJwt(token: string) {
  * `CopilotSession.chat` (session.ts); async-iterate it for delta text and read
  * the getters for the turn's diagnostic metadata after it completes.
  */
+/** One generated image, as carried on a GraphicArt frame (§14). URLs point at
+ *  designerapp.officeapps.live.com and need the designerappservice token to
+ *  fetch — see `fetchImageBytes` / `generateImage`. */
+export interface CapturedImage {
+  referenceUrls: string[];
+  fileToken?: string;
+  pollUrl?: string;
+  size?: string;
+  orientation?: string;
+  /** Server status; 2 = ready (observed). */
+  status?: number;
+}
+
 export interface CopilotStream {
   [Symbol.asyncIterator](): AsyncIterator<string>;
   fullText: string;
+  /** Generated images captured this turn (empty unless image gen was requested
+   *  and the server returned a GraphicArt frame). */
+  images: CapturedImage[];
   /** True if the server returned content (deltas or full text) */
   hasContent: boolean;
   /** Throttle info if provided by M365 */

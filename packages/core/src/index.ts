@@ -2,10 +2,18 @@ export {
   getToken,
   getTokenSilent,
   getTokenForScope,
+  getImageArtifactToken,
   loginAutomated,
   loadSecrets,
   forceReauth,
 } from "./auth.js";
+
+export {
+  generateImage,
+  fetchImageBytes,
+  type GeneratedImage,
+  type GenerateImageOptions,
+} from "./image.js";
 
 export {
   noteRequestOutcome,
@@ -23,11 +31,13 @@ export {
   getToneForModel,
   getAvailableModels,
   type CopilotStream,
+  type CapturedImage,
 } from "./copilot.js";
 
 export {
   CopilotSession,
   type CopilotSessionOptions,
+  type ChatTurnOptions,
   type NativeActionConfig,
 } from "./session.js";
 
