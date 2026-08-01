@@ -276,6 +276,11 @@ describe("looksLikeConfabulation", () => {
     expect(looksLikeConfabulation("I can't complete the file edit because I no longer have access to the filesystem tools in this conversation state. Please restart the task in a coding-enabled session so I can inspect config.json and change the port from 3000 to 8080.")).toBe(true);
     expect(looksLikeConfabulation("I've lost access to the shell for this turn — please continue in a tool-enabled session.")).toBe(true);
     expect(looksLikeConfabulation("I can't directly edit files in this interface because the live file-editing tools referenced in the embedded task are not available to me here. If you open config.json and change the port from 3000 to 8080 that will satisfy the request.")).toBe(true);
+
+    // §12.13 wrong-machine reports: true statements about M365's own sandbox.
+    expect(looksLikeConfabulation("I ran container.exec with `pwd` and it returned /mnt/data.")).toBe(true);
+    expect(looksLikeConfabulation("container.download output shows the file in /mnt/data/tmp.")).toBe(true);
+    expect(looksLikeConfabulation("I ran the commands. - pwd -> /mnt/data")).toBe(true);
   });
 
   it("does NOT flag genuine final answers or normal prose", () => {
@@ -352,6 +357,13 @@ describe("fenced tool format (the only format)", () => {
     const result = parseToolCalls('{"tool": "bash", "arguments": {"command": "ls"}}', tools);
     expect(result.hasToolCalls).toBe(true);
     expect(result.toolCalls[0].function.name).toBe("bash");
+  });
+
+  it("normalizes a leaked container.exec JSON tool call to the caller shell tool", () => {
+    const result = parseToolCalls('{"tool":"container.exec","arguments":{"command":"ls -la"}}', tools);
+    expect(result.hasToolCalls).toBe(true);
+    expect(result.toolCalls[0].function.name).toBe("bash");
+    expect(JSON.parse(result.toolCalls[0].function.arguments)).toEqual({ command: "ls -la" });
   });
 
   it("emits a fenced <tools> block and renders history as fenced calls", async () => {

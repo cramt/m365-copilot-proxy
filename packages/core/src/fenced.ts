@@ -57,6 +57,11 @@ const REPLACE_KEYS = ["new", "replace", "replacement", "new_str", "new_string"];
 // whatever it's named. See docs/hypotheses.md §A (shell-routing).
 const SHELL_LANGS = new Set([
   "bash", "sh", "shell", "zsh", "console", "shell-session", "shellsession", "shsession",
+  // M365's hosted runtime leaks its own code-interpreter tool namespace into
+  // generations (`container.exec` and friends) — see §12.13. Those turns are
+  // salvageable: the model *did* decide to run a command, it just addressed the
+  // wrong executor. Route them to the harness shell instead of losing them to prose.
+  "container.exec", "container.run", "container.bash",
 ]);
 // A tool counts as "the shell" if its name looks like a run-a-command tool. pi
 // uses `bash`, opencode `bash`, hermes `shell`/`run`, openclaw `run_command` — all caught.
@@ -505,9 +510,12 @@ export const FRAMING_VARIANT_NAMES = Object.keys(FRAMING_VARIANTS);
 
 // --- Parsing -----------------------------------------------------------------
 
-// Match a fenced block with an alphanumeric/underscore info-string. Non-greedy
-// body; the closing fence is a line that is exactly ``` (start of line).
-const FENCE_REGEX = /```([A-Za-z0-9_]+)[ \t]*\r?\n([\s\S]*?)\r?\n?```/g;
+// Match a fenced block with a tool-like info-string. Dots and hyphens are allowed
+// so namespaced runtime tool names (```container.exec) can be recognised and
+// routed; an info-string that resolves to no spec is left in prose by
+// parseFencedToolCalls, so widening this costs nothing. Non-greedy body; the
+// closing fence is a line that is exactly ``` (start of line).
+const FENCE_REGEX = /```([A-Za-z0-9_.-]+)[ \t]*\r?\n([\s\S]*?)\r?\n?```/g;
 const SEARCH_REPLACE_REGEX =
   /<{5,}\s*SEARCH\s*\r?\n([\s\S]*?)\r?\n={5,}\s*\r?\n([\s\S]*?)\r?\n>{5,}\s*REPLACE/;
 

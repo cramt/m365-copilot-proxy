@@ -269,6 +269,16 @@ const CONFABULATION_PATTERNS: RegExp[] = [
   /paste\s+(?:the\s+)?(?:contents?|files?|code|them)/i,
   /provide\s+(?:the\s+)?(?:contents?|files?)/i,
   /(?:environment|shell|tool)\s+(?:isn.?t|is not|aren.?t|are not|appears? to be)\s+(?:return|provid|respond|work|access)/i,
+  // Wrong-machine tells (§12.13). These turns are not lies — the model really did
+  // run something, in M365's own code-interpreter sandbox, and is reporting it
+  // honestly. The user's disk was never touched, so it still needs forcing.
+  // `/mnt/data` is that sandbox's cwd; `container.*` is its tool namespace. Only
+  // the *prose* form lands here — a fenced ```container.exec block is salvaged by
+  // the shell-alias routing in fenced.ts and never reaches this check.
+  /(?:current\s+working\s+directory|working\s+directory|cwd)[\s\S]{0,120}\/mnt\/data/i,
+  /(?:\bpwd\b|\bcd\b)[\s\S]{0,60}\/mnt\/data/i,
+  /(?:ran|used|executed|called)[\s\S]{0,80}container\.(?:exec|open_image|download)/i,
+  /container\.(?:exec|open_image|download)[\s\S]{0,120}(?:returned|output|shows?|result)/i,
   /no\s+files?\s+(?:in|found|present|visible)/i,
   /(?:file|directory|folder|it)\s+(?:appears?|seems?|looks?)\s+(?:to\s+be\s+)?empty/i, // "the file appears to be empty"
   /nothing\s+to\s+(?:simplify|fix|do|change|show|read)/i,                               // "nothing to simplify"
@@ -351,12 +361,18 @@ export function parseToolCalls(text: string, tools?: ToolDef[]): ParseResult {
   // Fenced is the format: parse ```toolname blocks first. Needs the tool schemas
   // to map header/body args. The JSON parse below is only a tolerance fallback for
   // when M365 ignores the contract and emits a `{"tool":...}` object anyway.
-  if (tools && tools.length > 0) {
-    const { calls, leftover } = parseFencedToolCalls(text, buildSpecMap(tools));
+  const specMap = tools && tools.length > 0 ? buildSpecMap(tools) : null;
+  if (specMap) {
+    const { calls, leftover } = parseFencedToolCalls(text, specMap);
     if (calls.length > 0) {
       return { hasToolCalls: true, toolCalls: calls, textContent: cleanLooseText(leftover) };
     }
   }
+
+  // The spec map carries the shell aliases too, so a JSON call naming a leaked
+  // runtime tool (`container.exec`) resolves to the harness shell tool here.
+  const resolveName = (raw: unknown): string | undefined =>
+    typeof raw === "string" ? (specMap?.get(raw)?.name ?? raw) : undefined;
 
   const toolCalls: ParsedToolCall[] = [];
 
@@ -367,7 +383,7 @@ export function parseToolCalls(text: string, tools?: ToolDef[]): ParseResult {
   while ((match = jsonRegex.exec(text)) !== null) {
     try {
       const parsed = JSON.parse(match[0]);
-      const name = parsed.tool;
+      const name = resolveName(parsed.tool);
       if (name) {
         toolCalls.push({
           id: `call_${crypto.randomUUID().replace(/-/g, "").slice(0, 24)}`,
@@ -391,7 +407,7 @@ export function parseToolCalls(text: string, tools?: ToolDef[]): ParseResult {
     while ((match = fencedRegex.exec(text)) !== null) {
       try {
         const parsed = JSON.parse(match[1]);
-        const name = parsed.tool || parsed.name;
+        const name = resolveName(parsed.tool || parsed.name);
         if (name) {
           toolCalls.push({
             id: `call_${crypto.randomUUID().replace(/-/g, "").slice(0, 24)}`,

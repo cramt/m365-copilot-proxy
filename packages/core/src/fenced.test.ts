@@ -187,6 +187,21 @@ describe("shell routing (Tier 1)", () => {
     expect(parseFencedToolCalls("```shell\nls\n```", specs).calls[0]?.function.name).toBe("run_command");
   });
 
+  it("routes leaked container.* runtime aliases to the harness shell tool", () => {
+    const specs = buildSpecMap([runCommand]);
+    const { calls } = parseFencedToolCalls("```container.exec\nls -la\n```", specs);
+    expect(calls).toHaveLength(1);
+    expect(calls[0].function.name).toBe("run_command");
+    expect(JSON.parse(calls[0].function.arguments)).toEqual({ command: "ls -la" });
+  });
+
+  it("leaves a dotted/hyphenated info-string that is not a tool in prose", () => {
+    // Widening the fence regex to allow . and - must not turn language tags into calls.
+    const specs = buildSpecMap([runCommand]);
+    expect(parseFencedToolCalls("```objective-c\nint x;\n```", specs).calls).toHaveLength(0);
+    expect(parseFencedToolCalls("```asp.net\n<%= x %>\n```", specs).calls).toHaveLength(0);
+  });
+
   it("does not hijack ```bash when a real tool is literally named bash", () => {
     // bash tool present → ```bash maps to it directly (not via alias), name stays bash
     const specs = buildSpecMap([bash, readFile]);

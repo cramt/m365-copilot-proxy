@@ -2190,15 +2190,36 @@ machine. §12.11's lesson repeats: the SOLVED-shaped output masks the failure.
 - Does `M365_NO_CODE_INTERPRETER=1` suppress it? Predicted **yes**, and that's the cheap
   mitigation if we want one.
 
-**Candidate fixes, none shipped.** In rough order of cost:
+**Fixes — two shipped (Aug 1 2026), both from [@EatonWu](https://github.com/EatonWu)'s fork.**
+He hit this independently and split it the right way, along a line the original write-up
+missed: the leak has a **salvageable** form and an **unsalvageable** one.
 
-- **Detector:** treat `/mnt/data` or an `oai`-owned path in a tool-less response as a sandbox-
-  execution tell and warn. Cheap, narrow, catches exactly this shape.
-- **Docs:** the harness quickstart should say that `--tools` is what makes execution local. The
-  README currently shows it in the example but never states *why* it's load-bearing.
-- **Structural:** reconsider defaulting the code interpreter on when the caller looks like an
-  agent harness rather than a chat client. Note this trades away a real §8.9 win, so it needs a
+- **Routing (shipped).** A fenced ` ```container.exec ` block is a *successful* turn wearing
+  the wrong label — the model chose a command, it just addressed M365's own runtime instead
+  of ours. `container.exec`/`run`/`bash` now join `SHELL_LANGS`, so those blocks route to the
+  harness shell tool like any ` ```bash `. Previously the fence regex (`[A-Za-z0-9_]+`) could
+  not even match a dotted info-string, so the whole turn fell through to prose and was lost.
+  Widening it to `[A-Za-z0-9_.-]+` is free: `parseFencedToolCalls` drops any info-string that
+  resolves to no spec, so ` ```objective-c ` still stays prose (regression-tested).
+- **Detector (shipped).** The *prose* form — "I ran `container.exec`; pwd → `/mnt/data`" — has
+  nothing to salvage, so it joins `CONFABULATION_PATTERNS` and triggers the existing forcing
+  retry. Note this widens what "confabulation" means in this codebase: every other pattern
+  catches a model claiming something it didn't do, and this one catches a model truthfully
+  reporting something it *did* do, on the wrong machine.
+- **Docs (open).** The harness quickstart still doesn't say that `--tools` is what makes
+  execution local. README shows it in the example without stating why it's load-bearing.
+- **Structural (open).** Reconsider defaulting the code interpreter on when the caller looks
+  like an agent harness rather than a chat client. Trades away a real §8.9 win, so it needs a
   reason better than one report.
+
+**Deliberately not taken from that fork.** His `isPathProbeRequest` forces an extra retry when
+the user's last message matches `/\b(?:path|directory|folder)\b/`. In a coding agent that fires
+on a large share of ordinary tasks, and each hit costs a round-trip against the ~600-message
+per-conversation quota — a quota regression wearing a bugfix's clothes. The narrow detector
+above covers the same shape without the blast radius. He also added a fail-closed strict tool
+mode (`083021e`, `3b91954`) and **reverted it two commits later** (`ca96806`) — worth recording
+as an independent negative result on enforcement-by-retry, which is the same direction §12.11
+found masked failures in.
 
 **Why it matters beyond the bug:** this is the first evidence that the agent-less path is not
 merely "less capable" but **actively misleading** for agent use — it answers filesystem
