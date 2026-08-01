@@ -10,6 +10,11 @@ const LOG_FILE = join(LOG_DIR, "debug.log");
 // engineering. M365_DEBUG keeps the lighter, truncated logging.
 const trace = !!process.env.M365_TRACE;
 const enabled = !!process.env.M365_DEBUG || trace;
+// Tailing ~/.config/opencode-m365/debug.log in a second terminal is the usual
+// way to watch a run; this mirrors the same lines to the proxy's own stdout so
+// one terminal is enough. Safe here because the proxy speaks HTTP — stdout is
+// not a protocol channel.
+const stdoutEnabled = !!process.env.M365_LOG_STDOUT;
 
 function timestamp(): string {
   return new Date().toISOString();
@@ -21,6 +26,7 @@ function write(level: string, component: string, ...args: unknown[]) {
     .map((a) => (typeof a === "string" ? a : JSON.stringify(a, null, 2)))
     .join(" ");
   const line = `[${timestamp()}] [${level}] [${component}] ${msg}\n`;
+  if (stdoutEnabled) process.stdout.write(line);
   try {
     mkdirSync(LOG_DIR, { recursive: true });
     appendFileSync(LOG_FILE, line);
