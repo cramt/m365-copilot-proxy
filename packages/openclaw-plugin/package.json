@@ -1,6 +1,7 @@
 {
   "name": "@m365-copilot/openclaw-plugin",
   "version": "0.2.0",
+  "license": "MIT",
   "type": "module",
   "description": "M365 Copilot provider plugin for OpenClaw — use Microsoft 365 Copilot as your LLM backend",
   "bin": {

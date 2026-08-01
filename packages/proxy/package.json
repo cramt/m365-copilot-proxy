@@ -1,6 +1,7 @@
 {
   "name": "@m365-copilot/proxy",
   "version": "0.2.0",
+  "license": "MIT",
   "type": "module",
   "bin": {
     "m365-proxy": "./bin/m365-proxy.mjs"

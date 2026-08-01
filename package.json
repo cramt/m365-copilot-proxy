@@ -1,6 +1,7 @@
 {
   "name": "m365-copilot-proxy",
   "private": true,
+  "license": "MIT",
   "type": "module",
   "scripts": {
     "dev": "pnpm --filter @m365-copilot/proxy dev",

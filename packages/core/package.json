@@ -1,6 +1,7 @@
 {
   "name": "@m365-copilot/core",
   "version": "0.2.0",
+  "license": "MIT",
   "type": "module",
   "exports": {
     ".": {

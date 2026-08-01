@@ -360,3 +360,9 @@ pnpm run test:live    # Run live integration tests against M365
 - The `think-deeper` / `*_Reasoning` models take 10-30s per response
 - Hard quota of ~600 messages **per conversation** (mitigated by session reuse + delta sends)
 - Streaming: **tool-less** responses stream incrementally (deltas forwarded as they arrive). **Tool-calling** turns are still buffered server-side — the raw text has to be parsed for tool-call fences before it can be emitted — so those arrive as a single chunk at the end (with an immediate HTTP 200 + heartbeats so the client never times out waiting)
+
+## License
+
+[MIT](LICENSE). Use at your own risk — this speaks to Microsoft's API with your own
+credentials, on your own account, and that's between you and your tenant's
+acceptable-use policy.
