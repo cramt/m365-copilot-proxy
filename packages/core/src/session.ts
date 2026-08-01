@@ -45,18 +45,23 @@ const CODE_INTERPRETER_OPTIONS_SETS = [
 
 // The image-generation optionsSets, lifted verbatim from the official web client
 // capture (§14). `flux_v3` is BizChat's orchestration codename, NOT the model —
-// artifacts come back DallE-named. We send the generation-focused subset (not the
-// GPT-V/upload family, which is image *input*), including `…non_watermarked_storage`
-// so the artifact isn't watermarked. Only added when the caller asks for images.
+// artifacts come back DallE-named. The GUI sends this WHOLE set on every turn and
+// lets the model pick the type from the prompt (standard / icon / story / designer
+// dimensions), which is why "draw me X" works with no UI toggle — so we match it:
+// send everything the GUI enables. Excludes only the GPT-V/upload family, which is
+// image *input* (a separate capability), not generation. `…non_watermarked_storage`
+// keeps the artifact unwatermarked.
 const IMAGE_GEN_OPTIONS_SETS = [
   "cwc_flux_image",
   "cwc_flux_v3",
   "enable_gg_gpt",
   "flux_v3_progress_messages",
   "flux_v3_image_gen_enable_dimensions",
-  "flux_v3_image_gen_enable_non_watermarked_storage",
-  "flux_v3_image_gen_enable_system_text_with_params",
+  "flux_v3_image_gen_enable_icon_dimensions",
+  "flux_v3_image_gen_enable_story",
   "flux_v3_image_gen_enable_designer_dimensions_meta_prompting_in_system_prompts",
+  "flux_v3_image_gen_enable_system_text_with_params",
+  "flux_v3_image_gen_enable_non_watermarked_storage",
 ];
 
 // --- Optional per-request frame dumping for reverse engineering ---

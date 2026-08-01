@@ -11,8 +11,14 @@ export {
 export {
   generateImage,
   fetchImageBytes,
+  buildImagePrompt,
+  classifyImageFailure,
+  ImageGenerationError,
   type GeneratedImage,
   type GenerateImageOptions,
+  type ImageOrientation,
+  type ImageStyle,
+  type ImageGenFailureReason,
 } from "./image.js";
 
 export {

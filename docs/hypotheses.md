@@ -2410,12 +2410,28 @@ the GUI), bytes downloaded and eyeballed — a correct teal lighthouse logo, 658
   `generateImage()` runs its own agent-less session, so image gen and tool calling never need to
   share a turn. This stays the reason it belongs behind a separate `/v1/images/generations`
   endpoint rather than inside a tool-calling chat completion. Not worth an image credit to settle.
-- **H14.4 — where does the image quota surface?** Still **open**. The one throttle frame we have
-  showed only `numUserMessagesInConversation` (1/600), nothing image-specific — yet a separate
-  image budget provably exists (the two `EnableImageGen…Throttled` variants, and the user
-  confirms a real cap). Capture the exhaustion frame opportunistically; do not burn credits to
-  force it. When we see it, the proxy should surface it as a distinct 429 rather than the chat
-  throttle.
+- **H14.4 — where does the image quota surface? ✅ RESOLVED (captured live, Aug 1 2026).** Ran the
+  account's daily image budget dry during option verification and caught the exhaustion turn. It is
+  **not** a throttle field and **not** a Disengage — it's a plain text refusal on a `DeepLeo`-origin
+  bot message, verbatim: *"Sorry, I can't generate any more images today. Try again tomorrow, or ask
+  me to find similar images on the web instead."* `turnState: Completed`, no GraphicArt frame, and
+  the chat throttle still read `1/600` — confirming the image budget is entirely separate from the
+  message quota (as predicted). Handled: `classifyImageFailure()` maps this text to `quota_exceeded`
+  (also `capacity` for transient load, `content_filtered` for prompt refusals); `generateImage()`
+  throws `ImageGenerationError` with that reason instead of returning `[]`, so a caller can map
+  quota → 429. The chat path already degrades gracefully — the apology is non-empty text, so it's
+  returned as the assistant message rather than triggering an empty-retry. **Caveat:** the
+  `capacity`/`content_filtered` wordings are inferred, not yet observed — only the `quota_exceeded`
+  text is confirmed. Tighten if/when we see the other two.
+
+**Verified options (live).** Beyond H14.1's baseline: implicit draw (a plain agent-less
+`ModelSession.run("draw me an image of a green teapot")` — no tools, no mode — returned a
+photorealistic image, 0 text); `orientation: "portrait"` (came back `Portrait` vs the default
+`Square`); `style: "icon"` (rounded-square app-icon framing). `style: "story"` is coded but
+**unverified** — the quota ran out on that exact run. The type/orientation levers are prompt
+directives (`buildImagePrompt`), not request params, because the model fills the `image_gen` tool
+args itself — same mechanism as the GUI's meta-prompting. All the GUI's image optionsSets are now
+sent on every agent-less turn, so any type the GUI can reach is reachable here.
 
 ### Follow-ups now that the core API exists
 

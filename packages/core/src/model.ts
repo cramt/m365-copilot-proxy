@@ -105,14 +105,21 @@ export class ModelSession {
 
     log.info(`run: model=${model}, agent=${agentForTurn ?? "none"}, turn=${this.copilotSession.turnCount}, sid=${this.sessionId}, cid=${this.conversationId}, text=${JSON.stringify(trunc(text, 200))}`);
 
+    // Match the GUI: on the agent-less path, image gen is always available, so a
+    // plain "draw me an image" produces one with no special mode (§14). Kept OFF on
+    // the tool-calling agent path — image optionsSets are agent-less, and we don't
+    // want the image tool competing with fenced tool-call emission. Opt out with
+    // M365_NO_IMAGE_GEN for a pure-text agent-less turn.
+    const turnOpts = { generateImages: !agentForTurn && !process.env.M365_NO_IMAGE_GEN };
+
     try {
-      return await this.copilotSession.chat(token, text, model, signal);
+      return await this.copilotSession.chat(token, text, model, signal, turnOpts);
     } catch (err: any) {
       // Session might be stale — reconnect with same IDs
       log.info("Session error, reconnecting:", err.message);
       this.copilotSession = this.createCopilotSession(agentForTurn);
       this.currentAgentId = agentForTurn;
-      return await this.copilotSession.chat(token, text, model, signal);
+      return await this.copilotSession.chat(token, text, model, signal, turnOpts);
     }
   }
 

@@ -280,13 +280,31 @@ const [img] = await generateImage("A minimalist flat-design logo of a lighthouse
 // img.contentType, img.size, img.orientation
 ```
 
-Runs its own agent-less session, so it never competes with tool calling. Uses the
-same login as chat; the artifact fetch uses a `designerappservice` token acquired
-silently from the existing cache. Protocol write-up: [docs/hypotheses.md §14](docs/hypotheses.md).
+Everything the M365 web client can do is reachable — the proxy sends the same image
+optionsSets it does. Steer type and aspect with options (they nudge the prompt the
+way the GUI's meta-prompting does; the model still makes the final call):
 
-> **Separate, scarcer budget.** Image generation draws on its own quota, distinct
-> from the ~600-message conversation limit. It's not metered by the chat throttle,
-> so treat image calls as the expensive ones.
+```ts
+await generateImage("a lighthouse on a cliff", { orientation: "portrait" });   // landscape | portrait | square
+await generateImage("a lighthouse", { style: "icon" });                        // natural | icon | story | designer
+```
+
+**You don't have to call `generateImage` at all.** Just like the web client, a plain
+chat turn draws when asked — send `"draw me an image of a green teapot"` to
+`/v1/chat/completions` (or `ModelSession.run`) with no tools and the image comes back
+embedded in the reply as a markdown data-URI. (Image gen is enabled on the agent-less
+path only, so it never competes with tool calling; set `M365_NO_IMAGE_GEN=1` to force
+pure text.)
+
+Runs its own agent-less session. Uses the same login as chat; the artifact fetch uses
+a `designerappservice` token acquired silently from the existing cache. Protocol
+write-up: [docs/hypotheses.md §14](docs/hypotheses.md).
+
+> **Separate, scarcer budget.** Image generation draws on its own daily quota, distinct
+> from the ~600-message conversation limit and not metered by the chat throttle — treat
+> image calls as the expensive ones. When it's exhausted, `generateImage()` throws
+> `ImageGenerationError` with `reason: "quota_exceeded"` (map it to HTTP 429); a plain
+> chat turn instead returns M365's "can't generate any more images today" message as text.
 
 An OpenAI-compatible `POST /v1/images/generations` endpoint on top of this is the
 next step — the core API it needs is already in place.

@@ -12,11 +12,39 @@ import {
   getMessageContent,
   noteRequestOutcome,
   awaitDegradationBackoff,
+  getImageArtifactToken,
+  fetchImageBytes,
+  type CapturedImage,
 } from "@m365-copilot/core";
 import { ChatCompletionRequest } from "./schemas.js";
 import type { z } from "zod/v4";
 
 const log = createLogger("handler");
+
+// Render generated images (§14) as markdown so any OpenAI-compatible client shows
+// them inline. The artifact URL 401s without the designerappservice token, so we
+// fetch the bytes ourselves and embed a self-contained data URI — a bare URL would
+// be useless to the client. On fetch failure we fall back to the raw URL so the
+// response is never silently empty.
+async function renderImagesMarkdown(images: CapturedImage[]): Promise<string> {
+  if (images.length === 0) return "";
+  let artifactToken: string | null = null;
+  try { artifactToken = await getImageArtifactToken(); } catch (e: any) { log.info(`image token failed: ${e.message}`); }
+  const parts: string[] = [];
+  for (const img of images) {
+    const url = img.referenceUrls[0];
+    if (!url) continue;
+    if (artifactToken) {
+      try {
+        const { data, contentType } = await fetchImageBytes(url, artifactToken);
+        parts.push(`![generated image](data:${contentType};base64,${data.toString("base64")})`);
+        continue;
+      } catch (e: any) { log.info(`image fetch failed: ${e.message}`); }
+    }
+    parts.push(`![generated image](${url})`);
+  }
+  return parts.join("\n\n");
+}
 
 // Forcing follow-up sent (in the same conversation) when M365 confabulates an
 // inability to act instead of calling a tool. See the confab-retry loop below.
@@ -267,6 +295,20 @@ export async function handleChatCompletion(
         }
       } catch (err: any) {
         return { error: jsonResponse(502, { error: { message: err.message, type: "upstream_error" } }) };
+      }
+
+      // Image gen (§14): the picture arrives on a GraphicArt frame, usually with NO
+      // chat text — so an image turn looks empty to the checks below and would burn
+      // a retry. Render the image(s) into the response instead, and (for streaming)
+      // emit the markdown as a trailing delta so the client isn't left with nothing.
+      const images = copilotStream.images ?? [];
+      if (images.length > 0) {
+        const imageMd = await renderImagesMarkdown(images);
+        if (imageMd) {
+          const addition = fullText.length > 0 ? `\n\n${imageMd}` : imageMd;
+          fullText += addition;
+          onDelta?.(addition);   // stream the appended markdown (text deltas already sent)
+        }
       }
 
       lastThrottle = copilotStream.throttle;

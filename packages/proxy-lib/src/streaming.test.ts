@@ -18,6 +18,7 @@ vi.mock("@m365-copilot/core", async (importActual) => {
       const stream = {
         fullText: full,
         hasContent: true,
+        images: [],
         throttle: { current: 1, max: 600 },
         contentOrigin: "Claude",
         messageType: null as string | null,
