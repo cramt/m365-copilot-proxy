@@ -25,6 +25,8 @@ than "we eyeballed one run." See §M (Methods) for the experimental rig.
 - §7 — Probe backlog, ordered by info-gain ÷ cost
 - §8 — Capability-expansion hypotheses (web-research dig: empty `optionsSets`, code interpreter, MCP actions, Claude tone, throttling levers, reference implementations)
 - §11 — Detection / anti-flagging science run (July 7 2026 — auto-reauth is loud AND probably useless)
+- §13 — User-driven SSO auth for tenants with no automatable TOTP (July 29 2026,
+  third-party): loopback redirect falsified, `nativeclient` corroborated by two forks
 - §12 — Multi-agent research dig (July 13 2026) + framing A/Bs, and §12.13: tool-less
   requests silently execute in M365's sandbox and return a real (wrong-machine) transcript
 
@@ -2224,3 +2226,62 @@ found masked failures in.
 **Why it matters beyond the bug:** this is the first evidence that the agent-less path is not
 merely "less capable" but **actively misleading** for agent use — it answers filesystem
 questions confidently about a machine the user has never seen.
+
+---
+
+## 13. July 29 2026 — user-driven SSO for tenants that can't do TOTP (third-party)
+
+**Why this section exists.** [#4](https://github.com/cramt/m365-copilot-proxy/issues/4) surfaced
+the tenants the stored-credentials path simply cannot serve: authenticator-app/software-OATH
+disabled by policy, push/number-matching-only MFA, FIDO2, Windows Hello, or federation to
+Okta/Ping/Duo. There is no base32 seed to extract, so `loginAutomated` has no code to type. The
+fix has to be a **user-driven** sign-in — a visible browser, one manual SSO/MFA, then silent
+refresh from cache. Two forks built toward that independently, which is what makes the results
+below worth more than n=1.
+
+### H13.1 — A random loopback redirect works for the first-party client ❌ FALSIFIED
+
+**Source:** [@neffer77](https://github.com/neffer77) ([PR #3](https://github.com/cramt/m365-copilot-proxy/pull/3),
+`scripts/raw-http-auth-probe.mjs`), n=1 live federated enterprise account, July 29 2026.
+
+**Result.** Federated SSO reached Entra, which rejected the generated
+`http://localhost:<ephemeral-port>` callback with **`AADSTS50011`** (redirect URI mismatch).
+
+**Why it's terminal, not a config error.** The client is Microsoft's own Office Copilot app
+(`c0ab8ce9-e9a0-42e7-b064-33d422df41f1`) — we don't own the registration, and neither does the
+user's tenant admin, so nobody in the loop can add the URI. This is the same constraint that
+forces the first-party client in the first place (§8: the Sydney scopes are only ever granted
+to it, so a self-registered app is not an option). **Do not spend another probe here, and don't
+ask an admin to "just add the redirect" — they can't.**
+
+**What to use instead:** the already-registered
+`https://login.microsoftonline.com/common/oauth2/nativeclient`, capturing the transient
+navigation to it and exchanging the code with PKCE.
+
+**Corroboration (the reason this is 🟢 and not 🟡).** [@EatonWu](https://github.com/EatonWu)'s
+fork implements interactive approval *without contact with neffer77* and lands on exactly that
+redirect — a `page.on("request")` capture keyed on `/oauth2/nativeclient` + `code=`. Two
+independent implementations, same conclusion, one of them with a live `AADSTS50011` to explain
+why the obvious alternative fails.
+
+### H13.2 — Device-code flow is enabled for the first-party client 🔴 UNTESTED
+
+Both forks assume it; **neither has run it.** neffer77 has it as H-A2 with no result, EatonWu
+ships it behind `M365_ENABLE_DEVICE_CODE=1` unverified. It's the natural headless answer (no
+browser on the box at all), so it's the highest-value open probe in this section — but treat
+"two forks implemented it" as zero evidence that it works. Conditional Access commonly blocks
+device code outright, and the token may come back without the Sydney audience even when the
+grant succeeds.
+
+**Falsification:** `/devicecode` POST rejected for the client, CA blocks it, or the resulting
+token's `aud`/scopes don't match the PKCE path's.
+
+### Not yet upstreamed
+
+EatonWu's `loginInteractiveForScopes` (env-gated on `M365_ENABLE_INTERACTIVE_APPROVAL=1`, with
+`M365_NO_INTERACTIVE` and a timeout) is the shape #4 needs and is written defensively. It is
+**not merged** because it cannot be verified from here without a live non-TOTP tenant, and
+shipping unverified auth code is how you turn a broken login into a broken login *plus* a
+support thread. Two things to fix when it does land: the device-code half is H13.2 above, and
+it hardcodes `locale: "en-GB"` / `timezoneId: "Europe/Copenhagen"` — copied from the §11 F25
+anti-fingerprint config, which is right for this account and wrong for everyone else's.
