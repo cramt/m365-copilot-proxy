@@ -2358,9 +2358,30 @@ It stays **opt-in** (`M365_ENABLE_INTERACTIVE_APPROVAL=1`, vetoable with `M365_N
 to preserve the headless invariant: a systemd/CI host must fail loudly, never hang on a window
 nobody can see. Setting the flag is the caller asserting a display exists.
 
-**Still unverified, honestly:** nobody has run this against a federated Okta/Ping/Duo tenant
-end to end. The redirect capture and PKCE exchange are proven; the federated *UI* journey is
-not. If you're on such a tenant, [#4](https://github.com/cramt/m365-copilot-proxy/issues/4)
+**Verified live before merge**, by forcing the branch with an empty cache and a non-existent
+secrets file so no other path could serve the token:
+
+| check | result |
+|---|---|
+| token acquired via `loginInteractiveForScopes` | ✅ 9.4s / 11.7s across two runs |
+| audience | `https://substrate.office.com/sydney` |
+| cached scopes | full Sydney set incl. `M365Chat.Read`, `sydney.readwrite` |
+| **token actually drives chat** | ✅ `pong`, `contentOrigin: DeepLeo` |
+| process exits cleanly afterwards | ✅ (see leak below) |
+
+Two things that only showed up by running it. First, `scp` is **absent** from this audience's
+JWT, so a scope assertion against that claim reads as a failure when nothing is wrong — check
+the cached `target` or just make a chat call. Second, a real leak worth remembering: `Promise.race`
+does not cancel the loser, so the 10-minute timeout timer stayed pending after a successful
+login and held Node's event loop open — the login worked and the process still hung (`EXIT=124`,
+one lingering `Timeout` handle). Now cleared in a `finally`, on both this and the automated path,
+which had the same shape with a 45s window. The proxy would have masked it (a server never
+exits anyway); any script calling `getToken()` would not.
+
+**Still unverified, honestly:** the sign-in above completed via cached AAD SSO cookies, so a
+human never typed anything, and nobody has run this against a federated Okta/Ping/Duo tenant.
+The redirect capture, PKCE exchange and token usability are proven; the federated *UI* journey
+is not. If you're on such a tenant, [#4](https://github.com/cramt/m365-copilot-proxy/issues/4)
 is where to report.
 
 ---

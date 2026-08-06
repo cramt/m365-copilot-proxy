@@ -386,12 +386,15 @@ async function runBrowserLogin(
         log.info(`driveAzureLogin ended early: ${e?.message}`),
       );
 
+      // Same uncancelled-loser caveat as the interactive path: clear the timer so a
+      // fast login doesn't hold the event loop open for the rest of the window.
+      let timer: ReturnType<typeof setTimeout> | undefined;
       const authCode = await Promise.race([
         codePromise,
-        new Promise<string>((_, rej) =>
-          setTimeout(() => rej(new Error("Timed out waiting for auth code")), 45000),
-        ),
-      ]);
+        new Promise<string>((_, rej) => {
+          timer = setTimeout(() => rej(new Error("Timed out waiting for auth code")), 45000);
+        }),
+      ]).finally(() => clearTimeout(timer));
       void drive; // fire-and-forget; context.close() below tears down any pending step
 
       const result = await app.acquireTokenByCode({
@@ -528,15 +531,20 @@ async function loginInteractiveForScopes(scopes: string[]): Promise<string> {
     console.error("[m365 auth] A browser window has opened — complete sign-in there.");
     console.error(`[m365 auth] Waiting up to ${Math.round(timeoutMs / 1000)}s.`);
     await page.goto(authUrl, { waitUntil: "domcontentloaded" });
+    // Promise.race doesn't cancel the loser, so the timer must be cleared by hand:
+    // a 10-minute pending setTimeout keeps Node's event loop alive long after a
+    // successful login, and any script calling getToken() would hang instead of
+    // exiting (observed: EXIT=124, one lingering "Timeout" handle).
+    let timer: ReturnType<typeof setTimeout> | undefined;
     const authCode = await Promise.race([
       codePromise,
-      new Promise<string>((_, rej) =>
-        setTimeout(
+      new Promise<string>((_, rej) => {
+        timer = setTimeout(
           () => rej(new Error(`Timed out waiting for interactive auth code after ${timeoutMs}ms`)),
           timeoutMs,
-        ),
-      ),
-    ]);
+        );
+      }),
+    ]).finally(() => clearTimeout(timer));
 
     const result = await app.acquireTokenByCode({
       code: authCode,
