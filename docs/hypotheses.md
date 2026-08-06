@@ -2229,6 +2229,16 @@ found masked failures in.
 merely "less capable" but **actively misleading** for agent use — it answers filesystem
 questions confidently about a machine the user has never seen.
 
+### 12.14 — GPT-5.6 reasoning tone is live (August 6 2026) 🟢
+
+Microsoft's M365 Copilot UI exposed **GPT 5.6 Think deeper** for an eligible tenant.
+A single agent-less control probe tested the pattern-derived `Gpt_5_6_Reasoning`
+tone: it returned exactly `pong`, `contentOrigin: "DeepLeo"`, with no error in
+23.6s. Because this endpoint rejects unknown tones, this confirms a real registered
+route. Shipped as `gpt-5.6-think-deeper`. `Gpt_5_6_Chat` remains unadvertised and
+was not re-tested. Tool-calling reliability is unbenchmarked, so GPT-5.5 Think
+Deeper remains the default for agents.
+
 ---
 
 ## 13. July 29 2026 — user-driven SSO for tenants that can't do TOTP (third-party)

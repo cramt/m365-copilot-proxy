@@ -26,6 +26,9 @@ const MODEL_TONES: Record<string, string> = {
   "gpt-5.5-quick": "Gpt_5_5_Chat",
   "gpt-5.5-think-deeper": "Gpt_5_5_Reasoning",
 
+  // GPT-5.6 (live-validated 2026-08-06; M365 currently exposes reasoning only)
+  "gpt-5.6-think-deeper": "Gpt_5_6_Reasoning",
+
   // GPT-5.4
   "gpt-5.4": "Gpt_5_4_Reasoning",
   "gpt-5.4-think-deeper": "Gpt_5_4_Reasoning",

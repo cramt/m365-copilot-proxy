@@ -15,7 +15,8 @@ const TONES = [
   "magic",                 // known good (baseline)
   "Gpt_5_5_Chat",          // g365 current
   "Gpt_5_5_Reasoning",     // g365 current
-  "Gpt_5_6_Chat",          // speculative next-gen
+  "Gpt_5_6_Reasoning",     // confirmed live 2026-08-06
+  "Gpt_5_6_Chat",          // rejected in June 2026
   "Claude_Sonnet",         // speculative Claude
   "Anthropic_Claude",      // speculative Claude
   "Claude_Reasoning",      // speculative Claude
