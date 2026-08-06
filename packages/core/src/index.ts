@@ -71,6 +71,7 @@ export {
   parseToolCalls,
   looksLikeConfabulation,
   looksLikeHallucinatedCompletion,
+  looksLikeRemoteArtifactCompletion,
   isProseDocument,
   type Message,
   type ToolDef,

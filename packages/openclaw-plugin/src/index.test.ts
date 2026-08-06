@@ -61,6 +61,7 @@ describe("generateOpenClawConfig", () => {
     }
 
     const models = config.models.providers.m365.models;
+    expect(models.find((m) => m.id === "gpt-5.6-think-deeper")?.reasoning).toBe(true);
     expect(models.find((m) => m.id === "think-deeper")?.reasoning).toBe(true);
     expect(models.find((m) => m.id === "quick")?.reasoning).toBe(false);
   });

@@ -8,6 +8,7 @@ import {
   parseToolCalls,
   looksLikeConfabulation,
   looksLikeHallucinatedCompletion,
+  looksLikeRemoteArtifactCompletion,
   isProseDocument,
   getMessageContent,
   noteRequestOutcome,
@@ -54,6 +55,12 @@ const CONFAB_FORCE_PROMPT =
 // Forcing follow-up when the model CLAIMS it did a file change but ran no tool.
 const HALLUCINATION_FORCE_PROMPT =
   "You have NOT actually done that — no tool ran this turn, so nothing changed on disk. Do not claim a file was created, replaced, or updated until a <tool_response> confirms it. Emit ONE ```bash block now that performs the change for real (write the file with a `cat > path <<'EOF' … EOF` heredoc), and nothing else.";
+
+// A Teams artifact belongs to M365's remote runtime and cannot be applied by a
+// local agent using only its basename. Force the intended mutation through the
+// harness tools instead of letting the remote patch leak into the conversation.
+const REMOTE_ARTIFACT_FORCE_PROMPT =
+  "The patch or download link you produced exists only in M365's remote environment and is NOT a file in the caller's working directory. Do NOT create, download, or apply a patch, and do NOT use a Teams artifact link. Use the provided local edit/write tool directly; if needed, emit ONE ```bash block that modifies the named local file in place. Output only that single local tool call, nothing else.";
 
 // M365 soft-caps output around ~3k tokens (~12k chars) and — critically —
 // CONCLUDES EARLY rather than truncating mid-stream, so a too-long answer comes
@@ -434,18 +441,41 @@ export async function handleChatCompletion(
     const everActed = (body.messages ?? []).some(
       (m) => m.role === "assistant" && Array.isArray(m.tool_calls) && m.tool_calls.length > 0,
     );
+    let remoteArtifactSeen = false;
+    let hallucinationSeen = false;
     for (let attempt = 0; attempt < maxConfabRetries && !parsed.hasToolCalls; attempt++) {
       const confab = looksLikeConfabulation(parsed.textContent);
+      const remoteArtifact = looksLikeRemoteArtifactCompletion(parsed.textContent);
+      remoteArtifactSeen ||= remoteArtifact;
       const halluc = !everActed && looksLikeHallucinatedCompletion(parsed.textContent);
-      if (!confab && !halluc) break;
-      log.info(`${confab ? "Confabulation" : "Hallucinated completion"} detected (no tool call) — forcing retry ${attempt + 1}/${maxConfabRetries}`);
-      text = confab ? CONFAB_FORCE_PROMPT : HALLUCINATION_FORCE_PROMPT;
+      hallucinationSeen ||= halluc;
+      if (!confab && !remoteArtifact && !halluc) break;
+      const retryKind = remoteArtifact ? "Remote artifact completion" : confab ? "Confabulation" : "Hallucinated completion";
+      log.info(`${retryKind} detected (no tool call) — forcing retry ${attempt + 1}/${maxConfabRetries}`);
+      text = remoteArtifact ? REMOTE_ARTIFACT_FORCE_PROMPT : confab ? CONFAB_FORCE_PROMPT : HALLUCINATION_FORCE_PROMPT;
       const retry = await runBuffered();
       if ("error" in retry) return { kind: "error", resp: retry.error };
       conv.sentMessageCount = body.messages.length;
       fullText = retry.fullText;
       parsed = parseToolCalls(fullText, body.tools);
       log.info(`After forcing retry: hasToolCalls=${parsed.hasToolCalls}, count=${parsed.toolCalls.length}`);
+    }
+
+    // Never pass a remote M365 artifact off as a successful local edit. A retry
+    // may merely transform a Teams URL into `sandbox:/mnt/data/...`; after the
+    // configured attempts are exhausted, fail explicitly so the harness/user can
+    // switch models instead of applying a nonexistent local file.
+    if (!parsed.hasToolCalls && (remoteArtifactSeen || hallucinationSeen || looksLikeRemoteArtifactCompletion(parsed.textContent))) {
+      log.info("File-mutation claim persisted without a local tool call after forcing retries — failing closed");
+      return {
+        kind: "error",
+        resp: jsonResponse(502, {
+          error: {
+            message: "M365 claimed a file update or returned a remote Teams or /mnt/data artifact instead of calling the local editing tools. No local file was changed. Retry with claude-sonnet-think-deeper, which is the recommended route for local file edits.",
+            type: "file_mutation_without_local_tool",
+          },
+        }),
+      };
     }
 
     // Document guard: the shell-routing parser turns every ```bash block into a
