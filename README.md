@@ -60,10 +60,14 @@ Each agent session reuses the same M365 conversation (same `sessionId` + `conver
 - Node.js 24+
 - pnpm 10+
 - An M365 account with Copilot access
-- TOTP-based MFA, with the base32 secret in hand — the automated login types the
-  6-digit code itself, so it needs the seed, not an app on your phone. See
-  [Getting the TOTP secret](#getting-the-totp-secret) (and the note after it if your
-  tenant doesn't offer TOTP at all).
+- A way to sign in, either:
+  - **TOTP-based MFA with the base32 secret in hand** — the automated login types the
+    6-digit code itself, so it needs the seed, not an app on your phone. See
+    [Getting the TOTP secret](#getting-the-totp-secret). This is the headless-friendly
+    option; prefer it if your tenant allows it.
+  - **or a display and 30 seconds** — set `M365_ENABLE_INTERACTIVE_APPROVAL=1` and sign
+    in by hand once. Required if your tenant has [no TOTP option](#if-your-tenant-has-no-totp-option)
+    (push-only MFA, FIDO2, Okta/Ping/Duo).
 
 ### 1. Install
 
@@ -126,10 +130,37 @@ Plenty of tenants can't do the above, and then there is no seed to extract:
 - sign-in is federated to a third-party IdP (Okta, Ping, Duo) that owns the MFA step.
 
 The stored-credentials flow above cannot work in those cases — the automated login has
-no code to type, and no amount of configuration fixes that. A user-driven fallback
-(visible browser, you complete MFA by hand once, tokens refresh silently afterwards) is
-tracked in [#4](https://github.com/cramt/m365-copilot-proxy/issues/4) and not shipped
-yet.
+no code to type, and no amount of configuration fixes that.
+
+**Use interactive approval instead.** Skip `secrets.json` entirely and set:
+
+```sh
+export M365_ENABLE_INTERACTIVE_APPROVAL=1
+m365-proxy 4141
+```
+
+A real browser window opens; you complete SSO/MFA by hand exactly as you would in
+Outlook — push, FIDO2, Okta, whatever your tenant enforces. The proxy captures the
+resulting OAuth code and from then on refreshes tokens silently from the MSAL cache,
+so the window is a **one-time cost**, not a per-run prompt. It also kicks in when
+stored credentials exist but stop working (policy change, MFA method swap).
+
+Contributed by [@EatonWu](https://github.com/EatonWu). Two honest caveats:
+
+- It is **opt-in on purpose.** Without the flag a headless host (systemd, CI, a second
+  PC) fails loudly instead of hanging on a window nobody can see. Set
+  `M365_NO_INTERACTIVE=1` to veto it outright.
+- The redirect capture and token exchange are the same ones the automated path uses in
+  production, but **nobody has yet run this end to end against a federated Okta/Ping/Duo
+  tenant.** If that's you, please report in
+  [#4](https://github.com/cramt/m365-copilot-proxy/issues/4) — working or not.
+
+> **Not device code.** The obvious headless alternative — `login.microsoft.com/device`
+> with a short code — is permanently dead here, not merely unimplemented. Initiation
+> returns a valid code, but redeeming it fails with `AADSTS7000218`: Entra treats
+> Microsoft's own Copilot client as confidential for that grant and demands a
+> `client_secret` only Microsoft holds. No tenant admin can grant it. Measured, with the
+> sign-in actually completed, in [§13 H13.2](docs/hypotheses.md).
 
 #### First run
 
@@ -314,9 +345,20 @@ next step — the core API it needs is already in place.
 
 The auth flow uses Azure MSAL with PKCE:
 
-1. **Silent refresh** — Uses cached tokens from `~/.config/opencode-m365/msal-cache.json`
-2. **Automated login** — Playwright-driven browser login using stored credentials + TOTP
-3. **Interactive login** — Opens browser for manual OAuth flow (fallback)
+1. **Silent refresh** — cached tokens from `~/.config/opencode-m365/msal-cache.json`. The
+   normal path; costs nothing and opens nothing.
+2. **Automated login** — headless Playwright browser driving the AAD form with stored
+   credentials + a TOTP code generated from `mfaSecret`.
+3. **Interactive approval** — visible browser, human completes SSO/MFA (§13). Only when
+   `M365_ENABLE_INTERACTIVE_APPROVAL=1`, and only after step 2 is unavailable or has
+   actually failed. This is the path for tenants where no TOTP seed exists.
+
+All three redeem the code against `https://login.microsoftonline.com/common/oauth2/nativeclient`
+with PKCE. That redirect isn't a stylistic choice: the client is Microsoft's own Copilot app
+(the Sydney scopes are granted to no other), so nobody can register a loopback URI — a
+generated `http://localhost:<port>` callback is rejected with `AADSTS50011`, and the device-code
+grant demands a `client_secret` only Microsoft holds (`AADSTS7000218`). Both measured live in
+[§13](docs/hypotheses.md); don't spend probes re-deriving them.
 
 Three token scopes are acquired:
 - `substrate.office.com/sydney/*` — For M365 Copilot chat
@@ -337,6 +379,10 @@ Three token scopes are acquired:
 | `M365_NO_BACKOFF` (alias `M365_NO_AUTO_REAUTH`) | Set to `1` to disable degradation backoff. By default, when empty/throttled responses span several **distinct conversations** in a short window (the thread-rate-throttle signature, [F13](docs/hypotheses.md)), the proxy **paces subsequent turns** (a jittered delay before starting new backend conversations) to let the account self-heal. This replaced the old auto-reauth: a fresh login does **not** clear this throttle (it's `oid`-keyed — [§11 H-R1](docs/hypotheses.md)) and raised our detection profile. A single long pi thread never trips the trigger. |
 | `M365_BACKOFF_THRESHOLD` / `M365_BACKOFF_WINDOW_MS` / `M365_BACKOFF_BASE_MS` / `M365_BACKOFF_MAX_MS` | Tune backoff: distinct-conversation empties to trigger (default `3`), the window they must fall in (default `120000`), the initial pacing window (default `90000`), and its escalation cap (default `600000`). |
 | `M365_BROWSER_PROFILE` / `M365_LOGIN_UA` | Override the persistent browser-profile dir and the login User-Agent used for the (rare) automated interactive login. The persistent profile keeps AAD SSO/device cookies so repeat logins are silent and look like a familiar device ([§11 H-R3](docs/hypotheses.md)). |
+| `M365_ENABLE_INTERACTIVE_APPROVAL` | Set to `1` to allow a **visible** browser window for sign-in when the automated login can't work or fails — the fallback for tenants with no TOTP option (push-only MFA, FIDO2, Okta/Ping/Duo). You complete SSO/MFA by hand once; tokens refresh silently afterwards. Off by default so headless hosts fail loudly rather than hang. See [If your tenant has no TOTP option](#if-your-tenant-has-no-totp-option). |
+| `M365_NO_INTERACTIVE` | Set to `1` to hard-disable any visible browser login, overriding the flag above. For systemd/CI hosts where a window must never open. |
+| `M365_INTERACTIVE_TIMEOUT_MS` | How long to wait for you to finish the interactive sign-in (default `600000`, i.e. 10 minutes). |
+| `M365_LOGIN_LOCALE` / `M365_LOGIN_TIMEZONE` | Browser locale and timezone presented during login (defaults `en-GB` / `Europe/Copenhagen`). These are part of the anti-bot-scoring fingerprint ([§11 F25](docs/hypotheses.md)) — set them to match your own machine if AAD starts treating your automated login as a bot. |
 | `M365_CACHE_FILE` | Override MSAL token cache location |
 | `M365_SECRETS_FILE` | Override credentials file location |
 | `CHROMIUM_PATH` | Path to Chromium binary for automated login |

@@ -2309,27 +2309,59 @@ redirect — a `page.on("request")` capture keyed on `/oauth2/nativeclient` + `c
 independent implementations, same conclusion, one of them with a live `AADSTS50011` to explain
 why the obvious alternative fails.
 
-### H13.2 — Device-code flow is enabled for the first-party client 🔴 UNTESTED
+### H13.2 — Device-code flow is enabled for the first-party client ❌ FALSIFIED
 
-Both forks assume it; **neither has run it.** neffer77 has it as H-A2 with no result, EatonWu
-ships it behind `M365_ENABLE_DEVICE_CODE=1` unverified. It's the natural headless answer (no
-browser on the box at all), so it's the highest-value open probe in this section — but treat
-"two forks implemented it" as zero evidence that it works. Conditional Access commonly blocks
-device code outright, and the token may come back without the Sydney audience even when the
-grant succeeds.
+**Tested Aug 6 2026**, live, n=1 tenant (TOTP-capable, so this tests the *grant*, not the MFA
+method). Both forks assumed this and neither ran it; it was the highest-value open probe here.
 
-**Falsification:** `/devicecode` POST rejected for the client, CA blocks it, or the resulting
-token's `aud`/scopes don't match the PKCE path's.
+**Test.** Raw HTTP against `/common/oauth2/v2.0/devicecode` and `/token` with
+`client_id=c0ab8ce9-…`, Sydney scopes + `offline_access` — deliberately outside MSAL so a
+library-level fallback couldn't mask which half failed. A human completed the real sign-in at
+`login.microsoft.com/device`.
 
-### Not yet upstreamed
+| step | result |
+|---|---|
+| `POST /devicecode` | **HTTP 200** — real `user_code`, `device_code`, 900s expiry |
+| `POST /token` before sign-in (control) | `authorization_pending` |
+| `POST /token` after sign-in completed | **`invalid_client` / `AADSTS7000218`** |
 
-EatonWu's `loginInteractiveForScopes` (env-gated on `M365_ENABLE_INTERACTIVE_APPROVAL=1`, with
-`M365_NO_INTERACTIVE` and a timeout) is the shape #4 needs and is written defensively. It is
-**not merged** because it cannot be verified from here without a live non-TOTP tenant, and
-shipping unverified auth code is how you turn a broken login into a broken login *plus* a
-support thread. Two things to fix when it does land: the device-code half is H13.2 above, and
-it hardcodes `locale: "en-GB"` / `timezoneId: "Europe/Copenhagen"` — copied from the §11 F25
-anti-fingerprint config, which is right for this account and wrong for everyone else's.
+> AADSTS7000218: The request body must contain the following parameter: 'client_assertion' or 'client_secret'
+
+**Conclusion — dead, and dead in an instructive place.** Initiation succeeds, which is exactly
+why both forks believed it would work: you get a valid code and a real Microsoft sign-in page,
+and it *feels* like it's working right up until redemption. Entra treats this client as
+confidential for the device-code grant, so redemption demands a secret that belongs to
+Microsoft. We cannot hold it, and no tenant admin can grant it — the same ownership wall as
+H13.1's `AADSTS50011`, hit from the other side.
+
+Note what did NOT falsify it: Conditional Access never engaged, and the sign-in itself was
+accepted. The failure is the client registration, so **no tenant's policy can make this work**
+and there is nothing to retry on a different tenant.
+
+**Therefore `M365_ENABLE_DEVICE_CODE` was NOT upstreamed** — shipping it would hand users a
+flow that prints a code, waits, and then fails after they've done the work. Two independent
+forks built it on assumption; this note exists so a third doesn't.
+
+### Landed — interactive approval is upstream (Aug 6 2026) 🟢
+
+[@EatonWu](https://github.com/EatonWu)'s `loginInteractiveForScopes` is now on `main`, wired
+into all three token paths (`doGetToken`, `getTokenForScope`, `doForceReauth`), each falling
+back to a human only after the automated login actually fails. The three §13 blockers are
+resolved: the device-code half is falsified above and dropped; `locale`/`timezoneId` are no
+longer hardcoded (`M365_LOGIN_LOCALE` / `M365_LOGIN_TIMEZONE`, defaulting to the §11 F25
+values so a *working* automated fingerprint isn't silently changed); and the mechanism it
+depends on — the transient `nativeclient` code capture — is the same one the automated path
+has been exercising in production all along, which is what makes this merge-safe despite no
+non-TOTP tenant to test on.
+
+It stays **opt-in** (`M365_ENABLE_INTERACTIVE_APPROVAL=1`, vetoable with `M365_NO_INTERACTIVE=1`)
+to preserve the headless invariant: a systemd/CI host must fail loudly, never hang on a window
+nobody can see. Setting the flag is the caller asserting a display exists.
+
+**Still unverified, honestly:** nobody has run this against a federated Okta/Ping/Duo tenant
+end to end. The redirect capture and PKCE exchange are proven; the federated *UI* journey is
+not. If you're on such a tenant, [#4](https://github.com/cramt/m365-copilot-proxy/issues/4)
+is where to report.
 
 ---
 

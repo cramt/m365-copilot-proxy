@@ -47,6 +47,28 @@ function resolveFile(envVar: string, defaultName: string): string {
 const CACHE_FILE = resolveFile("M365_CACHE_FILE", "msal-cache.json");
 const SECRETS_FILE = resolveFile("M365_SECRETS_FILE", "secrets.json");
 
+// Browser identity for both login paths. These defaults are the §11 F25
+// anti-fingerprint config — empirically tuned against AAD's bot scoring for the
+// account this was built on, hence overridable rather than derived: a wrong
+// locale is cosmetic, but silently changing a fingerprint that currently passes
+// is not worth the risk. Set these if AAD treats your automated login as a bot.
+const LOGIN_LOCALE = process.env.M365_LOGIN_LOCALE ?? "en-GB";
+const LOGIN_TIMEZONE = process.env.M365_LOGIN_TIMEZONE ?? "Europe/Copenhagen";
+
+/** Human completes SSO/MFA by hand (§13). Off by default: it opens a real window. */
+function interactiveApprovalEnabled(): boolean {
+  return process.env.M365_ENABLE_INTERACTIVE_APPROVAL === "1";
+}
+
+function interactiveAllowed(): boolean {
+  return process.env.M365_NO_INTERACTIVE !== "1";
+}
+
+function interactiveTimeoutMs(): number {
+  const raw = Number(process.env.M365_INTERACTIVE_TIMEOUT_MS ?? 600_000);
+  return Number.isFinite(raw) && raw > 0 ? raw : 600_000;
+}
+
 // --- MSAL cache persistence ---
 
 function loadCache(app: msal.PublicClientApplication) {
@@ -324,8 +346,8 @@ async function runBrowserLogin(
         "--disable-blink-features=AutomationControlled",
       ],
       userAgent: LOGIN_USER_AGENT,
-      locale: "en-GB",
-      timezoneId: "Europe/Copenhagen",
+      locale: LOGIN_LOCALE,
+      timezoneId: LOGIN_TIMEZONE,
       viewport: { width: 1280, height: 800 },
     });
     await context.addInitScript(() => {
@@ -435,6 +457,104 @@ export async function loginAutomated(
   return token;
 }
 
+/**
+ * User-driven sign-in for tenants the stored-credentials path cannot serve (§13):
+ * software-OATH disabled by policy, push/number-matching-only MFA, FIDO2, Windows
+ * Hello, or federation to Okta/Ping/Duo. There is no base32 seed to extract in any
+ * of those, so `loginAutomated` has no code to type.
+ *
+ * Opens a VISIBLE browser, lets a human complete SSO/MFA once, then captures the
+ * code and exchanges it with PKCE. Afterwards the persistent profile plus the MSAL
+ * refresh token make subsequent starts silent — the window is a one-time cost.
+ *
+ * Adapted from @EatonWu's fork (github.com/EatonWu/m365-copilot-proxy).
+ *
+ * Why this redirect and not a loopback port: the client is Microsoft's own app, so
+ * nobody in the loop — not us, not your tenant admin — can register a new redirect
+ * URI. A generated `http://localhost:<port>` callback is rejected with AADSTS50011
+ * (H13.1, live). `nativeclient` is already registered, so it is the only door.
+ *
+ * Device code is NOT an alternative: initiation succeeds but redemption demands a
+ * `client_secret` we can never hold (H13.2, AADSTS7000218, live). Don't re-add it.
+ */
+async function loginInteractiveForScopes(scopes: string[]): Promise<string> {
+  if (!interactiveAllowed()) {
+    throw new Error("Interactive login is disabled (M365_NO_INTERACTIVE=1)");
+  }
+  const { chromium } = await import("playwright");
+  const app = getApp();
+  const timeoutMs = interactiveTimeoutMs();
+  const { authUrl, verifier } = await buildAuthUrlForScopes(app, scopes);
+
+  const context = await chromium.launchPersistentContext(BROWSER_PROFILE_DIR, {
+    headless: false, // the entire point: a human has to see and drive this
+    executablePath: resolveChromiumPath(),
+    args: [
+      "--no-sandbox",
+      "--disable-dev-shm-usage",
+      "--disable-blink-features=AutomationControlled",
+    ],
+    userAgent: LOGIN_USER_AGENT,
+    locale: LOGIN_LOCALE,
+    timezoneId: LOGIN_TIMEZONE,
+    viewport: { width: 1280, height: 800 },
+  });
+  await context.addInitScript(() => {
+    Object.defineProperty(navigator, "webdriver", { get: () => undefined });
+  });
+  const page = context.pages()[0] ?? (await context.newPage());
+
+  // Same transient-code capture as the automated path: a real browser follows
+  // nativeclient one hop further, so the ?code= only exists on the navigation.
+  let resolveCode: (code: string) => void;
+  const codePromise = new Promise<string>((res) => {
+    resolveCode = res;
+  });
+  page.on("request", (req: any) => {
+    const u = req.url();
+    if (u.includes("/oauth2/nativeclient") && u.includes("code=")) {
+      const c = new URL(u).searchParams.get("code");
+      if (c) {
+        log.info("Captured auth code from nativeclient redirect (interactive)");
+        resolveCode(c);
+      }
+    }
+  });
+
+  try {
+    // console.error, not log: this is a blocking instruction to a human and must
+    // appear even with debug logging off, or the proxy looks hung.
+    console.error("[m365 auth] Interactive approval required.");
+    console.error("[m365 auth] A browser window has opened — complete sign-in there.");
+    console.error(`[m365 auth] Waiting up to ${Math.round(timeoutMs / 1000)}s.`);
+    await page.goto(authUrl, { waitUntil: "domcontentloaded" });
+    const authCode = await Promise.race([
+      codePromise,
+      new Promise<string>((_, rej) =>
+        setTimeout(
+          () => rej(new Error(`Timed out waiting for interactive auth code after ${timeoutMs}ms`)),
+          timeoutMs,
+        ),
+      ),
+    ]);
+
+    const result = await app.acquireTokenByCode({
+      code: authCode,
+      scopes,
+      redirectUri: REDIRECT_URI,
+      codeVerifier: verifier,
+    });
+    saveCache(app);
+    log.info(`Interactive login succeeded as ${result.account?.username}`);
+    return result.accessToken;
+  } catch (err: any) {
+    await capture(page, "interactive-fail");
+    throw err;
+  } finally {
+    await context.close();
+  }
+}
+
 // Ensure we hold a usable token. Retained as a MANUAL lever only — nothing auto-invokes
 // it anymore (see auth-recovery.ts: degradation is handled by backoff, not re-login).
 //
@@ -461,14 +581,29 @@ async function doForceReauth(): Promise<boolean> {
       return true;
     }
     const secrets = loadSecrets();
+    const canPromptHuman = interactiveApprovalEnabled() && interactiveAllowed();
     if (!secrets) {
+      if (canPromptHuman) {
+        log.info("forceReauth: no secrets file, asking for interactive approval");
+        await loginInteractiveForScopes(SCOPES);
+        return true;
+      }
       log.error("forceReauth: silent refresh failed and no secrets file — cannot re-login");
       return false;
     }
     log.info("forceReauth: silent unavailable, doing automated login");
-    await loginAutomated(secrets.email, secrets.password, secrets.mfaSecret);
-    log.info("forceReauth: automated login succeeded");
-    return true;
+    try {
+      await loginAutomated(secrets.email, secrets.password, secrets.mfaSecret);
+      log.info("forceReauth: automated login succeeded");
+      return true;
+    } catch (err: any) {
+      if (!canPromptHuman) throw err;
+      // Stored creds exist but didn't get through — a policy change, an MFA method
+      // swap, or a Conditional Access prompt. A human can still finish it.
+      log.info(`forceReauth: automated login failed (${err.message}), asking for interactive approval`);
+      await loginInteractiveForScopes(SCOPES);
+      return true;
+    }
   } catch (err: any) {
     log.error(`forceReauth failed: ${err.message}`);
     return false;
@@ -506,10 +641,18 @@ export async function getTokenForScope(scopes: string[]): Promise<string | null>
     }
   }
 
-  // Silent unavailable — fall back to automated browser login with stored creds.
+  // Silent unavailable — fall back to automated browser login with stored creds,
+  // then to a human if that's enabled (§13).
   const secrets = loadSecrets();
-  if (!secrets) return null;
-  return runBrowserLogin(app, scopes, secrets);
+  const canPromptHuman = interactiveApprovalEnabled() && interactiveAllowed();
+  if (!secrets) return canPromptHuman ? loginInteractiveForScopes(scopes) : null;
+  try {
+    return await runBrowserLogin(app, scopes, secrets);
+  } catch (err: any) {
+    if (!canPromptHuman) throw err;
+    log.info(`getTokenForScope: browser login failed (${err.message}), asking for interactive approval`);
+    return loginInteractiveForScopes(scopes);
+  }
 }
 
 // Serialize token acquisition: concurrent callers share one in-flight login
@@ -530,13 +673,25 @@ async function doGetToken(): Promise<string> {
   }
 
   const secrets = loadSecrets();
+  // Automated (headless) login by default. A headless host (systemd, CI, second
+  // PC) must fail LOUDLY rather than hang on an invisible prompt or pop a browser
+  // tab — so the human-in-the-loop path stays strictly opt-in via
+  // M365_ENABLE_INTERACTIVE_APPROVAL=1, which is the caller asserting a display
+  // exists. M365_NO_INTERACTIVE=1 vetoes it regardless (§13).
+  const canPromptHuman = interactiveApprovalEnabled() && interactiveAllowed();
   if (!secrets) {
+    if (canPromptHuman) return loginInteractiveForScopes(SCOPES);
     throw new Error(
-      "No cached token and no secrets.json — cannot authenticate. Provide email/password/mfaSecret for automated login.",
+      "No cached token and no secrets.json — cannot authenticate. Provide email/password/mfaSecret for automated login, or set M365_ENABLE_INTERACTIVE_APPROVAL=1 to sign in by hand in a visible browser (needed for tenants without TOTP: push-only MFA, FIDO2, Okta/Ping/Duo).",
     );
   }
-  // Automated (headless) login only. There is intentionally no interactive
-  // browser fallback — a headless host (systemd, CI, second PC) must fail loudly
-  // rather than hang on an invisible paste-the-URL prompt or pop a browser tab.
-  return loginAutomated(secrets.email, secrets.password, secrets.mfaSecret);
+  if (!canPromptHuman) {
+    return loginAutomated(secrets.email, secrets.password, secrets.mfaSecret);
+  }
+  try {
+    return await loginAutomated(secrets.email, secrets.password, secrets.mfaSecret);
+  } catch (err: any) {
+    log.info(`Automated login failed (${err.message}), asking for interactive approval`);
+    return loginInteractiveForScopes(SCOPES);
+  }
 }
