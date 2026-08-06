@@ -294,12 +294,15 @@ const CONFABULATION_PATTERNS: RegExp[] = [
 // store instead of calling the harness's local edit/write/bash tools. The link
 // is valid in M365 but the referenced file is not present in the caller's
 // working directory, so a later `git apply <basename>` inevitably fails.
-// Keep this deliberately narrow: generated images and normal links are valid
-// answers, while a .patch/.diff artifact during tool mode is not a local edit.
+// Every pattern must be ANCHORED to something only M365's remote runtime emits:
+// a Teams artifact URL, a `sandbox:/mnt/data` path, or a citation marker. Talking
+// about a "patch" or "diff" is normal for a coding agent, so an unanchored verb +
+// noun pattern (e.g. /generated .{0,100} patch/) fires on "I generated a patch for
+// review" and — because this detector fails closed below — turns an ordinary answer
+// into a 502. Anchors are what separate a remote artifact from a local one.
 const REMOTE_ARTIFACT_COMPLETION_PATTERNS: RegExp[] = [
   /sandbox:\/mnt\/data\/[^\s)\]]+/i,
   /https?:\/\/[^\s)\]]*asyncgw\.teams\.microsoft\.com\/[^\s)\]]+\.(?:patch|diff)(?:[?#][^\s)\]]*)?/i,
-  /\b(?:download|attached|generated|prepared)\b[^\n]{0,100}\b(?:update\s+)?(?:patch|diff)\b/i,
   // The remote artifact may be the whole updated source file rather than a
   // patch. Require a mutation claim near the Teams "views/original" URL so a
   // normal shared link is not mistaken for a failed local edit.

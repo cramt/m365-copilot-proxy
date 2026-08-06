@@ -187,7 +187,17 @@ There is no `model` parameter. The `tone` string on the chat message picks the m
 
 Mapping lives in `MODEL_TONES` (`copilot.ts`). `*_Reasoning` tones take 10–30s.
 
-**The server validates `tone`.** An unknown tone returns a `type:3` completion error (`Failed to invoke 'Chat'`), so an accepted tone is a real, registered route — that's how the Claude/GPT-5.5/GPT-5.6 tones above were confirmed. Rejected on test: `Anthropic_Claude`, `Claude_Haiku`, `Claude_3_7_Sonnet`, `Gpt_5_6_Chat` (June 2026, before the GPT-5.6 rollout). Accepted-but-NOT-Claude: `Claude_Reasoning` (self-IDs as GPT-5 — don't use). New tones still appear by pattern (`Gpt_5_N_{Quick,Reasoning}`, `Claude_*`).
+**The server validates `tone` — and there are THREE outcomes, not two** (Aug 6 2026, §12.15). Probe a candidate tone agent-less and read `contentOrigin`:
+
+| Outcome | Signal | Meaning |
+|---|---|---|
+| **Live** | content + `contentOrigin: "DeepLeo"`, seconds-to-30s | real, registered, serving — safe to map |
+| **Rejected** | `type:3` error `Failed to invoke 'Chat'`, ~250-300ms | no such tone |
+| **Registered but dead** | canned *"Sorry, I wasn't able to respond to that"* + `contentOrigin: "BotConnection"`, ~1.6s | route exists, serves nothing |
+
+That third state is the trap: **"didn't error" is not sufficient to conclude a tone works.** `Gpt_5_6_Chat` sits there right now — rejected outright in June 2026, accepted-but-dead since the GPT-5.6 rollout, and it would ship as a model that only ever apologises. Require `DeepLeo` before mapping anything.
+
+Rejected on test: `Anthropic_Claude`, `Claude_Haiku`, `Claude_3_7_Sonnet`. Accepted-but-NOT-Claude: `Claude_Reasoning` (self-IDs as GPT-5 — don't use). New tones still appear by pattern (`Gpt_5_N_{Quick,Reasoning}`, `Claude_*`).
 
 > ⚠️ **The declarative agent overrides the tone and forces GPT-5.** This is the big one (June 2026, `scripts/tone-probe.mjs`): with **no agent**, `Claude_Sonnet` → real Claude; with the agent attached (`threadLevelGptId`, §10) the *same* tone silently routes to **GPT-5**. So a non-default tone (Claude, and the `*_Reasoning` tones) only takes effect on the **agent-less / plain-chat** path. With a heavy tool prompt a Claude tone + agent goes further and **Disengages persistently** (the `DeepLeo` reasoning pipeline meta-analyses the injected prompt instead of obeying it). Ruled out as causes: prompt wrapper, the `variants` flag list, conversation reuse — isolated cleanly to agent presence.
 >

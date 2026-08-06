@@ -441,14 +441,10 @@ export async function handleChatCompletion(
     const everActed = (body.messages ?? []).some(
       (m) => m.role === "assistant" && Array.isArray(m.tool_calls) && m.tool_calls.length > 0,
     );
-    let remoteArtifactSeen = false;
-    let hallucinationSeen = false;
     for (let attempt = 0; attempt < maxConfabRetries && !parsed.hasToolCalls; attempt++) {
       const confab = looksLikeConfabulation(parsed.textContent);
       const remoteArtifact = looksLikeRemoteArtifactCompletion(parsed.textContent);
-      remoteArtifactSeen ||= remoteArtifact;
       const halluc = !everActed && looksLikeHallucinatedCompletion(parsed.textContent);
-      hallucinationSeen ||= halluc;
       if (!confab && !remoteArtifact && !halluc) break;
       const retryKind = remoteArtifact ? "Remote artifact completion" : confab ? "Confabulation" : "Hallucinated completion";
       log.info(`${retryKind} detected (no tool call) — forcing retry ${attempt + 1}/${maxConfabRetries}`);
@@ -462,16 +458,20 @@ export async function handleChatCompletion(
     }
 
     // Never pass a remote M365 artifact off as a successful local edit. A retry
-    // may merely transform a Teams URL into `sandbox:/mnt/data/...`; after the
+    // may merely transform a Teams URL into `sandbox:/mnt/data/...`; once the
     // configured attempts are exhausted, fail explicitly so the harness/user can
     // switch models instead of applying a nonexistent local file.
-    if (!parsed.hasToolCalls && (remoteArtifactSeen || hallucinationSeen || looksLikeRemoteArtifactCompletion(parsed.textContent))) {
-      log.info("File-mutation claim persisted without a local tool call after forcing retries — failing closed");
+    //
+    // Judge the FINAL text, not a sticky flag from the first attempt: a retry that
+    // replaces the bogus mutation claim with a genuine answer ("I need the file
+    // path first") has fixed the problem, and 502-ing it would be a regression.
+    if (!parsed.hasToolCalls && looksLikeRemoteArtifactCompletion(parsed.textContent)) {
+      log.info("Remote-artifact mutation claim persisted without a local tool call after forcing retries — failing closed");
       return {
         kind: "error",
         resp: jsonResponse(502, {
           error: {
-            message: "M365 claimed a file update or returned a remote Teams or /mnt/data artifact instead of calling the local editing tools. No local file was changed. Retry with claude-sonnet-think-deeper, which is the recommended route for local file edits.",
+            message: "M365 returned a remote Teams or /mnt/data artifact instead of calling the local editing tools. No local file was changed. Retry with gpt-5.5-think-deeper, the recommended model for tool calling.",
             type: "file_mutation_without_local_tool",
           },
         }),

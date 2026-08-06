@@ -2235,9 +2235,42 @@ Microsoft's M365 Copilot UI exposed **GPT 5.6 Think deeper** for an eligible ten
 A single agent-less control probe tested the pattern-derived `Gpt_5_6_Reasoning`
 tone: it returned exactly `pong`, `contentOrigin: "DeepLeo"`, with no error in
 23.6s. Because this endpoint rejects unknown tones, this confirms a real registered
-route. Shipped as `gpt-5.6-think-deeper`. `Gpt_5_6_Chat` remains unadvertised and
-was not re-tested. Tool-calling reliability is unbenchmarked, so GPT-5.5 Think
-Deeper remains the default for agents.
+route. Shipped as `gpt-5.6-think-deeper`. Independently reproduced on our tenant
+(20.1s, `pong`, `DeepLeo`) before merging [#5](https://github.com/cramt/m365-copilot-proxy/pull/5).
+Tool-calling reliability is unbenchmarked, so GPT-5.5 Think Deeper remains the
+default for agents.
+
+### 12.15 — tone validation is THREE-state: `Gpt_5_6_Chat` is registered but dead 🟢
+
+**Hypothesis.** Tone validation is binary (§5): accepted ⇒ real route, rejected ⇒
+`Failed to invoke 'Chat'`. [#5](https://github.com/cramt/m365-copilot-proxy/pull/5)
+carried that assumption forward, documenting `Gpt_5_6_Chat` as still-rejected.
+
+**Prediction.** Re-probing `Gpt_5_6_Chat` errors out exactly as it did in June 2026.
+
+**Test.** Agent-less single-turn probes, `Reply with exactly the single word: pong`,
+with a known-good tone and a known-bad tone as controls. `Gpt_5_6_Chat` run twice
+with distinct nonces to rule out a transient.
+
+| Tone | Result | `contentOrigin` | Elapsed |
+|---|---|---|---|
+| `Gpt_5_5_Chat` (control, good) | `pong` | `DeepLeo` | 5.4s |
+| `Gpt_5_6_Reasoning` | `pong` | `DeepLeo` | 21.0s |
+| `Gpt_5_6_Chat` (×2) | *"Sorry, I wasn't able to respond to that."* | **`BotConnection`** | 1.6s / 1.8s |
+| `Claude_Haiku` (control, bad) | `Failed to invoke 'Chat'` | — | 0.30s |
+| `Definitely_Not_A_Real_Tone_XYZ` (control) | `Failed to invoke 'Chat'` | — | 0.25s |
+
+**Conclusion — falsified, and the model of the endpoint was wrong.** There is a third
+state between accepted and rejected: **registered but dead**. `Gpt_5_6_Chat` no longer
+errors (it did in June, so the rollout did register it), but it never reaches a model —
+it returns M365's canned deflection from `BotConnection` in ~1.6s, reproducibly.
+
+The methodological consequence outlives this one tone: **absence of an error is not
+evidence of a working route.** Every tone confirmation from here on must show
+`contentOrigin: "DeepLeo"`. A naive "it didn't error, ship it" would have shipped
+`gpt-5.6` as a model that only ever apologises — and the 1.6s latency looks like a
+*fast* model, not a broken one, so a latency-only check would have missed it too.
+`scripts/tone-probe.mjs` already prints `origin`; §5 now documents all three states.
 
 ---
 

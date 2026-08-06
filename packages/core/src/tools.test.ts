@@ -301,8 +301,17 @@ describe("looksLikeRemoteArtifactCompletion", () => {
     expect(looksLikeRemoteArtifactCompletion(response)).toBe(true);
   });
 
-  it("flags a narrated remote patch even when the URL is omitted", () => {
-    expect(looksLikeRemoteArtifactCompletion("I prepared the update patch for plan.md and attached it here.")).toBe(true);
+  // Detection must be anchored to an M365 artifact (Teams URL, sandbox path,
+  // citation marker). "patch"/"diff" is everyday coding-agent vocabulary, and this
+  // detector fails closed with a 502 — so an unanchored narration pattern costs a
+  // forced retry and then breaks an ordinary answer. Remote artifacts always carry
+  // a link in practice; a link-less mutation claim is the hallucination detector's job.
+  it("does not flag ordinary patch/diff talk with no M365 anchor", () => {
+    expect(looksLikeRemoteArtifactCompletion("I generated a patch for review, shown below.")).toBe(false);
+    expect(looksLikeRemoteArtifactCompletion("You can download the patch from the GitHub release page.")).toBe(false);
+    expect(looksLikeRemoteArtifactCompletion("I've attached the diff inline above for you to inspect.")).toBe(false);
+    expect(looksLikeRemoteArtifactCompletion("git format-patch generated 3 patch files in the repo.")).toBe(false);
+    expect(looksLikeRemoteArtifactCompletion("Here is the diff I prepared for the change:\n\n```diff\n-a\n+b\n```")).toBe(false);
   });
 
   it("flags GPT-5.6's hidden M365 file citation presented as a local edit", () => {

@@ -16,7 +16,7 @@ const TONES = [
   "Gpt_5_5_Chat",          // g365 current
   "Gpt_5_5_Reasoning",     // g365 current
   "Gpt_5_6_Reasoning",     // confirmed live 2026-08-06
-  "Gpt_5_6_Chat",          // rejected in June 2026
+  "Gpt_5_6_Chat",          // registered but dead — BotConnection deflection, not DeepLeo (§12.15)
   "Claude_Sonnet",         // speculative Claude
   "Anthropic_Claude",      // speculative Claude
   "Claude_Reasoning",      // speculative Claude
