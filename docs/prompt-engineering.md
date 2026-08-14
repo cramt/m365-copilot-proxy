@@ -70,7 +70,9 @@ These are what actually move compliance. In rough order of importance:
   `usage.x_m365_dea_score` (clean tool calls ~1e-8, prose ~1e-6, jailbreak-shaped ~1e-3);
   it rises before Disengaged fires.
 - **Keep the toolset lean.** Heavy harnesses (opencode's ~15 tools) get empty Disengaged
-  replies; pi's lean set works. ([api §9].)
+  replies; pi's lean set works. ([api §9].) A heavy harness can often be *made* lean —
+  but note that opencode's own config/hook levers do not affect the outgoing request, so
+  the trim has to happen in the proxy. ([api §9, "Trimming a heavy harness"].)
 - **Measure on *unfakeable* tasks.** The model hallucinates success on tasks it can answer
   from memory (fizzbuzz, count-lines) with 0 tool calls; only unfakeable tasks (fix-bug,
   find-needle, edit-config) force real calls. ([api §10 "measurement traps"].)
