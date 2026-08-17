@@ -87,36 +87,38 @@ async function getEnvironmentUrl(ppToken: string): Promise<string> {
     .replace(/-/g, "")
     .toLowerCase();
 
-  // Microsoft constructs the subdomain as "default{envId}" but DNS resolution
-  // requires finding the correct label. Try the full ID first, fall back to
-  // progressively shorter versions if DNS doesn't resolve.
-  const base = `.df.environment.api.powerplatform.com`;
-  const candidates = [
-    `https://default${envId}${base}`,
-    `https://default${envId.slice(0, -2)}${base}`, // some tenants truncate last 2 chars
-  ];
-
-  for (const url of candidates) {
-    try {
-      const probe = await fetch(
-        `${url}/copilotstudio/minimalBots/api?api-version=2022-03-01-preview`,
-        {
-          method: "HEAD",
-          headers: { Authorization: `Bearer ${ppToken}` },
-        },
-      );
-      // Any response (even 401/403) means the host resolved
-      log.info(`Resolved environment URL: ${url}`);
-      return url;
-    } catch {
-      log.info(`Environment URL candidate failed: ${url}`);
-    }
+  // Power Platform splits the environment ID across TWO DNS labels: everything but
+  // the last two characters, then those two characters as a label of their own.
+  //
+  // This used to hardcode `.df.` as that second label, which resolves only for
+  // tenants whose env ID happens to end in "df" — the maintainer's does, so the
+  // old fallback candidate landed on the right host by coincidence and the bug
+  // stayed invisible here while provisioning failed outright for everyone else.
+  // Found by @FreemindTrader (#8); confirmed live: for an ID ending "df" both
+  // forms reach the same host (200, identical bot list), for any other ending the
+  // hardcoded form produces two names that don't resolve at all.
+  if (envId.length < 3) {
+    throw new Error(`Unexpected Power Platform environment ID: ${envId}`);
   }
+  const url =
+    `https://default${envId.slice(0, -2)}.${envId.slice(-2)}` +
+    `.environment.api.powerplatform.com`;
 
-  // Last resort: return the full version
-  const fallback = candidates[0];
-  log.info(`Using fallback environment URL: ${fallback}`);
-  return fallback;
+  try {
+    // Any response at all (401/403 included) proves the host resolved; we only
+    // care about DNS here, not authorization.
+    await fetch(`${url}/copilotstudio/minimalBots/api?api-version=2022-03-01-preview`, {
+      method: "HEAD",
+      headers: { Authorization: `Bearer ${ppToken}` },
+    });
+    log.info(`Resolved environment URL: ${url}`);
+  } catch {
+    // Not fatal: the derivation is the documented convention, so a failed probe
+    // is more likely a transient network blip than a wrong name. Surface it and
+    // let the real call produce the actionable error.
+    log.info(`Environment URL did not resolve on probe, using anyway: ${url}`);
+  }
+  return url;
 }
 
 interface CachedAgent {
