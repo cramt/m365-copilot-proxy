@@ -6,6 +6,7 @@ import {
   buildSpecMap,
   formatFencedToolDefinitions,
   findShellTool,
+  hostPlatformNote,
 } from "./fenced.js";
 import type { ToolDef } from "./tools.js";
 
@@ -211,6 +212,57 @@ describe("shell routing (Tier 1)", () => {
   it("injects shell-first framing only when a shell tool is present", () => {
     expect(formatFencedToolDefinitions([bash, readFile])).toContain("WRITING A SHELL SCRIPT");
     expect(formatFencedToolDefinitions([readFile, writeFile])).not.toContain("WRITING A SHELL SCRIPT");
+  });
+
+  // #7: these were silently demoted to prose, so a model correctly told to use
+  // PowerShell produced turns that executed nothing.
+  it("routes Windows shell fences to the harness shell tool", () => {
+    const specs = buildSpecMap([runCommand]);
+    for (const lang of ["powershell", "pwsh", "ps1", "cmd", "bat", "batch"]) {
+      const { calls } = parseFencedToolCalls("```" + lang + "\nGet-ChildItem\n```", specs);
+      expect(calls, `${lang} should route`).toHaveLength(1);
+      expect(calls[0].function.name).toBe("run_command");
+      expect(JSON.parse(calls[0].function.arguments)).toEqual({ command: "Get-ChildItem" });
+    }
+  });
+});
+
+describe("hostPlatformNote", () => {
+  it("is empty off Windows, so POSIX framing stays byte-for-byte", () => {
+    expect(hostPlatformNote(bash, "linux")).toBe("");
+    expect(hostPlatformNote(bash, "darwin")).toBe("");
+    expect(formatFencedToolDefinitions([bash, readFile])).not.toContain("HOST PLATFORM");
+  });
+
+  it("is empty on Windows when the harness gave no shell tool", () => {
+    expect(hostPlatformNote(undefined, "win32")).toBe("");
+  });
+
+  it("names the platform and overrides every POSIX idiom the framing teaches", () => {
+    const note = hostPlatformNote(bash, "win32");
+    expect(note).toContain("HOST PLATFORM: Windows");
+    expect(note).toContain("```powershell");
+    // The specific idioms baseline framing teaches by name must be countermanded.
+    for (const posix of ["EOF", "sed -i", "ls", "grep"]) {
+      expect(note, `${posix} should be countermanded`).toContain(posix);
+    }
+    expect(note).toContain("Set-Content");
+    expect(note).toContain("Get-ChildItem");
+    expect(note).toContain("Select-String");
+    // #12: the sandbox the model drifts to when POSIX commands fail.
+    expect(note).toContain("/mnt/data");
+  });
+
+  it("names the harness's own shell tool rather than assuming `bash`", () => {
+    const shell: ToolDef = {
+      type: "function",
+      function: {
+        name: "run_terminal_cmd",
+        description: "Run a command.",
+        parameters: { type: "object", properties: { command: { type: "string" } }, required: ["command"] },
+      },
+    };
+    expect(hostPlatformNote(shell, "win32")).toContain("`run_terminal_cmd`");
   });
 });
 

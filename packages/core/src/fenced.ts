@@ -62,6 +62,13 @@ const SHELL_LANGS = new Set([
   // salvageable: the model *did* decide to run a command, it just addressed the
   // wrong executor. Route them to the harness shell instead of losing them to prose.
   "container.exec", "container.run", "container.bash",
+  // Windows fences, routed unconditionally rather than gated on `process.platform`:
+  // the proxy and the harness need not share a host, and a command that runs and
+  // fails returns an error the model can correct from, whereas an unrouted fence is
+  // silently demoted to prose and the turn is lost. Issue #7 — a user's memory
+  // instruction to "always use PowerShell" made every compliant turn a no-op, which
+  // read as the model ignoring them.
+  "powershell", "pwsh", "ps1", "posh", "cmd", "bat", "batch", "dosbatch",
 ]);
 // A tool counts as "the shell" if its name looks like a run-a-command tool. pi
 // uses `bash`, opencode `bash`, hermes `shell`/`run`, openclaw `run_command` — all caught.
@@ -191,7 +198,37 @@ export function formatFencedToolDefinitions(tools: ToolDef[], variantOverride?: 
   // baseline framing plus a synthetic reply() tool (see tools.ts).
   const key = variant === "reply_tool" ? "baseline" : variant;
   const build = FRAMING_VARIANTS[key] ?? FRAMING_VARIANTS.baseline;
-  return build(tools);
+  return build(tools) + hostPlatformNote(findShellTool(tools));
+}
+
+/** Per-turn correction telling the model which OS it is actually driving.
+ *
+ *  Every framing variant teaches POSIX idioms *by name* — `cat > f <<'EOF'`
+ *  heredocs, `sed -i`, `ls`/`grep` — and none of them ever say what host the shell
+ *  runs on. On Windows that is a strong instruction, repeated every single turn, to
+ *  emit commands the host cannot run; it reliably outweighed the user-level memory
+ *  instructions people wrote to counteract it, and the resulting failures pushed the
+ *  model toward M365's own Linux code-interpreter as the only filesystem it could
+ *  reach (#7, and the sandbox drift in #12).
+ *
+ *  `platform` is injectable so the Windows branch is testable from a POSIX box —
+ *  the whole point, since this repo had no Windows host to verify against.
+ *  Returns "" off Windows, leaving the bench-tuned variants byte-for-byte unchanged. */
+export function hostPlatformNote(
+  shell: ToolDef | undefined,
+  platform: NodeJS.Platform = process.platform,
+): string {
+  if (platform !== "win32" || !shell) return "";
+  return `
+
+HOST PLATFORM: Windows. The \`${shell.function.name}\` tool runs PowerShell on a real Windows machine — not Linux, and not a container. Any POSIX idiom named above is wrong here and will fail: there are no \`<<'EOF'\` heredocs, no \`sed -i\`, no \`ls\`/\`grep\`. Emit \`\`\`powershell blocks instead of \`\`\`bash, and use the Windows equivalents:
+
+- create/overwrite a file: \`Set-Content -Path name -Value @'\n…\n'@\`
+- edit in place: \`(Get-Content f) -replace 'old','new' | Set-Content f\`
+- inspect: \`Get-Content\` / \`Get-ChildItem\` / \`Select-String\`
+- paths use \`\\\` and may contain spaces — quote them.
+
+You are NOT in a Linux sandbox and have no \`/mnt/data\`. The working directory is a real Windows path; run \`Get-Location\` if you need to see it.`;
 }
 
 /** The active framing strategy. For A/B sweeps, `M365_FRAMING_FILE` points at a
