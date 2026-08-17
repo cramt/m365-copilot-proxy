@@ -357,13 +357,55 @@ When M365 dislikes a prompt — **looks like a jailbreak / prompt injection**, o
 **Why it bites agents:** the response has empty content, which is indistinguishable from rate-limiting unless you specifically look for `messageType:"Disengaged"`. Our handler historically retried it as a rate limit (`Please continue.`), which just disengaged again and burned the 600 quota.
 
 **What triggers it (observed):**
-- Large injected tool blocks. Empirically: ~1 tool is fine; **~12 tools is borderline** (disengages once, recovers on retry); a full coding-agent toolset (~15+, e.g. opencode's) disengages **persistently**.
+- Large injected tool blocks. Empirically: ~1 tool is fine; **~12 tools is borderline** (disengages once, recovers on retry); a full coding-agent toolset (~15+, e.g. opencode's) disengages **persistently**. (opencode's count has since dropped to 9 — see "Trimming a heavy harness" below.)
 - Aggressive, jailbreak-shaped instructions: fake `<system>`/`<user>`/`<assistant>` turns, "output ONLY JSON", "STRICT RULES", "never describe your intent". These read as manipulation.
 
 **Mitigations:**
 - Keep the **toolset lean** (a handful of tools). Lean harnesses like [pi](https://pi.dev/) stay under the threshold; heavy ones trip it.
 - Prefer a **Copilot Studio agent** (§10) whose tool-calling instructions live server-side, so the per-request prompt can be gentle instead of a wall of rules.
 - Detect `Disengaged` explicitly and surface it rather than retrying blindly.
+
+### Trimming a heavy harness: opencode
+
+> **Scope:** contributed from outside; everything here is measured against **opencode
+> 1.18.18**, not against M365. Whether the trimmed payload actually clears the Disengaged
+> threshold is **not** verified — no live tenant was involved. Read it as "how to get a
+> heavy harness under the limit", not as a new measurement of the limit.
+>
+> One number worth re-checking: opencode 1.18.18 offers **9** tools, not ~15 — the count
+> has moved across releases. Nine is *below* the ~12 borderline stated above, so on tool
+> count alone current opencode may no longer be the persistent-disengage case this
+> section describes. What is unambiguous is the size and shape of the prompt around those
+> tools (below); whether trimming it is still necessary is a live-tenant question we
+> could not answer.
+
+"Keep the toolset lean" is the right instruction, but opencode gives a plugin **no
+supported way to follow it**. Measured against 1.18.18:
+
+| Lever | What actually happens |
+|---|---|
+| `config.tools` from a plugin's `config` hook | Resolved into the config — `opencode debug config` shows it correctly — and then **ignored**. A config disabling eight tools still produced a request offering all nine. |
+| `experimental.chat.system.transform` | Fires, accepts a replacement `system` array, and the request still carries the **original** prompt. |
+| `agent.<name>.prompt` from the `config` hook | Ignored the same way. |
+
+So the trim has to happen in whatever sits between opencode and this API — a proxy sees
+the final OpenAI request and is the only place it reliably lands.
+
+**Most of the payload is a catalogue of things the model cannot use.** On one agentic
+turn the system message was 53,676 chars, of which **`<available_skills>` alone was
+34,263 (64%)** — an inventory of every skill on the machine. Once the toolset is trimmed
+there is no `skill` tool left to invoke any of them, so it is pure weight advertising
+capabilities the model does not have. Dropping that block and the harness persona prose,
+and cutting 9 offered tools to 4, took the same turn to **1,853 chars**.
+
+Two traps for anyone else doing this:
+
+- opencode injects `AGENTS.md` and global rules **as prose** inside the system message,
+  under an `Instructions from: <path>` line — not in a structured block. A "keep only the
+  `<tag>` blocks" rule silently deletes the user's own project rules.
+- opencode 1.18.18 ships **`apply_patch`** as its editing tool where other versions ship
+  `edit`/`write`. A name-based allowlist that covers only one of those leaves the model
+  unable to edit files at all, with only the shell to fall back on.
 
 ---
 

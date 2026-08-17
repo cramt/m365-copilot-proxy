@@ -448,7 +448,7 @@ pnpm run test:live    # Run live integration tests against M365
 
 ## Known limitations
 
-- **M365 "disengages" on large tool payloads** — heavy agent harnesses (e.g. opencode's ~15-tool prompt) get empty `Disengaged` responses. Keep the toolset lean (this is why [pi](https://pi.dev/) works well). See [docs/m365-copilot-api.md](docs/m365-copilot-api.md#the-disengaged-filter).
+- **M365 "disengages" on large tool payloads** — heavy agent harnesses (e.g. opencode's ~15-tool prompt) get empty `Disengaged` responses. Keep the toolset lean (this is why [pi](https://pi.dev/) works well). A heavy harness can be trimmed to fit, though opencode in particular needs that done in the proxy rather than through its own config, and its tool count has since dropped — see [docs/m365-copilot-api.md](docs/m365-copilot-api.md#the-disengaged-filter).
 - Tool calling is emulated (prompt injection + a Copilot Studio agent), not native function calling — robust with the agent, unreliable without it
 - The `think-deeper` / `*_Reasoning` models take 10-30s per response
 - Hard quota of ~600 messages **per conversation** (mitigated by session reuse + delta sends)
