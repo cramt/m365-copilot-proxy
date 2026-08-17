@@ -36,6 +36,22 @@ The contract is enforced at three layers:
 - **Shell-first framing** when a shell tool is present: "do the whole step by writing ONE ` ```bash ` block" (heredocs to create, `sed` to edit, `cat`/`ls`/`grep` to inspect), plus **anti-confabulation** ("you've run nothing yet — never claim commands return no output; your FIRST output is a ` ```bash ` block"). This framing is what made it work through real pi (hypotheses §9 F14).
 - "**Never claim success** (`✅`/`SUCCESS`/`Done`) unless a `<tool_response>` proving it already appears above" — M365 loves to declare victory before the build runs.
 - "When you do give the final answer, **no preamble/sign-off**".
+- **Host-platform note** (`hostPlatformNote`, Windows only): every framing variant above
+  teaches POSIX idioms *by name* — heredocs, `sed -i`, `ls`/`grep` — so on Windows the
+  prompt instructs the model, on every turn, to emit commands the host cannot run. The note
+  states the real platform and gives the PowerShell equivalents. It is empty off Windows, so
+  the bench-tuned variants stay byte-for-byte unchanged; `platform` is injectable so the
+  Windows branch is testable from a POSIX box. (#7.)
+
+**Shell fence aliases** (`SHELL_LANGS` in `fenced.ts`): a fence only becomes a tool call if
+its info-string is a known shell alias — POSIX (` ```bash `/`sh`/`shell`/`zsh`/…), the leaked
+`container.*` runtime namespace (§12.13), and Windows (` ```powershell `/`pwsh`/`ps1`/`cmd`/
+`bat`). Anything else is demoted to prose. Windows fences were **missing until 2026-08-17**,
+so a model correctly told to use PowerShell produced turns that executed nothing — which read
+to users as the model ignoring their instructions, and pushed it toward M365's own Linux
+sandbox as the only filesystem it could reach (#7, #12). Windows aliases route regardless of
+host: the proxy and harness need not share a machine, and a command that runs and fails
+returns an error the model can correct from, whereas an unrouted fence loses the turn.
 
 ### 2. Copilot Studio Agent System Prompt (packages/core/src/agent.ts)
 
