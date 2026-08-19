@@ -295,7 +295,7 @@ const CONFABULATION_PATTERNS: RegExp[] = [
   // forcing retry silently protects only English sessions. Mirror the same
   // shapes in Korean. Korean has no /i concept; no flag needed.
   // "실행할 수 없습니다" / "수정할 수는 없습니다" / "접근이 불가능합니다"
-  /(?:실행|수행|접근|수정|편집|저장|생성|삭제|사용|적용|확인|열람|읽|쓰)[^\n]{0,24}(?:할\s*수(?:는|가)?\s*없|불가능)/,
+  /(?:실행|수행|접근|수정|편집|저장|생성|삭제|사용|적용|확인|열람|호출|불러|읽|쓰)[^\n]{0,24}(?:할\s*수(?:는|가)?\s*없|불가능)/,
   // "실행할 수 있는 상태는 아닙니다"
   /할\s*수\s*있는\s*상태(?:가|는)?\s*아닙/,
   // "도구가 제공되지 않아" / "터미널이 활성화돼 있지 않아" / "권한이 없습니다"

@@ -294,6 +294,10 @@ describe("looksLikeConfabulation", () => {
     expect(looksLikeConfabulation("현재 응답 환경에서는 로컬 터미널이나 Hermes 설정 도구를 실행할 수 없어, default 프로필에 연동을 직접 적용할 수는 없습니다.")).toBe(true);
     expect(looksLikeConfabulation("파일에 접근이 불가능합니다. calc.py 내용을 붙여넣어 주세요.")).toBe(true);
     expect(looksLikeConfabulation("명령의 출력이 반환되지 않았습니다.")).toBe(true);
+    // Live 2026-08-19: the model ran `terminal` fine, then refused the named
+    // tools in this wording — "호출" was missing from the verb list, so the
+    // forcing retry never fired and the turn ended with the work undone.
+    expect(looksLikeConfabulation("현재 응답 환경에서는 `skill_manage`와 `skills_list`를 실제로 호출할 수 없습니다.")).toBe(true);
   });
 
   it("does NOT flag genuine final answers or normal prose", () => {
