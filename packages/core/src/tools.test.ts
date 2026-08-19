@@ -286,9 +286,31 @@ describe("looksLikeConfabulation", () => {
     expect(looksLikeConfabulation("The problem is that this session does not expose the local repository filesystem at /Users/dev/project. My filesystem only contained /mnt/data.")).toBe(true);
   });
 
+  it("flags Korean give-up confabulations (exact strings from the live Hermes session, 2026-08-19)", () => {
+    expect(looksLikeConfabulation("현재 이 세션에는 파일 수정, 터미널 실행, Hermes memory·skill 관리 도구가 제공되지 않아 3중 방어를 직접 적용할 수 없습니다.")).toBe(true);
+    expect(looksLikeConfabulation("현재 이 세션에는 Hermes memory 도구가 활성화돼 있지 않아 직접 저장할 수 없습니다.")).toBe(true);
+    expect(looksLikeConfabulation("제가 새 명령을 실행할 수 있는 상태는 아닙니다.")).toBe(true);
+    expect(looksLikeConfabulation("저는 지훈님 MacBook의 localhost 터미널이나 명령어를 실행할 수 없습니다.")).toBe(true);
+    expect(looksLikeConfabulation("현재 응답 환경에서는 로컬 터미널이나 Hermes 설정 도구를 실행할 수 없어, default 프로필에 연동을 직접 적용할 수는 없습니다.")).toBe(true);
+    expect(looksLikeConfabulation("파일에 접근이 불가능합니다. calc.py 내용을 붙여넣어 주세요.")).toBe(true);
+    expect(looksLikeConfabulation("명령의 출력이 반환되지 않았습니다.")).toBe(true);
+    // Live 2026-08-19: the model ran `terminal` fine, then refused the named
+    // tools in this wording — "호출" was missing from the verb list, so the
+    // forcing retry never fired and the turn ended with the work undone.
+    expect(looksLikeConfabulation("현재 응답 환경에서는 `skill_manage`와 `skills_list`를 실제로 호출할 수 없습니다.")).toBe(true);
+    // Live 2026-08-19 (TUI): one tool call succeeded, then this — phrased as
+    // "not connected" rather than "cannot", so the 없/불가능 patterns missed it.
+    expect(looksLikeConfabulation("프로젝트를 확인하려면 실제 저장소 파일과 Git 상태를 읽어야 하지만, 현재 이 대화에서는 해당 로컬 파일 시스템을 실행하거나 조회할 수 있는 도구가 연결되어 있지 않습니다.")).toBe(true);
+    expect(looksLikeConfabulation("파일 편집 도구가 등록되어 있지 않습니다.")).toBe(true);
+  });
+
   it("does NOT flag genuine final answers or normal prose", () => {
     expect(looksLikeConfabulation("Fixed the bug: add now returns a + b, and check.py prints OK.")).toBe(false);
     expect(looksLikeConfabulation("The hostname is web-prod-01.")).toBe(false);
+    // Korean final answers / ordinary prose must not fire the forcing retry.
+    expect(looksLikeConfabulation("버그를 수정했습니다. add는 이제 a + b를 반환하고 check.py는 OK를 출력합니다.")).toBe(false);
+    expect(looksLikeConfabulation("완료했습니다. 커밋 해시는 4439bd4입니다.")).toBe(false);
+    expect(looksLikeConfabulation("이 함수는 파일을 읽어서 내용을 파싱합니다.")).toBe(false);
     expect(looksLikeConfabulation("Done.")).toBe(false);
     expect(looksLikeConfabulation(null)).toBe(false);
     expect(looksLikeConfabulation("")).toBe(false);

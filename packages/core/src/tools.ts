@@ -288,6 +288,29 @@ const CONFABULATION_PATTERNS: RegExp[] = [
   // patterns because it says the session "does not expose" the filesystem.
   /(?:session|environment|runtime)\s+(?:does\s+not|doesn.?t|cannot)\s+(?:expose|mount|provide)\s+(?:the\s+)?(?:local\s+)?(?:repository\s+)?filesystem/i,
   /(?:my|the)\s+filesystem\s+(?:only\s+)?(?:contained|contains|has)[\s\S]{0,80}\/mnt\/data/i,
+  // ── Korean give-up phrasing ─────────────────────────────────────────────
+  // Observed live (Hermes, 2026-08-19): a Korean session confabulated for 8+
+  // turns ("파일 수정, 터미널 실행 ... 도구가 제공되지 않아", "직접 적용할 수는
+  // 없습니다") and none of the English patterns above ever fired, so the
+  // forcing retry silently protects only English sessions. Mirror the same
+  // shapes in Korean. Korean has no /i concept; no flag needed.
+  // "실행할 수 없습니다" / "수정할 수는 없습니다" / "접근이 불가능합니다"
+  /(?:실행|수행|접근|수정|편집|저장|생성|삭제|사용|적용|확인|열람|호출|불러|읽|쓰)[^\n]{0,24}(?:할\s*수(?:는|가)?\s*없|불가능)/,
+  // "실행할 수 있는 상태는 아닙니다"
+  /할\s*수\s*있는\s*상태(?:가|는)?\s*아닙/,
+  // "도구가 제공되지 않아" / "터미널이 활성화돼 있지 않아" / "권한이 없습니다"
+  // `있지\s*않` covers the whole family in one go — 연결되어/활성화돼/등록되어/
+  // 붙어 있지 않습니다. Listing them individually kept missing the next variant
+  // (live 2026-08-19: "도구가 연결되어 있지 않습니다" slipped past a list that
+  // had 활성화 but not 연결).
+  /(?:도구|터미널|셸|쉘|명령어?|권한|파일\s*시스템)[^\n]{0,32}(?:제공되지\s*않|있지\s*않|사용할\s*수\s*없|없습니다|없어서|없기\s*때문)/,
+  // The same claim phrased around the ENVIRONMENT rather than the tool:
+  // "현재 이 대화에서는 …을 조회할 수 있는 도구가 …" / "실행 환경이 연결되어 있지 않".
+  /(?:이\s*대화|현재\s*(?:대화|세션|환경)|응답\s*환경|실행\s*환경)[^\n]{0,60}(?:있지\s*않|없습니다|불가능|제공되지\s*않)/,
+  // "파일 내용을 붙여넣어 주세요" / "코드를 공유해 주시면"
+  /(?:내용|파일|코드)[^\n]{0,20}(?:붙여\s*넣|공유해|제공해|올려)\s*주/,
+  // "출력이 반환되지 않았습니다" / "출력을 받지 못했습니다"
+  /출력(?:이|을|은)?[^\n]{0,16}(?:반환되지\s*않|받지\s*못|비어\s*있|없습니다)/,
 ];
 
 // M365 sometimes creates a real patch in its Teams-hosted remote artifact
