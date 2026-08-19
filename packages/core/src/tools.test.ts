@@ -298,6 +298,10 @@ describe("looksLikeConfabulation", () => {
     // tools in this wording — "호출" was missing from the verb list, so the
     // forcing retry never fired and the turn ended with the work undone.
     expect(looksLikeConfabulation("현재 응답 환경에서는 `skill_manage`와 `skills_list`를 실제로 호출할 수 없습니다.")).toBe(true);
+    // Live 2026-08-19 (TUI): one tool call succeeded, then this — phrased as
+    // "not connected" rather than "cannot", so the 없/불가능 patterns missed it.
+    expect(looksLikeConfabulation("프로젝트를 확인하려면 실제 저장소 파일과 Git 상태를 읽어야 하지만, 현재 이 대화에서는 해당 로컬 파일 시스템을 실행하거나 조회할 수 있는 도구가 연결되어 있지 않습니다.")).toBe(true);
+    expect(looksLikeConfabulation("파일 편집 도구가 등록되어 있지 않습니다.")).toBe(true);
   });
 
   it("does NOT flag genuine final answers or normal prose", () => {
