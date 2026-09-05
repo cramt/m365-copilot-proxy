@@ -606,8 +606,14 @@ export async function handleChatCompletion(
           // HTTP 200 is already committed, so surface the failure as an in-stream error chunk.
           send({ ...base, error: { message, type: "upstream_error" } });
         } else if (p.kind === "tools") {
-          p.toolCalls.forEach((tc, i) =>
-            send({ ...base, choices: [{ index: 0, delta: { tool_calls: [{ index: i, id: tc.id, type: "function", function: { name: tc.function.name, arguments: tc.function.arguments } }] }, finish_reason: null }] }));
+          p.toolCalls.forEach((tc, i) =>{
+            console.error(
+              "TOOLCALL",
+              tc.function.name,
+              tc.function.arguments
+            );
+            send({ ...base, choices: [{ index: 0, delta: { tool_calls: [{ index: i, id: tc.id, type: "function", function: { name: tc.function.name, arguments: tc.function.arguments } }] }, finish_reason: null }] })
+          });
           send({ ...base, choices: [{ index: 0, delta: {}, finish_reason: "tool_calls" }], ...(includeUsage ? { usage: usage() } : {}) });
         } else {
           // Emit only what wasn't already streamed live: the whole text if nothing was

@@ -84,10 +84,13 @@ export function findShellTool(tools: ToolDef[]): ToolDef | undefined {
     });
 }
 
+
 export interface FencedToolSpec {
   name: string;
   description?: string;
-  /** Scalar params rendered as `key: value` header lines. */
+
+  parameterTypes: Record<string, string>;
+  /** Scalar params rendered as `*ey: value` header lines. */
   headerParams: string[];
   /** The free-form param carried as the fence body (mutually exclusive with editPair). */
   bodyParam?: string;
@@ -99,7 +102,15 @@ export interface FencedToolSpec {
 export function deriveFencedSpec(tool: ToolDef): FencedToolSpec {
   const name = tool.function.name;
   const description = tool.function.description;
-  const props = Object.keys(tool.function.parameters?.properties ?? {});
+  const propsSchema = tool.function.parameters?.properties ?? {};
+  const props = Object.keys(propsSchema);
+
+  const parameterTypes = Object.fromEntries(
+    Object.entries(propsSchema).map(([k, v]: any) => [
+      k,
+      v?.type ?? "string",
+    ]),
+  );
 
   const search = props.find((p) => SEARCH_KEYS.includes(p));
   const replace = props.find((p) => REPLACE_KEYS.includes(p));
@@ -107,6 +118,7 @@ export function deriveFencedSpec(tool: ToolDef): FencedToolSpec {
     return {
       name,
       description,
+      parameterTypes,
       editPair: { search, replace },
       headerParams: props.filter((p) => p !== search && p !== replace),
     };
@@ -118,6 +130,7 @@ export function deriveFencedSpec(tool: ToolDef): FencedToolSpec {
   return {
     name,
     description,
+    parameterTypes,
     bodyParam,
     headerParams: props.filter((p) => p !== bodyParam),
   };
@@ -578,7 +591,29 @@ function parseFencedInner(spec: FencedToolSpec, inner: string): Record<string, u
       if (line.trim() === "") { i++; break; }
       const m = line.match(/^([A-Za-z0-9_]+):[ \t]?(.*)$/);
       if (m && spec.headerParams.includes(m[1])) {
-        args[m[1]] = m[2];
+        const key = m[1];
+        const value = m[2].trim();
+        const declaredType = spec.parameterTypes?.[key] ?? "string";
+
+        if (declaredType === "boolean") {
+          args[key] = value === "true";
+        } else if (declaredType === "integer") {
+          args[key] = Number.parseInt(value, 10);
+        } else if (declaredType === "number") {
+          args[key] = Number(value);
+        } else if (declaredType === "array") {
+          if (value === "") {
+            args[key] = [];
+          } else {
+            try {
+              args[key] = JSON.parse(value);
+            } catch {
+              args[key] = [value];
+            }
+          }
+        } else {
+          args[key] = value;
+        }
       } else {
         break;
       }
