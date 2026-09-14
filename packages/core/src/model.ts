@@ -11,6 +11,11 @@ export interface ModelSessionOptions {
   getToken?: () => Promise<string>;
   /** Whether to attempt agent resolution. Default: true. */
   useAgent?: boolean;
+  /**
+   * Prevent proxy conversations appearing in the M365 Copilot history sidebar.
+   * Defaults to true. Set false only when persistent Copilot history is wanted.
+   */
+  temporaryChat?: boolean;
 }
 
 /**
@@ -25,6 +30,7 @@ export interface ModelSessionOptions {
 export class ModelSession {
   private resolveToken: () => Promise<string>;
   private useAgent: boolean;
+  private temporaryChat: boolean;
   private copilotSession: CopilotSession | null = null;
   private cachedAgentId: string | null | undefined = undefined;
 
@@ -47,6 +53,8 @@ export class ModelSession {
   constructor(options: ModelSessionOptions = {}) {
     this.resolveToken = options.getToken ?? getToken;
     this.useAgent = options.useAgent !== false;
+    this.temporaryChat =
+      options.temporaryChat ?? process.env.M365_SAVE_HISTORY !== "1";
   }
 
   /** Number of turns completed in this session */
@@ -62,6 +70,7 @@ export class ModelSession {
       agentId,
       sessionId: this.sessionId,
       conversationId: this.conversationId,
+      temporaryChat: this.temporaryChat,
     });
   }
 
