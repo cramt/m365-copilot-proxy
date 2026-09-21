@@ -197,8 +197,15 @@ pnpm test:live      # M365_LIVE=1; live tests that hit real M365 (uses quota)
 
 ```sh
 # proxy smoke + tool call + multiturn (run unsandboxed, inside nix develop):
-nix develop --command bash -c 'M365_DEBUG=1 node scripts/proxy-verify.mjs --agent --multiturn'
+nix develop --command bash -c 'M365_DEBUG=1 node scripts/proxy-verify.mjs --tools --multiturn --model=claude-sonnet'
 ```
+
+`--tools` is load-bearing — without it no tools are sent and "NO TOOL CALL" is the
+correct result, not a failure. Use a **Claude** model: those route agent-less,
+which is the path that tool-calls (~5s). The `m365-copilot` default resolves to
+the magic tone, which does not tool-call right now and confabulates "no
+file-reading tool is available to me" — that is upstream's current state, not a
+regression, so don't chase it (re-confirmed 2/2 on 2026-09-21; §9 F-route).
 
 ## Conventions
 

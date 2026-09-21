@@ -2706,3 +2706,24 @@ from the UI after the fact — an intentional trade, and the reason `M365_SAVE_H
 Whether `disableMemory=1` also suppresses whatever longer-term personalisation M365 builds from
 chat history ("memory" in the product sense, not per-conversation state). The name suggests it,
 nothing here tests it, and no current behaviour depends on the answer.
+
+### F30 — the magic path still does not tool-call (Sep 21 2026) 🟢
+
+Re-confirmation, not a new finding. The route-probe (2026-07-07) measured the `magic`/GPT path
+at 0/2 on tool calls while the Claude agent-less path scored 2/2; that split is still exactly
+where it was, 2½ months later.
+
+Two `proxy-verify --tools` runs on `m365-copilot` (→ `magic`) returned prose both times, 14.0s
+and 25.1s, with the model asserting it has no filesystem access:
+
+> I can't actually read files from a device or server in this chat because I don't have access
+> to your filesystem and no file-reading tool is available to me here.
+
+The same verifier on `claude-sonnet` emitted a clean `read_file` call in **4.5s** and then
+consumed the tool result correctly on turn 2 (`The hostname is web-prod-01.`).
+
+Practical consequence: `proxy-verify` defaulted to `m365-copilot`, so the documented smoke test
+failed by design on a healthy proxy — which makes it useless as a regression signal, and worse
+than useless when you are mid-merge and looking for something you broke. The script now takes
+`--model=`, and AGENTS.md points at a Claude model. The doc's command was also missing `--tools`
+entirely, so it could never have exercised a tool call at all.
