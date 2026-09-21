@@ -320,3 +320,76 @@ describe("currentFramingVariant", () => {
     expect(currentFramingVariant("minimal")).toBe("fewshot");
   });
 });
+
+describe("header value coercion (strict-harness schema conformance)", () => {
+  // Zed validates tool arguments against the declared schema and rejects a
+  // string where the schema said integer/boolean/array.
+  const typed: ToolDef = {
+    type: "function",
+    function: {
+      name: "read_file",
+      description: "Read a file.",
+      parameters: {
+        type: "object",
+        properties: {
+          path: { type: "string" },
+          offset: { type: "integer" },
+          ratio: { type: "number" },
+          recursive: { type: "boolean" },
+          globs: { type: "array" },
+        },
+        required: ["path"],
+      },
+    },
+  };
+  const specs = buildSpecMap([typed]);
+  const parse = (inner: string) => {
+    const r = parseFencedToolCalls("```read_file\n" + inner + "\n```", specs);
+    return JSON.parse(r.calls[0].function.arguments);
+  };
+
+  it("coerces well-formed values to their declared types", () => {
+    expect(parse('path: /tmp/a.txt\noffset: 10\nratio: 0.5\nrecursive: true\nglobs: ["*.ts"]')).toEqual({
+      path: "/tmp/a.txt", offset: 10, ratio: 0.5, recursive: true, globs: ["*.ts"],
+    });
+  });
+
+  it("accepts the casings and synonyms a model actually writes for booleans", () => {
+    expect(parse("path: /a\nrecursive: True").recursive).toBe(true);
+    expect(parse("path: /a\nrecursive: Yes").recursive).toBe(true);
+    expect(parse("path: /a\nrecursive: FALSE").recursive).toBe(false);
+    expect(parse("path: /a\nrecursive: no").recursive).toBe(false);
+  });
+
+  // The load-bearing cases: tool calling is prompt-emulated, so the model puts
+  // prose in typed slots routinely. A value that can't be coerced must stay a
+  // string the harness rejects loudly — never become a plausible wrong value.
+  it("leaves an unparseable number as a string rather than emitting null", () => {
+    // parseInt("the whole file") is NaN, and JSON.stringify(NaN) is `null` —
+    // a value the harness would accept and act on.
+    expect(parse("path: /a\noffset: the whole file").offset).toBe("the whole file");
+    expect(parse("path: /a\noffset: n/a").offset).toBe("n/a");
+    expect(parse("path: /a\noffset: 12abc").offset).toBe("12abc"); // parseInt would say 12
+  });
+
+  it("leaves a non-integer as a string where the schema demands an integer", () => {
+    expect(parse("path: /a\noffset: 1.5").offset).toBe("1.5");
+    expect(parse("path: /a\nratio: 1.5").ratio).toBe(1.5); // but `number` accepts it
+  });
+
+  it("leaves an unrecognised boolean as a string rather than guessing false", () => {
+    expect(parse("path: /a\nrecursive: maybe").recursive).toBe("maybe");
+    expect(parse("path: /a\nrecursive: if needed").recursive).toBe("if needed");
+  });
+
+  it("never ships a non-array for an array-typed param", () => {
+    expect(parse("path: /a\nglobs: 5").globs).toEqual(["5"]); // JSON.parse would give 5
+    expect(parse('path: /a\nglobs: {"a":1}').globs).toEqual(['{"a":1}']);
+    expect(parse("path: /a\nglobs: *.ts").globs).toEqual(["*.ts"]);
+    expect(parse("path: /a\nglobs: ").globs).toEqual([]);
+  });
+
+  it("leaves untyped and string params untouched", () => {
+    expect(parse("path: 123").path).toBe("123");
+  });
+});
