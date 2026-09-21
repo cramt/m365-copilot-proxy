@@ -92,6 +92,16 @@ Current strategies: `baseline` (shipped default, unchanged), `minimal`, `recency
 `fewshot`, `proof_demand`, `persona`, `react`, `negative`, `terse`, and `reply_tool`
 (synthetic `reply()` tool; also `M365_INJECT_REPLY_TOOL=1`).
 
+**The default is now tone-aware** (`defaultFramingForTone`). `baseline` is a cage built for
+M365's chat-tuned GPT path — most of its length goes on forcing a model that would rather
+narrate into acting. `Claude_Opus` doesn't need that and is metered by a small
+priority-access budget (docs/hypotheses.md §15), so it defaults to `minimal`: 684 chars vs
+`baseline`'s 3,894 on a 2-tool request (~82% smaller), keeping shell-routing and the
+anti-confabulation clause while dropping the strict-rules wall. **Every other tone keeps
+`baseline` byte-for-byte**, so no bench number moves, and `M365_FRAMING_*` still wins.
+Caveat worth repeating: it is unproven that the Opus budget is token-weighted, so read this
+as prompt hygiene for a model that doesn't need the cage — not as a measured quota saving.
+
 **Run a sweep** (persistent proxy + control file; sequential, generously spaced):
 
 ```sh

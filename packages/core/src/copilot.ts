@@ -19,7 +19,15 @@ const MODEL_TONES: Record<string, string> = {
   "claude-sonnet": "Claude_Sonnet",
   "claude-sonnet-4.5": "Claude_Sonnet",
   "claude-sonnet-think-deeper": "Claude_Sonnet_Reasoning",
-  "claude-opus": "Claude_Opus", // accepted tone; identity deflected, likely Opus
+  // Opus is real and strong, but it is NOT reachable on the default
+  // `OfficeWebIncludedCopilot` scenario — there it deflects with a
+  // BotConnection apology, which is what the old "dead tone" reading (F23) was
+  // measuring. Requesting `scenario=OfficeWebPaidCopilot` on the WS query makes
+  // it serve; see PAID_SCENARIO_TONES below and docs §5.
+  // The model behind this tone is currently Claude Opus 5 (knowledge cutoff May
+  // 2026)
+  "claude-opus": "Claude_Opus",
+  "claude-opus-5": "Claude_Opus",
 
   // GPT-5.5 (current generation)
   "gpt-5.5": "Gpt_5_5_Chat",
@@ -48,15 +56,65 @@ const MODEL_TONES: Record<string, string> = {
 export function getToneForModel(model: string): string {
   const exact = MODEL_TONES[model];
   if (exact) return exact;
-  // Unmapped `claude-*` strings (e.g. the `claude-opus-4-8[1m]` a Claude Code client
+  // Unmapped `claude-*` strings (e.g. the `claude-opus-5[1m]` a Claude Code client
   // sends) must NOT fall back to the `magic` (GPT) tone. Empirically (route-probe,
   // 2026-07-07) the magic path does not tool-call right now — 0/2, confabulates
   // "I don't have a shell" — while the Claude tone agent-less path tool-calls 2/2 and
   // fast (~5s). Route anything Claude-labelled to the working Claude_Sonnet tone
   // rather than silently serving GPT under a Claude name and landing in the
   // confabulation quadrant. (getAvailableModels still only advertises the exact keys.)
+  // …except an unmapped Opus string (`claude-opus-5[1m]`, and any dated or
+  // context-suffixed Opus 5 variant), which now has a working route of its own
+  // rather than being downgraded to Sonnet. The match is on `opus` alone, so it
+  // survives whatever version suffix a client decides to send. The paid scenario
+  // is attached automatically (getScenarioForTone).
+  if (/opus/i.test(model)) return "Claude_Opus";
   if (/^claude/i.test(model)) return "Claude_Sonnet";
   return MODEL_TONES["m365-copilot"];
+}
+
+// --- Scenario / licenseType routing -----------------------------------------
+//
+// The WS query string carries a `scenario` and a `licenseType`. We hardcoded
+// `OfficeWebIncludedCopilot` + `Starter` (what a seat-included Copilot web
+// client sends) for every turn. That silently caps which models the backend
+// will serve: `Claude_Opus` is accepted as a tone but never reaches a model on
+// the included scenario — it returns M365's canned BotConnection apology, the
+// "registered but dead" third state from §12.15.
+//
+// `scenario=OfficeWebPaidCopilot` is what unlocks it. `licenseType=Premium` is
+// the value the paid scenario travels with, NOT a lever in its own right:
+// flipping licenseType alone on the included scenario changes nothing (it does
+// not grant access to different models). We send the pair for coherence with
+// the real client and because the scenario is the load-bearing half.
+//
+// This is an entitlement, not a bypass: the account must actually hold paid /
+// premium Copilot access. On a seat that doesn't, the paid scenario simply
+// doesn't yield Opus.
+const DEFAULT_SCENARIO = "OfficeWebIncludedCopilot";
+const DEFAULT_LICENSE_TYPE = "Starter";
+const PAID_SCENARIO = "OfficeWebPaidCopilot";
+const PAID_LICENSE_TYPE = "Premium";
+
+/** Tones that only serve under the paid scenario. */
+export const PAID_SCENARIO_TONES: ReadonlySet<string> = new Set(["Claude_Opus"]);
+
+export interface ScenarioRouting {
+  scenario: string;
+  licenseType: string;
+}
+
+/**
+ * The `scenario`/`licenseType` pair a given tone must be requested under.
+ * Env overrides (`M365_SCENARIO` / `M365_LICENSE_TYPE`) win, so a tenant whose
+ * entitlement is named differently can still be driven without a code change.
+ */
+export function getScenarioForTone(tone: string): ScenarioRouting {
+  const paid = PAID_SCENARIO_TONES.has(tone);
+  return {
+    scenario: process.env.M365_SCENARIO ?? (paid ? PAID_SCENARIO : DEFAULT_SCENARIO),
+    licenseType: process.env.M365_LICENSE_TYPE ?? (paid ? PAID_LICENSE_TYPE : DEFAULT_LICENSE_TYPE),
+  };
 }
 
 export function getAvailableModels(): string[] {

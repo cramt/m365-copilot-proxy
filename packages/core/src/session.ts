@@ -10,7 +10,13 @@ import {
   CompletionFrame,
   CloseFrame,
 } from "./schemas.js";
-import { decodeJwt, getToneForModel, type CopilotStream, type CapturedImage } from "./copilot.js";
+import {
+  decodeJwt,
+  getScenarioForTone,
+  getToneForModel,
+  type CopilotStream,
+  type CapturedImage,
+} from "./copilot.js";
 import {
   parseActionConfirmation,
   buildResumeInvokeAction,
@@ -228,6 +234,14 @@ export class CopilotSession {
     const claims = decodeJwt(token);
     const requestId = crypto.randomUUID();
 
+    // Resolve the tone ONCE and derive the connection's entitlement from it.
+    // `scenario` is not cosmetic: the default `OfficeWebIncludedCopilot` will
+    // not serve `Claude_Opus` (canned BotConnection apology), while
+    // `OfficeWebPaidCopilot` does. See getScenarioForTone / docs §5.
+    const tone = getToneForModel(model);
+    const { scenario, licenseType } = getScenarioForTone(tone);
+    log.info(`Routing: tone=${tone}, scenario=${scenario}, licenseType=${licenseType}`);
+
     const params = new URLSearchParams({
       chatsessionid: requestId,
       clientrequestid: requestId,
@@ -238,9 +252,9 @@ export class CopilotSession {
       source: '"officeweb"',
       product: "Office",
       agentHost: "Bizchat.FullScreen",
-      licenseType: "Starter",
+      licenseType,
       agent: "web",
-      scenario: "OfficeWebIncludedCopilot",
+      scenario,
     });
 
     const wsUrl = `wss://substrate.office.com/m365Copilot/Chathub/${claims.oid}@${claims.tid}?${params}`;
@@ -615,7 +629,7 @@ export class CopilotSession {
                   }
                 : {}),
               isSbsSupported: true,
-              tone: getToneForModel(model),
+              tone,
               renderReferencesBehindEOS: true,
               disconnectBehavior: "continue",
         };
