@@ -22,7 +22,7 @@ mkdir -p "$PIHOME/.pi/agent"
 # Model list mirrors the proxy's MODEL_TONES (getAvailableModels) so Ctrl+P
 # cycling works. baseUrl points at the local proxy.
 cat > "$PIHOME/.pi/agent/models.json" <<EOF
-{"providers":{"m365":{"api":"openai-completions","apiKey":"m365","baseUrl":"$BASE","compat":{"supportsDeveloperRole":false,"supportsReasoningEffort":false,"supportsUsageInStreaming":false},"models":[
+{"providers":{"m365":{"api":"openai-completions","apiKey":"not-needed","baseUrl":"$BASE","compat":{"supportsDeveloperRole":false,"supportsReasoningEffort":false,"supportsUsageInStreaming":false},"models":[
   {"id":"m365-copilot","name":"M365 Copilot (default / magic)"},
   {"id":"auto","name":"Auto (magic)"},
   {"id":"quick","name":"Quick"},

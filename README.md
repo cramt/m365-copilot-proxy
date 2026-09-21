@@ -182,7 +182,7 @@ Point [pi](https://pi.dev/) at it via `~/.pi/agent/models.json`:
     "m365": {
       "baseUrl": "http://localhost:4143/v1",
       "api": "openai-completions",
-      "apiKey": "m365",
+      "apiKey": "not-needed",
       "compat": {
         "supportsDeveloperRole": false,
         "supportsReasoningEffort": false,
@@ -196,6 +196,9 @@ Point [pi](https://pi.dev/) at it via `~/.pi/agent/models.json`:
   }
 }
 ```
+
+> `apiKey` is a placeholder. The proxy binds to localhost and validates no
+> credential — the field exists only because the OpenAI client schema requires it.
 
 Then run pi (use `gpt-5.5-think-deeper` — the reliable tool-calling model — and keep the
 toolset lean; M365 "disengages" on very large tool payloads, see
