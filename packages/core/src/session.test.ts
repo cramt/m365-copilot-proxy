@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { foldStreamText } from "./session.js";
+import { buildCopilotWebSocketUrl, foldStreamText } from "./session.js";
 import { MessageUpdate } from "./schemas.js";
 
 /** Replay a sequence of raw M365 frames (deltas as {d}, snapshots as {s}) through
@@ -109,5 +109,27 @@ describe("GraphicArt image frame parsing (§14)", () => {
     expect(parsed.success).toBe(true);
     const m = parsed.data!.messages[0] as any;
     expect(m.contentGenerationProgressList).toBeUndefined();
+  });
+});
+
+describe("temporary-chat WebSocket URL", () => {
+  it("preserves disableMemory=1 when temporary chat is enabled", () => {
+    const params = new URLSearchParams({
+      ConversationId: "conversation-1",
+      disableMemory: "1",
+    });
+    const url = new URL(buildCopilotWebSocketUrl("oid-1", "tid-1", params));
+
+    expect(url.hostname).toBe("substrate.office.com");
+    expect(url.pathname).toBe("/m365Copilot/Chathub/oid-1@tid-1");
+    expect(url.searchParams.get("ConversationId")).toBe("conversation-1");
+    expect(url.searchParams.get("disableMemory")).toBe("1");
+  });
+
+  it("does not invent disableMemory when saved history is requested", () => {
+    const params = new URLSearchParams({ ConversationId: "conversation-1" });
+    const url = new URL(buildCopilotWebSocketUrl("oid-1", "tid-1", params));
+
+    expect(url.searchParams.has("disableMemory")).toBe(false);
   });
 });

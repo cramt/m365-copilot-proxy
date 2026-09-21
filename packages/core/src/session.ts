@@ -190,8 +190,26 @@ export interface CopilotSessionOptions {
   sessionId?: string;
   /** Reuse an existing conversation ID so M365 finds the same server-side conversation. */
   conversationId?: string;
+  /**
+   * Ask M365 for a temporary chat by adding `disableMemory=1` to the Chathub URL.
+   * Temporary chats retain context for their live ConversationId but are not
+   * added to the Copilot history sidebar. Default: true.
+   */
+  temporaryChat?: boolean;
   /** Enable native custom-action support (H-NATIVE-6/7). Off = unchanged behaviour. */
   nativeActions?: NativeActionConfig;
+}
+
+/**
+ * Build the authenticated Chathub URL. Kept as a pure helper so privacy-critical
+ * query flags can be verified without opening a network connection.
+ */
+export function buildCopilotWebSocketUrl(
+  objectId: string,
+  tenantId: string,
+  params: URLSearchParams,
+): string {
+  return `wss://substrate.office.com/m365Copilot/Chathub/${objectId}@${tenantId}?${params}`;
 }
 
 /**
@@ -205,13 +223,15 @@ export class CopilotSession {
   private _turnCount = 0;
   private agentId?: string;
   private nativeActions?: NativeActionConfig;
+  private temporaryChat: boolean;
 
   constructor(options?: CopilotSessionOptions) {
     this.sessionId = options?.sessionId ?? crypto.randomUUID();
     this.conversationId = options?.conversationId ?? crypto.randomUUID();
     this.agentId = options?.agentId;
     this.nativeActions = options?.nativeActions;
-    log.info(`New session: sid=${this.sessionId}, cid=${this.conversationId}, agent=${this.agentId ?? "none"}, nativeActions=${!!this.nativeActions}`);
+    this.temporaryChat = options?.temporaryChat ?? true;
+    log.info(`New session: sid=${this.sessionId}, cid=${this.conversationId}, agent=${this.agentId ?? "none"}, nativeActions=${!!this.nativeActions}, temporaryChat=${this.temporaryChat}`);
   }
 
   /** Number of turns completed in this session */
@@ -257,7 +277,9 @@ export class CopilotSession {
       scenario,
     });
 
-    const wsUrl = `wss://substrate.office.com/m365Copilot/Chathub/${claims.oid}@${claims.tid}?${params}`;
+    if (this.temporaryChat) params.set("disableMemory", "1");
+
+    const wsUrl = buildCopilotWebSocketUrl(claims.oid, claims.tid, params);
     const agentId = this.agentId;
     const sessionId = this.sessionId;
     const nativeActions = this.nativeActions;
