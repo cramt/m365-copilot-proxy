@@ -84,3 +84,62 @@ describe("incremental streaming (non-tool path)", () => {
     expect(contents.join("").match(/Hello/g)?.length).toBe(1);
   });
 });
+
+/** Drive one streaming request and collect content deltas AND error chunks. */
+async function streamRaw(
+  deltas: string[],
+  fullText?: string,
+): Promise<{ contents: string[]; errors: any[] }> {
+  scripted.deltas = deltas;
+  scripted.fullText = fullText;
+  const body = ChatCompletionRequest.parse({
+    model: "claude-opus",
+    stream: true,
+    messages: [{ role: "user", content: "hello" }],
+  });
+  const res = await handleChatCompletion(body, new SessionPool());
+  const text = await res.text();
+
+  const contents: string[] = [];
+  const errors: any[] = [];
+  for (const line of text.split("\n")) {
+    if (!line.startsWith("data: ")) continue;
+    const payload = line.slice(6);
+    if (payload === "[DONE]") continue;
+    const chunk = JSON.parse(payload);
+    const c = chunk.choices?.[0]?.delta?.content;
+    if (typeof c === "string" && c.length > 0) contents.push(c);
+    if (chunk.error) errors.push(chunk.error);
+  }
+  return { contents, errors };
+}
+
+describe("priority-access exhaustion on the streaming path", () => {
+  const REFUSAL =
+    "You've used your available priority access to the Opus model for today. " +
+    "You can choose another available model or wait until tomorrow to use the Opus model again.";
+
+  it("never leaks the refusal to the client as content", async () => {
+    // Chunked the way M365 actually streams it — the gate must hold the head.
+    const deltas = REFUSAL.match(/.{1,12}/g)!;
+    const { contents } = await streamRaw(deltas);
+    expect(contents.join("")).not.toContain("priority access");
+    expect(contents.join("")).toBe("");
+  });
+
+  it("emits a machine-readable error chunk, not just prose", async () => {
+    const { errors } = await streamRaw(REFUSAL.match(/.{1,12}/g)!);
+    expect(errors).toHaveLength(1);
+    // A streaming client must be able to tell a quota wall from a transient
+    // upstream blip without string-matching the message.
+    expect(errors[0].code).toBe("priority_access_exhausted");
+    expect(errors[0].type).toBe("rate_limit_error");
+    expect(errors[0].retry_after).toBeGreaterThan(0);
+  });
+
+  it("still streams an ordinary answer that merely starts with \"You\"", async () => {
+    const { contents, errors } = await streamRaw(["You", "r code ", "has a bug."]);
+    expect(errors).toHaveLength(0);
+    expect(contents.join("")).toBe("Your code has a bug.");
+  });
+});

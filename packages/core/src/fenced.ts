@@ -248,7 +248,7 @@ You are NOT in a Linux sandbox and have no \`/mnt/data\`. The working directory 
  *  file whose first line names the variant — letting one long-lived proxy switch
  *  strategies per-request without a restart. Falls back to `M365_FRAMING_VARIANT`,
  *  then `baseline`. */
-export function currentFramingVariant(): string {
+export function currentFramingVariant(toneDefault?: string): string {
   const file = process.env.M365_FRAMING_FILE;
   if (file) {
     try {
@@ -264,7 +264,27 @@ export function currentFramingVariant(): string {
   // confabulation (1/4), so it is NOT the default — instead the handler retries with
   // `softened` only ON a Disengage (F22): baseline's override-shape occasionally trips
   // Prompt Shields; softened escapes it. Best of both. Override with M365_FRAMING_*.
-  return process.env.M365_FRAMING_VARIANT || "baseline";
+  return process.env.M365_FRAMING_VARIANT || toneDefault || "baseline";
+}
+
+/** The framing a tone should default to when the caller hasn't overridden it.
+ *
+ *  `baseline` is a cage built for M365's chat-tuned GPT path: it spends most of
+ *  its length forcing a model that would rather narrate into acting. Opus does
+ *  not need convincing — it acts from the schema alone — so the cage is pure
+ *  weight, and weight is the one thing worth economising on there: Opus is
+ *  metered by a small priority-access budget (see priority-access.ts), and a
+ *  proxy that prepends ~4kB of framing to every turn exhausts it far faster
+ *  than hand-driving the model does. `minimal` keeps the load-bearing parts
+ *  (shell-routing + anti-confabulation) at roughly a fifth of the size.
+ *
+ *  Honest caveat: we have NOT confirmed the budget is token-weighted rather
+ *  than per-message. If it is per-message this buys latency and nothing else —
+ *  it is still the right default for a model that doesn't need the cage, but
+ *  don't read it as a measured quota win. Override with M365_FRAMING_VARIANT.
+ *  Every other tone keeps the bench-tuned `baseline` byte-for-byte. */
+export function defaultFramingForTone(tone?: string): string | undefined {
+  return tone === "Claude_Opus" ? "minimal" : undefined;
 }
 
 type FramingBuilder = (tools: ToolDef[]) => string;
