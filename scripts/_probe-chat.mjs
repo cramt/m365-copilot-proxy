@@ -53,6 +53,12 @@ export function oneTurn(o) {
     extraAllowed = [],                // extra allowedMessageTypes (GeneratedCode, …)
     plugins = undefined,              // override plugins; default = BingWebSearch (or [] to disable search)
     variants = VARIANTS,              // override the WS-query variants flag list (string)
+    // Entitlement the connection is opened under. The default included scenario
+    // will NOT serve Claude_Opus (canned BotConnection apology); the paid one
+    // does. `licenseType` is the value the paid scenario travels with — it is
+    // not a model lever on its own. See packages/core/src/copilot.ts.
+    scenario = "OfficeWebIncludedCopilot",
+    licenseType = "Starter",
   } = o;
 
   const sessionId = crypto.randomUUID();
@@ -69,9 +75,9 @@ export function oneTurn(o) {
     source: '"officeweb"',
     product: "Office",
     agentHost: "Bizchat.FullScreen",
-    licenseType: "Starter",
+    licenseType,
     agent: "web",
-    scenario: "OfficeWebIncludedCopilot",
+    scenario,
   });
   const wsUrl = `wss://substrate.office.com/m365Copilot/Chathub/${claims.oid}@${claims.tid}?${params}`;
 
