@@ -6,6 +6,9 @@ import { getToken } from "../packages/core/dist/index.mjs";
 const useAgent = process.argv.includes("--agent");
 const withTools = process.argv.includes("--tools");
 const manyTools = process.argv.includes("--manytools");
+// --model <id>: the magic default does not tool-call right now (route-probe
+// 2026-07-07, 0/2 confabulating "I have no shell"); the Claude tones do.
+const MODEL = (process.argv.find((a) => a.startsWith("--model=")) ?? "--model=m365-copilot").slice(8);
 
 // Mimic opencode's "build" agent toolset to reproduce the disengagement.
 const OPENCODE_LIKE_TOOLS = [
@@ -77,7 +80,7 @@ async function chat(messages) {
   const res = await call("/v1/chat/completions", {
     method: "POST",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({ model: "m365-copilot", stream: false, messages, tools: TOOLS }),
+    body: JSON.stringify({ model: MODEL, stream: false, messages, tools: TOOLS }),
   });
   const elapsed = ((Date.now() - t0) / 1000).toFixed(1);
   const j = await res.json();
@@ -108,7 +111,7 @@ if (process.argv.includes("--multiturn")) {
 }
 
 const body = {
-  model: "m365-copilot",
+  model: MODEL,
   stream: false,
   messages: manyTools
     ? [{ role: "user", content: "Reply with exactly the word: pong" }]
