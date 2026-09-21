@@ -18,6 +18,7 @@ MODEL="${MODEL:-m365-copilot}"
 COOLDOWN="${COOLDOWN:-60}"
 TIMEOUT="${TIMEOUT:-240}"
 BASE="http://localhost:${PORT}/v1"
+API_KEY="${API_KEY:-m365}"
 CSV="${CSV:-/tmp/m365-pi-reliability.csv}"
 TASK="${TASK:-fix-bug}"   # fix-bug (find+fix) | edit-config (F17 "change X->Y" shape)
 
@@ -46,7 +47,7 @@ for i in $(seq 1 "$N"); do
   fi
   PIHOME="$D/.pihome"; mkdir -p "$PIHOME/.pi/agent"
   cat > "$PIHOME/.pi/agent/models.json" <<EOF
-{"providers":{"m365":{"api":"openai-completions","apiKey":"m365","baseUrl":"$BASE","compat":{"supportsDeveloperRole":false,"supportsReasoningEffort":false,"supportsUsageInStreaming":false},"models":[{"id":"m365-copilot","name":"M365"}]}}}
+{"providers":{"m365":{"api":"openai-completions","apiKey":"$API_KEY","baseUrl":"$BASE","compat":{"supportsDeveloperRole":false,"supportsReasoningEffort":false,"supportsUsageInStreaming":false},"models":[{"id":"m365-copilot","name":"M365"}]}}}
 EOF
   cat > "$PIHOME/.pi/agent/settings.json" <<EOF
 {"defaultModel":"$MODEL","defaultProvider":"m365","enableInstallTelemetry":false}
