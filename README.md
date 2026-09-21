@@ -279,6 +279,7 @@ without NixOS: `nix run github:cramt/m365-copilot-proxy -- 4141`.
 | `think-deeper` | Gpt_Reasoning | Slower, more thorough |
 | `claude` / `claude-sonnet` | Claude_Sonnet | Real Anthropic Claude (agent-less path) |
 | `claude-sonnet-think-deeper` | Claude_Sonnet_Reasoning | Claude reasoning |
+| `claude-opus` / `claude-opus-5` | Claude_Opus | Real Claude Opus 5. **Needs a paid/premium Copilot seat** and has a small separate quota (see below) |
 | `gpt-5.4` / `gpt-5.4-quick` | Gpt_5_4_* | GPT-5.4 |
 | `gpt-5.3` / `gpt-5.3-think-deeper` | Gpt_5_3_* | GPT-5.3 |
 | `gpt-5.2` / `gpt-5.2-think-deeper` | Gpt_5_2_* | GPT-5.2 |
@@ -295,6 +296,34 @@ without NixOS: `nix run github:cramt/m365-copilot-proxy -- 4141`.
 > `think-deeper`) route through M365's `DeepLeo` pipeline, which meta-analyzes the
 > injected prompt and can disengage from tools. Prefer `gpt-5.5-think-deeper`.
 > See [docs/m365-copilot-api.md](docs/m365-copilot-api.md) §5/§10.
+
+### Opus (`claude-opus`) — entitlement + a separate, small quota
+
+The model behind this tone is **Claude Opus 5**. It performs very well here, with two things
+to know before you point an agent at it.
+
+**It needs the paid scenario.** M365 gates the model list on the `scenario` sent with the
+WebSocket connection. On the default `OfficeWebIncludedCopilot` the Opus tone is accepted but
+never reaches a model — it returns a canned apology, which is why earlier notes in this repo
+recorded Opus as a dead tone. The proxy now sends `scenario=OfficeWebPaidCopilot` (with the
+`licenseType=Premium` that pairs with it) automatically whenever the resolved tone is
+`Claude_Opus`; every other model keeps the included scenario. This is an **entitlement, not a
+bypass** — your account has to actually hold paid/premium Copilot access, and `licenseType`
+alone unlocks nothing. Override either with `M365_SCENARIO` / `M365_LICENSE_TYPE`.
+
+**It is metered separately, and the proxy spends it fast.** Opus draws on a "priority access"
+budget distinct from the ~600-message conversation cap. When it runs out, M365 replies with
+text rather than an error — *"You've used your available priority access to the Opus model for
+today…"* (or *"…for the week"*). Left alone that reads to an agent as the model's answer, so the
+proxy detects both wordings and returns **HTTP 429** (`code: priority_access_exhausted`) with a
+`Retry-After`. **Both budgets reset at midnight UTC**; the weekly one on Monday.
+
+Because agentic turns prepend a tool-framing block, driving Opus through a proxy burns that
+budget faster than chatting with it by hand. Opus therefore defaults to the lean `minimal`
+framing (~82% smaller than the default `baseline`, which exists to force M365's chat-tuned GPT
+path to act and which Opus doesn't need). Whether the budget counts tokens or messages is
+**not verified** — if it's per-message this saves latency rather than quota. Set
+`M365_FRAMING_VARIANT=baseline` to opt out. See [docs/hypotheses.md §15](docs/hypotheses.md).
 
 ## Image generation
 
@@ -383,6 +412,7 @@ Three token scopes are acquired:
 | `M365_NO_INTERACTIVE` | Set to `1` to hard-disable any visible browser login, overriding the flag above. For systemd/CI hosts where a window must never open. |
 | `M365_INTERACTIVE_TIMEOUT_MS` | How long to wait for you to finish the interactive sign-in (default `600000`, i.e. 10 minutes). |
 | `M365_LOGIN_LOCALE` / `M365_LOGIN_TIMEZONE` | Browser locale and timezone presented during login (defaults `en-GB` / `Europe/Copenhagen`). These are part of the anti-bot-scoring fingerprint ([§11 F25](docs/hypotheses.md)) — set them to match your own machine if AAD starts treating your automated login as a bot. |
+| `M365_SCENARIO` / `M365_LICENSE_TYPE` | Override the entitlement the WebSocket is opened under (defaults: `OfficeWebIncludedCopilot` / `Starter`, switching to `OfficeWebPaidCopilot` / `Premium` for `claude-opus`). `scenario` is what gates the model list; `licenseType` rides along and unlocks nothing by itself. |
 | `M365_CACHE_FILE` | Override MSAL token cache location |
 | `M365_SECRETS_FILE` | Override credentials file location |
 | `CHROMIUM_PATH` | Path to Chromium binary for automated login |
@@ -452,6 +482,7 @@ pnpm run test:live    # Run live integration tests against M365
 - Tool calling is emulated (prompt injection + a Copilot Studio agent), not native function calling — robust with the agent, unreliable without it
 - The `think-deeper` / `*_Reasoning` models take 10-30s per response
 - Hard quota of ~600 messages **per conversation** (mitigated by session reuse + delta sends)
+- `claude-opus` needs a paid/premium seat and has its own small priority-access quota that resets at midnight UTC (weekly on Monday); exhaustion surfaces as a 429, not as a model answer
 - Streaming: **tool-less** responses stream incrementally (deltas forwarded as they arrive). **Tool-calling** turns are still buffered server-side — the raw text has to be parsed for tool-call fences before it can be emitted — so those arrive as a single chunk at the end (with an immediate HTTP 200 + heartbeats so the client never times out waiting)
 
 ## License

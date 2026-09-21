@@ -1,4 +1,4 @@
-import { describe, it, expect } from "vitest";
+import { afterEach, describe, it, expect } from "vitest";
 import {
   deriveFencedSpec,
   renderFencedCall,
@@ -7,6 +7,8 @@ import {
   formatFencedToolDefinitions,
   findShellTool,
   hostPlatformNote,
+  currentFramingVariant,
+  defaultFramingForTone,
 } from "./fenced.js";
 import type { ToolDef } from "./tools.js";
 
@@ -276,5 +278,45 @@ describe("formatFencedToolDefinitions", () => {
     // Stresses the action-not-illustration contract
     expect(out).toContain("ACTION");
     expect(out).toContain("PRIMARY JOB");
+  });
+});
+
+describe("defaultFramingForTone", () => {
+  it("gives Opus the lean framing (it doesn't need the anti-narration cage, and its budget is small)", () => {
+    expect(defaultFramingForTone("Claude_Opus")).toBe("minimal");
+  });
+
+  it("leaves every other tone on the bench-tuned baseline", () => {
+    for (const tone of ["magic", "Claude_Sonnet", "Gpt_5_5_Reasoning", undefined]) {
+      expect(defaultFramingForTone(tone)).toBeUndefined();
+    }
+  });
+
+  it("is materially shorter than baseline for the same toolset", () => {
+    const lean = formatFencedToolDefinitions([bash, readFile], "minimal");
+    const baseline = formatFencedToolDefinitions([bash, readFile], "baseline");
+    expect(lean.length).toBeLessThan(baseline.length / 2);
+    // …while keeping the two load-bearing levers: shell-routing + anti-confab.
+    expect(lean).toContain("```bash");
+    expect(lean).toContain("run nothing yet");
+  });
+});
+
+describe("currentFramingVariant", () => {
+  afterEach(() => {
+    delete process.env.M365_FRAMING_VARIANT;
+  });
+
+  it("falls back to baseline with no tone default", () => {
+    expect(currentFramingVariant()).toBe("baseline");
+  });
+
+  it("uses the tone default when the env is unset", () => {
+    expect(currentFramingVariant("minimal")).toBe("minimal");
+  });
+
+  it("lets an explicit env override beat the tone default", () => {
+    process.env.M365_FRAMING_VARIANT = "fewshot";
+    expect(currentFramingVariant("minimal")).toBe("fewshot");
   });
 });

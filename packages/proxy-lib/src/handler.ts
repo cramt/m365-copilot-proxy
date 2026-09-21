@@ -4,6 +4,12 @@ import {
   createLogger,
   trunc,
   getToneForModel,
+  defaultFramingForTone,
+  currentFramingVariant,
+  parsePriorityAccessExhaustion,
+  couldBePriorityAccessPrefix,
+  secondsUntilReset,
+  type PriorityAccessExhaustion,
   formatMessages,
   parseToolCalls,
   looksLikeConfabulation,
@@ -214,11 +220,15 @@ export async function handleChatCompletion(
   // the path that tool-calls right now (route-probe 2026-07-07: Claude_Sonnet agent-less
   // 2/2; the magic path 0/2). Derive it from the RESOLVED tone, not the raw model
   // string: getToneForModel now routes any unmapped `claude-*` (e.g. the
-  // `claude-opus-4-8[1m]` a Claude Code client sends) to Claude_Sonnet, so this check
+  // `claude-opus-5[1m]` a Claude Code client sends) to Claude_Sonnet, so this check
   // then keeps that request on the working agent-less path. The old
   // `/claude/i.test(model)` + `magic` fallback split a claude-* string into GPT-tone +
   // agent-suppressed — the confab quadrant we observed. One resolved tone drives both.
   const tone = getToneForModel(model);
+  // Framing default follows the tone: Opus gets the lean variant (it doesn't
+  // need the anti-narration cage, and its priority-access budget is small), the
+  // rest keep the bench-tuned `baseline`. M365_FRAMING_* still wins.
+  const framingVariant = currentFramingVariant(defaultFramingForTone(tone));
   const isClaudeTone = /^Claude_/i.test(tone);
   const useToolAgent = !!hasTools && (process.env.M365_FORCE_AGENT === "1" || !isClaudeTone);
 
@@ -229,7 +239,7 @@ export async function handleChatCompletion(
   const convId = session.conversationId;
   let text: string;
   if (isFirstTurn || conv.sentMessageCount === 0) {
-    text = formatMessages(body.messages, body.tools, body.tool_choice, convId);
+    text = formatMessages(body.messages, body.tools, body.tool_choice, convId, framingVariant);
     log.info(`Chat completion: model=${model}, stream=${body.stream}, messages=${body.messages.length}, turn=${session.turnCount}, mode=full, cid=${convId}`);
   } else {
     const newMessages = body.messages.slice(conv.sentMessageCount);
@@ -326,6 +336,16 @@ export async function handleChatCompletion(
 
       if (copilotStream.hasContent || fullText.length > 0) {
         noteRequestOutcome(false, convId); // clean response → degradation has lifted
+        // The Opus priority-access cap arrives as a SUCCESSFUL turn whose text is
+        // a refusal ("You've used your available priority access…"), so nothing
+        // above catches it and the client would receive a refusal dressed as an
+        // answer. Surface it as a 429 with the reset time instead. Same hazard
+        // class as the image-quota text (§14 H14.4).
+        const exhausted = parsePriorityAccessExhaustion(fullText);
+        if (exhausted) {
+          log.info(`Priority access exhausted (${exhausted.window}) — resets ${exhausted.resetsAt.toISOString()}`);
+          return { error: priorityAccessResponse(exhausted, model) };
+        }
         return { fullText };
       }
 
@@ -589,8 +609,21 @@ export async function handleChatCompletion(
       // every forwarded delta extends the answer, so `sent` is always a prefix of the
       // final text — the remainder is a clean tail, never a duplicate.
       let sent = "";
+      // Hold the head of the stream until it can't be a priority-access refusal
+      // (Opus quota, §15): those arrive as ordinary content, so forwarding them
+      // live would put the refusal in front of the client before the 429 that
+      // replaces it — delivering exactly the confusion the 429 prevents. The
+      // gate releases within ~45 chars, i.e. one short delta on a normal turn.
+      let head = "";
+      let gated = true;
       const liveDelta = hasTools ? undefined : (delta: string) => {
         if (!delta) return;
+        if (gated) {
+          head += delta;
+          if (couldBePriorityAccessPrefix(head)) return; // still undecided — keep buffering
+          gated = false;
+          delta = head; // release everything held so far, in order
+        }
         sent += delta;
         try { send({ ...base, choices: [{ index: 0, delta: { content: delta }, finish_reason: null }] }); } catch {}
       };
@@ -602,9 +635,21 @@ export async function handleChatCompletion(
       try {
         if (p.kind === "error") {
           let message = "upstream error";
-          try { message = (JSON.parse(await p.resp.text())?.error?.message) || message; } catch {}
+          let type = "upstream_error";
+          let code: string | undefined;
+          // Carry the structured fields through, not just the prose: a streaming
+          // client still has to tell a priority-access wall (back off until the
+          // reset) from a transient upstream failure (retry now), and the status
+          // code it would have read is gone once HTTP 200 is committed.
+          try {
+            const parsed = JSON.parse(await p.resp.text())?.error;
+            if (parsed?.message) message = parsed.message;
+            if (parsed?.type) type = parsed.type;
+            if (parsed?.code) code = parsed.code;
+          } catch {}
+          const retryAfter = p.resp.headers.get("Retry-After");
           // HTTP 200 is already committed, so surface the failure as an in-stream error chunk.
-          send({ ...base, error: { message, type: "upstream_error" } });
+          send({ ...base, error: { message, type, ...(code ? { code } : {}), ...(retryAfter ? { retry_after: Number(retryAfter) } : {}) } });
         } else if (p.kind === "tools") {
           p.toolCalls.forEach((tc, i) =>{
             console.error(
@@ -683,11 +728,38 @@ function buildUsage(
 
 // --- Helpers ---
 
-function jsonResponse(status: number, body: unknown): Response {
+function jsonResponse(status: number, body: unknown, headers: Record<string, string> = {}): Response {
   return new Response(JSON.stringify(body), {
     status,
-    headers: { "Content-Type": "application/json" },
+    headers: { "Content-Type": "application/json", ...headers },
   });
+}
+
+/** The Opus priority-access budget ran out. A real 429 (with `Retry-After` and
+ *  the UTC reset instant) so a client backs off to the refill instead of
+ *  retrying into a wall — and so an agent loop doesn't treat the refusal text as
+ *  the model's answer. Resets at midnight UTC; the weekly budget on Monday. */
+function priorityAccessResponse(exhaustion: PriorityAccessExhaustion, model: string): Response {
+  const retryAfter = secondsUntilReset(exhaustion);
+  const label = exhaustion.model ?? model;
+  const when = exhaustion.window === "week" ? "this week" : "today";
+  return jsonResponse(
+    429,
+    {
+      error: {
+        message:
+          `M365 Copilot's priority access to ${label} is used up for ${when} ` +
+          `(resets ${exhaustion.resetsAt.toISOString()}, i.e. midnight UTC` +
+          `${exhaustion.window === "week" ? " on Monday" : ""}). ` +
+          `Switch to another model (e.g. claude-sonnet or gpt-5.5-think-deeper) or wait. ` +
+          `Upstream said: ${exhaustion.message}`,
+        type: "rate_limit_error",
+        code: "priority_access_exhausted",
+        param: exhaustion.window,
+      },
+    },
+    { "Retry-After": String(retryAfter) },
+  );
 }
 
 function sseResponse(stream: ReadableStream): Response {
