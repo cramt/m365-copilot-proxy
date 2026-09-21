@@ -36,9 +36,26 @@ export {
   decodeJwt,
   getToneForModel,
   getAvailableModels,
+  getScenarioForTone,
+  PAID_SCENARIO_TONES,
+  type ScenarioRouting,
   type CopilotStream,
   type CapturedImage,
 } from "./copilot.js";
+
+export {
+  parsePriorityAccessExhaustion,
+  couldBePriorityAccessPrefix,
+  secondsUntilReset,
+  type PriorityAccessExhaustion,
+  type PriorityAccessWindow,
+} from "./priority-access.js";
+
+export {
+  currentFramingVariant,
+  defaultFramingForTone,
+  FRAMING_VARIANT_NAMES,
+} from "./fenced.js";
 
 export {
   CopilotSession,

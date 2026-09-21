@@ -174,6 +174,14 @@ pnpm test:live      # M365_LIVE=1; live tests that hit real M365 (uses quota)
 - **M365 disengages on large tool payloads.** Keep injected toolsets lean. This is why
   pi works and heavy harnesses (opencode) don't. The proxy also enforces one tool call per
   turn and strips M365's invented `{confidence}`/`{final}` JSON (`M365_ALLOW_MULTI_TOOL` to opt out).
+- **`claude-opus` is entitlement-gated and separately metered.** The WS `scenario` decides which
+  models will serve: Opus is a dead route on `OfficeWebIncludedCopilot` and a real model on
+  `OfficeWebPaidCopilot` (`getScenarioForTone`, derived per-turn from the resolved tone).
+  `licenseType: Premium` pairs with it but unlocks nothing alone. Opus also has a small
+  priority-access budget that **refuses in content, not in a status field** ("You've used your
+  available priority access…"), so it reads as a successful turn — `parsePriorityAccessExhaustion`
+  catches it and the proxy 429s. Resets midnight UTC (weekly: Monday). Don't burn it on sweeps.
+  See docs/hypotheses.md §15.
 - **Account degradation is THREAD-rate, not message-count** (docs/hypotheses.md §9 F13).
   Microsoft throttles *conversations started*, not messages sent — the per-conversation
   counter resets each thread. A bench that opens one fresh conversation per task burns the
