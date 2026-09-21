@@ -374,6 +374,7 @@ conversation at `1/600`). Characterised behaviour:
 - A "conversation" = a stable `ConversationId` (+ `X-SessionId`). M365 keeps **server-side context** for it.
 - Each **turn opens a fresh WebSocket** (with `invocationId:"0"`), but reuses the same `ConversationId`/`sessionId`, so the server threads them together. `isStartOfSession:true` only on turn 0.
 - Because the server remembers prior turns, follow-ups should send **only the new messages** (the delta), not the whole history. Re-sending the full history confuses it and burns quota. See `ModelSession`/`CopilotSession` and `SessionPool` (`handler.ts`).
+- The proxy now adds `disableMemory=1` to the Chathub URL by default. This is M365's temporary-chat control: the live `ConversationId` still retains multi-turn context, but the chat is not added to the Copilot history sidebar. `M365_SAVE_HISTORY=1` opts back into saved history.
 
 ---
 

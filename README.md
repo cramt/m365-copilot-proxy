@@ -230,6 +230,14 @@ pnpm run dev
 
 Then point any OpenAI-compatible client at `http://localhost:4141/v1`.
 
+#### Temporary chats
+
+Proxy conversations use M365 **temporary-chat mode by default**
+(`disableMemory=1` on the authenticated Chathub URL), so they are not added to
+the Copilot history sidebar while multi-turn context still works for the live
+conversation. Set `M365_SAVE_HISTORY=1` before starting the proxy only if you
+deliberately want proxy chats saved in Copilot history.
+
 ### 6. Run on NixOS (systemd service)
 
 The proxy is a [Nitro](https://nitro.build/) service. The flake exposes a package
