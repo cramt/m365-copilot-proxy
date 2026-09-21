@@ -87,6 +87,8 @@ export function findShellTool(tools: ToolDef[]): ToolDef | undefined {
 export interface FencedToolSpec {
   name: string;
   description?: string;
+  /** Declared JSON-Schema `type` per param, for coercing header values. */
+  parameterTypes: Record<string, string>;
   /** Scalar params rendered as `key: value` header lines. */
   headerParams: string[];
   /** The free-form param carried as the fence body (mutually exclusive with editPair). */
@@ -99,7 +101,15 @@ export interface FencedToolSpec {
 export function deriveFencedSpec(tool: ToolDef): FencedToolSpec {
   const name = tool.function.name;
   const description = tool.function.description;
-  const props = Object.keys(tool.function.parameters?.properties ?? {});
+  const propsSchema = tool.function.parameters?.properties ?? {};
+  const props = Object.keys(propsSchema);
+
+  const parameterTypes = Object.fromEntries(
+    Object.entries(propsSchema).map(([k, v]: any) => [
+      k,
+      v?.type ?? "string",
+    ]),
+  );
 
   const search = props.find((p) => SEARCH_KEYS.includes(p));
   const replace = props.find((p) => REPLACE_KEYS.includes(p));
@@ -107,6 +117,7 @@ export function deriveFencedSpec(tool: ToolDef): FencedToolSpec {
     return {
       name,
       description,
+      parameterTypes,
       editPair: { search, replace },
       headerParams: props.filter((p) => p !== search && p !== replace),
     };
@@ -118,6 +129,7 @@ export function deriveFencedSpec(tool: ToolDef): FencedToolSpec {
   return {
     name,
     description,
+    parameterTypes,
     bodyParam,
     headerParams: props.filter((p) => p !== bodyParam),
   };
@@ -584,6 +596,56 @@ function makeCall(name: string, args: Record<string, unknown>): ParsedToolCall {
   };
 }
 
+// Header values arrive as text — the model writes them, so everything is a
+// string until the tool's own schema says otherwise. Strict harnesses (Zed)
+// reject `"10"` where the schema declared `integer`, so coerce to the declared
+// type.
+//
+// The rule that matters is what happens when a value DOESN'T parse. Tool calling
+// here is prompt-emulated: the model writes natural language into typed slots, so
+// `offset: the whole file` is an ordinary occurrence, not an edge case. Coercing
+// that with parseInt yields NaN, which JSON.stringify writes as `null` — a
+// plausible-looking value the harness accepts and acts on. Leaving it as the
+// original string instead makes the harness reject it loudly and the model
+// correct itself on the next turn. A wrong value is worse than a type error:
+// the type error is recoverable, the wrong value silently does the wrong thing.
+const TRUE_WORDS = new Set(["true", "yes", "y", "1", "on"]);
+const FALSE_WORDS = new Set(["false", "no", "n", "0", "off"]);
+
+function coerceHeaderValue(value: string, declaredType: string | undefined): unknown {
+  switch (declaredType) {
+    case "boolean": {
+      const v = value.toLowerCase();
+      if (TRUE_WORDS.has(v)) return true;
+      if (FALSE_WORDS.has(v)) return false;
+      return value; // not a boolean the model meant — let the harness say so
+    }
+    case "integer":
+    case "number": {
+      if (value === "") return value;
+      const n = Number(value); // whole-string parse: rejects "12abc", unlike parseInt
+      if (!Number.isFinite(n)) return value;
+      if (declaredType === "integer" && !Number.isInteger(n)) return value;
+      return n;
+    }
+    case "array": {
+      if (value === "") return [];
+      try {
+        const parsed = JSON.parse(value);
+        // JSON.parse("5") succeeds and yields a number — which would ship a
+        // non-array for an array-typed param, the exact class of bug this
+        // function exists to prevent.
+        if (Array.isArray(parsed)) return parsed;
+      } catch {
+        // not JSON — fall through to the single-element reading
+      }
+      return [value];
+    }
+    default:
+      return value;
+  }
+}
+
 /** Parse the inner text of one fenced block into an arguments object, schema-aware. */
 function parseFencedInner(spec: FencedToolSpec, inner: string): Record<string, unknown> | null {
   const lines = inner.split("\n");
@@ -598,7 +660,8 @@ function parseFencedInner(spec: FencedToolSpec, inner: string): Record<string, u
       if (line.trim() === "") { i++; break; }
       const m = line.match(/^([A-Za-z0-9_]+):[ \t]?(.*)$/);
       if (m && spec.headerParams.includes(m[1])) {
-        args[m[1]] = m[2];
+        const key = m[1];
+        args[key] = coerceHeaderValue(m[2].trim(), spec.parameterTypes[key]);
       } else {
         break;
       }
