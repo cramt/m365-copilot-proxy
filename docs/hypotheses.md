@@ -31,8 +31,127 @@ than "we eyeballed one run." See §M (Methods) for the experimental rig.
   third-party): loopback redirect falsified, `nativeclient` corroborated by two forks
 - §12 — Multi-agent research dig (July 13 2026) + framing A/Bs, and §12.13: tool-less
   requests silently execute in M365's sandbox and return a real (wrong-machine) transcript
+- §15 — `scenario` is a model gate (Opus is real, not a dead tone) + its priority-access
+  budget, and what that costs a proxy that prepends framing to every turn
 
 ---
+
+---
+
+## 15. `scenario` is a model gate — Opus is real, and it is metered
+
+**Premise (user report, driving a live paid/premium seat).** `Claude_Opus` works, and works well,
+through this proxy — but only when the WS connection is opened with
+`scenario=OfficeWebPaidCopilot`. And driving it through the proxy exhausts its daily allowance
+"very quickly", far faster than using the model by hand.
+
+### F26 — `scenario` gates which models will serve; `licenseType` does not 🟢
+**Claim.** The `scenario` query parameter is an entitlement selector that changes the served model
+set. `Claude_Opus` returns M365's canned `BotConnection` apology under the default
+`OfficeWebIncludedCopilot` and serves a real answer under `OfficeWebPaidCopilot`.
+`licenseType=Premium` is the value the paid scenario travels with — **it does not grant access to
+different models on its own**, so flipping it alone is not a lever.
+
+**Which Opus.** The model served under this tone is **Claude Opus 5, knowledge cutoff May 2026** —
+no longer 4.5, 4.6, or 4.8. Worth stating explicitly because the surrounding notes were written
+while Opus looked dead and carried `claude-opus-4-*` strings inherited from client payloads; the
+advertised alias is `claude-opus-5` and the fallback matches on `opus` alone, so no version
+suffix is load-bearing.
+
+**What this overturns.** F23's "Claude_Opus 0/3, dead end" and F24's "bare `claude-opus` still maps
+to the dead tone". Both were measured on the included scenario. The *observations* stand; the
+*conclusion* was scoped to a connection parameter nobody was varying — the classic shape of a
+finding that holds one variable fixed without noticing it is a variable. §12.15's three-state tone
+model needs a fourth entry alongside it: **entitlement-gated**, indistinguishable at the wire from
+"registered but dead" unless you change scenario and re-probe.
+
+**Confidence.** High that the scenario is the lever (deterministic: same tone, same account, two
+scenarios, two outcomes). This is an **entitlement, not a bypass** — the seat must actually hold
+paid/premium access; asking for the paid scenario on a seat that doesn't have it does not conjure
+Opus. Untested on an unentitled seat, so we cannot say what that failure looks like.
+
+**Shipped.** `getScenarioForTone()` (`copilot.ts`) → `PAID_SCENARIO_TONES`, applied per-turn in
+`session.ts` from the resolved tone, so routing is automatic and no caller has to know the rule.
+`M365_SCENARIO` / `M365_LICENSE_TYPE` override independently.
+
+**Falsification / next.** (a) Probe the rest of the tone table under the paid scenario — if any
+other tone changes state, the model list is entitlement-shaped more broadly than one model and the
+table in api-doc §5 needs a scenario column, not a footnote. (b) Test whether the paid scenario
+degrades anything on the included path (no reason to think so; unverified). (c) `scripts/tone-probe.mjs`
+now runs scenario-paired cells and prints a `SCENARIO-SENSITIVE` line, which is the cheap way to
+answer (a) in one sweep.
+
+### F27 — Opus has a separate priority-access budget, and it refuses in *content* 🟢
+**Claim.** Opus is metered by a "priority access" allowance unrelated to the ~600-message
+per-conversation cap (§7) and to thread-rate throttle (F13). Exhaustion is reported as a **normal,
+successful turn whose text is a refusal**:
+
+> You've used your available priority access to the Opus model for today. You can choose another
+> available model or wait until tomorrow to use the Opus model again.
+
+> You've used your available priority access to the Opus model for the week. You can choose another
+> available model or wait until Monday to use the Opus model again.
+
+**Both reset at midnight UTC**; the weekly one on Monday.
+
+**Why it matters more than the limit itself.** The failure wears a success's clothes. `hasContent`
+is true, `messageType` is not `Disengaged`, throttle is not at-limit — so the empty-retry path, the
+Disengaged fail-fast and the rate-limit check all pass it straight through, and an agent loop reads
+"wait until tomorrow" as the model's answer to its task. This is the same hazard class as the
+image-quota text (§14 H14.4) and the wrong-machine transcript (§12.13): **M365 says something true
+in a channel where our code is looking for something else.** Recurring lesson — content-carrying
+refusals need content-level detection; no status field will ever flag them.
+
+**Shipped.** `parsePriorityAccessExhaustion()` (`priority-access.ts`, unit-tested incl. the
+Monday-rollover and the "it is already Monday" edge) → proxy returns **429** with
+`code: "priority_access_exhausted"` and `Retry-After` counted to the UTC reset, so a client backs
+off to the refill instead of retrying into a wall. The streaming path needed its own guard
+(`couldBePriorityAccessPrefix`): deltas are forwarded as they arrive, so without it the refusal
+reaches the client *ahead of* the 429 that replaces it.
+
+**Confidence.** High on the two wordings and the reset semantics (reported first-hand, verbatim).
+Unknown: the actual allowance size, whether daily and weekly are independent counters or nested,
+and whether it is per-account or per-tenant.
+
+### H15.1 — Does the proxy's framing block burn the budget faster? 🟡 partially addressed, UNPROVEN
+**Premise.** Opus exhausts "very quickly" through the proxy. The structural difference between
+proxy use and hand use is that every agentic turn prepends a tool-framing block — `baseline` is
+**3,894 chars for a 2-tool request**, and it exists to force M365's chat-tuned GPT path to *act*
+rather than narrate. Opus does not need that cage: it acts from the tool schema alone.
+
+**Shipped (cheap, defensible regardless).** `defaultFramingForTone()` puts Opus on `minimal`:
+**684 chars, ~82% smaller**, keeping the two load-bearing levers (shell-routing + anti-confabulation)
+and dropping the strict-rules wall. Every other tone keeps the bench-tuned `baseline`
+byte-for-byte, so no existing reliability number moves. `M365_FRAMING_VARIANT` still wins.
+
+**⚠️ The causal claim is NOT tested.** We do not know whether priority access is token-weighted or
+counted per message. If it is per-message, this buys latency and prompt hygiene and *nothing* on
+quota — the right default for a model that doesn't need the cage, but not a measured win. Writing
+it up as "we cut Opus usage 82%" would be exactly the inference-from-plausibility this notebook
+exists to prevent.
+
+**Probe that would settle it (cheap, one variable, expensive only in budget):** run the same
+fixed task to exhaustion twice on a rested day — once forced to `baseline`, once on `minimal` —
+and count turns-to-refusal. Token-weighted ⇒ `minimal` survives materially more turns.
+Per-message ⇒ identical counts. Until someone spends a day on that, treat H15.1 as open.
+
+**Adjacent, untested:** Opus is a `Claude_*` tone, so it already runs agent-less (F23) and skips
+the agent's server-side instructions entirely — the per-request block is the whole prompt overhead
+there. Also unknown whether *output* tokens count toward the budget, which would make the
+`*_Reasoning` tones (if Opus ever gets one) disproportionately expensive.
+
+### Claude_Fable — accepted, answers, and is not Fable 🟡
+In the real client's tone list (§12.6) next to `Claude_Sonnet`. Accepted here and returns content —
+but self-IDs as **GPT-5**. So this is a *fourth* validator outcome: not live, not rejected, not the
+BotConnection deflection, but **silently substituted** — a shape where "it replied" is maximally
+misleading. Best reading: the Fable route is gated on the **Frontier program**, and an unentitled
+account gets the house model rather than an error. Unlike Opus there is no known query parameter
+that opens it; program membership is not a string we can send.
+
+**Therefore deliberately NOT in `MODEL_TONES`.** Advertising `fable` would ship a model ID that
+lies about which model answers — worse than not offering it. It lives in `scripts/tone-probe.mjs`
+only, probed on both scenarios so the day it starts self-identifying as Fable is visible in a
+routine sweep. **Falsify by:** a probe where `Claude_Fable` self-IDs as Fable — then map it.
 
 ## 11. July 7 2026 — flying under Microsoft's radar (auto-reauth detection science run)
 
@@ -204,9 +323,12 @@ RESTED account (the F23 overnight methodology), because a real pi session is ONE
 while our probes are many threads (self-throttling). Net: no evidence `magic` is specifically broken;
 the deterministic routing/regex fixes stand on their own merits; the pi default (`gpt-5.5-think-deeper`)
 rests on real-session experience, which is the more reliable signal here.
-**Note:** `Claude_Opus` remains a dead agent-less tone (F23: 0/3, `BotConnection` apology) — the
-generic `claude-*`→`Claude_Sonnet` fallback deliberately avoids it; bare `claude-opus` still maps
-to the dead `Claude_Opus` and should probably be remapped too.
+**Note (SUPERSEDED — see §15):** this read `Claude_Opus` as a dead agent-less tone (F23: 0/3,
+`BotConnection` apology) and routed around it. The observation was right and the conclusion was
+wrong: every one of those probes ran under `scenario=OfficeWebIncludedCopilot`, which does not
+serve Opus. Under `OfficeWebPaidCopilot` the same tone answers normally. The tone was never dead —
+our connection was never entitled. `claude-opus` now maps to `Claude_Opus` **and** carries the paid
+scenario; unmapped `*opus*` strings route there too instead of being downgraded to Sonnet.
 
 ### F23 — CLAUDE-FOR-TOOLS works via agent-LESS shell-routing (overturns §8.9-8.11 "MCP-only") 🟢
 **Claim.** Claude Sonnet 4.5 will drive a real agentic coding loop through the proxy **without the

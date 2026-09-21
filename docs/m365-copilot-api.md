@@ -45,7 +45,8 @@ wss://substrate.office.com/m365Copilot/Chathub/{oid}@{tid}?{query}
 | `source` | `"officeweb"` (note: the literal value is double-quoted in the original client). |
 | `product` | `Office` |
 | `agentHost` | `Bizchat.FullScreen` |
-| `scenario` | `OfficeWebIncludedCopilot` |
+| `licenseType` | `Starter`, or `Premium` alongside the paid scenario. Not a model lever on its own (§5). |
+| `scenario` | `OfficeWebIncludedCopilot`, or `OfficeWebPaidCopilot` for Opus — **this is what gates the model list** (§5). |
 | `variants` | A long comma-separated list of feature flags (see `VARIANTS` in `copilot.ts`). Most are cargo-culted from a captured session; removing them is untested. |
 
 ---
@@ -174,7 +175,7 @@ There is no `model` parameter. The `tone` string on the chat message picks the m
 | `think-deeper` | `Gpt_Reasoning` | |
 | `claude` / `claude-sonnet` | `Claude_Sonnet` | **real Anthropic Claude Sonnet 4.5** (self-identifies) |
 | `claude-sonnet-think-deeper` | `Claude_Sonnet_Reasoning` | Claude Sonnet 4.5 + reasoning |
-| `claude-opus` | `Claude_Opus` | accepted tone; identity deflected (likely Opus) |
+| `claude-opus` / `claude-opus-5` | `Claude_Opus` | **real Opus — Claude Opus 5**. Reachable ONLY under `scenario=OfficeWebPaidCopilot` (see below). On the default included scenario it is a "registered but dead" route |
 | `gpt-5.5` / `gpt-5.5-quick` | `Gpt_5_5_Chat` | current GPT generation |
 | `gpt-5.5-think-deeper` | `Gpt_5_5_Reasoning` | |
 | `gpt-5.6-think-deeper` | `Gpt_5_6_Reasoning` | confirmed live 2026-08-06; GPT-5.6 Think deeper |
@@ -198,6 +199,42 @@ Mapping lives in `MODEL_TONES` (`copilot.ts`). `*_Reasoning` tones take 10–30s
 That third state is the trap: **"didn't error" is not sufficient to conclude a tone works.** `Gpt_5_6_Chat` sits there right now — rejected outright in June 2026, accepted-but-dead since the GPT-5.6 rollout, and it would ship as a model that only ever apologises. Require `DeepLeo` before mapping anything.
 
 Rejected on test: `Anthropic_Claude`, `Claude_Haiku`, `Claude_3_7_Sonnet`. Accepted-but-NOT-Claude: `Claude_Reasoning` (self-IDs as GPT-5 — don't use). New tones still appear by pattern (`Gpt_5_N_{Quick,Reasoning}`, `Claude_*`).
+
+**`Claude_Fable` is a fourth shape: accepted, answers — and answers as something else.** It exists in the real web client's tone list (§12.6), it is accepted here, and it returns content. But it self-identifies as **GPT-5, not Fable**, so "it replied" once again proves only that *a* model answered. Best current reading: the Fable route is gated on the **Frontier program**, and an unentitled account is quietly served the house model instead of being rejected — the entitlement gate degrades silently where the tone validator would have errored. Unlike Opus, no scenario string is known to open it; program membership is not a query parameter. It is therefore deliberately **absent from `MODEL_TONES`** — mapping it would ship a model ID that lies about which model answers — and lives only in `scripts/tone-probe.mjs`, where a self-ID check can catch the day that changes.
+
+### Entitlement: `scenario` (and its `licenseType`) gate which models will serve
+
+The WS query carries `scenario` and `licenseType`. We sent `OfficeWebIncludedCopilot` + `Starter` unconditionally, which silently capped the model list:
+
+| `scenario` | `licenseType` | Serves |
+|---|---|---|
+| `OfficeWebIncludedCopilot` | `Starter` | everything in the table above **except** Opus |
+| `OfficeWebPaidCopilot` | `Premium` | the same, **plus `Claude_Opus`** |
+
+Two things worth separating, because conflating them wastes probes:
+
+- **`scenario` is the lever.** Flipping it to `OfficeWebPaidCopilot` is what makes `Claude_Opus` serve a real answer instead of the canned BotConnection apology. This also rewrites the old F23 reading of "Opus is a dead tone, 0/3": that measurement was taken on the included scenario, where the observation was correct and the conclusion wasn't.
+- **`licenseType` is not.** `Premium` is simply the value the paid scenario travels with; setting `licenseType` alone does **not** grant access to different models. We send the pair for coherence with the real client, not because both halves do work.
+
+This is an entitlement, not a bypass: the account has to actually hold the paid/premium access. On a seat that doesn't, requesting the paid scenario just doesn't produce Opus.
+
+Implemented in `getScenarioForTone()` (`copilot.ts`), applied per-turn in `session.ts` from the **resolved tone** — so a request routes itself and no caller has to know the rule. Override with `M365_SCENARIO` / `M365_LICENSE_TYPE` (independent, for a tenant whose entitlement is named differently).
+
+### Opus priority access is a separate, much smaller budget
+
+Opus is metered by a **priority-access** allowance that has nothing to do with the ~600-message per-conversation cap or the thread-rate throttle. When it runs out, M365 does not throttle, disengage, or return empty — it answers the turn with a plain-text refusal, verbatim:
+
+> You've used your available priority access to the Opus model for today. You can choose another available model or wait until tomorrow to use the Opus model again.
+
+and, once the weekly allowance is gone:
+
+> You've used your available priority access to the Opus model for the week. You can choose another available model or wait until Monday to use the Opus model again.
+
+**Both reset at midnight UTC** (the weekly one on Monday). The hazard is the shape, not the limit: this is a *successful* turn carrying content, so every existing guard — empty-retry, Disengaged fail-fast, at-limit throttle — waves it through and a client receives a refusal dressed as the model's answer. Exactly the failure class as the image-quota text (§14 H14.4). `parsePriorityAccessExhaustion()` (`priority-access.ts`) detects both wordings and the proxy returns **HTTP 429** with `code: "priority_access_exhausted"` and a `Retry-After` counted to the UTC reset.
+
+On the **streaming** path HTTP 200 is committed before the turn even starts, so there is no status code left to set. Two things cover it instead: `couldBePriorityAccessPrefix()` holds the head of the stream until it can no longer be a refusal (releasing within ~45 chars — one short delta on a normal turn), so the refusal is never forwarded as content; and the failure is then emitted as an in-stream `error` chunk carrying the same `type`/`code` plus `retry_after` in seconds. A streaming client can therefore distinguish a quota wall (back off until the reset) from a transient upstream blip (retry now) without string-matching the message.
+
+Driving Opus through this proxy burns that budget **much faster than hand-driving the model does**, because every agentic turn prepends a tool-framing block. The proxy therefore defaults Opus to the lean `minimal` framing (3,894 → 684 chars for a 2-tool request, **~82% smaller**) instead of the `baseline` cage, which exists to force M365's chat-tuned GPT path to act and which Opus does not need. ⚠️ **Unverified:** whether the budget is token-weighted or per-message. If it is per-message this buys latency and nothing else. It is still the right default for a model that doesn't need the cage — but don't cite it as a measured quota saving until someone counts turns-to-exhaustion both ways.
 
 > ⚠️ **The declarative agent overrides the tone and forces GPT-5.** This is the big one (June 2026, `scripts/tone-probe.mjs`): with **no agent**, `Claude_Sonnet` → real Claude; with the agent attached (`threadLevelGptId`, §10) the *same* tone silently routes to **GPT-5**. So a non-default tone (Claude, and the `*_Reasoning` tones) only takes effect on the **agent-less / plain-chat** path. With a heavy tool prompt a Claude tone + agent goes further and **Disengages persistently** (the `DeepLeo` reasoning pipeline meta-analyses the injected prompt instead of obeying it). Ruled out as causes: prompt wrapper, the `variants` flag list, conversation reuse — isolated cleanly to agent presence.
 >
@@ -532,6 +569,8 @@ Evidence (`scripts/dataverse-bot-probe.mjs`, with a `<org>.crm4.dynamics.com/.de
 | 22 | **`tone` is server-validated** (unknown → `type:3` error), so an accepted tone is real. `Claude_Sonnet` = real Claude Sonnet 4.5; `Gpt_5_5_*` current gen; `Claude_Reasoning` accepted but actually GPT | §5 |
 | 23 | **Code interpreter is real:** `cwc_code_interpreter*` optionsSets + `GeneratedCode` msg type → genuine server-side Python execution. Proxy enables it on the agent-less path | §5 |
 | 24 | **`optionsSets` was sent empty** — leaves code-interpreter/memory/custom-instructions/image off the table. Reference impls (PyRIT, kuchris) populate it | §5/hypotheses §8 |
+| 25 | **`scenario` gates the model list.** `Claude_Opus` is a dead route on `OfficeWebIncludedCopilot` and a real model on `OfficeWebPaidCopilot`. `licenseType: Premium` rides along but unlocks nothing by itself. Proxy derives it per-turn from the resolved tone | §5 |
+| 26 | **Opus's priority-access cap arrives as a successful turn with refusal *text*** ("You've used your available priority access…"), not a throttle/Disengage/empty — so every existing guard passes it through. Detected and surfaced as 429; resets midnight UTC (weekly: Monday) | §5/§15 |
 
 ---
 
