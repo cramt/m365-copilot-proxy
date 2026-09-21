@@ -635,9 +635,21 @@ export async function handleChatCompletion(
       try {
         if (p.kind === "error") {
           let message = "upstream error";
-          try { message = (JSON.parse(await p.resp.text())?.error?.message) || message; } catch {}
+          let type = "upstream_error";
+          let code: string | undefined;
+          // Carry the structured fields through, not just the prose: a streaming
+          // client still has to tell a priority-access wall (back off until the
+          // reset) from a transient upstream failure (retry now), and the status
+          // code it would have read is gone once HTTP 200 is committed.
+          try {
+            const parsed = JSON.parse(await p.resp.text())?.error;
+            if (parsed?.message) message = parsed.message;
+            if (parsed?.type) type = parsed.type;
+            if (parsed?.code) code = parsed.code;
+          } catch {}
+          const retryAfter = p.resp.headers.get("Retry-After");
           // HTTP 200 is already committed, so surface the failure as an in-stream error chunk.
-          send({ ...base, error: { message, type: "upstream_error" } });
+          send({ ...base, error: { message, type, ...(code ? { code } : {}), ...(retryAfter ? { retry_after: Number(retryAfter) } : {}) } });
         } else if (p.kind === "tools") {
           p.toolCalls.forEach((tc, i) =>
             send({ ...base, choices: [{ index: 0, delta: { tool_calls: [{ index: i, id: tc.id, type: "function", function: { name: tc.function.name, arguments: tc.function.arguments } }] }, finish_reason: null }] }));
