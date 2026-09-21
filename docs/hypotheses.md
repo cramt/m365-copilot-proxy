@@ -2665,3 +2665,44 @@ sent on every agent-less turn, so any type the GUI can reach is reachable here.
 
 `session.ts` used to list `"GenerateContentQuery"` twice in `allowedMessageTypes`; the image-mode
 edit collapsed it to one.
+
+---
+
+## 16. Sep 21 2026 — `disableMemory=1`: temporary chats that still remember
+
+Contributed as [#15](https://github.com/cramt/m365-copilot-proxy/pull/15) by @romunro, from a
+real complaint: driving the proxy fills the Copilot history sidebar with one saved thread per
+prompt. The fix adds `disableMemory=1` to the Chathub query — M365's temporary-chat control —
+and makes it the default (`M365_SAVE_HISTORY=1` opts back out).
+
+The claim had two halves and the PR asserted both in the API doc while testing neither against
+the live service (its tests check that the URL builder echoes the param back, which is not the
+same question). Both are now settled. Probe: `scripts/temporary-chat-probe.mjs`.
+
+### F28 — `disableMemory=1` does NOT cost multi-turn context 🟢
+
+The dangerous half. If the flag dropped server-side conversation state, every agent loop would
+silently regress to single-turn while still *looking* like it worked — the proxy sends only the
+delta on follow-ups (§ conversation model), so a forgetful server means the model receives turn
+N with no idea what turns 1..N-1 said.
+
+Two turns on one temporary conversation: turn 1 supplies a codeword, turn 2 asks for it back.
+Turn 2 answered `plum-harbor-77` verbatim. Context is retained on the live `ConversationId`.
+n=1, but the failure mode would be total rather than stochastic, so one clean sample settles it.
+
+### F29 — the temporary thread is genuinely absent from history 🟢
+
+A/B on two fresh conversations sent ~4s apart, one with the flag and one without, each carrying
+a distinct marker word. The Copilot web sidebar (Playwright, real first-party UI) lists
+`Say the word beta-marker and nothing else.` under **Chats** and contains no occurrence of
+`alpha-marker` anywhere on the page. Evidence: `scripts/gui-capture-out/sidebar.{txt,png}`.
+
+So the flag does exactly what it says: the thread is live and stateful while it runs, and leaves
+no trace in history afterwards. Note this also means a proxy conversation can't be recovered
+from the UI after the fact — an intentional trade, and the reason `M365_SAVE_HISTORY=1` exists.
+
+### Not established
+
+Whether `disableMemory=1` also suppresses whatever longer-term personalisation M365 builds from
+chat history ("memory" in the product sense, not per-conversation state). The name suggests it,
+nothing here tests it, and no current behaviour depends on the answer.
