@@ -26,7 +26,7 @@ SENTINEL="$SCRATCH/sentinel.txt"
 
 mkdir -p "$PIH/.pi/agent"
 cat > "$PIH/.pi/agent/models.json" <<EOF
-{"providers":{"m365":{"api":"openai-completions","apiKey":"m365","baseUrl":"$PROXY_URL","compat":{"supportsDeveloperRole":false,"supportsReasoningEffort":false,"supportsUsageInStreaming":false},"models":[{"id":"$MODEL","name":"$MODEL"}]}}}
+{"providers":{"m365":{"api":"openai-completions","apiKey":"not-needed","baseUrl":"$PROXY_URL","compat":{"supportsDeveloperRole":false,"supportsReasoningEffort":false,"supportsUsageInStreaming":false},"models":[{"id":"$MODEL","name":"$MODEL"}]}}}
 EOF
 cat > "$PIH/.pi/agent/settings.json" <<EOF
 {"defaultModel":"$MODEL","defaultProvider":"m365","enableInstallTelemetry":false}
