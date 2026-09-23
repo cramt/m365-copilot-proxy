@@ -292,6 +292,14 @@ describe("defaultFramingForTone", () => {
     }
   });
 
+  it("keeps the paid-gated GPT-6 tone on baseline — the gate is not a budget", () => {
+    // Opus gets `minimal` because its priority-access budget is the scarce
+    // thing, not because it is entitlement-gated. Gpt_6_Reasoning is gated the
+    // same way and metered like everything else, and it drives M365's GPT path,
+    // which is what baseline's anti-narration cage exists for.
+    expect(defaultFramingForTone("Gpt_6_Reasoning")).toBeUndefined();
+  });
+
   it("is materially shorter than baseline for the same toolset", () => {
     const lean = formatFencedToolDefinitions([bash, readFile], "minimal");
     const baseline = formatFencedToolDefinitions([bash, readFile], "baseline");

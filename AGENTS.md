@@ -182,6 +182,11 @@ pnpm test:live      # M365_LIVE=1; live tests that hit real M365 (uses quota)
   available priority access…"), so it reads as a successful turn — `parsePriorityAccessExhaustion`
   catches it and the proxy 429s. Resets midnight UTC (weekly: Monday). Don't burn it on sweeps.
   See docs/hypotheses.md §15.
+- **Entitlement-gated ≠ metered.** `gpt-6-think-deeper` (`Gpt_6_Reasoning`) needs the same paid
+  scenario as Opus but carries **no** priority-access budget and throttles like everything else,
+  so `PAID_SCENARIO_TONES` is about reaching a model, not about what it costs. Don't key metering
+  or framing decisions off that set — the quota detector reads the refusal text and the framing
+  default is per-tone (Opus `minimal`, GPT-6 `baseline`). See docs/hypotheses.md §17.
 - **Account degradation is THREAD-rate, not message-count** (docs/hypotheses.md §9 F13).
   Microsoft throttles *conversations started*, not messages sent — the per-conversation
   counter resets each thread. A bench that opens one fresh conversation per task burns the
