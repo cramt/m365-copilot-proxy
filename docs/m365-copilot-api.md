@@ -179,6 +179,7 @@ There is no `model` parameter. The `tone` string on the chat message picks the m
 | `gpt-5.5` / `gpt-5.5-quick` | `Gpt_5_5_Chat` | current GPT generation |
 | `gpt-5.5-think-deeper` | `Gpt_5_5_Reasoning` | |
 | `gpt-5.6-think-deeper` | `Gpt_5_6_Reasoning` | confirmed live 2026-08-06; GPT-5.6 Think deeper |
+| `gpt-6-think-deeper` | `Gpt_6_Reasoning` | GPT-6 Think deeper. Reachable ONLY under `scenario=OfficeWebPaidCopilot` (see below), like Opus — but **not** separately metered. No chat variant: `Gpt_6_Chat` is rejected |
 | `gpt-5.4` / `gpt-5.4-think-deeper` | `Gpt_5_4_Reasoning` | |
 | `gpt-5.4-quick` | `Gpt_5_4_Quick` | |
 | `gpt-5.3` / `gpt-5.3-quick` | `Gpt_5_3_Quick` | |
@@ -198,7 +199,9 @@ Mapping lives in `MODEL_TONES` (`copilot.ts`). `*_Reasoning` tones take 10–30s
 
 That third state is the trap: **"didn't error" is not sufficient to conclude a tone works.** `Gpt_5_6_Chat` sits there right now — rejected outright in June 2026, accepted-but-dead since the GPT-5.6 rollout, and it would ship as a model that only ever apologises. Require `DeepLeo` before mapping anything.
 
-Rejected on test: `Anthropic_Claude`, `Claude_Haiku`, `Claude_3_7_Sonnet`. Accepted-but-NOT-Claude: `Claude_Reasoning` (self-IDs as GPT-5 — don't use). New tones still appear by pattern (`Gpt_5_N_{Quick,Reasoning}`, `Claude_*`).
+The GPT-6 rollout is a useful contrast on exactly this axis: `Gpt_6_Reasoning` is live (under the paid scenario), while `Gpt_6_Chat` is **rejected** — a validator error, not the BotConnection deflection its 5.6 counterpart gives. Same generation, same missing chat variant, two different wire signatures, and only one of them survives a "did it error?" check. Read the outcome, not the absence of an error.
+
+Rejected on test: `Anthropic_Claude`, `Claude_Haiku`, `Claude_3_7_Sonnet`, `Gpt_6_Chat`. Accepted-but-NOT-Claude: `Claude_Reasoning` (self-IDs as GPT-5 — don't use). New tones still appear by pattern (`Gpt_5_N_{Quick,Reasoning}`, `Claude_*`).
 
 **`Claude_Fable` is a fourth shape: accepted, answers — and answers as something else.** It exists in the real web client's tone list (§12.6), it is accepted here, and it returns content. But it self-identifies as **GPT-5, not Fable**, so "it replied" once again proves only that *a* model answered. Best current reading: the Fable route is gated on the **Frontier program**, and an unentitled account is quietly served the house model instead of being rejected — the entitlement gate degrades silently where the tone validator would have errored. Unlike Opus, no scenario string is known to open it; program membership is not a query parameter. It is therefore deliberately **absent from `MODEL_TONES`** — mapping it would ship a model ID that lies about which model answers — and lives only in `scripts/tone-probe.mjs`, where a self-ID check can catch the day that changes.
 
@@ -208,8 +211,8 @@ The WS query carries `scenario` and `licenseType`. We sent `OfficeWebIncludedCop
 
 | `scenario` | `licenseType` | Serves |
 |---|---|---|
-| `OfficeWebIncludedCopilot` | `Starter` | everything in the table above **except** Opus |
-| `OfficeWebPaidCopilot` | `Premium` | the same, **plus `Claude_Opus`** |
+| `OfficeWebIncludedCopilot` | `Starter` | everything in the table above **except** `Claude_Opus` and `Gpt_6_Reasoning` |
+| `OfficeWebPaidCopilot` | `Premium` | the same, **plus `Claude_Opus` and `Gpt_6_Reasoning`** |
 
 Two things worth separating, because conflating them wastes probes:
 
@@ -217,6 +220,8 @@ Two things worth separating, because conflating them wastes probes:
 - **`licenseType` is not.** `Premium` is simply the value the paid scenario travels with; setting `licenseType` alone does **not** grant access to different models. We send the pair for coherence with the real client, not because both halves do work.
 
 This is an entitlement, not a bypass: the account has to actually hold the paid/premium access. On a seat that doesn't, requesting the paid scenario just doesn't produce Opus.
+
+**The gate is not a budget.** Opus is both entitlement-gated *and* metered by priority access (below), and while it was the only paid-scenario tone those two properties were indistinguishable — it was easy to read "paid scenario" as shorthand for "scarce". `Gpt_6_Reasoning` separates them: same gate, no priority-access allowance, throttled by the ordinary per-conversation cap and thread-rate governor like everything else. So membership of `PAID_SCENARIO_TONES` says what a tone needs to *reach* a model and nothing about what it costs once it does. Downstream code should not infer one from the other — the priority-access detector keys on the refusal text (so it simply never fires for GPT-6), and the framing default is decided per-tone, which is why GPT-6 keeps `baseline` where Opus takes `minimal`.
 
 Implemented in `getScenarioForTone()` (`copilot.ts`), applied per-turn in `session.ts` from the **resolved tone** — so a request routes itself and no caller has to know the rule. Override with `M365_SCENARIO` / `M365_LICENSE_TYPE` (independent, for a tenant whose entitlement is named differently).
 
@@ -570,7 +575,7 @@ Evidence (`scripts/dataverse-bot-probe.mjs`, with a `<org>.crm4.dynamics.com/.de
 | 22 | **`tone` is server-validated** (unknown → `type:3` error), so an accepted tone is real. `Claude_Sonnet` = real Claude Sonnet 4.5; `Gpt_5_5_*` current gen; `Claude_Reasoning` accepted but actually GPT | §5 |
 | 23 | **Code interpreter is real:** `cwc_code_interpreter*` optionsSets + `GeneratedCode` msg type → genuine server-side Python execution. Proxy enables it on the agent-less path | §5 |
 | 24 | **`optionsSets` was sent empty** — leaves code-interpreter/memory/custom-instructions/image off the table. Reference impls (PyRIT, kuchris) populate it | §5/hypotheses §8 |
-| 25 | **`scenario` gates the model list.** `Claude_Opus` is a dead route on `OfficeWebIncludedCopilot` and a real model on `OfficeWebPaidCopilot`. `licenseType: Premium` rides along but unlocks nothing by itself. Proxy derives it per-turn from the resolved tone | §5 |
+| 25 | **`scenario` gates the model list.** `Claude_Opus` and `Gpt_6_Reasoning` are dead routes on `OfficeWebIncludedCopilot` and real models on `OfficeWebPaidCopilot`. `licenseType: Premium` rides along but unlocks nothing by itself. Proxy derives it per-turn from the resolved tone. The gate says nothing about metering — GPT-6 is gated but not separately budgeted | §5 |
 | 26 | **Opus's priority-access cap arrives as a successful turn with refusal *text*** ("You've used your available priority access…"), not a throttle/Disengage/empty — so every existing guard passes it through. Detected and surfaced as 429; resets midnight UTC (weekly: Monday) | §5/§15 |
 
 ---
