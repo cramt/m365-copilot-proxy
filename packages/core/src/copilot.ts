@@ -37,6 +37,14 @@ const MODEL_TONES: Record<string, string> = {
   // GPT-5.6 (live-validated 2026-08-06; M365 currently exposes reasoning only)
   "gpt-5.6-think-deeper": "Gpt_5_6_Reasoning",
 
+  // GPT-6. Reasoning only: `Gpt_6_Chat` is REJECTED by the tone validator (it
+  // errors, rather than deflecting via BotConnection the way `Gpt_5_6_Chat`
+  // does — see §12.15 for why those two states are not the same thing), so
+  // there is no chat variant to map. Like `Claude_Opus`, this tone is
+  // entitlement-gated and only serves under the paid scenario; unlike Opus it
+  // is NOT separately metered (see PAID_SCENARIO_TONES below and docs §5).
+  "gpt-6-think-deeper": "Gpt_6_Reasoning",
+
   // GPT-5.4
   "gpt-5.4": "Gpt_5_4_Reasoning",
   "gpt-5.4-think-deeper": "Gpt_5_4_Reasoning",
@@ -78,11 +86,11 @@ export function getToneForModel(model: string): string {
 // The WS query string carries a `scenario` and a `licenseType`. We hardcoded
 // `OfficeWebIncludedCopilot` + `Starter` (what a seat-included Copilot web
 // client sends) for every turn. That silently caps which models the backend
-// will serve: `Claude_Opus` is accepted as a tone but never reaches a model on
-// the included scenario — it returns M365's canned BotConnection apology, the
-// "registered but dead" third state from §12.15.
+// will serve: `Claude_Opus` and `Gpt_6_Reasoning` are accepted as tones but
+// never reach a model on the included scenario — they return M365's canned
+// BotConnection apology, the "registered but dead" third state from §12.15.
 //
-// `scenario=OfficeWebPaidCopilot` is what unlocks it. `licenseType=Premium` is
+// `scenario=OfficeWebPaidCopilot` is what unlocks them. `licenseType=Premium` is
 // the value the paid scenario travels with, NOT a lever in its own right:
 // flipping licenseType alone on the included scenario changes nothing (it does
 // not grant access to different models). We send the pair for coherence with
@@ -90,14 +98,27 @@ export function getToneForModel(model: string): string {
 //
 // This is an entitlement, not a bypass: the account must actually hold paid /
 // premium Copilot access. On a seat that doesn't, the paid scenario simply
-// doesn't yield Opus.
+// doesn't yield those models.
 const DEFAULT_SCENARIO = "OfficeWebIncludedCopilot";
 const DEFAULT_LICENSE_TYPE = "Starter";
 const PAID_SCENARIO = "OfficeWebPaidCopilot";
 const PAID_LICENSE_TYPE = "Premium";
 
-/** Tones that only serve under the paid scenario. */
-export const PAID_SCENARIO_TONES: ReadonlySet<string> = new Set(["Claude_Opus"]);
+/**
+ * Tones that only serve under the paid scenario.
+ *
+ * Membership means ENTITLEMENT and nothing else. It is not a proxy for "is
+ * metered" or "needs lean framing": `Claude_Opus` happens to be both gated and
+ * drawing on a small priority-access budget, but `Gpt_6_Reasoning` is gated and
+ * throttled exactly like every other model, with no separate budget. The two
+ * properties travelled together only while Opus was the sole member, so nothing
+ * downstream should infer one from the other — `defaultFramingForTone` and
+ * `parsePriorityAccessExhaustion` each decide for themselves.
+ */
+export const PAID_SCENARIO_TONES: ReadonlySet<string> = new Set([
+  "Claude_Opus",
+  "Gpt_6_Reasoning",
+]);
 
 export interface ScenarioRouting {
   scenario: string;

@@ -282,6 +282,7 @@ without NixOS: `nix run github:cramt/m365-copilot-proxy -- 4141`.
 
 | Model ID | M365 Tone | Description |
 |---|---|---|
+| `gpt-6-think-deeper` | Gpt_6_Reasoning | GPT-6 reasoning. **Needs a paid/premium Copilot seat** (see below); 24/30 on the bench |
 | `gpt-5.6-think-deeper` | Gpt_5_6_Reasoning | GPT-5.6 reasoning — live-validated; agent/tool reliability not yet benchmarked |
 | `gpt-5.5-think-deeper` | Gpt_5_5_Reasoning | **Recommended default for agents/tool-calling** — robust tool compliance |
 | `gpt-5.5` / `gpt-5.5-quick` | Gpt_5_5_Chat | GPT-5.5 fast |
@@ -308,6 +309,29 @@ without NixOS: `nix run github:cramt/m365-copilot-proxy -- 4141`.
 > injected prompt and can disengage from tools. Prefer `gpt-5.5-think-deeper`.
 > See [docs/m365-copilot-api.md](docs/m365-copilot-api.md) §5/§10.
 
+### GPT-6 (`gpt-6-think-deeper`) — entitlement, but no separate quota
+
+**It needs the paid scenario, exactly like Opus.** On the default
+`OfficeWebIncludedCopilot` the `Gpt_6_Reasoning` tone is accepted and then deflects with the
+canned apology; under `OfficeWebPaidCopilot` it serves normally. The proxy sends the paid
+scenario automatically whenever the resolved tone is `Gpt_6_Reasoning`, so nothing has to be
+configured — but this is an **entitlement, not a bypass**, and a seat without paid/premium
+access will see the apology no matter which scenario is requested.
+
+**It is not metered separately, and that is the part worth stating.** The paid scenario is an
+entitlement gate; it does not imply a budget. GPT-6 has no priority-access allowance and is
+throttled by the same per-conversation cap and thread-rate governor as every other model, so
+none of the Opus advice about rationing turns applies. It also keeps the `baseline` framing:
+the lean `minimal` variant exists to conserve Opus's scarce budget, and GPT-6 drives M365's
+GPT path, which is what `baseline`'s anti-narration framing is tuned for.
+
+**Tool calling: 24/30 on the bench**, with all six non-passing runs being prose give-ups —
+the model answering in narration instead of acting — rather than Disengaged or malformed
+calls. That is the failure mode the confab-retry already targets, though we have not measured
+how many of the six it recovers. `gpt-5.5-think-deeper` remains the recommended default and
+the no-model fallback: it benchmarks higher and needs no entitlement, so making GPT-6 the
+default would trade reliability for a model most seats can't reach.
+
 ### Opus (`claude-opus`) — entitlement + a separate, small quota
 
 The model behind this tone is **Claude Opus 5**. It performs very well here, with two things
@@ -318,8 +342,8 @@ WebSocket connection. On the default `OfficeWebIncludedCopilot` the Opus tone is
 never reaches a model — it returns a canned apology, which is why earlier notes in this repo
 recorded Opus as a dead tone. The proxy now sends `scenario=OfficeWebPaidCopilot` (with the
 `licenseType=Premium` that pairs with it) automatically whenever the resolved tone is
-`Claude_Opus`; every other model keeps the included scenario. This is an **entitlement, not a
-bypass** — your account has to actually hold paid/premium Copilot access, and `licenseType`
+`Claude_Opus`; every model except `gpt-6-think-deeper` keeps the included scenario. This is an
+**entitlement, not a bypass** — your account has to actually hold paid/premium Copilot access, and `licenseType`
 alone unlocks nothing. Override either with `M365_SCENARIO` / `M365_LICENSE_TYPE`.
 
 **It is metered separately, and the proxy spends it fast.** Opus draws on a "priority access"
@@ -423,7 +447,7 @@ Three token scopes are acquired:
 | `M365_NO_INTERACTIVE` | Set to `1` to hard-disable any visible browser login, overriding the flag above. For systemd/CI hosts where a window must never open. |
 | `M365_INTERACTIVE_TIMEOUT_MS` | How long to wait for you to finish the interactive sign-in (default `600000`, i.e. 10 minutes). |
 | `M365_LOGIN_LOCALE` / `M365_LOGIN_TIMEZONE` | Browser locale and timezone presented during login (defaults `en-GB` / `Europe/Copenhagen`). These are part of the anti-bot-scoring fingerprint ([§11 F25](docs/hypotheses.md)) — set them to match your own machine if AAD starts treating your automated login as a bot. |
-| `M365_SCENARIO` / `M365_LICENSE_TYPE` | Override the entitlement the WebSocket is opened under (defaults: `OfficeWebIncludedCopilot` / `Starter`, switching to `OfficeWebPaidCopilot` / `Premium` for `claude-opus`). `scenario` is what gates the model list; `licenseType` rides along and unlocks nothing by itself. |
+| `M365_SCENARIO` / `M365_LICENSE_TYPE` | Override the entitlement the WebSocket is opened under (defaults: `OfficeWebIncludedCopilot` / `Starter`, switching to `OfficeWebPaidCopilot` / `Premium` for the entitlement-gated tones — `claude-opus` and `gpt-6-think-deeper`). `scenario` is what gates the model list; `licenseType` rides along and unlocks nothing by itself. |
 | `M365_CACHE_FILE` | Override MSAL token cache location |
 | `M365_SECRETS_FILE` | Override credentials file location |
 | `CHROMIUM_PATH` | Path to Chromium binary for automated login |

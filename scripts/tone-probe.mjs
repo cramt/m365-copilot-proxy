@@ -34,6 +34,7 @@ const TONES = [
   { tone: "Gpt_5_5_Reasoning", note: "g365 current" },
   { tone: "Gpt_5_6_Reasoning", note: "confirmed live 2026-08-06" },
   { tone: "Gpt_5_6_Chat", note: "registered but dead — BotConnection deflection, not DeepLeo (§12.15)" },
+  { tone: "Gpt_6_Chat", note: "REJECTED outright — validator error, not the 5.6 deflection" },
   { tone: "Claude_Sonnet", note: "real Claude Sonnet 4.5" },
   { tone: "Anthropic_Claude", note: "speculative Claude" },
   { tone: "Claude_Reasoning", note: "accepted but actually GPT-5 — don't use" },
@@ -41,6 +42,12 @@ const TONES = [
   // Opus, both entitlements, so the scenario effect is measured not assumed.
   { tone: "Claude_Opus", note: "included scenario: expect the BotConnection apology", ...INCLUDED },
   { tone: "Claude_Opus", note: "PAID scenario: expect DeepLeo + a real answer", ...PAID },
+
+  // GPT-6, likewise paired. Entitlement-gated exactly like Opus but NOT
+  // separately metered, so these two cells are cheap — they spend one ordinary
+  // message each and can stay in a sweep that drops the Opus cells.
+  { tone: "Gpt_6_Reasoning", note: "included scenario: expect the BotConnection apology", ...INCLUDED },
+  { tone: "Gpt_6_Reasoning", note: "PAID scenario: expect DeepLeo + a real answer", ...PAID },
 
   // Claude_Fable: present in the real web client's tone list (§12.6 decompile)
   // alongside Claude_Sonnet, so it is a registered route rather than a guess.
