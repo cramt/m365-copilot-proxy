@@ -2727,3 +2727,68 @@ failed by design on a healthy proxy — which makes it useless as a regression s
 than useless when you are mid-merge and looking for something you broke. The script now takes
 `--model=`, and AGENTS.md points at a Claude model. The doc's command was also missing `--tools`
 entirely, so it could never have exercised a tool call at all.
+
+## 17. Sep 23 2026 — GPT-6 is entitlement-gated, and that is all it is
+
+`Gpt_6_Reasoning` is live. Shipped as `gpt-6-think-deeper`. The interesting part is not the
+new model but what it does to §15's model of the `scenario` parameter: Opus was the only
+paid-scenario tone, so "entitlement-gated" and "separately metered" had never been observed
+apart, and the code had quietly started treating them as one property.
+
+### F31 — the paid scenario is an entitlement gate, not a metering signal 🟢
+
+**Claim.** `Gpt_6_Reasoning` serves only under `scenario=OfficeWebPaidCopilot` — on the
+default included scenario it deflects with the canned BotConnection apology, exactly like
+`Claude_Opus` (F26). It carries **no priority-access budget** and is throttled by the ordinary
+per-conversation cap (§7) and thread-rate governor (F13) like every other tone.
+
+**Why it matters more than one more model in the table.** F26/F27 landed together, so
+`PAID_SCENARIO_TONES` had exactly one member and that member was scarce. Reading the set as
+"the expensive models" was indistinguishable from reading it as "the gated models", and either
+reading predicted the same behaviour. GPT-6 breaks the tie, and the two properties have to be
+kept apart in code, not just in prose:
+
+- **Metering** stays content-detected. `parsePriorityAccessExhaustion()` keys on the refusal
+  text, not on the tone, so it simply never fires for GPT-6. Had it been gated on "is this a
+  paid-scenario tone", GPT-6 would now be one bad regex away from 429-ing on a real answer.
+- **Framing** stays per-tone. Opus takes `minimal` because its budget is the scarce thing
+  (H15.1); GPT-6 keeps `baseline`, which is the right default twice over — nothing to conserve,
+  and it drives M365's GPT path, which is what `baseline`'s anti-narration cage was tuned for.
+  A `defaultFramingForTone` keyed on the paid scenario would have silently handed the GPT path
+  the variant built for a model that doesn't need convincing.
+
+Both are now asserted by unit test rather than left as a reading of the comments.
+
+**Confidence.** High on the gate (same deterministic shape as F26: one tone, two scenarios,
+two outcomes). High on the absence of a priority-access budget as *reported* — but note this
+is an absence, and absences are weaker evidence than the verbatim refusal strings that
+established F27. The falsifier is cheap and will arrive on its own: a GPT-6 turn that comes
+back as a successful turn whose text refuses on quota grounds. If that ever appears, the
+detector already catches it — the wording is model-agnostic — and only this note is wrong.
+
+### F32 — `Gpt_6_Chat` is REJECTED, where `Gpt_5_6_Chat` is registered-but-dead 🟢
+
+Both generations ship reasoning without a chat variant, and the two absences look identical
+from a "did the request fail?" distance while being different wire states (§12.15):
+`Gpt_5_6_Chat` is accepted and deflects via `BotConnection`; `Gpt_6_Chat` errors outright with
+`Failed to invoke 'Chat'`.
+
+Neither is mapped, so the practical consequence is nil today — but the pair is the cleanest
+illustration yet of why §12.15's rule is phrased as *require `DeepLeo`* rather than *check for
+an error*. A tone table built by probing for errors would have caught `Gpt_6_Chat` and shipped
+`Gpt_5_6_Chat`. `scripts/tone-probe.mjs` now carries both, plus GPT-6 on **both** scenarios, so
+the gate is measured in a routine sweep instead of assumed from this note.
+
+### Bench: 24/30, and why that doesn't make it the default
+
+Tool calling scores **24/30**, with all six non-passing runs being prose give-ups — the model
+narrating instead of acting — rather than Disengaged or malformed fences. That is the
+failure shape `looksLikeConfabulation` + the confab-retry already target (F16), so the
+recoverable-looking number may be better than 24/30 in practice. **Unmeasured:** how many of
+the six the retry actually salvages. Worth a `--repeat` sweep with `M365_NO_CONFAB_RETRY=1` as
+the control, which is the same methodology §12.11 needed to stop the retry from masking the
+thing being measured.
+
+`gpt-5.5-think-deeper` stays the recommended default and the no-model fallback: it benchmarks
+higher (§12.10/§12.11) and needs no entitlement, so defaulting to GPT-6 would trade reliability
+for a model most seats cannot reach at all.

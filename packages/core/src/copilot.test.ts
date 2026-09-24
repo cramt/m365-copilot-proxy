@@ -8,6 +8,21 @@ describe("GPT-5.6 model routing", () => {
   });
 });
 
+describe("GPT-6 routing", () => {
+  it("maps the advertised model ID to the reasoning tone", () => {
+    expect(getToneForModel("gpt-6-think-deeper")).toBe("Gpt_6_Reasoning");
+    expect(getAvailableModels()).toContain("gpt-6-think-deeper");
+  });
+
+  it("advertises no chat variant — Gpt_6_Chat is rejected by the validator", () => {
+    // A rejected tone must never be reachable: it errors the whole turn rather
+    // than degrading to prose, so shipping an ID that resolves to it would be a
+    // model that can only ever fail.
+    const advertisedTones = getAvailableModels().map(getToneForModel);
+    expect(advertisedTones).not.toContain("Gpt_6_Chat");
+  });
+});
+
 describe("Opus routing", () => {
   it("maps the advertised Opus IDs to the Claude_Opus tone", () => {
     expect(getToneForModel("claude-opus")).toBe("Claude_Opus");
@@ -33,6 +48,13 @@ describe("getScenarioForTone", () => {
 
   it("requests the paid scenario for Opus — the only thing that makes it serve", () => {
     expect(getScenarioForTone("Claude_Opus")).toEqual({
+      scenario: "OfficeWebPaidCopilot",
+      licenseType: "Premium",
+    });
+  });
+
+  it("requests the paid scenario for GPT-6 too", () => {
+    expect(getScenarioForTone("Gpt_6_Reasoning")).toEqual({
       scenario: "OfficeWebPaidCopilot",
       licenseType: "Premium",
     });
