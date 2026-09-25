@@ -42,6 +42,8 @@ export interface OpenClawConfig {
 const MODEL_DISPLAY_NAMES: Record<string, string> = {
   "gpt-6-think-deeper": "GPT-6 Think Deeper",
   "gpt-5.6-think-deeper": "GPT-5.6 Think Deeper",
+  "gpt-5.6": "GPT-5.6 Quick",
+  "gpt-5.6-quick": "GPT-5.6 Quick",
   "m365-copilot": "M365 Copilot (Auto)",
   "auto": "M365 Auto",
   "quick": "GPT Quick",

@@ -284,8 +284,9 @@ without NixOS: `nix run github:cramt/m365-copilot-proxy -- 4141`.
 |---|---|---|
 | `gpt-6-think-deeper` | Gpt_6_Reasoning | GPT-6 reasoning. **Needs a paid/premium Copilot seat** (see below); 24/30 on the bench |
 | `gpt-5.6-think-deeper` | Gpt_5_6_Reasoning | GPT-5.6 reasoning — live-validated; agent/tool reliability not yet benchmarked |
+| `gpt-5.6` / `gpt-5.6-quick` | Gpt_5_6_Chat | GPT-5.6 fast ("GPT 5.6 Quick response" in the web UI). **Weak at tool calling** — 10/30 on the bench (see below) |
 | `gpt-5.5-think-deeper` | Gpt_5_5_Reasoning | **Recommended default for agents/tool-calling** — robust tool compliance |
-| `gpt-5.5` / `gpt-5.5-quick` | Gpt_5_5_Chat | GPT-5.5 fast |
+| `gpt-5.5` / `gpt-5.5-quick` | Gpt_5_5_Chat | GPT-5.5 fast — 25/30 on the bench, the strongest of the chat tones |
 | `m365-copilot` / `auto` | magic | Auto-routing — high-variance at tool-calling (confabulates; see below) |
 | `quick` | Gpt_Quick | Fast responses |
 | `think-deeper` | Gpt_Reasoning | Slower, more thorough |
@@ -308,6 +309,27 @@ without NixOS: `nix run github:cramt/m365-copilot-proxy -- 4141`.
 > `think-deeper`) route through M365's `DeepLeo` pipeline, which meta-analyzes the
 > injected prompt and can disengage from tools. Prefer `gpt-5.5-think-deeper`.
 > See [docs/m365-copilot-api.md](docs/m365-copilot-api.md) §5/§10.
+
+### GPT-5.6 chat (`gpt-5.6` / `gpt-5.6-quick`) — newer, and worse at agentic work
+
+The web client calls this one **"GPT 5.6 Quick response"**, which is the shape to expect:
+it is the chat sibling of `gpt-5.6-think-deeper`, not a reasoning tone, and it self-identifies
+as "the GPT-5 chat model" — exactly as `Gpt_5_5_Chat` does. Neither tone will tell you which
+generation is actually answering, so don't pick between them on self-report.
+
+**Pick it for chat, not for tools.** A higher version number is not an upgrade here: on the
+bench it solves **10/30**, against **25/30** for `gpt-5.5`. It also spent fewer messages
+doing it (50 vs 73) — but that is 5.0 messages per solved task versus 2.9, and on a harness
+where a prose give-up ends the loop early, a low message count next to a low solve rate reads
+as quitting sooner rather than as working more efficiently. We have not separated those two
+explanations, so treat the message count as uninterpreted, not as a point in its favour.
+
+**No entitlement needed.** It reaches a model on the default `OfficeWebIncludedCopilot`
+scenario, so the proxy sends nothing special for it. This is newly true: until recently the
+tone deflected with the canned `BotConnection` apology on the included scenario while serving
+normally under `OfficeWebPaidCopilot` — it was entitlement-gated like Opus, which
+[hypotheses §12.15](docs/hypotheses.md) had misfiled as a permanently dead route.
+See [§18](docs/hypotheses.md) for the correction.
 
 ### GPT-6 (`gpt-6-think-deeper`) — entitlement, but no separate quota
 
