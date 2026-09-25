@@ -6,6 +6,25 @@ describe("GPT-5.6 model routing", () => {
     expect(getToneForModel("gpt-5.6-think-deeper")).toBe("Gpt_5_6_Reasoning");
     expect(getAvailableModels()).toContain("gpt-5.6-think-deeper");
   });
+
+  it("maps both chat IDs to Gpt_5_6_Chat, mirroring the GPT-5.5 naming", () => {
+    // The web client calls this one "GPT 5.6 Quick response", so `-quick` is
+    // the alias a user reaches for; bare `gpt-5.6` follows `gpt-5.5`.
+    expect(getToneForModel("gpt-5.6")).toBe("Gpt_5_6_Chat");
+    expect(getToneForModel("gpt-5.6-quick")).toBe("Gpt_5_6_Chat");
+    expect(getAvailableModels()).toContain("gpt-5.6");
+    expect(getAvailableModels()).toContain("gpt-5.6-quick");
+  });
+
+  it("requests NO paid scenario for the chat tone — it serves on the included one", () => {
+    // It was entitlement-gated (BotConnection on included, DeepLeo on paid),
+    // which §12.15 misread as a dead route. The gate has since lifted, so
+    // asking for the paid scenario here would be a bypass attempt, not a fix.
+    expect(getScenarioForTone("Gpt_5_6_Chat")).toEqual({
+      scenario: "OfficeWebIncludedCopilot",
+      licenseType: "Starter",
+    });
+  });
 });
 
 describe("GPT-6 routing", () => {
@@ -61,7 +80,7 @@ describe("getScenarioForTone", () => {
   });
 
   it("leaves every other tone on the included scenario", () => {
-    for (const tone of ["magic", "Claude_Sonnet", "Gpt_5_5_Reasoning", "Gpt_5_6_Reasoning"]) {
+    for (const tone of ["magic", "Claude_Sonnet", "Gpt_5_5_Reasoning", "Gpt_5_6_Reasoning", "Gpt_5_6_Chat"]) {
       expect(getScenarioForTone(tone)).toEqual({
         scenario: "OfficeWebIncludedCopilot",
         licenseType: "Starter",

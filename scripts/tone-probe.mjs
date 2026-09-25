@@ -13,7 +13,12 @@
 // deflects with the BotConnection apology under the default included scenario
 // and serves normally under `scenario=OfficeWebPaidCopilot`. Cells below carry
 // their own scenario so that difference is visible in one sweep rather than
-// being misfiled as a dead tone (which is what the old F23 "Opus 0/3" was).
+// being misfiled as a dead tone (which is what the old F23 "Opus 0/3" was, and
+// then again what §12.15's "Gpt_5_6_Chat is dead" was — that one was gated too,
+// and has since been ungated entirely, so a "dead" cell is worth re-probing).
+//
+// So: never conclude "dead" from a single scenario, and treat the third state
+// as a property of the CONNECTION, not of the tone.
 //
 // Usage: M365_NO_INTERACTIVE=1 CHROMIUM_PATH=$(which chromium) node scripts/tone-probe.mjs
 // Cost: 1 message per cell. Opus cells spend the scarce priority-access budget
@@ -33,7 +38,12 @@ const TONES = [
   { tone: "Gpt_5_5_Chat", note: "g365 current" },
   { tone: "Gpt_5_5_Reasoning", note: "g365 current" },
   { tone: "Gpt_5_6_Reasoning", note: "confirmed live 2026-08-06" },
-  { tone: "Gpt_5_6_Chat", note: "registered but dead — BotConnection deflection, not DeepLeo (§12.15)" },
+  // Gpt_5_6_Chat: paired, because this is the tone §12.15 recorded as "dead"
+  // on the strength of included-scenario probes alone while it was serving
+  // fine on the paid one (§18 F33). Both cells should now be DeepLeo — the
+  // included one is the regression detector if Microsoft re-gates it.
+  { tone: "Gpt_5_6_Chat", note: "included scenario: expect DeepLeo — BotConnection here means re-gated", ...INCLUDED },
+  { tone: "Gpt_5_6_Chat", note: "PAID scenario: expect DeepLeo (it served here even while gated)", ...PAID },
   { tone: "Gpt_6_Chat", note: "REJECTED outright — validator error, not the 5.6 deflection" },
   { tone: "Claude_Sonnet", note: "real Claude Sonnet 4.5" },
   { tone: "Anthropic_Claude", note: "speculative Claude" },
