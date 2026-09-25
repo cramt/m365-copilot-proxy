@@ -179,6 +179,7 @@ There is no `model` parameter. The `tone` string on the chat message picks the m
 | `gpt-5.5` / `gpt-5.5-quick` | `Gpt_5_5_Chat` | current GPT generation |
 | `gpt-5.5-think-deeper` | `Gpt_5_5_Reasoning` | |
 | `gpt-5.6-think-deeper` | `Gpt_5_6_Reasoning` | confirmed live 2026-08-06; GPT-5.6 Think deeper |
+| `gpt-5.6` / `gpt-5.6-quick` | `Gpt_5_6_Chat` | "GPT 5.6 Quick response" in the web UI. Live on the **included** scenario since 2026-09-24 — it was entitlement-gated before that (§18), which §12.15 misread as dead |
 | `gpt-6-think-deeper` | `Gpt_6_Reasoning` | GPT-6 Think deeper. Reachable ONLY under `scenario=OfficeWebPaidCopilot` (see below), like Opus — but **not** separately metered. No chat variant: `Gpt_6_Chat` is rejected |
 | `gpt-5.4` / `gpt-5.4-think-deeper` | `Gpt_5_4_Reasoning` | |
 | `gpt-5.4-quick` | `Gpt_5_4_Quick` | |
@@ -197,9 +198,11 @@ Mapping lives in `MODEL_TONES` (`copilot.ts`). `*_Reasoning` tones take 10–30s
 | **Rejected** | `type:3` error `Failed to invoke 'Chat'`, ~250-300ms | no such tone |
 | **Registered but dead** | canned *"Sorry, I wasn't able to respond to that"* + `contentOrigin: "BotConnection"`, ~1.6s | route exists, serves nothing |
 
-That third state is the trap: **"didn't error" is not sufficient to conclude a tone works.** `Gpt_5_6_Chat` sits there right now — rejected outright in June 2026, accepted-but-dead since the GPT-5.6 rollout, and it would ship as a model that only ever apologises. Require `DeepLeo` before mapping anything.
+That third state is the trap: **"didn't error" is not sufficient to conclude a tone works.** Require `DeepLeo` before mapping anything — a `BotConnection` reply in ~1.6s looks like a *fast* model, so neither "did it error?" nor a latency check catches it. `Claude_Opus` on the included scenario is the state's standing example.
 
-The GPT-6 rollout is a useful contrast on exactly this axis: `Gpt_6_Reasoning` is live (under the paid scenario), while `Gpt_6_Chat` is **rejected** — a validator error, not the BotConnection deflection its 5.6 counterpart gives. Same generation, same missing chat variant, two different wire signatures, and only one of them survives a "did it error?" check. Read the outcome, not the absence of an error.
+**But read "registered but dead" as a reading of one connection, not a verdict on the tone** — the state is frequently just an entitlement you haven't varied yet, and it can come good later. `Gpt_5_6_Chat` was the case study for the trap from August 2026 until it stopped being one: it deflected on `OfficeWebIncludedCopilot` while serving normally on `OfficeWebPaidCopilot` the entire time, and as of 2026-09-24 it serves on both. So it was never dead — first mis-scoped (the same shape as F23's "Opus is a dead tone": a variable held fixed without anyone noticing it was a variable), then un-gated. Before recording a tone as dead, probe it on **both** scenarios; before leaving it recorded that way, re-probe it. `scripts/tone-probe.mjs` pairs the entitlement-sensitive cells for exactly this reason.
+
+The GPT-6 rollout is a useful contrast on exactly this axis: `Gpt_6_Reasoning` is live (under the paid scenario), while `Gpt_6_Chat` is **rejected** — a validator error, not the BotConnection deflection `Gpt_5_6_Chat` used to give. Only one of those two survives a "did it error?" check, and the distinction turned out to predict what happened next: the deflecting tone was gated and later opened up, while the rejected one is simply absent. A `BotConnection` route is worth re-probing; a validator error is not.
 
 Rejected on test: `Anthropic_Claude`, `Claude_Haiku`, `Claude_3_7_Sonnet`, `Gpt_6_Chat`. Accepted-but-NOT-Claude: `Claude_Reasoning` (self-IDs as GPT-5 — don't use). New tones still appear by pattern (`Gpt_5_N_{Quick,Reasoning}`, `Claude_*`).
 
