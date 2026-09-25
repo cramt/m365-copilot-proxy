@@ -18,7 +18,16 @@ import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync, existsSync
 import { join, dirname } from "node:path";
 import { tmpdir } from "node:os";
 import { execSync, spawnSync } from "node:child_process";
+import { Agent, setGlobalDispatcher } from "undici";
 import { TASKS } from "./tasks.mjs";
+
+// Slow reasoning models (e.g. gpt-6-think-deeper) can hold a non-streaming request
+// open for minutes; undici's default 300s headersTimeout would kill the turn and
+// throw an uncaught UND_ERR_HEADERS_TIMEOUT that aborts the whole run (discarding
+// every result gathered so far). Raise the transport timeouts and enforce one clean
+// overall cap via AbortSignal in chat(). Override with BENCH_TIMEOUT_MS.
+const REQ_TIMEOUT_MS = Number(process.env.BENCH_TIMEOUT_MS ?? 15 * 60 * 1000);
+setGlobalDispatcher(new Agent({ headersTimeout: REQ_TIMEOUT_MS + 30_000, bodyTimeout: REQ_TIMEOUT_MS + 30_000 }));
 
 const args = process.argv.slice(2);
 const opt = (k, d) => { const i = args.indexOf(k); return i >= 0 && args[i + 1] ? args[i + 1] : d; };
@@ -87,12 +96,19 @@ function execTool(name, a, sandbox, cid) {
 }
 
 async function chat(messages) {
-  const res = await fetch(`${BASE}/chat/completions`, {
-    method: "POST", headers: { "Content-Type": "application/json", "Authorization": "Bearer bench" },
-    body: JSON.stringify({ model: MODEL, messages, tools: TOOLS, stream: false }),
-  });
-  if (!res.ok) { const t = await res.text(); return { error: `HTTP ${res.status}: ${t.slice(0, 200)}` }; }
-  return res.json();
+  try {
+    const res = await fetch(`${BASE}/chat/completions`, {
+      method: "POST", headers: { "Content-Type": "application/json", "Authorization": "Bearer bench" },
+      body: JSON.stringify({ model: MODEL, messages, tools: TOOLS, stream: false }),
+      signal: AbortSignal.timeout(REQ_TIMEOUT_MS),
+    });
+    if (!res.ok) { const t = await res.text(); return { error: `HTTP ${res.status}: ${t.slice(0, 200)}` }; }
+    return res.json();
+  } catch (e) {
+    // Never let a transport error (timeout, reset, throttle-hang) crash the whole
+    // run — degrade to an error row so remaining tasks run and the scorecard writes.
+    return { error: `fetch failed: ${e.cause?.code || e.name}: ${e.message}` };
+  }
 }
 
 function setupSandbox(task) {
