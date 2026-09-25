@@ -34,12 +34,31 @@ const MODEL_TONES: Record<string, string> = {
   "gpt-5.5-quick": "Gpt_5_5_Chat",
   "gpt-5.5-think-deeper": "Gpt_5_5_Reasoning",
 
-  // GPT-5.6 (live-validated 2026-08-06; M365 currently exposes reasoning only)
+  // GPT-5.6. Both variants are live and serve on the DEFAULT included scenario,
+  // so neither belongs in PAID_SCENARIO_TONES.
+  //
+  // `Gpt_5_6_Chat` took the long way here and is worth a note, because it
+  // repeated F23's "Opus is a dead tone" mistake: §12.15 recorded it as
+  // "registered but dead" (BotConnection apology, never DeepLeo) and that
+  // measurement only ever ran on the included scenario. It served normally
+  // under `OfficeWebPaidCopilot` the whole time — it was entitlement-gated like
+  // Opus, not dead. As of 2026-09-24 it returns DeepLeo on the included
+  // scenario too, so the gate is gone and no scenario override is needed.
+  //
+  // It is a chat tone, not a reasoning one: it self-IDs as "the GPT-5 chat
+  // model", exactly as `Gpt_5_5_Chat` does, and the web client labels it
+  // "GPT 5.6 Quick response" — hence the `-quick` alias, matching GPT-5.5.
+  // It is markedly WORSE at agentic work than `Gpt_5_5_Chat` (10/30 vs 25/30
+  // on the bench, and it burns more messages per solve), so it is advertised
+  // but must not become anyone's default — see README and §18.
+  "gpt-5.6": "Gpt_5_6_Chat",
+  "gpt-5.6-quick": "Gpt_5_6_Chat",
   "gpt-5.6-think-deeper": "Gpt_5_6_Reasoning",
 
-  // GPT-6. Reasoning only: `Gpt_6_Chat` is REJECTED by the tone validator (it
-  // errors, rather than deflecting via BotConnection the way `Gpt_5_6_Chat`
-  // does — see §12.15 for why those two states are not the same thing), so
+  // GPT-6. Reasoning only: `Gpt_6_Chat` is REJECTED by the tone validator — it
+  // errors outright, rather than deflecting via BotConnection the way
+  // `Gpt_5_6_Chat` did before its gate lifted (§12.15/§18 — those two states
+  // are not the same thing, and only one of them can come good later), so
   // there is no chat variant to map. Like `Claude_Opus`, this tone is
   // entitlement-gated and only serves under the paid scenario; unlike Opus it
   // is NOT separately metered (see PAID_SCENARIO_TONES below and docs §5).

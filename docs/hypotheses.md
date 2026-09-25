@@ -2394,6 +2394,18 @@ evidence of a working route.** Every tone confirmation from here on must show
 *fast* model, not a broken one, so a latency-only check would have missed it too.
 `scripts/tone-probe.mjs` already prints `origin`; §5 now documents all three states.
 
+**Note (SUPERSEDED in part — see §18).** The *observation* holds and the methodological rule
+("require `DeepLeo`") is the right one, and it is why this tone was never shipped broken. The
+*conclusion* — "registered but dead" as a property of the tone — does not: every probe in the
+table above ran on `scenario=OfficeWebIncludedCopilot`, and `Gpt_5_6_Chat` was serving normally
+under `OfficeWebPaidCopilot` the whole time. It was entitlement-gated, not dead — the same shape
+as F23's "Opus is a dead tone", a variable held fixed without anyone noticing it was a variable.
+The controls above were chosen to separate *accepted* from *rejected* and so could not have
+caught it: a same-scenario good tone and a same-scenario bad tone say nothing about the scenario.
+F26 identified the mechanism shortly after this entry and flagged the ambiguity by name; what it
+did not get was a re-probe of this tone, which is the part §18 is really about. As of 2026-09-24
+the gate is gone and the tone is mapped.
+
 ---
 
 ## 13. July 29 2026 — user-driven SSO for tenants that can't do TOTP (third-party)
@@ -2792,3 +2804,83 @@ thing being measured.
 `gpt-5.5-think-deeper` stays the recommended default and the no-model fallback: it benchmarks
 higher (§12.10/§12.11) and needs no entitlement, so defaulting to GPT-6 would trade reliability
 for a model most seats cannot reach at all.
+
+---
+
+## 18. Sep 24 2026 — `Gpt_5_6_Chat` was gated, not dead, and is now ungated
+
+Shipped as `gpt-5.6` / `gpt-5.6-quick`. The tone itself is unremarkable; what it costs us is
+§12.15's central example, and the reason it does is worth more than the model.
+
+### F33 — the "registered but dead" state was an entitlement gate all along 🟢
+
+**Claim.** `Gpt_5_6_Chat` has never been a dead route. Through the period §12.15 recorded it as
+"registered but dead", it returned the canned `BotConnection` apology on
+`OfficeWebIncludedCopilot` **and `DeepLeo` on `OfficeWebPaidCopilot`** — the exact two-scenario
+signature F26 later established for `Claude_Opus`. As of 2026-09-24 it returns `DeepLeo` on the
+included scenario too, so the gate has lifted and it needs no scenario override.
+
+**Why the original probe couldn't have caught it.** §12.15 (Aug 6) predates F26, so this is not
+a case of ignoring a known confound. Its controls were a known-good tone and a known-bad tone
+**on the same scenario** — perfect for separating accepted from rejected, and structurally blind
+to entitlement. The run came back clean, internally consistent, and wrong, because *a control
+only rules out the alternative it varies.* The `BotConnection` apology was never a tone-level
+fact: it is what this endpoint says when *this connection* may not have *that model*, and it
+takes a second connection to interpret.
+
+**Why it survived after F26, which is the part worth fixing.** F26 named this exact failure
+mode — "**entitlement-gated**, indistinguishable at the wire from 'registered but dead' unless
+you change scenario and re-probe" — and its own next-step (a) was *"probe the rest of the tone
+table under the paid scenario."* That sweep was never run against `Gpt_5_6_Chat`. The evidence
+is still sitting in `scripts/tone-probe.mjs`: F26 added scenario-paired cells for Opus, then
+§17 added them for GPT-6, and §15 added them for `Claude_Fable` — every tone anyone was
+actively unsure about — while the one tone already carrying a written verdict kept its single
+included-scenario cell and a note that repeated the verdict. **A conclusion in the docs stops
+being probed precisely because it is in the docs**, and a stale one is more expensive than an
+open question: an open question invites a cheap probe, a verdict deters one. When a finding is
+overturned by a later mechanism (F26), the cheap move is to re-run the new probe against
+everything the old model classified — not only against the tones still under suspicion.
+
+**Therefore "dead" is not a terminal state and must not be recorded as one.** The three-state
+model (§5) describes wire signatures, not tone lifecycles. Of the two non-serving signatures,
+only one can come good: `Gpt_6_Chat`'s validator error means the string does not exist, while a
+`BotConnection` deflection means a route exists that this connection can't reach — which an
+entitlement change, or Microsoft's rollout, can flip later. F32 read those two as a matched
+pair illustrating one rule; they are better read as different-lifetime states, and this tone
+is the proof.
+
+**Shipped.** Mapped in `MODEL_TONES` and deliberately **absent** from `PAID_SCENARIO_TONES`
+(unit-tested): requesting the paid scenario for a tone that serves on the included one would
+be an entitlement request we don't need, and would misrepresent what the tone costs.
+`scripts/tone-probe.mjs` now probes it on both scenarios so a re-gating shows up in a routine
+sweep rather than as a mystery outage.
+
+**Confidence.** High on the current state (deterministic: same tone, same account, both
+scenarios `DeepLeo`). Medium on *when* the gate lifted — we have the before and after, not the
+transition, so "since 2026-09-24" is when it was observed, not when it changed.
+**Falsification.** An included-scenario probe that returns `BotConnection` again, which would
+mean the gate is being rolled rather than removed; the paired probe cells are there to catch it.
+
+### Bench: 10/30, and why a higher version number bought nothing
+
+| tone | solved | M365 messages | messages per solve |
+|---|---|---|---|
+| `Gpt_5_5_Chat` | **25/30** | 73 | 2.9 |
+| `Gpt_5_6_Chat` | **10/30** | 50 | 5.0 |
+
+The newer chat tone solves **less than half** of what its predecessor does. Note the shape of
+the message count before reading it as efficiency: spending *fewer total* messages while
+solving *fewer tasks* is what giving up early looks like on this harness, since a prose
+give-up ends the loop where a working loop keeps calling tools. The per-solve column is the
+one that isn't flattering. **We have not separated "quits sooner" from "needs fewer turns
+when it works"** — the outcome mix would settle it (a prose-give-up count per task, as §17 did
+for GPT-6), and until someone runs that, the 50 is uninterpreted rather than good.
+
+Both tones also self-identify as "the GPT-5 chat model", so self-report cannot tell them apart
+and is not evidence about which generation is answering — the same caution `Claude_Fable`
+earned in §15, one notch weaker: there the model lied about its family, here two genuinely
+different routes give the same honest-but-useless answer.
+
+**Consequence for defaults: none.** `gpt-5.5-think-deeper` remains the recommended default and
+the no-model fallback. `gpt-5.6` is advertised because it is a real, reachable, entitlement-free
+route and some users want the newest chat model for chat — not because it is a better agent.
