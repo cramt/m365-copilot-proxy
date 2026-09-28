@@ -717,6 +717,9 @@ multi-turn ```bash loop, or JSON ever matches fenced on SOLVED, F12 weakens.
 
 ### F13 — Account degradation is THREAD-rate, not message-count; fresh login clears it 🟡
 
+> **Update (Sep 28 2026, #35):** it is not silent. A throttled turn's final `type:2` item says
+> `result.value: "Throttled"`, `errorCode: "PerUserThrottled"`; the proxy now 429s on it.
+
 **Claim.** The "everything 502s / Disengages" degradation tracks **conversations (threads)
 started**, not messages sent, and **re-authenticating (new MSAL tokens) restores function**.
 
@@ -3113,3 +3116,17 @@ Anything else falls through to the old rule unchanged, so the F15 README fixture
 before the first fence) still come back as text. Unit-tested on the live shapes.
 **Live result:** on the build with this change, three Sonnet 4.6 bench runs across two accounts
 (30 tasks) produced **0** guard verdicts, the note fired 18 times, and 26 of 30 tasks were solved.
+
+### F40 — M365 says when it throttles: `result.value = "Throttled"`, `errorCode = "PerUserThrottled"` 🟢 (#35)
+F13 treated thread-rate throttle as silent ("empty 503s, no Disengaged"). It isn't: the final
+`type:2` item carries `result: {value:"Throttled", errorCode:"PerUserThrottled", message:"We're
+temporarily unable to respond to this volume of requests. Please try again later."}` and a
+`BotConnection` bot message with that text, after an EarlyProgress frame and ~26 s of silence. 41
+such turns on Sep 28, all after ~190 fresh threads on the premium account (182 with frame dumps)
+and ~60 on a second account (which throttled independently — hence *per user*); none in any
+earlier dump. The proxy ignored `item.result`, so each throttled request burned **3 upstream
+attempts** (two "quick retries" into the throttle) and ended in a 502 blaming a content filter.
+**Shipped:** `stream.result`; the handler returns **429** `code: "m365_throttled"` (`param:
+"PerUserThrottled"`) after one attempt and feeds the degradation backoff. It is checked before
+the content check, so a throttle apology can never pass for an answer. Verified live: a throttled
+premium account answered 429 in ~27 s, one attempt. Recovery time is still unmeasured.

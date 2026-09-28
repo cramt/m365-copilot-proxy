@@ -5,6 +5,8 @@ import { describe, it, expect, vi } from "vitest";
 const scripted: {
   deltas: string[];
   fullText?: string;
+  /** Script an upstream `result` (e.g. Throttled) on a turn with no content. */
+  result?: { value: string; errorCode?: string; message?: string } | null;
   runs: number;
   /** Text of every run() call, in order. */
   texts: string[];
@@ -30,6 +32,7 @@ vi.mock("@m365-copilot/core", async (importActual) => {
       const stream = {
         fullText: full,
         hasContent: full.length > 0,
+        result: scripted.result ?? { value: "Success" },
         images: [],
         throttle: { current: 1, max: 600 },
         contentOrigin: "Claude",
@@ -162,6 +165,7 @@ describe("the only-the-first-call-ran note", () => {
 
   /** One conversation, several requests through the same pool. */
   async function converse(replies: string[]): Promise<string[]> {
+    scripted.result = null;
     scripted.texts = [];
     scripted.queue = replies.map((fullText) => ({ fullText }));
     const pool = new SessionPool();
@@ -203,6 +207,7 @@ describe("the only-the-first-call-ran note", () => {
 describe("a reply that opens with a tool call and then writes an essay", () => {
   it("runs the opening call and tells the model its essay was written before the result", async () => {
     const tools = [{ type: "function", function: { name: "bash", parameters: { type: "object", properties: { command: { type: "string" } } } } }];
+    scripted.result = null;
     scripted.texts = [];
     scripted.queue = [
       { fullText: "```bash\ncat config.json\n```\n\nThe file `config.json` doesn't exist in my environment, so here is how you could fix it yourself:\n\n## Steps\n\n```bash\nsed -i s/3000/8080/ config.json\n```\n\nThat's all." },
@@ -220,5 +225,43 @@ describe("a reply that opens with a tool call and then writes an essay", () => {
     expect(scripted.texts[1]).toContain("was written before its result existed");
     expect(scripted.texts[1]).toContain('{"port": 3000}');
     scripted.queue = [];
+  });
+});
+
+describe("an explicitly Throttled turn (result.value = Throttled)", () => {
+  // Verbatim from the Sep 28 dumps: no content frames, only this final result.
+  const THROTTLED = {
+    value: "Throttled",
+    errorCode: "PerUserThrottled",
+    message: "We're temporarily unable to respond to this volume of requests. Please try again later.",
+  };
+
+  it("fails fast with a 429 — no quick retries back into the throttle", async () => {
+    scripted.deltas = [];
+    scripted.fullText = "";
+    scripted.result = THROTTLED;
+    scripted.runs = 0;
+    const body = ChatCompletionRequest.parse({
+      model: "claude-sonnet",
+      stream: false,
+      messages: [{ role: "user", content: "hello throttled" }],
+    });
+    const res = await handleChatCompletion(body, new SessionPool());
+    expect(res.status).toBe(429);
+    const err = (await res.json()).error;
+    expect(err.type).toBe("rate_limit_error");
+    expect(err.code).toBe("m365_throttled");
+    expect(err.param).toBe("PerUserThrottled");
+    expect(scripted.runs).toBe(1); // the old path spent 3 attempts here
+    scripted.result = null;
+  });
+
+  it("carries the code through the streaming path as an error chunk", async () => {
+    scripted.result = THROTTLED;
+    const { contents, errors } = await streamRaw([], "");
+    expect(contents).toHaveLength(0);
+    expect(errors).toHaveLength(1);
+    expect(errors[0].code).toBe("m365_throttled");
+    scripted.result = null;
   });
 });

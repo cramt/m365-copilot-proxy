@@ -205,7 +205,10 @@ pnpm test:live      # M365_LIVE=1; live tests that hit real M365 (uses quota)
   counter resets each thread. A bench that opens one fresh conversation per task burns the
   thread budget fast; a real pi session (one long thread, many messages) is fine. When
   everything starts empty-503-ing, it's thread-throttle, **not** the Disengaged content
-  filter (check: no `messageType:"Disengaged"` → it's throttle). **A fresh login (move
+  filter (check: no `messageType:"Disengaged"` → it's throttle). **It is explicit on the wire:**
+  the final `type:2` item says `result.value:"Throttled"`, `errorCode:"PerUserThrottled"`, and
+  the proxy now returns 429 `m365_throttled` without retrying (#35). ~190 fresh threads in a
+  day tripped it on the premium account. **A fresh login (move
   `msal-cache.json` aside, restart → new tokens) clears it.** Space experiment runs; don't
   loop new conversations.
 - The `nativeclient` OAuth redirect bounces to `/common/wrongplace`; the auth code is

@@ -376,6 +376,18 @@ export async function handleChatCompletion(
       lastScores = copilotStream.scores;
       lastTurnCount = copilotStream.turnCount;
 
+      // M365 SAYS when it throttles: the final item's result is `Throttled` /
+      // `PerUserThrottled` (#35). Checked BEFORE the content check so
+      // an apology that ever arrives as content can't pass for an answer. This
+      // used to fall through to the empty-reply path below — two "quick retries"
+      // straight back into the throttle, then a 502 blaming a content filter.
+      // Fail fast with a 429 instead, and count it toward the degradation backoff.
+      if (copilotStream.result?.value === "Throttled") {
+        noteRequestOutcome(true, convId);
+        log.info(`Upstream Throttled (${copilotStream.result.errorCode ?? "no errorCode"}) — 429, no retry`);
+        return { error: throttledResponse(copilotStream.result) };
+      }
+
       if (copilotStream.hasContent || fullText.length > 0) {
         noteRequestOutcome(false, convId); // clean response → degradation has lifted
         // The Opus priority-access cap arrives as a SUCCESSFUL turn whose text is
@@ -830,6 +842,22 @@ function rateLimitMessage(throttle: { current: number; max: number } | null): st
 
 function rateLimitResponse(throttle: { current: number; max: number } | null): Response {
   return jsonResponse(429, { error: { message: rateLimitMessage(throttle), type: "rate_limit_error" } });
+}
+
+/** M365 explicitly throttled the turn (`result.value: "Throttled"`). It names
+ *  the scope (`PerUserThrottled`) but not the duration, so no Retry-After is
+ *  invented. */
+function throttledResponse(result: { errorCode?: string; message?: string }): Response {
+  const scope = result.errorCode ? ` (${result.errorCode})` : "";
+  return jsonResponse(429, {
+    error: {
+      message: `M365 Copilot throttled this account${scope}: ${result.message ?? "too many requests"} ` +
+        `Retrying immediately does not help; it is triggered by starting many new conversations in a short time.`,
+      type: "rate_limit_error",
+      code: "m365_throttled",
+      ...(result.errorCode ? { param: result.errorCode } : {}),
+    },
+  });
 }
 
 /** Empty upstream reply that is NOT an at-limit throttle — a distinct failure

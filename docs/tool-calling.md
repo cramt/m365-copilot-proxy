@@ -108,6 +108,9 @@ prompt is tuned. The layers, in handler order:
   riding alongside tool calls (premature success), and **unwraps** a lone `{"final":"…"}`.
 - **One call per turn:** keeps only the **first** tool call; M365 batches its whole plan into
   one response, running later steps on guessed state. Override with `M365_ALLOW_MULTI_TOOL`.
+- **Explicit throttle → 429:** a turn whose final item says `result.value: "Throttled"`
+  (`errorCode: "PerUserThrottled"`) returns **429** `code: "m365_throttled"` after one attempt,
+  instead of being retried as an "empty" reply. (#35.)
 - **Empty ≠ rate limit:** an empty reply is treated as throttling only when the throttle is
   **at-limit**; otherwise it fails fast after a couple of quick retries. Repeated empties
   across **distinct conversations** (the thread-rate-throttle signature) trigger **degradation

@@ -221,6 +221,9 @@ export interface CopilotStream {
   turnCount?: number | null;
   /** `Completed` etc. */
   turnState?: string | null;
+  /** The final item's `result`: `{value:"Success"}`, or `{value:"Throttled",
+   *  errorCode:"PerUserThrottled", message}` when the account is rate-limited. */
+  result?: { value: string; errorCode?: string; message?: string } | null;
   /** True if the model triggered a native custom action this turn (H-NATIVE-6). */
   sawAction?: boolean;
 }
