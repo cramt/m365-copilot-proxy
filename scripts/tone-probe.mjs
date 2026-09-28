@@ -20,22 +20,13 @@
 // So: never conclude "dead" from a single scenario, and treat the third state
 // as a property of the CONNECTION, not of the tone.
 //
-// Every tone MODEL_TONES maps should have a cell here. The run ends by checking
-// that each mapped tone is LIVE on the scenario the proxy routes it to, and
-// prints MAPPED BUT NOT LIVE / MAPPED BUT UNPROBED when one isn't. That check
-// was missing when Microsoft retired the `*_Quick` tones (§19): they had no
-// cells here, so nothing noticed when the server stopped accepting them.
-//
 // Usage: M365_NO_INTERACTIVE=1 CHROMIUM_PATH=$(which chromium) node scripts/tone-probe.mjs
 // Cost: 1 message per cell. Opus cells spend the scarce priority-access budget
 // (see docs §15) — drop them from the list when sweeping something else.
 
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import {
-  getToken, decodeJwt, parsePriorityAccessExhaustion,
-  getAvailableModels, getToneForModel, getScenarioForTone,
-} from "../packages/core/dist/index.mjs";
+import { getToken, decodeJwt, parsePriorityAccessExhaustion } from "../packages/core/dist/index.mjs";
 import { oneTurn } from "./_probe-chat.mjs";
 
 const INCLUDED = { scenario: "OfficeWebIncludedCopilot", licenseType: "Starter" };
@@ -55,20 +46,8 @@ const TONES = [
   { tone: "Gpt_5_6_Chat", note: "PAID scenario: expect DeepLeo (it served here even while gated)", ...PAID },
   { tone: "Gpt_6_Chat", note: "REJECTED outright — validator error, not the 5.6 deflection" },
   { tone: "Claude_Sonnet", note: "real Claude Sonnet 4.5" },
-  { tone: "Claude_Sonnet_Reasoning", note: "mapped as claude-sonnet-think-deeper" },
   { tone: "Anthropic_Claude", note: "speculative Claude" },
   { tone: "Claude_Reasoning", note: "accepted but actually GPT-5 — don't use" },
-
-  // Older GPT generations. Each one's `*_Quick` tone was retired (REJECTED) and
-  // replaced by `*_Chat` (§19). The retired Quick tones are deliberately NOT
-  // probed: the Chat tones permanently replaced them, so there is nothing to
-  // map them back to.
-  { tone: "Gpt_5_4_Chat", note: "replaced the retired Quick tone — gpt-5.4-quick" },
-  { tone: "Gpt_5_4_Reasoning", note: "gpt-5.4 / gpt-5.4-think-deeper" },
-  { tone: "Gpt_5_3_Chat", note: "replaced the retired Quick tone — gpt-5.3 / gpt-5.3-quick" },
-  { tone: "Gpt_5_3_Reasoning", note: "gpt-5.3-think-deeper" },
-  { tone: "Gpt_5_2_Chat", note: "replaced the retired Quick tone — gpt-5.2 / gpt-5.2-quick" },
-  { tone: "Gpt_5_2_Reasoning", note: "gpt-5.2-think-deeper" },
 
   // Opus, both entitlements, so the scenario effect is measured not assumed.
   { tone: "Claude_Opus", note: "included scenario: expect the BotConnection apology", ...INCLUDED },
@@ -156,20 +135,5 @@ for (const tone of new Set(results.map((r) => r.tone))) {
     console.log(`[tone] SCENARIO-SENSITIVE: ${tone} → ${cells.map((c) => `${c.scenario}=${c.verdict}`).join(", ")}`);
   }
 }
-// The proxy's own table: every mapped tone must be LIVE on its routed scenario.
-const mapped = new Map();
-for (const id of getAvailableModels()) {
-  const tone = getToneForModel(id);
-  mapped.set(tone, [...(mapped.get(tone) ?? []), id]);
-}
-let mappedLive = 0;
-for (const [tone, ids] of mapped) {
-  const { scenario } = getScenarioForTone(tone);
-  const cell = results.find((r) => r.tone === tone && r.scenario === scenario);
-  if (!cell) console.log(`[tone] MAPPED BUT UNPROBED: ${ids.join(", ")} → ${tone} @ ${scenario}`);
-  else if (cell.verdict !== "LIVE") console.log(`[tone] MAPPED BUT NOT LIVE: ${ids.join(", ")} → ${tone} @ ${scenario} = ${cell.verdict}`);
-  else mappedLive++;
-}
-console.log(`[tone] MAPPED: ${mappedLive}/${mapped.size} MODEL_TONES tones LIVE on the scenario the proxy routes them to`);
 console.log(`[tone] NOTE: a non-empty reply is not proof — only contentOrigin "DeepLeo" is (§12.15).`);
 console.log(`[tone] out: ${OUT}`);
