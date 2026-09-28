@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { buildCopilotWebSocketUrl, foldStreamText } from "./session.js";
+import { buildCopilotWebSocketUrl, cursorMessageId, foldStreamText, TurnTextComposer } from "./session.js";
 import { MessageUpdate } from "./schemas.js";
 
 /** Replay a sequence of raw M365 frames (deltas as {d}, snapshots as {s}) through
@@ -131,5 +131,74 @@ describe("temporary-chat WebSocket URL", () => {
     const url = new URL(buildCopilotWebSocketUrl("oid-1", "tid-1", params));
 
     expect(url.searchParams.has("disableMemory")).toBe(false);
+  });
+});
+
+describe("TurnTextComposer (multi-message turns)", () => {
+  type F = { cursor?: string } & ({ d: string } | { s: string; id: string });
+  /** Replay frames through the composer AND the streaming fold, like session.ts. */
+  function compose(frames: F[]) {
+    const c = new TurnTextComposer();
+    let answer = "";
+    let streamed = "";
+    for (const f of frames) {
+      if (f.cursor) c.cursor(cursorMessageId(f.cursor)!); // as session.ts does
+      if ("d" in f) c.delta(f.d);
+      else c.snapshot(f.id, f.s);
+      const r = foldStreamText(answer, c.text);
+      answer = r.answer;
+      if (r.emit) streamed += r.emit;
+    }
+    return { text: c.text, answer, streamed };
+  }
+  const cur = (id: string) => `$['${id}'].adaptiveCards[0].body[0].text`;
+
+  it("keeps the head of a second message — the live turn that lost a tool fence", () => {
+    // Verbatim shape of the Sep 28 Sonnet 4.6 find-needle turn: narration in one
+    // message, the ```bash fence in the next. The old single-string fold dropped
+    // the second message's head snapshot "```" and produced "…SECRET_CODE.bash\ngrep".
+    const r = compose([
+      { cursor: cur("m1"), s: "Let", id: "m1" },
+      { d: " me look" }, { d: " through" }, { d: " the files" }, { d: " in the notes/" },
+      { d: " directory to find the SECRET_CODE" }, { d: "." },
+      { s: "Let me look through the files in the notes/ directory to find the SECRET_CODE.", id: "m1" },
+      { cursor: cur("m2"), s: "```", id: "m2" },
+      { d: "bash\ngrep -r" }, { d: ' "^' }, { d: 'SECRET_CODE=" notes' }, { d: "/" }, { d: "\n```" },
+      { s: '```bash\ngrep -r "^SECRET_CODE=" notes/\n```', id: "m2" },
+    ]);
+    expect(r.text).toBe(
+      'Let me look through the files in the notes/ directory to find the SECRET_CODE.\n\n```bash\ngrep -r "^SECRET_CODE=" notes/\n```',
+    );
+    expect(r.answer).toBe(r.text);
+    expect(r.streamed).toBe(r.text); // prefix-safe: everything streamed, nothing duplicated
+  });
+
+  it("is byte-identical to the old fold for a single-message turn", () => {
+    const frames: F[] = [{ cursor: cur("a"), s: "alpha", id: "a" }, { d: "\nbeta" }, { s: "alpha\nbeta", id: "a" }];
+    expect(compose(frames).text).toBe("alpha\nbeta");
+    expect(compose(frames).streamed).toBe("alpha\nbeta");
+  });
+
+  it("routes deltas by cursor, not by whichever snapshot arrived last", () => {
+    // A late final snapshot of message 1 lands after message 2's cursor; the
+    // deltas that follow still belong to message 2.
+    const r = compose([
+      { cursor: cur("m1"), s: "one", id: "m1" },
+      { cursor: cur("m2"), s: "two", id: "m2" },
+      { s: "one!", id: "m1" },
+      { d: " more" },
+    ]);
+    expect(r.text).toBe("one!\n\ntwo more");
+  });
+
+  it("falls back to the snapshot's message when no cursor was ever sent", () => {
+    const r = compose([{ s: "x", id: "m1" }, { d: "yz" }]);
+    expect(r.text).toBe("xyz");
+  });
+
+  it("parses the message id out of a cursor path", () => {
+    expect(cursorMessageId("$['1051ab91-f905'].adaptiveCards[0].body[0].text")).toBe("1051ab91-f905");
+    expect(cursorMessageId(undefined)).toBeNull();
+    expect(cursorMessageId("garbage")).toBeNull();
   });
 });

@@ -3052,3 +3052,20 @@ this table to measure what it recovers.
   The bench points the same way at task scale. Per M365 message, the 5.5/5.6 reasoning tones
   took 16s/20s against 21s/25s for the chat tones (table above). That's a different workload,
   so it corroborates this rather than confirms it.
+
+---
+
+## 20. Sep 28 2026 — Multi-message turns lost the head of every message after the first 🟢 (#29)
+
+A turn can carry several bot messages (distinct `messageId`s). Each message's first token arrives
+only as a snapshot (with a `cursor` naming it); its `writeAtCursor` deltas carry no id. The
+single-string fold ignored the second message's head (shorter than the accumulated answer) and
+glued its deltas onto the first: `"…to find the SECRET_CODE.bash\ngrep -r …"` — the fence's
+opening backticks were the dropped head, so a real tool call became GAVE_UP_PROSE (live, Claude
+Sonnet 4.6, bench `find-needle`). Offline replay of every frame dump from that day: **every**
+multi-message turn was corrupted (Sonnet 4.6: 9/9; Claude on the paid scenario: 4/4), usually as
+garbled prose ("Let me fix that now.python\` tool runs…"). Affects every model's answers.
+**Shipped:** `TurnTextComposer` (`session.ts`) assembles text per message, routing deltas by the
+last cursor and snapshots by `messageId`; unit-tested on the verbatim live frame sequence.
+Checked: all 5,971 deltas in the day's dumps follow a cursor naming a *content* message — none a
+`Progress`/chain-of-thought one — so routing by cursor can't fold reasoning into the answer.
