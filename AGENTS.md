@@ -197,6 +197,9 @@ pnpm test:live      # M365_LIVE=1; live tests that hit real M365 (uses quota)
   so `PAID_SCENARIO_TONES` is about reaching a model, not about what it costs. Don't key metering
   or framing decisions off that set — the quota detector reads the refusal text and the framing
   default is per-tone (Opus `minimal`, GPT-6 `baseline`). See docs/hypotheses.md §17.
+- **A turn can hold several bot messages; assemble text per message.** Each new message's head
+  arrives only as a snapshot with a `cursor`; folding everything into one string drops it (it ate
+  a fence's backticks). `TurnTextComposer` in `session.ts` — don't "simplify" it away. #29.
 - **Account degradation is THREAD-rate, not message-count** (docs/hypotheses.md §9 F13).
   Microsoft throttles *conversations started*, not messages sent — the per-conversation
   counter resets each thread. A bench that opens one fresh conversation per task burns the

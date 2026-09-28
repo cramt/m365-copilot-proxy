@@ -275,13 +275,16 @@ Streaming arrives as **`type:1`, `target:"update"`** frames whose `arguments[]` 
 ```json
 { "writeAtCursor": "partial text", "streamingMode": "Delta" }
 ```
-Concatenate `writeAtCursor` across deltas → the streamed answer.
+A delta carries **no `messageId`**. It extends whichever message the most recent **cursor** named (below).
 
 ### b) Message update (full snapshot)
 ```json
-{ "messages": [{ "author": "bot", "text": "full text so far", ... }] }
+{ "cursor": { "j": "$['<messageId>'].adaptiveCards[0].body[0].text", "p": -1 },
+  "messages": [{ "author": "bot", "messageId": "<messageId>", "text": "full text so far", ... }] }
 ```
-**Only treat a bot message as content when `messageType` is absent.** Messages *with* a `messageType` are control/meta (see below). We keep whichever of (delta-accumulated) vs (message snapshot) text is longer.
+**Only treat a bot message as content when `messageType` is absent.** Messages *with* a `messageType` are control/meta (see below).
+
+**A turn can contain several bot messages** (distinct `messageId`s — separate bubbles in the real client). Claude narrates in one message and writes its tool fence in the next. Each message streams the same way: its **first token arrives only as a snapshot** that carries a `cursor` naming the message, then `writeAtCursor` deltas that extend it, then a final full snapshot. So text must be assembled **per message** — deltas routed by the last cursor, snapshots by their `messageId` — and the messages joined in order of first appearance. Folding everything into one string (what the proxy did until 2026-09-28) drops the head of every message after the first: the new message's head snapshot is shorter than the accumulated text, so it is ignored, and its deltas get glued onto the previous message. Every multi-message turn in that day's dumps was corrupted this way — mostly garbled prose (`"Let me fix that now.python\` tool runs…"`), and sometimes a lost tool call (`"…the SECRET_CODE.bash\ngrep -r …"`: the fence's opening backticks were the dropped head). `TurnTextComposer` (`session.ts`) implements the per-message assembly (#29).
 
 The final-state bot message (in either the last update frame or the `type:2` stream item) also carries:
 
