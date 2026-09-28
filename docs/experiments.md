@@ -93,11 +93,12 @@ gets a non-zero `SOLVED` / tool-call rate. **Always diff against the magic basel
   request, A/B.  **Read:** SOLVED delta.  **Cost:** ~25 msgs.
 
 ### E-C5 — Model comparison (agent path)
-- **Hypothesis:** `gpt-5.5` (or `*-quick`) complies better than `magic` on the
+- **Hypothesis:** `gpt-5.5` (or another `*_Chat` tone) complies better than `magic` on the
   agent path. (Claude is **not** testable here — the agent forces GPT / disengages,
   §5; it's plain-chat only.)
 - **Run:** `--model m365-copilot --label magic` vs `--model gpt-5.5 --label gpt55`
-  vs `--model quick --label quick`.
+  vs `--model gpt-5.4-quick --label gpt54chat`. (Not `quick`: it now aliases `gpt-5.5`,
+  so it would repeat the second arm — hypotheses §19.)
 - **Read:** SOLVED per model.  **Cost:** ~25 msgs/model.
 
 ---

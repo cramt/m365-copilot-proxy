@@ -171,8 +171,8 @@ There is no `model` parameter. The `tone` string on the chat message picks the m
 | Our model id | `tone` | Notes |
 |---|---|---|
 | `m365-copilot` / `auto` | `magic` (auto-routing) | default; routes GPT-5 class |
-| `quick` | `Gpt_Quick` | |
-| `think-deeper` | `Gpt_Reasoning` | |
+| `quick` | `Gpt_5_5_Chat` | alias of `gpt-5.5`. Was `Gpt_Quick`, now rejected, and no unversioned chat tone survives (`Gpt_Chat` is rejected too) |
+| `think-deeper` | `Gpt_5_5_Reasoning` | alias of `gpt-5.5-think-deeper`. Was `Gpt_Reasoning`, now rejected |
 | `claude` / `claude-sonnet` | `Claude_Sonnet` | **real Anthropic Claude Sonnet 4.5** (self-identifies) |
 | `claude-sonnet-think-deeper` | `Claude_Sonnet_Reasoning` | Claude Sonnet 4.5 + reasoning |
 | `claude-opus` / `claude-opus-5` | `Claude_Opus` | **real Opus — Claude Opus 5**. Reachable ONLY under `scenario=OfficeWebPaidCopilot` (see below). On the default included scenario it is a "registered but dead" route |
@@ -182,13 +182,15 @@ There is no `model` parameter. The `tone` string on the chat message picks the m
 | `gpt-5.6` / `gpt-5.6-quick` | `Gpt_5_6_Chat` | "GPT 5.6 Quick response" in the web UI. Live on the **included** scenario since 2026-09-24 — it was entitlement-gated before that (§18), which §12.15 misread as dead |
 | `gpt-6-think-deeper` | `Gpt_6_Reasoning` | GPT-6 Think deeper. Reachable ONLY under `scenario=OfficeWebPaidCopilot` (see below), like Opus — but **not** separately metered. No chat variant: `Gpt_6_Chat` is rejected |
 | `gpt-5.4` / `gpt-5.4-think-deeper` | `Gpt_5_4_Reasoning` | |
-| `gpt-5.4-quick` | `Gpt_5_4_Quick` | |
-| `gpt-5.3` / `gpt-5.3-quick` | `Gpt_5_3_Quick` | |
+| `gpt-5.4-quick` | `Gpt_5_4_Chat` | was `Gpt_5_4_Quick` (retired) |
+| `gpt-5.3` / `gpt-5.3-quick` | `Gpt_5_3_Chat` | was `Gpt_5_3_Quick` (retired) |
 | `gpt-5.3-think-deeper` | `Gpt_5_3_Reasoning` | |
-| `gpt-5.2` / `gpt-5.2-quick` | `Gpt_5_2_Quick` | |
+| `gpt-5.2` / `gpt-5.2-quick` | `Gpt_5_2_Chat` | was `Gpt_5_2_Quick` (retired) |
 | `gpt-5.2-think-deeper` | `Gpt_5_2_Reasoning` | |
 
 Mapping lives in `MODEL_TONES` (`copilot.ts`). `*_Reasoning` tones take 10–30s.
+
+**The `*_Quick` tones are retired; the `*_Chat` tones replaced them** (2026-09-28, `tone-probe` n=3, hypotheses §19). `Gpt_Quick` and `Gpt_5_{2,3,4}_Quick` now fail validation exactly like the invalid-tone control, while `Gpt_5_{2,3,4}_Chat` serve (`DeepLeo`), so every generation from 5.2 to 5.6 is a `*_Chat` + `*_Reasoning` pair. The unversioned tones went too: `Gpt_Chat` and `Gpt_Reasoning` are also rejected, so the generic `quick` / `think-deeper` IDs pin to GPT-5.5. All the `-quick` model IDs are kept as aliases, so client configs don't change. Don't map a `*_Quick` tone.
 
 **The server validates `tone` — and there are THREE outcomes, not two** (Aug 6 2026, §12.15). Probe a candidate tone agent-less and read `contentOrigin`:
 
@@ -204,7 +206,7 @@ That third state is the trap: **"didn't error" is not sufficient to conclude a t
 
 The GPT-6 rollout is a useful contrast on exactly this axis: `Gpt_6_Reasoning` is live (under the paid scenario), while `Gpt_6_Chat` is **rejected** — a validator error, not the BotConnection deflection `Gpt_5_6_Chat` used to give. Only one of those two survives a "did it error?" check, and the distinction turned out to predict what happened next: the deflecting tone was gated and later opened up, while the rejected one is simply absent. A `BotConnection` route is worth re-probing; a validator error is not.
 
-Rejected on test: `Anthropic_Claude`, `Claude_Haiku`, `Claude_3_7_Sonnet`, `Gpt_6_Chat`. Accepted-but-NOT-Claude: `Claude_Reasoning` (self-IDs as GPT-5 — don't use). New tones still appear by pattern (`Gpt_5_N_{Quick,Reasoning}`, `Claude_*`).
+Rejected on test: `Anthropic_Claude`, `Claude_Haiku`, `Claude_3_7_Sonnet`, `Gpt_6_Chat`, and (since 2026-09-28) `Gpt_Quick`, `Gpt_Chat`, `Gpt_Reasoning`, `Gpt_5_{2,3,4}_Quick`. Accepted-but-NOT-Claude: `Claude_Reasoning` (self-IDs as GPT-5 — don't use). New tones still appear by pattern (`Gpt_5_N_{Chat,Reasoning}`, `Claude_*`).
 
 **`Claude_Fable` is a fourth shape: accepted, answers — and answers as something else.** It exists in the real web client's tone list (§12.6), it is accepted here, and it returns content. But it self-identifies as **GPT-5, not Fable**, so "it replied" once again proves only that *a* model answered. Best current reading: the Fable route is gated on the **Frontier program**, and an unentitled account is quietly served the house model instead of being rejected — the entitlement gate degrades silently where the tone validator would have errored. Unlike Opus, no scenario string is known to open it; program membership is not a query parameter. It is therefore deliberately **absent from `MODEL_TONES`** — mapping it would ship a model ID that lies about which model answers — and lives only in `scripts/tone-probe.mjs`, where a self-ID check can catch the day that changes.
 
@@ -566,7 +568,7 @@ Evidence (`scripts/dataverse-bot-probe.mjs`, with a `<org>.crm4.dynamics.com/.de
 | 10 | Power Platform env host needs last-2-chars trimmed to resolve DNS | `getEnvironmentUrl()` |
 | 11 | 600 messages **per conversation**; reuse + delta to conserve | §7/§8 |
 | 12 | Only bot messages **without** `messageType` are real content | `handleMsg()` |
-| 13 | **Reasoning tones** (`*_Reasoning`/`DeepLeo`) meta-analyze the prompt and disengage; only `magic` + `*_Quick` work with the agent | §5/§10 |
+| 13 | **Reasoning tones** (`*_Reasoning`/`DeepLeo`) meta-analyze the prompt and disengage; only `magic` + the chat tones (`*_Chat`, which replaced the retired `*_Quick`) work with the agent | §5/§10 |
 | 14 | Our `minimalBots` agents are **not** Dataverse bots (that table is empty) and have **no model field** — can't bind a model | §10 |
 | 15 | Agent is **versioned by name** (`m365-tool-agent-<sha256-prefix>`); editing instructions auto-provisions a new one + cleans up old | §10 |
 | 16 | Empty reply ≠ rate limit unless throttle is at-limit; otherwise fail fast (don't burn 60s of retries) | `handler.ts` |

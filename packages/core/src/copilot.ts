@@ -5,14 +5,24 @@ import { JwtClaims } from "./schemas.js";
 // 'Chat'"), so every entry here has been confirmed accepted against the live
 // API. Claude tones self-identify as "Claude Sonnet 4.5, by Anthropic"
 // (docs/hypotheses.md H8.6) — a genuine non-Microsoft model at zero marginal cost.
+//
+// Microsoft retired the `*_Quick` tones: `Gpt_Quick` and `Gpt_5_{2,3,4}_Quick`
+// are now REJECTED by the validator, and the `*_Chat` tones replaced them
+// (tone-probe 2026-09-28, 3/3 each — docs/hypotheses.md §19). The `quick` and
+// `-quick` model IDs are kept as aliases, so existing client configs keep
+// working; only the tones they resolve to changed. Do not map a `*_Quick` tone.
 const MODEL_TONES: Record<string, string> = {
   // Default
   "m365-copilot": "magic",
   "auto": "magic",
 
-  // Generic modes
-  "quick": "Gpt_Quick",
-  "think-deeper": "Gpt_Reasoning",
+  // Generic modes. No unversioned tone survives: `Gpt_Quick`, `Gpt_Chat` and
+  // `Gpt_Reasoning` are all REJECTED, so these pin to a versioned tone.
+  // GPT-5.5 over GPT-5.6, deliberately (bench, confab-retry off, §19): 5.5
+  // wins the chat half (16/30 vs 7/30) and the reasoning half is a tie (26/30
+  // vs 27/30, p=1.0). Don't re-point them to 5.6 on the reasoning numbers.
+  "quick": "Gpt_5_5_Chat",
+  "think-deeper": "Gpt_5_5_Reasoning",
 
   // Claude (real Anthropic models, confirmed via self-id) — chat + reasoning.
   "claude": "Claude_Sonnet",
@@ -48,9 +58,10 @@ const MODEL_TONES: Record<string, string> = {
   // It is a chat tone, not a reasoning one: it self-IDs as "the GPT-5 chat
   // model", exactly as `Gpt_5_5_Chat` does, and the web client labels it
   // "GPT 5.6 Quick response" — hence the `-quick` alias, matching GPT-5.5.
-  // It is markedly WORSE at agentic work than `Gpt_5_5_Chat` (10/30 vs 25/30
-  // on the bench, and it burns more messages per solve), so it is advertised
-  // but must not become anyone's default — see README and §18.
+  // It is markedly WORSE at agentic work than `Gpt_5_5_Chat` (7/30 vs 16/30
+  // on the bench with the confab-retry off, and 22 of its 23 failures give up
+  // before a single tool call — §19), so it is advertised but must not become
+  // anyone's default — see README and §18.
   "gpt-5.6": "Gpt_5_6_Chat",
   "gpt-5.6-quick": "Gpt_5_6_Chat",
   "gpt-5.6-think-deeper": "Gpt_5_6_Reasoning",
@@ -64,19 +75,20 @@ const MODEL_TONES: Record<string, string> = {
   // is NOT separately metered (see PAID_SCENARIO_TONES below and docs §5).
   "gpt-6-think-deeper": "Gpt_6_Reasoning",
 
-  // GPT-5.4
+  // GPT-5.4. Bare `gpt-5.4` has always been the reasoning tone (unlike its
+  // siblings); only the `-quick` alias moved, from the retired `Gpt_5_4_Quick`.
   "gpt-5.4": "Gpt_5_4_Reasoning",
   "gpt-5.4-think-deeper": "Gpt_5_4_Reasoning",
-  "gpt-5.4-quick": "Gpt_5_4_Quick",
+  "gpt-5.4-quick": "Gpt_5_4_Chat",
 
-  // GPT-5.3
-  "gpt-5.3": "Gpt_5_3_Quick",
-  "gpt-5.3-quick": "Gpt_5_3_Quick",
+  // GPT-5.3 (was `Gpt_5_3_Quick`, now retired)
+  "gpt-5.3": "Gpt_5_3_Chat",
+  "gpt-5.3-quick": "Gpt_5_3_Chat",
   "gpt-5.3-think-deeper": "Gpt_5_3_Reasoning",
 
-  // GPT-5.2
-  "gpt-5.2": "Gpt_5_2_Quick",
-  "gpt-5.2-quick": "Gpt_5_2_Quick",
+  // GPT-5.2 (was `Gpt_5_2_Quick`, now retired)
+  "gpt-5.2": "Gpt_5_2_Chat",
+  "gpt-5.2-quick": "Gpt_5_2_Chat",
   "gpt-5.2-think-deeper": "Gpt_5_2_Reasoning",
 };
 

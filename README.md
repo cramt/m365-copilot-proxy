@@ -283,13 +283,13 @@ without NixOS: `nix run github:cramt/m365-copilot-proxy -- 4141`.
 | Model ID | M365 Tone | Description |
 |---|---|---|
 | `gpt-6-think-deeper` | Gpt_6_Reasoning | GPT-6 reasoning. **Needs a paid/premium Copilot seat** (see below); 24/30 on the bench |
-| `gpt-5.6-think-deeper` | Gpt_5_6_Reasoning | GPT-5.6 reasoning — live-validated; agent/tool reliability not yet benchmarked |
-| `gpt-5.6` / `gpt-5.6-quick` | Gpt_5_6_Chat | GPT-5.6 fast ("GPT 5.6 Quick response" in the web UI). **Weak at tool calling** — 10/30 on the bench (see below) |
-| `gpt-5.5-think-deeper` | Gpt_5_5_Reasoning | **Recommended default for agents/tool-calling** — robust tool compliance |
-| `gpt-5.5` / `gpt-5.5-quick` | Gpt_5_5_Chat | GPT-5.5 fast — 25/30 on the bench, the strongest of the chat tones |
+| `gpt-5.6-think-deeper` | Gpt_5_6_Reasoning | GPT-5.6 reasoning — 27/30 on the bench, tied with `gpt-5.5-think-deeper` |
+| `gpt-5.6` / `gpt-5.6-quick` | Gpt_5_6_Chat | GPT-5.6 fast ("GPT 5.6 Quick response" in the web UI). **Weak at tool calling** — 7/30 on the bench (see below) |
+| `gpt-5.5-think-deeper` | Gpt_5_5_Reasoning | **Recommended default for agents/tool-calling** — 26/30 on the bench |
+| `gpt-5.5` / `gpt-5.5-quick` | Gpt_5_5_Chat | GPT-5.5 fast — 16/30 on the bench, the strongest benchmarked chat tone |
 | `m365-copilot` / `auto` | magic | Auto-routing — high-variance at tool-calling (confabulates; see below) |
-| `quick` | Gpt_Quick | Fast responses |
-| `think-deeper` | Gpt_Reasoning | Slower, more thorough |
+| `quick` | Gpt_5_5_Chat | Alias of `gpt-5.5` (its old `Gpt_Quick` tone was retired — see below) |
+| `think-deeper` | Gpt_5_5_Reasoning | Alias of `gpt-5.5-think-deeper` (its old `Gpt_Reasoning` tone was retired) |
 | `claude` / `claude-sonnet` | Claude_Sonnet | Real Anthropic Claude (agent-less path) |
 | `claude-sonnet-think-deeper` | Claude_Sonnet_Reasoning | Claude reasoning |
 | `claude-opus` / `claude-opus-5` | Claude_Opus | Real Claude Opus 5. **Needs a paid/premium Copilot seat** and has a small separate quota (see below) |
@@ -297,16 +297,26 @@ without NixOS: `nix run github:cramt/m365-copilot-proxy -- 4141`.
 | `gpt-5.3` / `gpt-5.3-think-deeper` | Gpt_5_3_* | GPT-5.3 |
 | `gpt-5.2` / `gpt-5.2-think-deeper` | Gpt_5_2_* | GPT-5.2 |
 
+Bench scores are 10 tasks × 3 reps with the confab-retry **off** (`M365_NO_CONFAB_RETRY=1`), so
+every first-try give-up counts, including ones the proxy's retry would normally recover
+([hypotheses §19](docs/hypotheses.md)). GPT-6's 24/30 was measured with the retry on, so it
+isn't directly comparable.
+
+> **Microsoft retired the `*_Quick` tones; `*_Chat` tones replaced them.** Every `quick` /
+> `*-quick` model ID still works and resolves to the replacement `*_Chat` tone (e.g.
+> `gpt-5.3-quick` → `Gpt_5_3_Chat`), so existing configs need no change.
+
 > ✅ **For tool calling, use `gpt-5.5-think-deeper` (the default when no model is sent).**
-> The current agent + fenced/shell-routing path makes this reasoning tone robust —
-> 100% compliance and solve across prompt/toolset sizes on the bench (docs/hypotheses.md
-> §12.10/§12.11). The **default `m365-copilot` (magic) tone is *not* reliable** for
+> The current agent + fenced/shell-routing path makes this reasoning tone robust:
+> 26/30 on the bench, tied with `gpt-5.6-think-deeper` and well ahead of every benchmarked
+> chat tone (docs/hypotheses.md §19), and 100% compliance and solve across prompt/toolset
+> sizes in the tool-call harness (§12.10/§12.11). The **default `m365-copilot` (magic) tone is *not* reliable** for
 > tools — it confabulates ("I no longer have access to the filesystem tools") and solves
 > ~0% of real tasks (§12.11); a proxy request with no `model` field already defaults to
 > `gpt-5.5-think-deeper` for this reason.
 >
 > ⚠️ The **older** reasoning tones (`gpt-5.2`/`gpt-5.3`/`gpt-5.4` `*-think-deeper`, bare
-> `think-deeper`) route through M365's `DeepLeo` pipeline, which meta-analyzes the
+> `gpt-5.4`) route through M365's `DeepLeo` pipeline, which meta-analyzes the
 > injected prompt and can disengage from tools. Prefer `gpt-5.5-think-deeper`.
 > See [docs/m365-copilot-api.md](docs/m365-copilot-api.md) §5/§10.
 
@@ -318,11 +328,9 @@ as "the GPT-5 chat model" — exactly as `Gpt_5_5_Chat` does. Neither tone will 
 generation is actually answering, so don't pick between them on self-report.
 
 **Pick it for chat, not for tools.** A higher version number is not an upgrade here: on the
-bench it solves **10/30**, against **25/30** for `gpt-5.5`. It also spent fewer messages
-doing it (50 vs 73) — but that is 5.0 messages per solved task versus 2.9, and on a harness
-where a prose give-up ends the loop early, a low message count next to a low solve rate reads
-as quitting sooner rather than as working more efficiently. We have not separated those two
-explanations, so treat the message count as uninterpreted, not as a point in its favour.
+bench it solves **7/30**, against **16/30** for `gpt-5.5`. Its low message count (39 vs 69)
+is not efficiency: 22 of its 23 failures gave up before making a single tool call. See
+[hypotheses §19](docs/hypotheses.md).
 
 **No entitlement needed.** It reaches a model on the default `OfficeWebIncludedCopilot`
 scenario, so the proxy sends nothing special for it. This is newly true: until recently the

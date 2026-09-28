@@ -56,9 +56,10 @@ These are what actually move compliance. In rough order of importance:
   primed info as "task complete" and says "Done" with 0 tools.
 - **`tool_choice: "required"`** translated to a prompt rule: forces bogus `bash()` calls
   on pure-prose questions ("what is 7×8?"). Pass it through as advisory only. ([hyp F3].)
-- **Reasoning tones + agent** (`*-think-deeper`, bare `gpt-5.x`, `DeepLeo`): the pipeline
+- **Reasoning tones + agent** (`*-think-deeper`, bare `gpt-5.4`, `DeepLeo`): the pipeline
   meta-reasons over the injected prompt instead of obeying it — it will critique your
-  few-shot and reason itself *out* of tools. Use `magic` / `*-quick`. ([api §10].)
+  few-shot and reason itself *out* of tools. Use `magic` / a chat tone (`*-quick` →
+  `*_Chat`; the `*_Quick` tones are retired). ([api §10].)
 - **Native tool-calling (MCP / full Dataverse bot):** out of scope — needs a paid Copilot
   Studio license, breaking the zero-cost premise. ([hyp §8.11].)
 
