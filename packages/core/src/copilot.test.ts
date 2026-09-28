@@ -59,6 +59,48 @@ describe("Opus routing", () => {
   });
 });
 
+// Tones the live validator REJECTS — every one errored `Failed to invoke 'Chat'`
+// in all 3 runs of the 2026-09-28 tone-probe sweep (docs/hypotheses.md §19).
+const REJECTED_TONES = [
+  "Gpt_Quick", "Gpt_Chat", "Gpt_Reasoning",
+  "Gpt_5_2_Quick", "Gpt_5_3_Quick", "Gpt_5_4_Quick",
+  "Gpt_6_Chat",
+];
+
+describe("retired Quick tones", () => {
+  it("never resolves an advertised model to a tone the validator rejects", () => {
+    // A rejected tone errors the whole turn, so an ID that resolves to one is a
+    // model that can only ever fail.
+    const advertisedTones = getAvailableModels().map(getToneForModel);
+    for (const tone of REJECTED_TONES) expect(advertisedTones).not.toContain(tone);
+  });
+
+  it("maps nothing to a *_Quick tone — the *_Chat tones replaced them", () => {
+    for (const id of getAvailableModels()) expect(getToneForModel(id)).not.toMatch(/_Quick$/);
+  });
+
+  it("re-points each versioned Quick ID at the same generation's Chat tone", () => {
+    expect(getToneForModel("gpt-5.4-quick")).toBe("Gpt_5_4_Chat");
+    expect(getToneForModel("gpt-5.3")).toBe("Gpt_5_3_Chat");
+    expect(getToneForModel("gpt-5.3-quick")).toBe("Gpt_5_3_Chat");
+    expect(getToneForModel("gpt-5.2")).toBe("Gpt_5_2_Chat");
+    expect(getToneForModel("gpt-5.2-quick")).toBe("Gpt_5_2_Chat");
+    // Bare gpt-5.4 was never a Quick tone and stays on reasoning.
+    expect(getToneForModel("gpt-5.4")).toBe("Gpt_5_4_Reasoning");
+  });
+
+  it("pins the generic aliases to GPT-5.5, since no unversioned tone survives", () => {
+    expect(getToneForModel("quick")).toBe("Gpt_5_5_Chat");
+    expect(getToneForModel("think-deeper")).toBe("Gpt_5_5_Reasoning");
+  });
+
+  it("keeps advertising every legacy ID, so existing client configs keep working", () => {
+    for (const id of ["quick", "think-deeper", "gpt-5.4-quick", "gpt-5.3", "gpt-5.3-quick", "gpt-5.2", "gpt-5.2-quick"]) {
+      expect(getAvailableModels()).toContain(id);
+    }
+  });
+});
+
 describe("getScenarioForTone", () => {
   afterEach(() => {
     delete process.env.M365_SCENARIO;

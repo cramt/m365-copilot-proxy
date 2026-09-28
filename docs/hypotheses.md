@@ -314,7 +314,8 @@ magic regression — see correction. **Falsify:** re-run `route-probe` on a rest
 tone sweep (`tone-sweep.mjs`, same rig) two hours later got `m365-copilot` **2/2 ACTED** — the exact
 opposite of the 0/2 that seeded this finding. In the same sweep the *controls* also swung
 (`claude-sonnet` 1/2, `gpt-5.5-think-deeper` 1/2), and `quick`/`Gpt_Quick` returned instant 502s
-(dead tone or throttle-onset). **Interpretation:** single-turn, back-to-back probes are dominated by
+(dead tone or throttle-onset; §19: `Gpt_Quick` is now validator-rejected, which surfaces as exactly
+this instant 502, so "dead" is the likelier reading). **Interpretation:** single-turn, back-to-back probes are dominated by
 THREAD-RATE degradation (F13), not tone quality — ~16 fresh conversations were started across the two
 runs, which is exactly what trips the throttle-that-looks-like-confab. So both the 0/2 and the 2/2 are
 measuring the account's thread-rate state, not the `magic` tone. **The instrument is wrong for this
@@ -861,7 +862,7 @@ but could regress the coding win, so it must be measured on the bench + pi, not 
   **failed** — fully primed, the model still says "Done" with 0 tools. Having the info reads
   to it as "task complete."
 - **Model axis** (`quick`, `gpt-5.5`): null on the tool path — `quick` instant-502s with the
-  agent; `gpt-5.5` behaves like `magic`. The declarative agent forces GPT routing; tone doesn't leak.
+  agent (likely because `Gpt_Quick` was already validator-rejected; see §19); `gpt-5.5` behaves like `magic`. The declarative agent forces GPT routing; tone doesn't leak.
 
 ### Remaining gap
 Fakeable *create-from-scratch* tasks (`count-lines`, `fizzbuzz`) still hallucinate "created and
@@ -2362,6 +2363,10 @@ route. Shipped as `gpt-5.6-think-deeper`. Independently reproduced on our tenant
 Tool-calling reliability is unbenchmarked, so GPT-5.5 Think Deeper remains the
 default for agents.
 
+**Update (benchmarked 2026-09-28, §19).** 27/30 with the confab-retry off, against 26/30 for
+`gpt-5.5-think-deeper` on the same suite: a tie (p = 1.0). GPT-5.5 stays the default by
+maintainer preference.
+
 ### 12.15 — tone validation is THREE-state: `Gpt_5_6_Chat` is registered but dead 🟢
 
 **Hypothesis.** Tone validation is binary (§5): accepted ⇒ real route, rejected ⇒
@@ -2863,6 +2868,9 @@ mean the gate is being rolled rather than removed; the paired probe cells are th
 
 ### Bench: 10/30, and why a higher version number bought nothing
 
+These are confab-retry-**on** runs from Sep 24–25. §19 re-ran both with the retry off: 16/30 vs
+7/30, same order.
+
 | tone | solved | M365 messages | messages per solve |
 |---|---|---|---|
 | `Gpt_5_5_Chat` | **25/30** | 73 | 2.9 |
@@ -2876,6 +2884,9 @@ one that isn't flattering. **We have not separated "quits sooner" from "needs fe
 when it works"** — the outcome mix would settle it (a prose-give-up count per task, as §17 did
 for GPT-6), and until someone runs that, the 50 is uninterpreted rather than good.
 
+**Update (§19).** Settled by a confab-retry-off re-run, which scores 16/30 vs 7/30: it quits
+sooner. 22 of `Gpt_5_6_Chat`'s 23 give-ups came before any tool call.
+
 Both tones also self-identify as "the GPT-5 chat model", so self-report cannot tell them apart
 and is not evidence about which generation is answering — the same caution `Claude_Fable`
 earned in §15, one notch weaker: there the model lied about its family, here two genuinely
@@ -2884,3 +2895,160 @@ different routes give the same honest-but-useless answer.
 **Consequence for defaults: none.** `gpt-5.5-think-deeper` remains the recommended default and
 the no-model fallback. `gpt-5.6` is advertised because it is a real, reachable, entitlement-free
 route and some users want the newest chat model for chat — not because it is a better agent.
+
+---
+
+## 19. Sep 28 2026 (UTC) — the `*_Quick` tones are retired; `*_Chat` replaced them
+
+### F34 — `Gpt_Quick` and `Gpt_5_{2,3,4}_Quick` are REJECTED; each generation's `*_Chat` serves 🟢
+
+**Claim.** Microsoft retired the `*_Quick` tones. `Gpt_Quick`, `Gpt_5_2_Quick`, `Gpt_5_3_Quick`
+and `Gpt_5_4_Quick` now fail validation with `Failed to invoke 'Chat'`, just like the invalid-tone
+control, while `Gpt_5_2_Chat`, `Gpt_5_3_Chat` and `Gpt_5_4_Chat` serve. With 5.5 and 5.6 already
+on `*_Chat`, every generation from 5.2 to 5.6 is now a `*_Chat` + `*_Reasoning` pair. There is no
+unversioned replacement: `Gpt_Chat` is rejected, and so is `Gpt_Reasoning`, which `think-deeper`
+had mapped to since the first commit.
+
+**Evidence.** `scripts/tone-probe.mjs`, three back-to-back sweeps, agent-less, `pong` prompt,
+n=3 per cell (`scripts/tone-out/2026-09-28T02-26-58-952Z`, `…T02-29-57-569Z`, `…T02-32-48-953Z`):
+
+| tones | verdict | `contentOrigin` | elapsed |
+|---|---|---|---|
+| `Gpt_Quick`, `Gpt_5_{2,3,4}_Quick` | REJECTED, 3/3 each | — | 1.3–1.6s |
+| `Gpt_Chat`, `Gpt_Reasoning` | REJECTED, 3/3 each | — | 1.3–1.6s |
+| `Definitely_Not_A_Real_Tone_XYZ` (control) | REJECTED, 3/3 | — | 1.3–1.6s |
+| `Gpt_5_{2,3,4}_Chat` | LIVE, 3/3 each, `pong` | `DeepLeo` | 4.1–5.1s |
+| `Gpt_5_{2,3,4}_Reasoning` | LIVE, 3/3 each | `DeepLeo` | 4.1–7.9s |
+| `magic`, `Gpt_5_{5,6}_{Chat,Reasoning}` | LIVE, 3/3 each | `DeepLeo` | 4.1–8.1s |
+
+Reproduced along the way, 3/3 each: F31 (`Gpt_6_Reasoning` is `BotConnection` on included,
+`DeepLeo` on paid), F32 (`Gpt_6_Chat` rejected), and F33 (`Gpt_5_6_Chat` live on included).
+Service version was not captured; tone-probe does not record it.
+
+**What it broke.** Seven model IDs resolved to rejected tones: `quick`, `think-deeper`,
+`gpt-5.4-quick`, `gpt-5.3`, `gpt-5.3-quick`, `gpt-5.2`, `gpt-5.2-quick`. A rejected tone surfaces
+through the proxy as an **instant 502**: the `type:3` completion error rejects the stream and
+`handler.ts` returns `upstream_error` without retrying. So each of those IDs could only fail,
+while `copilot.ts` stated that "every entry here has been confirmed accepted against the live
+API".
+
+**Why nothing noticed.** No `*_Quick` tone has ever had a cell in `tone-probe.mjs`
+(`git log -S _Quick -- scripts/tone-probe.mjs` is empty), so no routine sweep could see the
+retirement. This is §18's lesson one level down. There, a verdict in the docs discouraged a
+re-probe. Here, an entry in the mapping table did, because a mapped tone reads as settled.
+**When** it happened is unknown for the versioned tones. For `Gpt_Quick` there are earlier
+hints: §9 (June 14) logged "`quick` instant-502s with the agent", and F24's correction (July 7)
+logged "`quick`/`Gpt_Quick` returned instant 502s (dead tone or throttle-onset)". An instant 502
+is exactly what a rejection looks like, so `Gpt_Quick` was plausibly already gone in June. That
+can't be re-measured now; it is the likelier reading, not a result.
+
+**Correction to §18.** §18 argued that of the two non-serving states only `BotConnection` "can
+come good", because a validator error means "the string does not exist". Its own case study
+contradicts that: `Gpt_5_6_Chat` was *rejected* in June (§12.15's premise) before it was
+registered. This entry is the same transition running the other way, live → rejected. The
+narrower claim holds: no *entitlement* change makes a rejected tone serve, so there is nothing
+to vary today. A rollout can still move a tone in either direction. The three states describe
+what one connection sees now, not what a tone will do later.
+
+**Shipped.** Seven `MODEL_TONES` values re-pointed. All 26 keys are kept, so no client config
+changes.
+- `gpt-5.4-quick` → `Gpt_5_4_Chat`, `gpt-5.3`/`gpt-5.3-quick` → `Gpt_5_3_Chat`,
+  `gpt-5.2`/`gpt-5.2-quick` → `Gpt_5_2_Chat`. Same generation, chat for chat.
+- `quick` → `Gpt_5_5_Chat`, `think-deeper` → `Gpt_5_5_Reasoning`. With no unversioned tone
+  left, these had to pin a generation. They pin GPT-5.5 by maintainer preference over GPT-5.6:
+  5.5 wins the chat half and the reasoning half is a tie (next subsection), so nothing argues
+  for moving them.
+- Unit tests (`copilot.test.ts`): no advertised ID resolves to a rejected tone or to any
+  `*_Quick` tone, and all seven legacy IDs stay advertised. Run against the old table, 4 of
+  them fail, as they should.
+- `tone-probe.mjs` gained cells for `Gpt_5_{2,3,4}_{Chat,Reasoning}` and
+  `Claude_Sonnet_Reasoning`. It now ends with a `MAPPED:` line that checks every tone
+  `MODEL_TONES` maps against its cell on the scenario the proxy routes it to, and prints
+  `MAPPED BUT NOT LIVE` / `MAPPED BUT UNPROBED` for any that fail. Replayed offline against these
+  sweeps, the old table scores 9/17 LIVE and names all seven broken IDs. The new table scores
+  12/15; the three Claude tones are unprobed because these sweeps had no Claude cells. No
+  `*_Quick` cells were added: the Chat tones replaced them permanently, so there is nothing to
+  probe them for.
+
+**Confidence.** High on the current state: deterministic across three sweeps, and the retired
+tones are indistinguishable from the invalid-tone control. **Not measured:** tool-calling on
+the re-pointed IDs. `Gpt_5_{2,3,4}_Chat` have not been benchmarked. `quick` now simply is
+`gpt-5.5` (16/30 with the confab-retry off, next subsection).
+**Falsification.** A re-pointed tone going non-LIVE in a later sweep. The `MAPPED:` line names
+it.
+
+### Bench: GPT-5.5 wins the chat half; the reasoning half is a tie
+
+Four runs on 2026-09-28 with the confab-retry **off** (`M365_NO_CONFAB_RETRY=1`), so every
+first-try give-up counts. Same 10 tasks × 3 reps and system prompt throughout
+(`scripts/bench/out/*-no-confab-2026-09-28T*`):
+
+| model ID | tone | solved | prose give-ups (before any tool call) | errors | M365 msgs | s per msg |
+|---|---|---|---|---|---|---|
+| `gpt-5.5-think-deeper` | `Gpt_5_5_Reasoning` | **26/30** | 4 (4) | 0 | 72 | 16 |
+| `gpt-5.6-think-deeper` | `Gpt_5_6_Reasoning` | **27/30** | 2 (1) | 1 | 68 | 20 |
+| `gpt-5.5-quick` | `Gpt_5_5_Chat` | **16/30** | 14 (8) | 0 | 69 | 21 |
+| `gpt-5.6-quick` | `Gpt_5_6_Chat` | **7/30** | 23 (22) | 0 | 39 | 25 |
+
+**Reading it.** The chat gap holds: 16 vs 7 gives a two-sided Fisher exact p ≈ 0.03, and the
+earlier retry-on pair (Sep 24–25, §18) had the same order, 25 vs 10. The reasoning half is a
+tie: 26 vs 27 gives p = 1.0, and the earlier retry-on pair (Sep 23) had it the other way round,
+30 vs 28. An order that flips between runs is what a tie looks like, so the reasoning bench
+gives no reason to prefer either generation. Both aliases and the recommended default stay on
+GPT-5.5 by maintainer preference, which keeps them on the generation that wins the chat half.
+This also closes §12.14's open question: at 27/30, GPT-5.6's reasoning tone is as strong as
+5.5's. Its deficit is in the chat tone, so "GPT-5.6 is worse at agentic work" (§18) is true of
+`Gpt_5_6_Chat`, not of GPT-5.6 as a whole.
+
+**It answers §18's open question too.** §18 couldn't tell whether GPT-5.6 Chat's low message
+count meant it quits sooner or needs fewer turns when it works. It quits sooner: 22 of its 23
+give-ups came before any tool call. On the tasks it did solve it used 2.1 messages against
+GPT-5.5 Chat's 2.9, so it is slightly leaner when it works, but its low total mostly reflects
+the 22 tasks that ended at turn 1.
+
+**Caveats.** One run per arm, and the order wasn't rotated: both 5.6 arms ran before either
+5.5 arm. The one error is a real `Disengaged` (the handler only emits that 502 on
+`messageType: "Disengaged"`): 5.6-think-deeper on `edit-config`, rep 0, at turn 1. That is the
+substitution-shaped task Prompt Shields is known to trip on (F17/F22).
+
+**Open lead: the confab detector sees about two-thirds of real give-ups.** With the retry off,
+all 43 prose give-ups are visible, and `looksLikeConfabulation` flags 27 of them. The retry's
+two other detectors (remote-artifact, and hallucinated-completion before any tool call) catch
+none of the rest, so the handler's full retry trigger also stands at 27. That was tested
+offline on the text the bench records (the first 120 chars, `run.mjs:180`), so it's a lower
+bound: up to 16 give-ups would get no retry even with it on. 13 of the 16 misses are vocabulary
+gaps in patterns that already cover the idea:
+- the can't-access pattern has no optional `directly` ("I can’t directly access or modify files");
+- the can't-edit pattern needs `file(s)` right after the verb, so it misses a backticked
+  filename (``modify `settings.txt` ``), an adjective ("edit local files") and paired verbs
+  ("create or modify files"), and its verb list lacks `generate` ("I can’t generate a file");
+- the tools-unavailable pattern misses a leading negation ("no filesystem or shell tool is
+  available") and the phrase "no longer available".
+
+The other 3 are a different class. Two are GPT-5.5 Chat refusing `find-needle` as a request to
+"disclose secret values, credentials, access codes". The task asks for a `SECRET_CODE=` value,
+so those two rows measure the model's refusal to disclose a "secret", not its tool use. The
+third is advise-instead-of-act ("The bug is in `calc.py` … It should be:"). One hunch is
+**falsified**: M365's U+2019 apostrophes don't break the patterns. All 8 apostrophe-bearing
+positive unit cases still match with U+2019, because the patterns spell it `can.?t`. Widening
+the patterns is a separate change and needs false-positive tests ("Replaced X with Y in
+calc.py" is a genuine completion). Afterwards, re-run with the retry on and compare against
+this table to measure what it recovers.
+
+### Side observations (uninterpreted, n=3 each)
+
+- **Latency signatures drifted.** Rejections took 1.3–1.6s and the `BotConnection` deflection
+  took 2.5–3.1s, against the ~0.25–0.3s and ~1.6s given in §5 and §12.15. The ordering holds
+  (rejected < deflected < live), and tone-probe classifies on error / `contentOrigin`, not
+  latency, so nothing breaks. Both states shifted by roughly a second, which looks like
+  per-connection overhead: `_probe-chat.mjs` starts its clock at socket creation, so `elapsedMs`
+  includes connect + handshake from this host. §12.15 doesn't record how it timed. Untested;
+  timing from the chat-frame send would settle it.
+- **Reasoning tones answered fast.** Every `*_Reasoning` tone answered `pong` in 4–8s, level
+  with the chat tones. §12.14/§12.15 timed `Gpt_5_6_Reasoning` at 20–24s on the same prompt, and
+  §5 says 10–30s. Either reasoning got faster on trivial input, or those tones now send trivial
+  input down a fast path. Latency can't separate the two; a prompt that needs reasoning would.
+  Connection overhead can't explain it either, since that would make today's numbers *slower*.
+  The bench points the same way at task scale. Per M365 message, the 5.5/5.6 reasoning tones
+  took 16s/20s against 21s/25s for the chat tones (table above). That's a different workload,
+  so it corroborates this rather than confirms it.
