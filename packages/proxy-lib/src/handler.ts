@@ -16,6 +16,7 @@ import {
   looksLikeHallucinatedCompletion,
   looksLikeRemoteArtifactCompletion,
   truncateAtFabricatedToolResponse,
+  textAfterFirstToolCall,
   isProseDocument,
   getMessageContent,
   noteRequestOutcome,
@@ -106,20 +107,27 @@ interface ConversationState {
  * The note that corrects the model's view of what actually ran.
  *
  * When the proxy executes only part of a reply — the head before a self-written
- * `<tool_response>` (the stop sequence), or the first of several batched calls —
- * M365's server-side history still holds the WHOLE reply. The model then
- * believes its invented results happened, often including an invented "done",
- * and reads the real result as stale: "It looks like this tool response came in
- * out of context" (Sonnet 4.6: 9 of 56 bench runs ended that way without this
- * note, 0 of 70 with it; #31).
+ * `<tool_response>` (the stop sequence), the first of several batched calls, or
+ * the call at the head of a reply that kept going (#33) — M365's
+ * server-side history still holds the WHOLE reply. The model then believes its
+ * invented results happened, often including an invented "done", and reads the
+ * real result as stale: "It looks like this tool response came in out of
+ * context" (Sonnet 4.6: 9 of 56 bench runs ended that way without this note,
+ * 0 of 70 with it; #31).
  */
-export function executedOnlyFirstNote(fabricated: boolean, droppedCalls: number): string | null {
+const TRAILING_NOTE_CHARS = 120;
+export function executedOnlyFirstNote(fabricated: boolean, droppedCalls: number, trailingChars = 0): string | null {
   if (fabricated) {
     return "(Note: only the first tool call in your previous reply was actually run. Everything you wrote after it, including the <tool_response> you wrote yourself, did not happen. Here is the real output of that first call:)";
   }
+  const speculated = trailingChars >= TRAILING_NOTE_CHARS;
   if (droppedCalls > 0) {
     const rest = droppedCalls === 1 ? "the other one was not" : `the other ${droppedCalls} were not`;
-    return `(Note: only the first of the ${droppedCalls + 1} tool calls in your previous reply was run; ${rest}. Here is the real output of the first one:)`;
+    const tail = speculated ? " Anything you wrote after it was written before its result existed." : "";
+    return `(Note: only the first of the ${droppedCalls + 1} tool calls in your previous reply was run; ${rest}.${tail} Here is the real output of the first one:)`;
+  }
+  if (speculated) {
+    return "(Note: only the tool call in your previous reply was acted on; anything you wrote after it was written before its result existed. Here is the real output of that call:)";
   }
   return null;
 }
@@ -547,8 +555,9 @@ export async function handleChatCompletion(
     // tool call, so a model that ANSWERS with a markdown document full of code
     // fences (e.g. "here's a simplified README") would get its own answer executed
     // as shell. Detect that shape (multiple fences + prose) and return the document
-    // as plain text instead of running it. See isProseDocument (chosen empirically).
-    if (isProseDocument(parsed)) {
+    // as plain text instead of running it — unless the reply OPENS with a tool
+    // call, which makes it an action with a speculative tail (#33).
+    if (isProseDocument(parsed, fullText, body.tools)) {
       log.info(`Response is a prose document (${parsed.toolCalls.length} embedded fences), returning as text instead of executing`);
       parsed = { hasToolCalls: false, toolCalls: [], textContent: fullText };
     }
@@ -603,7 +612,7 @@ export async function handleChatCompletion(
     if (parsed.hasToolCalls && parsed.toolCalls.length > 0) {
       // The model's server-side history holds more than what runs; say so on
       // the turn that carries the real result (executedOnlyFirstNote).
-      conv.pendingNote = executedOnlyFirstNote(cutFabricated, droppedCalls);
+      conv.pendingNote = executedOnlyFirstNote(cutFabricated, droppedCalls, textAfterFirstToolCall(fullText, body.tools).length);
       return { kind: "tools", toolCalls: parsed.toolCalls };
     }
     return { kind: "text", text: fullText };

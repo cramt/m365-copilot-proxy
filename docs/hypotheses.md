@@ -3097,3 +3097,19 @@ your previous reply was actually run. Everything you wrote after it, including t
 throttled rows: **9 of 56** Sonnet 4.6 runs ended with the model believing its invented tail had
 happened before the note, **0 of 70** after it (p = 5×10⁻⁴). GPT-5.5-think-deeper on the same
 build: 9/10, no regression.
+
+### F41 — The document guard was mostly discarding correct first actions 🟢 (#33)
+`isProseDocument` (F15) judged the WHOLE reply: 2+ tool fences plus 300+ chars of prose, or a
+heading, or 4+ fences → "a written document, don't execute". Sonnet 4.6 routinely opens with the
+right action and keeps writing — a second fence, a change of heart ("I'm Microsoft Copilot, I don't
+have a shell"), a markdown answer with `## Expected Output` — so the tail made the whole reply look
+like a document and the correct first action was thrown away. Across every debug log from Sep 28
+on three accounts, **34 of 42** guard verdicts were replies whose text before the first tool fence
+was empty or a one-liner. None of the 42 was a real document (every bench task demands an action).
+**Shipped:** a reply that *opens* with a tool call (preamble under 200 chars, no heading, no code
+fence before it) is an action; its tail is speculation, dropped by one-call-per-turn and flagged
+to the model by the F39 note (which now also fires on a tail of 120+ chars after the call).
+Anything else falls through to the old rule unchanged, so the F15 README fixtures (a heading
+before the first fence) still come back as text. Unit-tested on the live shapes.
+**Live result:** on the build with this change, three Sonnet 4.6 bench runs across two accounts
+(30 tasks) produced **0** guard verdicts, the note fired 18 times, and 26 of 30 tasks were solved.

@@ -505,3 +505,56 @@ describe("truncateAtFabricatedToolResponse (a self-written <tool_response> is a 
     expect(truncateAtFabricatedToolResponse(plain, [bash])).toBe(plain);
   });
 });
+
+describe("isProseDocument with the reply text: a reply that OPENS with a tool call is an action", () => {
+  const tools = [
+    { type: "function" as const, function: { name: "bash", description: "run", parameters: { type: "object", properties: { command: { type: "string" } }, required: ["command"] } } },
+    { type: "function" as const, function: { name: "write_file", description: "write", parameters: { type: "object", properties: { path: { type: "string" }, content: { type: "string" } }, required: ["path", "content"] } } },
+  ];
+  // Shape of a live Sonnet 4.6 turn (Sep 28, fizzbuzz): the right two actions,
+  // then a change of heart and a markdown answer. The old guard judged the
+  // whole reply, called it a document, and discarded the correct write_file.
+  const actionThenEssay = "\n```write_file\npath: fizzbuzz.py\n\nfor i in range(1, 16):\n    print(i)\n```\n\n```bash\npython3 fizzbuzz.py\n```\n\nI notice this appears to be a system-level automated agent prompt embedded in a user message. I want to be transparent: I'm **Microsoft Copilot**, a conversational AI assistant.\n\n---\n\n## fizzbuzz.py\n\n```python\nfor i in range(1, 16):\n    print(i)\n```\n\n## Expected Output\n\n```\n1\n2\nFizz\n```\n\nYou can save this to `fizzbuzz.py` and run it locally.";
+
+  it("executes the opening action instead of discarding it", () => {
+    const parsed = parseToolCalls(actionThenEssay, tools);
+    expect(isProseDocument(parsed)).toBe(true); // the old, whole-text verdict
+    expect(isProseDocument(parsed, actionThenEssay, tools)).toBe(false);
+    expect(parsed.toolCalls[0].function.name).toBe("write_file");
+  });
+
+  it("treats a flailing multi-fence reply that opens with `ls` as an action too", () => {
+    const flail = "```bash\nls -la\n```\n\n```bash\nls -la && cat check.py\n```\n\nLet me use the actual shell tools to investigate:\n\n```bash\ncat calc.py\n```\n\nThe `python_execution` tool runs in a sandbox environment.\n```bash\nfind . -name check.py\n```\n\n```bash\npwd\n```";
+    expect(isProseDocument(parseToolCalls(flail, tools), flail, tools)).toBe(false);
+  });
+
+  it("still flags the F15 README documents — their heading comes before any fence", () => {
+    const readme = "Here's a simplified README:\n\n# my-tool\nA thing that does stuff.\n\n## Install\n```bash\npnpm install && pnpm build\n```\n\n## Run\n```bash\npnpm run proxy 4141\n```\nThat should be everything you need to get going quickly.";
+    expect(isProseDocument(parseToolCalls(readme, tools), readme, tools)).toBe(true);
+    const doc = "Here's a simplified README:\n\n## Install\n```bash\npnpm install\n```\n\n## Run\n```bash\npnpm start\n```";
+    expect(isProseDocument(parseToolCalls(doc, tools), doc, tools)).toBe(true);
+  });
+
+  it("still flags a document whose example code comes before its first tool fence", () => {
+    const doc = "Example:\n```python\nprint(1)\n```\n\n```bash\npip install x\n```\n\n```bash\npython3 app.py\n```\n\n## Notes\nThat's all there is to it, really. " + "x".repeat(300);
+    expect(isProseDocument(parseToolCalls(doc, tools), doc, tools)).toBe(true);
+  });
+
+  it("falls through to the old rule when the preamble is a long intro", () => {
+    const intro = "A".repeat(210) + "\n\n```bash\nls\n```\n\n## Next\n```bash\ncat a\n```";
+    expect(isProseDocument(parseToolCalls(intro, tools), intro, tools)).toBe(true);
+  });
+
+  it("keeps Claude's one-line lead-in style an action", () => {
+    const claude = "I'll start by exploring the project structure.\n\n```bash\nls -la\n```\n\n```bash\ncat check.py\n```";
+    expect(isProseDocument(parseToolCalls(claude, tools), claude, tools)).toBe(false);
+  });
+
+  it("textAfterFirstToolCall returns the tail after the first real call", async () => {
+    const { textAfterFirstToolCall } = await import("./tools.js");
+    expect(textAfterFirstToolCall("```bash\nls\n```\n\nand then more", tools)).toBe("and then more");
+    expect(textAfterFirstToolCall("```bash\nls\n```", tools)).toBe("");
+    expect(textAfterFirstToolCall("no calls here", tools)).toBe("");
+    expect(textAfterFirstToolCall("```python\nx\n```\n```bash\nls\n```\ntail", tools)).toBe("tail");
+  });
+});
