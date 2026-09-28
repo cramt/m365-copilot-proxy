@@ -22,8 +22,13 @@ CSV="${CSV:-/tmp/m365-pi-reliability.csv}"
 TASK="${TASK:-fix-bug}"   # fix-bug (find+fix) | edit-config (F17 "change X->Y" shape)
 
 command -v pi >/dev/null || { echo "[pi-rel] pi not on PATH — run inside nix develop"; exit 1; }
-PYBIN="$(nix build --no-link --print-out-paths nixpkgs#python3 2>/dev/null)/bin"
-[ -x "$PYBIN/python3" ] || { echo "[pi-rel] could not resolve python3 from nixpkgs"; exit 1; }
+# NixOS: the nix shell has no python3, so resolve it from nixpkgs. Elsewhere a
+# system python3 is fine (and `nix` may not exist at all). PYBIN overrides both.
+if [ -z "${PYBIN:-}" ]; then
+  if command -v nix >/dev/null; then PYBIN="$(nix build --no-link --print-out-paths nixpkgs#python3 2>/dev/null)/bin"; fi
+  [ -x "${PYBIN:-}/python3" ] || PYBIN="$(dirname "$(command -v python3 2>/dev/null || echo /nonexistent/python3)")"
+fi
+[ -x "$PYBIN/python3" ] || { echo "[pi-rel] could not resolve python3 (set PYBIN)"; exit 1; }
 curl -s -m3 "http://localhost:${PORT}/health" >/dev/null || { echo "[pi-rel] proxy not answering on :$PORT"; exit 1; }
 
 [ -f "$CSV" ] || echo "run,iso_ts,outcome,elapsed_s,dir" > "$CSV"
@@ -45,8 +50,9 @@ for i in $(seq 1 "$N"); do
     PROMPT="This project has a bug: running 'python3 check.py' fails an assertion. Read the files, fix the bug in calc.py, and make 'python3 check.py' print OK. Verify it."
   fi
   PIHOME="$D/.pihome"; mkdir -p "$PIHOME/.pi/agent"
+  # pi only accepts a --model its provider lists, so list the one under test.
   cat > "$PIHOME/.pi/agent/models.json" <<EOF
-{"providers":{"m365":{"api":"openai-completions","apiKey":"not-needed","baseUrl":"$BASE","compat":{"supportsDeveloperRole":false,"supportsReasoningEffort":false,"supportsUsageInStreaming":false},"models":[{"id":"m365-copilot","name":"M365"}]}}}
+{"providers":{"m365":{"api":"openai-completions","apiKey":"not-needed","baseUrl":"$BASE","compat":{"supportsDeveloperRole":false,"supportsReasoningEffort":false,"supportsUsageInStreaming":false},"models":[{"id":"$MODEL","name":"M365 $MODEL"}]}}}
 EOF
   cat > "$PIHOME/.pi/agent/settings.json" <<EOF
 {"defaultModel":"$MODEL","defaultProvider":"m365","enableInstallTelemetry":false}

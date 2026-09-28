@@ -9,6 +9,8 @@ import {
   hostPlatformNote,
   currentFramingVariant,
   defaultFramingForTone,
+  defaultFramingForModel,
+  transcriptStyleForVariant,
 } from "./fenced.js";
 import type { ToolDef } from "./tools.js";
 
@@ -287,9 +289,14 @@ describe("defaultFramingForTone", () => {
   });
 
   it("leaves every other tone on the bench-tuned baseline", () => {
-    for (const tone of ["magic", "Claude_Sonnet", "Gpt_5_5_Reasoning", undefined]) {
+    for (const tone of ["magic", "Claude_Sonnet_Reasoning", "Gpt_5_5_Reasoning", undefined]) {
       expect(defaultFramingForTone(tone)).toBeUndefined();
     }
+  });
+
+  it("gives the Claude_Sonnet tone (4.6 and 5) the <system>-free relay framing", () => {
+    // Both Sonnets read the <system>-tagged baseline as an injected prompt (§21).
+    expect(defaultFramingForTone("Claude_Sonnet")).toBe("relay");
   });
 
   it("keeps the paid-gated GPT-6 tone on baseline — the gate is not a budget", () => {
@@ -307,6 +314,43 @@ describe("defaultFramingForTone", () => {
     // …while keeping the two load-bearing levers: shell-routing + anti-confab.
     expect(lean).toContain("```bash");
     expect(lean).toContain("run nothing yet");
+  });
+});
+
+describe("defaultFramingForModel", () => {
+  // `Claude_Sonnet` is Sonnet 4.6 on the included scenario and Sonnet 5 on the
+  // paid one, so the tone alone can't choose Sonnet 5's framing.
+  it("gives Sonnet 5 the relay framing, including unmapped Sonnet 5 strings", () => {
+    for (const id of ["claude-sonnet-5", "claude-sonnet-5[1m]"]) {
+      expect(defaultFramingForModel(id)).toBe("relay");
+    }
+  });
+
+  it("gives Sonnet 4.6 relay too — and every unmapped claude-* string that lands on its tone", () => {
+    for (const id of ["claude-sonnet", "claude-sonnet-4.6", "claude-sonnet-4.5", "claude", "claude-haiku-9"]) {
+      expect(defaultFramingForModel(id)).toBe("relay");
+    }
+  });
+
+  it("falls through to the tone default for everything else", () => {
+    expect(defaultFramingForModel("claude-opus")).toBe("minimal");
+    expect(defaultFramingForModel("claude-sonnet-think-deeper")).toBeUndefined(); // unmeasured: stays baseline
+    expect(defaultFramingForModel("m365-copilot")).toBeUndefined();
+    expect(defaultFramingForModel("gpt-5.5-think-deeper")).toBeUndefined();
+  });
+});
+
+describe("transcriptStyleForVariant", () => {
+  it("keeps the historical <system> tags for every pre-existing variant", () => {
+    for (const v of ["baseline", "minimal", "softened", "recency", "fewshot", "session_facts", "nonexistent"]) {
+      expect(transcriptStyleForVariant(v)).toEqual({ framingTag: "system", systemTag: "system" });
+    }
+  });
+
+  it("drops the framing wrapper for user-voice variants and relabels harness prompts", () => {
+    for (const v of ["relay", "honest", "terse_user"]) {
+      expect(transcriptStyleForVariant(v)).toEqual({ framingTag: null, systemTag: "harness_system_prompt" });
+    }
   });
 });
 

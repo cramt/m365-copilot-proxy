@@ -558,3 +558,50 @@ describe("isProseDocument with the reply text: a reply that OPENS with a tool ca
     expect(textAfterFirstToolCall("```python\nx\n```\n```bash\nls\n```\ntail", tools)).toBe("tail");
   });
 });
+
+describe("transcript style (which tags wrap the framing and harness system prompts)", () => {
+  // Claude Sonnet 5 reads a `<system>` block inside a user turn as a forged
+  // system prompt and ignores the framing it carries (docs §21). The Sonnet 5
+  // variants therefore label text by its real source; every other variant
+  // must keep the historical tags byte-for-byte.
+  const tools = [
+    { type: "function" as const, function: { name: "bash", description: "run", parameters: { type: "object", properties: { command: { type: "string" } }, required: ["command"] } } },
+  ];
+  const msgs = [
+    { role: "system", content: "You are an autonomous coding agent." },
+    { role: "user", content: "fix the bug" },
+  ];
+
+  it("keeps <system> tags for baseline — the bench-tuned default is unchanged", async () => {
+    const { formatMessages } = await import("./tools.js");
+    const out = formatMessages(msgs, tools, undefined, undefined, "baseline");
+    expect(out).toMatch(/^<system>\nYou are the execution core/);
+    expect(out).toContain("<system>\nYou are an autonomous coding agent.\n</system>");
+    expect(out).not.toContain("harness_");
+  });
+
+  it("never emits a <system> tag for the user-voice variants", async () => {
+    const { formatMessages } = await import("./tools.js");
+    for (const v of ["honest", "terse_user", "relay"]) {
+      const out = formatMessages(msgs, tools, undefined, undefined, v);
+      expect(out).not.toContain("<system>");
+      expect(out).toContain("<harness_system_prompt>\nYou are an autonomous coding agent.\n</harness_system_prompt>");
+      expect(out).toContain("```bash"); // shell-routing survives
+      expect(out).toContain("<user>\nfix the bug\n</user>");
+    }
+  });
+
+  it("retag changes only the wrapper, not the baseline text inside it", async () => {
+    const { formatMessages, formatToolDefinitions } = await import("./tools.js");
+    const out = formatMessages(msgs, tools, undefined, undefined, "retag");
+    expect(out).toContain(`<harness_instructions>\n${formatToolDefinitions(tools, "baseline")}\n</harness_instructions>`);
+    expect(out).not.toContain("<system>");
+  });
+
+  it("tells the model its built-in sandbox is the wrong machine in every user-voice variant", async () => {
+    const { formatToolDefinitions } = await import("./tools.js");
+    for (const v of ["honest", "terse_user", "relay"]) {
+      expect(formatToolDefinitions(tools, v)).toMatch(/sandbox/);
+    }
+  });
+});

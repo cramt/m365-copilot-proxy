@@ -290,7 +290,8 @@ without NixOS: `nix run github:cramt/m365-copilot-proxy -- 4141`.
 | `m365-copilot` / `auto` | magic | Auto-routing — high-variance at tool-calling (confabulates; see below) |
 | `quick` | Gpt_5_5_Chat | Alias of `gpt-5.5` (its old `Gpt_Quick` tone was retired — see below) |
 | `think-deeper` | Gpt_5_5_Reasoning | Alias of `gpt-5.5-think-deeper` (its old `Gpt_Reasoning` tone was retired) |
-| `claude` / `claude-sonnet` | Claude_Sonnet | Real Anthropic Claude (agent-less path) |
+| `claude` / `claude-sonnet` / `claude-sonnet-4.6` | Claude_Sonnet | Real Anthropic Claude Sonnet 4.6 (agent-less path) — 78/90 on the bench with the `relay` framing (47/76 with `baseline`). `claude-sonnet-4.5` is kept as an alias |
+| `claude-sonnet-5` | Claude_Sonnet (paid scenario) | Claude Sonnet 5. **Needs a paid/premium Copilot seat** — same tone as above, the scenario picks the model. 27/30 on the bench with the `relay` framing (6/40 with `baseline`; see below) |
 | `claude-sonnet-think-deeper` | Claude_Sonnet_Reasoning | Claude reasoning |
 | `claude-opus` / `claude-opus-5` | Claude_Opus | Real Claude Opus 5. **Needs a paid/premium Copilot seat** and has a small separate quota (see below) |
 | `gpt-5.4` / `gpt-5.4-quick` | Gpt_5_4_* | GPT-5.4 |
@@ -362,6 +363,21 @@ how many of the six it recovers. `gpt-5.5-think-deeper` remains the recommended 
 the no-model fallback: it benchmarks higher and needs no entitlement, so making GPT-6 the
 default would trade reliability for a model most seats can't reach.
 
+### Sonnet 5 (`claude-sonnet-5`) — its own sandbox, and the `relay` framing
+
+`Claude_Sonnet` is Sonnet 4.6 on the included scenario and **Sonnet 5** on the paid one, so
+`claude-sonnet-5` needs a paid/premium seat, like Opus. It is not separately metered.
+
+Sonnet 5 arrives with **its own tools** (`bash_tool`, `create_file`, …) running in a remote
+sandbox (`/home/claude`) that cannot see your files, and it reads the proxy's usual
+`<system>`-tagged tool framing as a prompt injection — so with that framing it inspects its own
+empty sandbox and reports that your files don't exist (6/40 on the bench). The proxy therefore
+gives both Sonnet models a different default framing, `relay`: a plain note asking it to guide you through your
+terminal one command at a time, which also tells it the sandbox is the wrong machine. That
+scores **27/30** on the bench (from 5/30) and solved **5/5** fix-bug runs through real pi.
+Sonnet 4.6 uses `relay` too (78/90 vs 47/76). Override with `M365_FRAMING_VARIANT` as usual.
+Details: hypotheses §21.
+
 ### Opus (`claude-opus`) — entitlement + a separate, small quota
 
 The model behind this tone is **Claude Opus 5**. It performs very well here, with two things
@@ -372,7 +388,7 @@ WebSocket connection. On the default `OfficeWebIncludedCopilot` the Opus tone is
 never reaches a model — it returns a canned apology, which is why earlier notes in this repo
 recorded Opus as a dead tone. The proxy now sends `scenario=OfficeWebPaidCopilot` (with the
 `licenseType=Premium` that pairs with it) automatically whenever the resolved tone is
-`Claude_Opus`; every model except `gpt-6-think-deeper` keeps the included scenario. This is an
+`Claude_Opus`; every model except `gpt-6-think-deeper` and `claude-sonnet-5` keeps the included scenario. This is an
 **entitlement, not a bypass** — your account has to actually hold paid/premium Copilot access, and `licenseType`
 alone unlocks nothing. Override either with `M365_SCENARIO` / `M365_LICENSE_TYPE`.
 
@@ -477,7 +493,7 @@ Three token scopes are acquired:
 | `M365_NO_INTERACTIVE` | Set to `1` to hard-disable any visible browser login, overriding the flag above. For systemd/CI hosts where a window must never open. |
 | `M365_INTERACTIVE_TIMEOUT_MS` | How long to wait for you to finish the interactive sign-in (default `600000`, i.e. 10 minutes). |
 | `M365_LOGIN_LOCALE` / `M365_LOGIN_TIMEZONE` | Browser locale and timezone presented during login (defaults `en-GB` / `Europe/Copenhagen`). These are part of the anti-bot-scoring fingerprint ([§11 F25](docs/hypotheses.md)) — set them to match your own machine if AAD starts treating your automated login as a bot. |
-| `M365_SCENARIO` / `M365_LICENSE_TYPE` | Override the entitlement the WebSocket is opened under (defaults: `OfficeWebIncludedCopilot` / `Starter`, switching to `OfficeWebPaidCopilot` / `Premium` for the entitlement-gated tones — `claude-opus` and `gpt-6-think-deeper`). `scenario` is what gates the model list; `licenseType` rides along and unlocks nothing by itself. |
+| `M365_SCENARIO` / `M365_LICENSE_TYPE` | Override the entitlement the WebSocket is opened under (defaults: `OfficeWebIncludedCopilot` / `Starter`, switching to `OfficeWebPaidCopilot` / `Premium` for the entitlement-gated models — `claude-opus`, `gpt-6-think-deeper` and `claude-sonnet-5`). `scenario` is what gates the model list (and picks Sonnet 4.6 vs 5 for the `Claude_Sonnet` tone); `licenseType` rides along and unlocks nothing by itself. |
 | `M365_CACHE_FILE` | Override MSAL token cache location |
 | `M365_SECRETS_FILE` | Override credentials file location |
 | `CHROMIUM_PATH` | Path to Chromium binary for automated login |

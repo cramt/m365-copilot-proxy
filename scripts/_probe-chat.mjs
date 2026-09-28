@@ -51,6 +51,7 @@ export function oneTurn(o) {
     timeoutMs = 120000, onFrame,
     optionsSets = [],                 // extra BizChat optionsSets (code interpreter, memory, …)
     extraAllowed = [],                // extra allowedMessageTypes (GeneratedCode, …)
+    baseAllowed = BASE_ALLOWED,       // override the base allowedMessageTypes (declare-to-receive probes)
     plugins = undefined,              // override plugins; default = BingWebSearch (or [] to disable search)
     variants = VARIANTS,              // override the WS-query variants flag list (string)
     // Entitlement the connection is opened under. The default included scenario
@@ -97,7 +98,7 @@ export function oneTurn(o) {
       spokenTextMode: "None",
       options: {},
       extraExtensionParameters: {},
-      allowedMessageTypes: [...new Set([...BASE_ALLOWED, ...extraAllowed])],
+      allowedMessageTypes: [...new Set([...baseAllowed, ...extraAllowed])],
       sliceIds: [],
       threadLevelGptId: agentId ? { id: agentId, source: "MOS3" } : {},
       traceId: requestId,

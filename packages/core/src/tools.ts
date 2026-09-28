@@ -7,6 +7,7 @@ import {
   formatFencedToolDefinitions,
   parseFencedToolCalls,
   renderFencedCall,
+  transcriptStyleForVariant,
 } from "./fenced.js";
 
 const log = createLogger("tools");
@@ -171,8 +172,14 @@ export function formatMessages(
 
   const effectiveTools = tools ? maybeInjectReplyTool(tools) : tools;
   const specMap = effectiveTools ? buildSpecMap(effectiveTools) : null;
+  // The wrapper tags follow the framing variant: most keep the historical
+  // `<system>` tags, but Claude Sonnet reads a `<system>` block inside a user
+  // turn as a forged system prompt, so some variants label text by its real
+  // source.
+  const style = transcriptStyleForVariant(framingVariant ?? currentFramingVariant());
   if (effectiveTools && effectiveTools.length > 0 && toolChoice !== "none") {
-    parts.push(`<system>\n${formatToolDefinitions(effectiveTools, framingVariant)}${formatToolChoiceInstruction(toolChoice)}\n</system>`);
+    const framing = `${formatToolDefinitions(effectiveTools, framingVariant)}${formatToolChoiceInstruction(toolChoice)}`;
+    parts.push(style.framingTag ? `<${style.framingTag}>\n${framing}\n</${style.framingTag}>` : framing);
   }
 
   // Correlate each tool result back to the call that produced it, so the model
@@ -222,6 +229,8 @@ export function formatMessages(
       // context (a directory listing vs file contents vs a command's stdout).
       const cmdAttr = meta?.summary ? ` command="${meta.summary}"` : "";
       parts.push(`<tool_response tool="${name}"${cmdAttr}>\n${getMessageContent(m)}\n</tool_response>`);
+    } else if (m.role === "system") {
+      parts.push(`<${style.systemTag}>\n${getMessageContent(m)}\n</${style.systemTag}>`);
     } else {
       parts.push(`<${m.role}>\n${getMessageContent(m)}\n</${m.role}>`);
     }

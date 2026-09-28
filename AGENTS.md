@@ -186,7 +186,7 @@ pnpm test:live      # M365_LIVE=1; live tests that hit real M365 (uses quota)
   turn and strips M365's invented `{confidence}`/`{final}` JSON (`M365_ALLOW_MULTI_TOOL` to opt out).
 - **`claude-opus` is entitlement-gated and separately metered.** The WS `scenario` decides which
   models will serve: Opus is a dead route on `OfficeWebIncludedCopilot` and a real model on
-  `OfficeWebPaidCopilot` (`getScenarioForTone`, derived per-turn from the resolved tone).
+  `OfficeWebPaidCopilot` (`getScenarioForModel`, derived per-turn from the model ID).
   `licenseType: Premium` pairs with it but unlocks nothing alone. Opus also has a small
   priority-access budget that **refuses in content, not in a status field** ("You've used your
   available priority access…"), so it reads as a successful turn — `parsePriorityAccessExhaustion`
@@ -197,6 +197,19 @@ pnpm test:live      # M365_LIVE=1; live tests that hit real M365 (uses quota)
   so `PAID_SCENARIO_TONES` is about reaching a model, not about what it costs. Don't key metering
   or framing decisions off that set — the quota detector reads the refusal text and the framing
   default is per-tone (Opus `minimal`, GPT-6 `baseline`). See docs/hypotheses.md §17.
+- **One tone can be two models — `Claude_Sonnet` is Sonnet 4.6 (included) and Sonnet 5 (paid).**
+  So routing follows the **model ID** (`getScenarioForModel`, `PAID_SCENARIO_MODELS`), and so does
+  the framing default (`defaultFramingForModel`). Never add `Claude_Sonnet` to
+  `PAID_SCENARIO_TONES` — that silently turns `claude-sonnet` into Sonnet 5. A liveness probe can't
+  see this (both are `DeepLeo`); only self-ID can. See docs/hypotheses.md §21, #37.
+- **Sonnet 5 has its own tools in a remote sandbox and reads `<system>` tags as an injection.**
+  Nothing client-side disables `bash_tool`/`create_file` (`/home/claude`), and a `<system>` block in
+  the user turn makes it disregard the framing and work there ("no such file"). Its default is the
+  user-voice `relay` framing (45/50 vs 6/40; 5/5 in real pi) — and Sonnet 4.6's too (78/90 vs
+  47/76). Don't move `Claude_Sonnet` back to a `<system>`-tagged variant, and don't wrap the note
+  in `<user>` tags either: tags are just text to it, and the variant that did (`relay_inline`,
+  removed) scored 1/20 (§21 F43).
+  **Read its `ChainOfThoughtSummary` frames** (`M365_DUMP_FRAMES=1`) — they say why it refused.
 - **A turn can hold several bot messages; assemble text per message.** Each new message's head
   arrives only as a snapshot with a `cursor`; folding everything into one string drops it (it ate
   a fence's backticks). `TurnTextComposer` in `session.ts` — don't "simplify" it away. #29.

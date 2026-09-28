@@ -1,5 +1,72 @@
 import { describe, expect, it, afterEach } from "vitest";
-import { getAvailableModels, getScenarioForTone, getToneForModel } from "./copilot.js";
+import {
+  getAvailableModels,
+  getScenarioForModel,
+  getScenarioForTone,
+  getToneForModel,
+  isSonnet5Model,
+} from "./copilot.js";
+
+const INCLUDED = { scenario: "OfficeWebIncludedCopilot", licenseType: "Starter" };
+const PAID = { scenario: "OfficeWebPaidCopilot", licenseType: "Premium" };
+
+describe("Sonnet routing — one tone, two models", () => {
+  // `Claude_Sonnet` is Sonnet 4.6 on the included scenario and Sonnet 5 on the
+  // paid one (tone-probe 2026-09-28), so the model ID has to pick the scenario.
+  afterEach(() => {
+    delete process.env.M365_SCENARIO;
+  });
+
+  it("sends claude-sonnet-5 to the shared tone under the paid scenario", () => {
+    expect(getToneForModel("claude-sonnet-5")).toBe("Claude_Sonnet");
+    expect(getScenarioForModel("claude-sonnet-5")).toEqual(PAID);
+    expect(getAvailableModels()).toContain("claude-sonnet-5");
+  });
+
+  it("keeps every other Sonnet ID on the included scenario (Sonnet 4.6)", () => {
+    for (const id of ["claude", "claude-sonnet", "claude-sonnet-4.5", "claude-sonnet-4.6"]) {
+      expect(getToneForModel(id)).toBe("Claude_Sonnet");
+      expect(getScenarioForModel(id)).toEqual(INCLUDED);
+    }
+  });
+
+  it("does NOT move the tone itself onto the paid scenario", () => {
+    // That would silently turn `claude-sonnet` into Sonnet 5 as well.
+    expect(getScenarioForTone("Claude_Sonnet")).toEqual(INCLUDED);
+  });
+
+  it("routes unmapped Sonnet 5 strings a client may send to Sonnet 5, not 4.6", () => {
+    for (const id of ["claude-sonnet-5[1m]", "claude-sonnet-5-20260115", "Claude-Sonnet-5"]) {
+      expect(isSonnet5Model(id)).toBe(true);
+      expect(getScenarioForModel(id)).toEqual(PAID);
+    }
+  });
+
+  it("does not mistake older Sonnet names for Sonnet 5", () => {
+    for (const id of ["claude-sonnet-4-5-20250929", "claude-3-5-sonnet", "claude-sonnet-4.5", "claude-sonnet-50"]) {
+      expect(isSonnet5Model(id)).toBe(false);
+      expect(getScenarioForModel(id)).toEqual(INCLUDED);
+    }
+  });
+
+  it("never treats a non-Sonnet tone as Sonnet 5, whatever the string says", () => {
+    expect(isSonnet5Model("claude-opus-5")).toBe(false);
+    expect(isSonnet5Model("gpt-sonnet-5")).toBe(false); // resolves to magic, not Claude_Sonnet
+  });
+
+  it("still derives the paid scenario from the tone for Opus and GPT-6", () => {
+    expect(getScenarioForModel("claude-opus")).toEqual(PAID);
+    expect(getScenarioForModel("claude-opus-5[1m]")).toEqual(PAID);
+    expect(getScenarioForModel("gpt-6-think-deeper")).toEqual(PAID);
+    expect(getScenarioForModel("gpt-5.5-think-deeper")).toEqual(INCLUDED);
+  });
+
+  it("lets the env override win for model routing too", () => {
+    process.env.M365_SCENARIO = "SomeOtherScenario";
+    expect(getScenarioForModel("claude-sonnet").scenario).toBe("SomeOtherScenario");
+    expect(getScenarioForModel("claude-sonnet-5").scenario).toBe("SomeOtherScenario");
+  });
+});
 
 describe("GPT-5.6 model routing", () => {
   it("maps the advertised model ID to the live-validated reasoning tone", () => {

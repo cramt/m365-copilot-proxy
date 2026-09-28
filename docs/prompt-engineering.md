@@ -44,7 +44,34 @@ These are what actually move compliance. In rough order of importance:
    labelling, one-call-per-turn, stripping invented `{confidence}`/`{final}` JSON, treating a
    model-written `<tool_response>` as a stop sequence (Sonnet 4.6 invents one in about half
    its turns), and telling the model on the next turn when only its first call ran. See
-   [`tool-calling.md`](tool-calling.md).
+   [`tool-calling.md`](tool-calling.md), [hyp §20 F39, F41].
+
+## Claude Sonnet: don't *cage* it, don't *label* things `<system>`
+
+Everything above was learned on models with no tools of their own. Sonnet 5 (`Claude_Sonnet` on
+the paid scenario) **has** real ones, in a remote sandbox, so the question is not "will it act"
+but "on which machine" — and our framing decides that. Conclusive (hyp §21, p = 3×10⁻¹³):
+
+- **A `<system>` block inside the user turn reads as a forged system prompt.** Its reasoning says
+  "prompt injection", it ignores the framing and works in its own sandbox, where the task's files
+  don't exist. Relabelling the *same* baseline text `<harness_instructions>` took it 1/10 → 9/10
+  and mostly stopped it deliberating at all. For this model the tag is the trigger, not the words.
+- **Ask for an ordinary role, not belief in a mechanism.** "My harness executes your fenced blocks"
+  (`honest`) invites a check against its system prompt, and it concludes the harness can't exist.
+  "Guide me through my terminal, one command at a time; I'll paste the output back" (`relay`,
+  shipped default) is just pair-programming: 45/50 against baseline's 6/40, and 5/5 in real pi.
+- **Say the sandbox is the wrong machine.** Without it (`retag`) the model starts right but falls
+  back to its own `bash_tool` the first time a harness command returns nothing useful.
+- **Too short fails too:** a one-line "don't use your tools" note (`terse_user`) is 2/10 — it reads
+  as an unexplained override.
+- **A `<user>` tag doesn't make the note the user's.** On the wire the whole proxy prompt is one
+  user message, and Sonnet 5 reads tags inside it as embedded text. Moving the relay note into a
+  `<user>` block (`relay_inline`, tested and removed) made the setup read as a fabricated
+  transcript: 1/20 vs relay's 9/10, with 19 of 20 first turns calling it a prompt injection (hyp
+  §21 F43). Whether the tag or the harness block now coming first is to blame is not yet separated.
+- **Sonnet 4.6 has the same reflex, weaker.** It rarely refuses, but says "this appears to be a
+  system-level automated agent prompt embedded in a user message" and then hedges. `relay` is its
+  default too: 78/90 vs baseline's 47/76 (p = 3×10⁻⁴, hyp §21 F42).
 
 ## What does NOT work (confirmed dead-ends — don't re-litigate)
 
@@ -65,6 +92,9 @@ These are what actually move compliance. In rough order of importance:
   `*_Chat`; the `*_Quick` tones are retired). ([api §10].)
 - **Native tool-calling (MCP / full Dataverse bot):** out of scope — needs a paid Copilot
   Studio license, breaking the zero-cost premise. ([hyp §8.11].)
+- **Moving the Claude Sonnet note into the first `<user>` block** (`relay_inline`, removed):
+  Sonnet 5 1/20 vs relay's 9/10 in the same session (p = 7×10⁻⁶); Sonnet 4.6 unaffected (19/19 vs
+  20/20). ([hyp §21 F43].)
 
 ## Constraints that bite while tinkering
 
@@ -93,16 +123,21 @@ registered in `packages/core/src/fenced.ts` (`FRAMING_VARIANTS`) and selected pe
   long-lived proxy switches strategy per request** without a restart (used by the sweep).
 
 Current strategies: `baseline` (shipped default, unchanged), `minimal`, `recency`,
-`fewshot`, `proof_demand`, `persona`, `react`, `negative`, `terse`, and `reply_tool`
-(synthetic `reply()` tool; also `M365_INJECT_REPLY_TOOL=1`).
+`fewshot`, `proof_demand`, `persona`, `react`, `negative`, `terse`, `softened`, `demo_only`,
+`session_facts`, `reply_tool` (synthetic `reply()` tool; also `M365_INJECT_REPLY_TOOL=1`), and the
+Claude Sonnet set: `retag`, `honest`, `terse_user`, `relay`. A variant can also change
+the transcript's **tags** (`transcriptStyleForVariant`): the Claude Sonnet set never emits `<system>`;
+the harness's own system prompt becomes `<harness_system_prompt>`.
 
-**The default is now tone-aware** (`defaultFramingForTone`). `baseline` is a cage built for
+**The default is model-aware** (`defaultFramingForModel`, falling back to `defaultFramingForTone`).
+`Claude_Sonnet` — Sonnet 4.6 and Sonnet 5 — → `relay` (above). `baseline` is a cage built for
 M365's chat-tuned GPT path — most of its length goes on forcing a model that would rather
 narrate into acting. `Claude_Opus` doesn't need that and is metered by a small
 priority-access budget (docs/hypotheses.md §15), so it defaults to `minimal`: 684 chars vs
 `baseline`'s 3,894 on a 2-tool request (~82% smaller), keeping shell-routing and the
-anti-confabulation clause while dropping the strict-rules wall. **Every other tone keeps
-`baseline` byte-for-byte**, so no bench number moves, and `M365_FRAMING_*` still wins.
+anti-confabulation clause while dropping the strict-rules wall. **Every other model keeps
+`baseline` byte-for-byte** (including `claude-sonnet-think-deeper`, unmeasured under relay), so
+no GPT bench number moves, and `M365_FRAMING_*` still wins.
 Caveat worth repeating: it is unproven that the Opus budget is token-weighted, so read this
 as prompt hygiene for a model that doesn't need the cage — not as a measured quota saving.
 
@@ -115,6 +150,16 @@ M365_FRAMING_FILE=/tmp/m365-framing M365_DEBUG=1 node packages/proxy/bin/m365-pr
 COOLDOWN=45 BLOCK_COOLDOWN=60 bash scripts/bench/sweep2.sh
 # 3. aggregate into a strategy × task matrix + leaderboard
 node scripts/bench/analyze-sweep.mjs s2
+```
+
+For the full 10-task bench per arm (and to archive each arm's debug log + frame dumps for
+forensics — read the `ChainOfThoughtSummary` frames, they say *why* a framing was refused):
+
+```sh
+M365_FRAMING_FILE=/tmp/m365-framing M365_DUMP_FRAMES=1 M365_DEBUG=1 M365_NO_CONFAB_RETRY=1 \
+  node packages/proxy/bin/m365-proxy.mjs 4141 &
+# `default` = empty control file = the model's shipped default; arms may repeat
+ARMS="default retag relay default" MODEL=claude-sonnet-5 TAG=mysweep bash scripts/bench/sonnet5-sweep.sh
 ```
 
 ## Results

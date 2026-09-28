@@ -4,8 +4,9 @@ import {
   createLogger,
   trunc,
   getToneForModel,
-  defaultFramingForTone,
+  defaultFramingForModel,
   currentFramingVariant,
+  transcriptStyleForVariant,
   parsePriorityAccessExhaustion,
   couldBePriorityAccessPrefix,
   secondsUntilReset,
@@ -261,10 +262,13 @@ export async function handleChatCompletion(
   // `/claude/i.test(model)` + `magic` fallback split a claude-* string into GPT-tone +
   // agent-suppressed — the confab quadrant we observed. One resolved tone drives both.
   const tone = getToneForModel(model);
-  // Framing default follows the tone: Opus gets the lean variant (it doesn't
-  // need the anti-narration cage, and its priority-access budget is small), the
-  // rest keep the bench-tuned `baseline`. M365_FRAMING_* still wins.
-  const framingVariant = currentFramingVariant(defaultFramingForTone(tone));
+  // Framing default follows the MODEL (defaultFramingForModel): Opus gets the
+  // lean variant (it doesn't need the anti-narration cage, and its priority-
+  // access budget is small), Claude Sonnet — 4.6 and 5 — gets `relay` (it reads
+  // the `<system>`-tagged baseline as an injected prompt), and the rest keep the
+  // bench-tuned `baseline`. Keyed on the model, not the tone, because one tone
+  // can serve two models. M365_FRAMING_* still wins.
+  const framingVariant = currentFramingVariant(defaultFramingForModel(model));
   const isClaudeTone = /^Claude_/i.test(tone);
   const useToolAgent = !!hasTools && (process.env.M365_FORCE_AGENT === "1" || !isClaudeTone);
 
@@ -418,8 +422,13 @@ export async function handleChatCompletion(
         if (hasTools && !disengageRetried && !process.env.M365_NO_DISENGAGE_RETRY) {
           disengageRetried = true;
           session.newConversation();
-          text = formatMessages(body.messages, body.tools, body.tool_choice, session.conversationId, "softened");
-          log.info("Upstream Disengaged — retrying once with 'softened' framing in a fresh conversation (F22)");
+          // `softened` is the low-override twin of the `<system>`-tagged framings.
+          // A variant that deliberately avoids `<system>` tags (Claude Sonnet's
+          // `relay`) keeps itself: swapping to `softened` would reintroduce
+          // exactly the tag that model reads as a forged system prompt.
+          const retryVariant = transcriptStyleForVariant(framingVariant).framingTag === "system" ? "softened" : framingVariant;
+          text = formatMessages(body.messages, body.tools, body.tool_choice, session.conversationId, retryVariant);
+          log.info(`Upstream Disengaged — retrying once with '${retryVariant}' framing in a fresh conversation (F22)`);
           attempt--; // free retry; bounded — disengageRetried flips once
           continue;
         }

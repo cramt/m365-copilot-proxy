@@ -42,6 +42,7 @@ Change **one** variable, give it a `--label`, diff the JSON in `scripts/bench/ou
 | **model / tone** | `--model m365-copilot` vs `--model gpt-5.5` vs `--model claude-sonnet` |
 | **tool format** | fenced is the only format now (JSON removed). Vary the per-request framing via `--system <file>` (see `prompts/p*.txt`) instead |
 | **prompt / agent instructions** | edit `getAgentInstructions()`, rebuild, re-run |
+| **per-request framing variant** | one proxy with `M365_FRAMING_FILE=<file>`, then `scripts/bench/sonnet5-sweep.sh` switches the file per arm (`ARMS="default relay retag"`, any `MODEL`) and archives each arm's debug log + frames |
 | **optionsSets** | `M365_NO_CODE_INTERPRETER=1` etc. on the proxy |
 
 Example: `--label json` then `--label fenced` → compare `pct` and the

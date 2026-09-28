@@ -12,7 +12,7 @@ import {
 } from "./schemas.js";
 import {
   decodeJwt,
-  getScenarioForTone,
+  getScenarioForModel,
   getToneForModel,
   type CopilotStream,
   type CapturedImage,
@@ -308,12 +308,14 @@ export class CopilotSession {
     const claims = decodeJwt(token);
     const requestId = crypto.randomUUID();
 
-    // Resolve the tone ONCE and derive the connection's entitlement from it.
-    // `scenario` is not cosmetic: the default `OfficeWebIncludedCopilot` will
-    // not serve `Claude_Opus` (canned BotConnection apology), while
-    // `OfficeWebPaidCopilot` does. See getScenarioForTone / docs §5.
+    // Resolve the tone ONCE and derive the connection's entitlement from the
+    // MODEL (not the tone alone). `scenario` is not cosmetic: the default
+    // `OfficeWebIncludedCopilot` will not serve `Claude_Opus` (canned
+    // BotConnection apology), while `OfficeWebPaidCopilot` does — and the same
+    // `Claude_Sonnet` tone is Sonnet 4.6 on one and Sonnet 5 on the other.
+    // See getScenarioForModel / docs §5.
     const tone = getToneForModel(model);
-    const { scenario, licenseType } = getScenarioForTone(tone);
+    const { scenario, licenseType } = getScenarioForModel(model);
     log.info(`Routing: tone=${tone}, scenario=${scenario}, licenseType=${licenseType}`);
 
     const params = new URLSearchParams({

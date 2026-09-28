@@ -37,7 +37,10 @@ export {
   getToneForModel,
   getAvailableModels,
   getScenarioForTone,
+  getScenarioForModel,
+  isSonnet5Model,
   PAID_SCENARIO_TONES,
+  PAID_SCENARIO_MODELS,
   type ScenarioRouting,
   type CopilotStream,
   type CapturedImage,
@@ -54,7 +57,10 @@ export {
 export {
   currentFramingVariant,
   defaultFramingForTone,
+  defaultFramingForModel,
+  transcriptStyleForVariant,
   FRAMING_VARIANT_NAMES,
+  type TranscriptStyle,
 } from "./fenced.js";
 
 export {
