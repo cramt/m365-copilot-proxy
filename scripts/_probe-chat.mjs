@@ -59,6 +59,11 @@ export function oneTurn(o) {
     // not a model lever on its own. See packages/core/src/copilot.ts.
     scenario = "OfficeWebIncludedCopilot",
     licenseType = "Starter",
+    // Temporary chat (`disableMemory=1`), the proxy's default since #15: context
+    // survives, but the thread never lands in the Copilot history sidebar
+    // (docs/hypotheses.md §16 F28/F29). `false` / M365_SAVE_HISTORY=1 restores the
+    // pre-#15 wire state most recorded probe evidence was taken under.
+    temporaryChat = process.env.M365_SAVE_HISTORY !== "1",
   } = o;
 
   const sessionId = crypto.randomUUID();
@@ -79,6 +84,7 @@ export function oneTurn(o) {
     agent: "web",
     scenario,
   });
+  if (temporaryChat) params.set("disableMemory", "1");
   const wsUrl = `wss://substrate.office.com/m365Copilot/Chathub/${claims.oid}@${claims.tid}?${params}`;
 
   const chatMsg = {
