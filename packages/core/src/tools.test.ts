@@ -462,3 +462,46 @@ describe("formatToolDefinitions", () => {
     expect(output).toContain("</tools>");
   });
 });
+
+describe("truncateAtFabricatedToolResponse (a self-written <tool_response> is a stop sequence)", () => {
+  const bash = { type: "function" as const, function: { name: "bash", description: "run", parameters: { type: "object", properties: { command: { type: "string" } }, required: ["command"] } } };
+  // Shape of a Sonnet 4.6 fix-bug turn (Sep 28 bench): a real action, then an
+  // INVENTED result, then more actions built on the invention — 3-4 fences in
+  // the 13 turns the document guard returned as prose in that run.
+  const fabricated = "\n```bash\nls -la && cat check.py && cat calc.py\n```\n\n<tool_response>\ntotal 20\ndrwxr-xr-x 1 user user 4096 .\n-rw-r--r-- 1 user user 30 calc.py\ndef add(a, b):\n    return a - b\n</tool_response>\n\nThe bug is the minus sign. Fixing it:\n\n```bash\nsed -i 's/a - b/a + b/' calc.py\n```\n\n<tool_response>\n</tool_response>\n\n```bash\ncat calc.py\n```\n\n<tool_response>\ndef add(a, b):\n    return a + b\n</tool_response>\n\n```bash\npython3 check.py\n```\n\n<tool_response>\nOK\n</tool_response>\n\nFixed — check.py prints OK.";
+
+  it("keeps the real action and drops the invented result and everything after it", async () => {
+    const { truncateAtFabricatedToolResponse, parseToolCalls, isProseDocument } = await import("./tools.js");
+    const cut = truncateAtFabricatedToolResponse(fabricated, [bash]);
+    expect(cut).toBe("\n```bash\nls -la && cat check.py && cat calc.py\n```");
+    const parsed = parseToolCalls(cut, [bash]);
+    expect(parsed.toolCalls).toHaveLength(1);
+    expect(JSON.parse(parsed.toolCalls[0].function.arguments).command).toBe("ls -la && cat check.py && cat calc.py");
+    expect(isProseDocument(parsed)).toBe(false);
+  });
+
+  it("is why the turn used to be lost: untruncated, the document guard swallows it", async () => {
+    const { parseToolCalls, isProseDocument } = await import("./tools.js");
+    expect(isProseDocument(parseToolCalls(fabricated, [bash]))).toBe(true);
+  });
+
+  it("also stops at a <tool_result> tag", async () => {
+    const { truncateAtFabricatedToolResponse } = await import("./tools.js");
+    expect(truncateAtFabricatedToolResponse("```bash\nls\n```\n<tool_result>\nx\n</tool_result>", [bash])).toBe("```bash\nls\n```");
+  });
+
+  it("leaves text alone when no tool call precedes the tag", async () => {
+    const { truncateAtFabricatedToolResponse } = await import("./tools.js");
+    const prose = "Tool output arrives in a <tool_response> block, which I then read.";
+    expect(truncateAtFabricatedToolResponse(prose, [bash])).toBe(prose);
+    // a ```python illustration is not a call to one of the request's tools
+    const illustration = "Example:\n```python\nprint(1)\n```\nthen a <tool_response> comes back.";
+    expect(truncateAtFabricatedToolResponse(illustration, [bash])).toBe(illustration);
+  });
+
+  it("is a no-op without the tag", async () => {
+    const { truncateAtFabricatedToolResponse } = await import("./tools.js");
+    const plain = "```bash\nls -la\n```";
+    expect(truncateAtFabricatedToolResponse(plain, [bash])).toBe(plain);
+  });
+});

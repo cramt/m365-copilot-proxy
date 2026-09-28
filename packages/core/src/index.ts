@@ -89,6 +89,7 @@ export {
   looksLikeConfabulation,
   looksLikeHallucinatedCompletion,
   looksLikeRemoteArtifactCompletion,
+  truncateAtFabricatedToolResponse,
   isProseDocument,
   type Message,
   type ToolDef,

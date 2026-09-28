@@ -73,11 +73,21 @@ The model's output is scrubbed and steered at the proxy regardless of whether it
 the prompt — the durable lever, since M365's chat-RLHF leaks through no matter how the
 prompt is tuned. The layers, in handler order:
 
+- **Stop sequence at a self-written `<tool_response>`** (`truncateAtFabricatedToolResponse`):
+  only the proxy sends tool results, so a `<tool_response>` in the model's own output is
+  invented. Sonnet 4.6 writes one after its fence in about half its turns and then acts on the
+  fiction; everything from the tag on is cut, keeping the real call at the head. Runs first, so
+  the invented tail can't make the turn look like a document below. (#31.)
 - **Document guard** (`isProseDocument`): shell-routing turns *every* ` ```bash ` block into
   a tool call — so a model that ANSWERS with a markdown document full of code fences (e.g.
   "here's a simplified README") would get its own answer executed as shell. A response that
   looks like a document (≥2 fences AND ≥120 chars surrounding prose, OR ≥4 fences) is returned
   as **text**, not executed. A single action is never reclassified. (hypotheses §9 F15.)
+- **Only-the-first-call-ran note** (`executedOnlyFirstNote`): when the proxy runs less than the
+  model wrote (a cut invented result, or batched calls dropped by one-call-per-turn), the next
+  tool result is prefixed with a one-line note saying so. M365 keeps the whole reply in its own
+  history, and without the note the model believes its invented results happened ("the task is
+  already complete!"). (#31.)
 - **Confabulation retry** (`looksLikeConfabulation`): if a tool request comes back with no
   tool call and give-up prose ("can't access the files", "commands return no output", "the
   file appears empty", "paste the files"), the proxy re-prompts forcefully **in the same

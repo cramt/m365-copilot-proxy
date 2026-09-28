@@ -372,6 +372,36 @@ export function looksLikeConfabulation(text: string | null): boolean {
   return CONFABULATION_PATTERNS.some((re) => re.test(t));
 }
 
+// A tool result the MODEL wrote. The proxy is the only thing that sends
+// <tool_response> blocks, so one in the model's own output is invented.
+const SELF_WRITTEN_RESULT = /<tool_(?:response|result)\b/i;
+const ANY_FENCE = /```[A-Za-z0-9_.-]+[ \t]*\r?\n[\s\S]*?```/;
+
+/**
+ * Treat a self-written `<tool_response>` as a STOP SEQUENCE.
+ *
+ * Real tool-calling APIs stop generating at the call. M365's chat models don't:
+ * Claude Sonnet 4.6 routinely writes its fence and then carries on, inventing
+ * the `<tool_response>` it expects and acting on that fiction — 38 of 80 turns
+ * in the Sep 28 bench dumps (the same tone on the paid scenario: 0 of 154).
+ * With 3-4 fences the tail makes the turn look like a prose document, so the
+ * document guard returned it as text and the one REAL action at the head was
+ * thrown away: at least 7 of the 13 turns that run lost to the guard carried an
+ * invented result (#31).
+ *
+ * Everything from the invented tag onward is fabricated, so cut there and keep
+ * the head — but only when the head holds a real call to one of `tools` (any
+ * fence, if no tools are given): a tag after prose or a ```python illustration
+ * is not a model predicting ITS OWN call's result.
+ */
+export function truncateAtFabricatedToolResponse(text: string, tools?: ToolDef[]): string {
+  const i = text.search(SELF_WRITTEN_RESULT);
+  if (i < 0) return text;
+  const head = text.slice(0, i);
+  const acted = tools && tools.length > 0 ? parseToolCalls(head, tools).hasToolCalls : ANY_FENCE.test(head);
+  return acted ? head.trimEnd() : text;
+}
+
 /**
  * Did the model write a DOCUMENT (prose with embedded code fences) rather than
  * issue tool calls? The shell-routing parser greedily turns every ```bash block
