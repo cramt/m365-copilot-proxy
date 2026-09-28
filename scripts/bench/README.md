@@ -50,8 +50,10 @@ Example: `--label json` then `--label fenced` → compare `pct` and the
 ## Cost & caveats
 
 - Each task = several M365 messages (multi-turn). Full suite ≈ 25–40 messages,
-  spread across fresh conversations. Use `--tasks` / `--repeat 1` to stay cheap;
-  if the account is throttling (lots of `ERROR`), wait ~10 min.
+  spread across fresh conversations. Use `--tasks` / `--repeat 1` to stay cheap.
+  A throttled account now shows as `ERROR … HTTP 429 … m365_throttled` (the turn's
+  final result says `PerUserThrottled`); ~190 fresh threads in a day tripped it.
+  Exclude those rows from any comparison — they measure the account, not the arm.
 - `n=1` by default — LLM output varies. Use `--repeat 3+` before trusting small
   differences.
 - Tasks live in `tasks.mjs` (objective, python3+bash only). Add your own.

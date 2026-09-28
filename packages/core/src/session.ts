@@ -356,6 +356,11 @@ export class CopilotSession {
       const maxScores: Record<string, number> = {};
       let turnCountServer: number | null = null;
       let turnState: string | null = null;
+      // The final type:2 item's `result` — `{value: "Success"}` normally, and
+      // `{value: "Throttled", errorCode: "PerUserThrottled", message}` when the
+      // account is rate-limited: the turn then carries NO content frames, only a
+      // BotConnection apology inside that item (#35).
+      let serverResult: { value: string; errorCode?: string; message?: string } | null = null;
       // Generated images captured this turn (§14). Keyed by fileToken so the
       // repeated progress snapshots for one image collapse to a single entry.
       const imagesByToken = new Map<string, CapturedImage>();
@@ -468,6 +473,9 @@ export class CopilotSession {
         },
         get turnState() {
           return turnState;
+        },
+        get result() {
+          return serverResult;
         },
         get images() {
           return [...imagesByToken.values()];
@@ -795,8 +803,16 @@ export class CopilotSession {
         if (base.type === 2) {
           // Stream item — the FINAL state of the conversation, with authoritative
           // throttle/turnCount/scores. Mine it before closing.
-          const item = (raw as { item?: { messages?: any[]; throttling?: any; turnState?: string } }).item;
+          const item = (raw as { item?: { messages?: any[]; throttling?: any; turnState?: string; result?: { value?: unknown; errorCode?: unknown; message?: unknown } } }).item;
           if (item) {
+            if (typeof item.result?.value === "string") {
+              serverResult = {
+                value: item.result.value,
+                ...(typeof item.result.errorCode === "string" ? { errorCode: item.result.errorCode } : {}),
+                ...(typeof item.result.message === "string" ? { message: item.result.message } : {}),
+              };
+              if (item.result.value !== "Success") log.info(`Turn result: ${item.result.value}${serverResult.errorCode ? ` (${serverResult.errorCode})` : ""}`);
+            }
             if (item.turnState) turnState = item.turnState;
             if (item.throttling) {
               throttleInfo = { current: item.throttling.numUserMessagesInConversation, max: item.throttling.maxNumUserMessagesInConversation };
