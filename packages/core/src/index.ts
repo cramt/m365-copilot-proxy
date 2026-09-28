@@ -90,6 +90,7 @@ export {
   looksLikeHallucinatedCompletion,
   looksLikeRemoteArtifactCompletion,
   truncateAtFabricatedToolResponse,
+  textAfterFirstToolCall,
   isProseDocument,
   type Message,
   type ToolDef,

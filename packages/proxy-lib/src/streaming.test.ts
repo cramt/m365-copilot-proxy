@@ -199,3 +199,26 @@ describe("the only-the-first-call-ran note", () => {
     expect(sent[1]).not.toContain("(Note:");
   });
 });
+
+describe("a reply that opens with a tool call and then writes an essay", () => {
+  it("runs the opening call and tells the model its essay was written before the result", async () => {
+    const tools = [{ type: "function", function: { name: "bash", parameters: { type: "object", properties: { command: { type: "string" } } } } }];
+    scripted.texts = [];
+    scripted.queue = [
+      { fullText: "```bash\ncat config.json\n```\n\nThe file `config.json` doesn't exist in my environment, so here is how you could fix it yourself:\n\n## Steps\n\n```bash\nsed -i s/3000/8080/ config.json\n```\n\nThat's all." },
+      { fullText: "Done." },
+    ];
+    const pool = new SessionPool();
+    const messages: any[] = [{ role: "user", content: `essay ${Math.random()}` }];
+    const r1 = await (await handleChatCompletion(ChatCompletionRequest.parse({ model: "claude-sonnet", stream: false, tools, messages }), pool)).json();
+    const call = r1.choices[0].message.tool_calls?.[0];
+    expect(call).toBeDefined(); // the old guard returned the essay as text
+    expect(JSON.parse(call.function.arguments).command).toBe("cat config.json");
+    messages.push({ role: "assistant", content: null, tool_calls: r1.choices[0].message.tool_calls });
+    messages.push({ role: "tool", tool_call_id: call.id, content: '{"port": 3000}' });
+    await handleChatCompletion(ChatCompletionRequest.parse({ model: "claude-sonnet", stream: false, tools, messages }), pool);
+    expect(scripted.texts[1]).toContain("was written before its result existed");
+    expect(scripted.texts[1]).toContain('{"port": 3000}');
+    scripted.queue = [];
+  });
+});

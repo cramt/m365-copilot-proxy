@@ -712,3 +712,18 @@ export function parseFencedToolCalls(
 
   return { calls, leftover };
 }
+
+/** Where the first fence that parses as a real tool call starts and ends —
+ *  the same acceptance rule as parseFencedToolCalls — or null if there is none. */
+export function findFirstToolFence(
+  text: string,
+  specs: Map<string, FencedToolSpec>,
+): { start: number; end: number } | null {
+  const re = new RegExp(FENCE_REGEX.source, "g");
+  let match: RegExpExecArray | null;
+  while ((match = re.exec(text)) !== null) {
+    const spec = specs.get(match[1]);
+    if (spec && parseFencedInner(spec, match[2])) return { start: match.index, end: match.index + match[0].length };
+  }
+  return null;
+}

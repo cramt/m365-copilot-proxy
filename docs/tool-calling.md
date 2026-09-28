@@ -82,10 +82,13 @@ prompt is tuned. The layers, in handler order:
   a tool call — so a model that ANSWERS with a markdown document full of code fences (e.g.
   "here's a simplified README") would get its own answer executed as shell. A response that
   looks like a document (≥2 fences AND ≥120 chars surrounding prose, OR ≥4 fences) is returned
-  as **text**, not executed. A single action is never reclassified. (hypotheses §9 F15.)
+  as **text**, not executed. A single action is never reclassified. (hypotheses §9 F15.) A reply
+  that **opens** with a tool call (a preamble under 200 chars, no heading, no code fence before
+  it) is always an action: its tail was written before the call's result existed. Judged by
+  the whole text, that tail made 34 of 42 guard verdicts in one day's bench runs. (#33.)
 - **Only-the-first-call-ran note** (`executedOnlyFirstNote`): when the proxy runs less than the
-  model wrote (a cut invented result, or batched calls dropped by one-call-per-turn), the next
-  tool result is prefixed with a one-line note saying so. M365 keeps the whole reply in its own
+  model wrote (a cut invented result, batched calls dropped by one-call-per-turn, or a tail
+  written after the call), the next tool result is prefixed with a one-line note saying so. M365 keeps the whole reply in its own
   history, and without the note the model believes its invented results happened ("the task is
   already complete!"). (#31.)
 - **Confabulation retry** (`looksLikeConfabulation`): if a tool request comes back with no
