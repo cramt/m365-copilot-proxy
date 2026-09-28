@@ -41,7 +41,9 @@ These are what actually move compliance. In rough order of importance:
 5. **Proxy-side hardening** (deterministic, behind the model): document guard
    (`isProseDocument` — don't execute a model's own markdown answer), confab retry,
    hallucinated-completion retry, tool-result labelling, one-call-per-turn, stripping
-   invented `{confidence}`/`{final}` JSON. See [`tool-calling.md`](tool-calling.md).
+   invented `{confidence}`/`{final}` JSON, treating a model-written `<tool_response>` as a
+   stop sequence (Sonnet 4.6 invents one in about half its turns), and telling the model on
+   the next turn when only its first call ran. See [`tool-calling.md`](tool-calling.md).
 
 ## What does NOT work (confirmed dead-ends — don't re-litigate)
 

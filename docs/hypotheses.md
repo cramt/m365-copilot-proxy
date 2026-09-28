@@ -3055,7 +3055,12 @@ this table to measure what it recovers.
 
 ---
 
-## 20. Sep 28 2026 — Multi-message turns lost the head of every message after the first 🟢 (#29)
+## 20. Sep 28 2026 — Claude bench forensics: proxy bugs found in the frame dumps
+
+Found while working out why Claude Sonnet scored low on the bench. Each finding below is a
+deterministic proxy bug, fixed and unit-tested; the evidence is the 2026-09-28 frame dumps.
+
+### F38 — Multi-message turns lost the head of every message after the first 🟢 (#29)
 
 A turn can carry several bot messages (distinct `messageId`s). Each message's first token arrives
 only as a snapshot (with a `cursor` naming it); its `writeAtCursor` deltas carry no id. The
@@ -3069,3 +3074,26 @@ garbled prose ("Let me fix that now.python\` tool runs…"). Affects every model
 last cursor and snapshots by `messageId`; unit-tested on the verbatim live frame sequence.
 Checked: all 5,971 deltas in the day's dumps follow a cursor naming a *content* message — none a
 `Progress`/chain-of-thought one — so routing by cursor can't fold reasoning into the answer.
+
+### F39 — Sonnet 4.6 writes its own `<tool_response>` in about half its turns 🟢 (#31)
+**38 of 80** turns in one Claude Sonnet 4.6 bench run (`claude-sonnet`, included scenario)
+contain a model-written `<tool_response>`, 36 of them right after a real fence; the same tone on
+the paid scenario: 0 of 154. The model writes its call and keeps going, inventing the result it
+expects and acting on it. The invented results pile up extra fences and prose, the document
+guard returns the turn as text (13 turns in that run; at least 7 provably fabricated — the log
+truncates at 1 kB), and the real first action is lost.
+**Shipped (1): a stop sequence.** `truncateAtFabricatedToolResponse` cuts at the first
+self-written tag when a real call to one of the request's tools precedes it. It fired 11× in a
+single later 4.6 run.
+**Shipped (2): a note.** Cutting isn't enough. M365's server-side history still holds the whole
+reply, so the model believes its invented results happened and reads the real one as stale: 4 of
+one run's 10 tasks ended "It looks like this tool response came in out of context — there's no
+active task" / "the task is already complete!" after only its `cat` ran. So when the proxy runs
+less than the model wrote (a cut invented result, or batched calls dropped by one-call-per-turn),
+the next tool result is prefixed with `executedOnlyFirstNote`: "(Note: only the first tool call in
+your previous reply was actually run. Everything you wrote after it, including the
+`<tool_response>` you wrote yourself, did not happen. Here is the real output…)". One turn only.
+**Result.** Counting that failure shape directly, across both framings under test and excluding
+throttled rows: **9 of 56** Sonnet 4.6 runs ended with the model believing its invented tail had
+happened before the note, **0 of 70** after it (p = 5×10⁻⁴). GPT-5.5-think-deeper on the same
+build: 9/10, no regression.

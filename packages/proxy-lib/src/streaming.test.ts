@@ -2,7 +2,15 @@ import { describe, it, expect, vi } from "vitest";
 
 // Replace core's ModelSession with a scripted fake so we can exercise the handler's
 // streaming path with no auth/WebSocket. Everything else in core stays real.
-const scripted: { deltas: string[]; fullText?: string } = { deltas: [] };
+const scripted: {
+  deltas: string[];
+  fullText?: string;
+  runs: number;
+  /** Text of every run() call, in order. */
+  texts: string[];
+  /** Per-call replies, consumed front-first; when empty, `deltas`/`fullText` apply. */
+  queue: Array<{ fullText: string }>;
+} = { deltas: [], runs: 0, texts: [], queue: [] };
 
 vi.mock("@m365-copilot/core", async (importActual) => {
   const actual = await importActual<typeof import("@m365-copilot/core")>();
@@ -12,12 +20,16 @@ vi.mock("@m365-copilot/core", async (importActual) => {
     reset() {}
     newConversation() { this.conversationId = "conv-test-2"; }
     async refreshAgent() { return false; }
-    async run() {
-      const deltas = scripted.deltas;
-      const full = scripted.fullText ?? deltas.join("");
+    async run(text: string) {
+      this.turnCount++; // like the real session: later requests go down the delta path
+      scripted.runs++;
+      scripted.texts.push(text);
+      const next = scripted.queue.shift();
+      const deltas = next ? (next.fullText ? [next.fullText] : []) : scripted.deltas;
+      const full = next ? next.fullText : (scripted.fullText ?? deltas.join(""));
       const stream = {
         fullText: full,
-        hasContent: true,
+        hasContent: full.length > 0,
         images: [],
         throttle: { current: 1, max: 600 },
         contentOrigin: "Claude",
@@ -141,5 +153,49 @@ describe("priority-access exhaustion on the streaming path", () => {
     const { contents, errors } = await streamRaw(["You", "r code ", "has a bug."]);
     expect(errors).toHaveLength(0);
     expect(contents.join("")).toBe("Your code has a bug.");
+  });
+});
+
+describe("the only-the-first-call-ran note", () => {
+  const tools = [{ type: "function", function: { name: "bash", parameters: { type: "object", properties: { command: { type: "string" } } } } }];
+  const NOTE = "(Note: only the first tool call in your previous reply was actually run.";
+
+  /** One conversation, several requests through the same pool. */
+  async function converse(replies: string[]): Promise<string[]> {
+    scripted.texts = [];
+    scripted.queue = replies.map((fullText) => ({ fullText }));
+    const pool = new SessionPool();
+    const messages: any[] = [{ role: "system", content: "sys" }, { role: "user", content: `fix it ${Math.random()}` }];
+    for (let i = 0; i < replies.length; i++) {
+      const res = await handleChatCompletion(ChatCompletionRequest.parse({ model: "claude-sonnet", stream: false, tools, messages }), pool);
+      const msg = (await res.json()).choices[0].message;
+      if (!msg.tool_calls) break;
+      messages.push({ role: "assistant", content: null, tool_calls: msg.tool_calls });
+      messages.push({ role: "tool", tool_call_id: msg.tool_calls[0].id, content: `real output ${i}` });
+    }
+    scripted.queue = [];
+    return scripted.texts;
+  }
+
+  it("tells the model, with the real result, that its invented tail never ran", async () => {
+    const sent = await converse([
+      "```bash\ncat config.json\n```\n\n<tool_response>\n{\"port\": 3000}\n</tool_response>\n\nThe bug is fixed.",
+      "```bash\nsed -i s/3000/8080/ config.json\n```",
+      "Done.",
+    ]);
+    expect(sent).toHaveLength(3);
+    expect(sent[1].startsWith(NOTE)).toBe(true);
+    expect(sent[1]).toContain("real output 0");
+    expect(sent[2]).not.toContain("(Note:"); // once only: turn 2 was executed in full
+  });
+
+  it("says how many batched calls were dropped by one-call-per-turn", async () => {
+    const sent = await converse(["```bash\nls\n```\n\n```bash\ncat a.txt\n```", "Done."]);
+    expect(sent[1]).toContain("only the first of the 2 tool calls in your previous reply was run; the other one was not");
+  });
+
+  it("adds nothing when the whole reply ran", async () => {
+    const sent = await converse(["```bash\nls\n```", "Done."]);
+    expect(sent[1]).not.toContain("(Note:");
   });
 });

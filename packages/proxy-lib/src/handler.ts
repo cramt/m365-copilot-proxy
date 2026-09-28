@@ -15,6 +15,7 @@ import {
   looksLikeConfabulation,
   looksLikeHallucinatedCompletion,
   looksLikeRemoteArtifactCompletion,
+  truncateAtFabricatedToolResponse,
   isProseDocument,
   getMessageContent,
   noteRequestOutcome,
@@ -96,6 +97,31 @@ interface ConversationState {
   session: ModelSession;
   sentMessageCount: number;
   lastAccessedAt: number;
+  /** Sent ahead of the next tool result when the proxy executed less than the
+   *  model wrote last turn (see executedOnlyFirstNote). */
+  pendingNote: string | null;
+}
+
+/**
+ * The note that corrects the model's view of what actually ran.
+ *
+ * When the proxy executes only part of a reply — the head before a self-written
+ * `<tool_response>` (the stop sequence), or the first of several batched calls —
+ * M365's server-side history still holds the WHOLE reply. The model then
+ * believes its invented results happened, often including an invented "done",
+ * and reads the real result as stale: "It looks like this tool response came in
+ * out of context" (Sonnet 4.6: 9 of 56 bench runs ended that way without this
+ * note, 0 of 70 with it; #31).
+ */
+export function executedOnlyFirstNote(fabricated: boolean, droppedCalls: number): string | null {
+  if (fabricated) {
+    return "(Note: only the first tool call in your previous reply was actually run. Everything you wrote after it, including the <tool_response> you wrote yourself, did not happen. Here is the real output of that first call:)";
+  }
+  if (droppedCalls > 0) {
+    const rest = droppedCalls === 1 ? "the other one was not" : `the other ${droppedCalls} were not`;
+    return `(Note: only the first of the ${droppedCalls + 1} tool calls in your previous reply was run; ${rest}. Here is the real output of the first one:)`;
+  }
+  return null;
 }
 
 // --- Session pool: maps conversation fingerprint → M365 session ---
@@ -126,6 +152,7 @@ export class SessionPool {
         log.info(`Conversation ${fingerprint}: messages shrunk (${messages.length} < ${existing.sentMessageCount}), resetting`);
         existing.session.reset();
         existing.sentMessageCount = 0;
+        existing.pendingNote = null;
       }
       existing.lastAccessedAt = Date.now();
       return existing;
@@ -136,6 +163,7 @@ export class SessionPool {
     const state: ConversationState = {
       session: new ModelSession(this.sessionOptions),
       sentMessageCount: 0,
+      pendingNote: null,
       lastAccessedAt: Date.now(),
     };
     this.conversations.set(fingerprint, state);
@@ -246,6 +274,11 @@ export async function handleChatCompletion(
     const delta = newMessages.length > 0 ? formatDeltaMessages(newMessages) : "";
     if (delta.length > 0) {
       text = delta;
+      // Only a tool result is the thing the note corrects the model about.
+      if (conv.pendingNote && newMessages.some((m) => m.role === "tool")) {
+        text = `${conv.pendingNote}\n\n${delta}`;
+        log.info("Prepended the only-the-first-call-ran note (last reply was partly executed)");
+      }
       log.info(`Chat completion: model=${model}, stream=${body.stream}, messages=${body.messages.length}, new=${newMessages.length}, turn=${session.turnCount}, mode=delta, cid=${convId}`);
     } else {
       // No meaningful new content to send — nudge M365 to continue.
@@ -253,6 +286,7 @@ export async function handleChatCompletion(
       log.info(`Chat completion: model=${model}, stream=${body.stream}, messages=${body.messages.length}, turn=${session.turnCount}, mode=retry, cid=${convId}`);
     }
   }
+  conv.pendingNote = null; // one turn only: consumed above, or stale
 
   log.debug("Formatted prompt:", trunc(text, 1000));
 
@@ -438,10 +472,21 @@ export async function handleChatCompletion(
   async function produce(onDelta?: (delta: string) => void): Promise<Produced> {
   // When tools are present, buffer full response to detect tool calls
   if (hasTools) {
+    // A <tool_response> the model wrote itself is a stop sequence: everything
+    // after it is an invented result (see truncateAtFabricatedToolResponse).
+    // `cutFabricated` reflects the attempt whose text is finally used.
+    let cutFabricated = false;
+    let droppedCalls = 0;
+    const stopAtFabricatedResult = (raw: string): string => {
+      const cut = truncateAtFabricatedToolResponse(raw, body.tools);
+      cutFabricated = cut !== raw;
+      if (cutFabricated) log.info(`Model wrote its own <tool_response> — cut ${raw.length - cut.length} fabricated chars (stop sequence)`);
+      return cut;
+    };
     const result = await runBuffered();
     if ("error" in result) return { kind: "error", resp: result.error };
     conv.sentMessageCount = body.messages.length;
-    let fullText = result.fullText;
+    let fullText = stopAtFabricatedResult(result.fullText);
 
     log.debug("Raw response (tool mode):", trunc(fullText, 1000));
     let parsed = parseToolCalls(fullText, body.tools);
@@ -472,7 +517,7 @@ export async function handleChatCompletion(
       const retry = await runBuffered();
       if ("error" in retry) return { kind: "error", resp: retry.error };
       conv.sentMessageCount = body.messages.length;
-      fullText = retry.fullText;
+      fullText = stopAtFabricatedResult(retry.fullText);
       parsed = parseToolCalls(fullText, body.tools);
       log.info(`After forcing retry: hasToolCalls=${parsed.hasToolCalls}, count=${parsed.toolCalls.length}`);
     }
@@ -550,11 +595,15 @@ export async function handleChatCompletion(
       // previous tool_response. Set M365_ALLOW_MULTI_TOOL to restore batching.
       if (!process.env.M365_ALLOW_MULTI_TOOL && parsed.toolCalls.length > 1) {
         log.info(`One-call-per-turn: keeping ${parsed.toolCalls[0].function.name}, dropping ${parsed.toolCalls.length - 1} batched call(s)`);
+        droppedCalls = parsed.toolCalls.length - 1;
         parsed.toolCalls = [parsed.toolCalls[0]];
       }
     }
 
     if (parsed.hasToolCalls && parsed.toolCalls.length > 0) {
+      // The model's server-side history holds more than what runs; say so on
+      // the turn that carries the real result (executedOnlyFirstNote).
+      conv.pendingNote = executedOnlyFirstNote(cutFabricated, droppedCalls);
       return { kind: "tools", toolCalls: parsed.toolCalls };
     }
     return { kind: "text", text: fullText };
