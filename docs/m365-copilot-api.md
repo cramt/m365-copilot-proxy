@@ -173,8 +173,9 @@ There is no `model` parameter. The `tone` string on the chat message picks the m
 | `m365-copilot` / `auto` | `magic` (auto-routing) | default; routes GPT-5 class |
 | `quick` | `Gpt_5_5_Chat` | alias of `gpt-5.5`. Was `Gpt_Quick`, now rejected, and no unversioned chat tone survives (`Gpt_Chat` is rejected too) |
 | `think-deeper` | `Gpt_5_5_Reasoning` | alias of `gpt-5.5-think-deeper`. Was `Gpt_Reasoning`, now rejected |
-| `claude` / `claude-sonnet` | `Claude_Sonnet` | **real Anthropic Claude Sonnet 4.5** (self-identifies) |
-| `claude-sonnet-think-deeper` | `Claude_Sonnet_Reasoning` | Claude Sonnet 4.5 + reasoning |
+| `claude` / `claude-sonnet` / `claude-sonnet-4.6` | `Claude_Sonnet` | **real Anthropic Claude Sonnet 4.6** (self-identifies; it was 4.5 until Sep 2026 — `claude-sonnet-4.5` is kept as an alias) |
+| `claude-sonnet-5` | `Claude_Sonnet` **+ paid scenario** | **Claude Sonnet 5** (self-IDs "Claude Sonnet 5", cutoff 2026-01). Same tone as the row above: the scenario picks the model (see below). Has its own server-side tools — see "Claude Sonnet 5" below |
+| `claude-sonnet-think-deeper` | `Claude_Sonnet_Reasoning` | Claude Sonnet + reasoning (included scenario; not re-identified since 4.5) |
 | `claude-opus` / `claude-opus-5` | `Claude_Opus` | **real Opus — Claude Opus 5**. Reachable ONLY under `scenario=OfficeWebPaidCopilot` (see below). On the default included scenario it is a "registered but dead" route |
 | `gpt-5.5` / `gpt-5.5-quick` | `Gpt_5_5_Chat` | current GPT generation |
 | `gpt-5.5-think-deeper` | `Gpt_5_5_Reasoning` | |
@@ -216,8 +217,10 @@ The WS query carries `scenario` and `licenseType`. We sent `OfficeWebIncludedCop
 
 | `scenario` | `licenseType` | Serves |
 |---|---|---|
-| `OfficeWebIncludedCopilot` | `Starter` | everything in the table above **except** `Claude_Opus` and `Gpt_6_Reasoning` |
-| `OfficeWebPaidCopilot` | `Premium` | the same, **plus `Claude_Opus` and `Gpt_6_Reasoning`** |
+| `OfficeWebIncludedCopilot` | `Starter` | everything in the table above **except** `Claude_Opus` and `Gpt_6_Reasoning`; `Claude_Sonnet` is **Sonnet 4.6** |
+| `OfficeWebPaidCopilot` | `Premium` | the same, **plus `Claude_Opus` and `Gpt_6_Reasoning`** — and `Claude_Sonnet` becomes **Sonnet 5** |
+
+**A scenario can change which model a tone IS, not only whether it serves.** `Claude_Sonnet` is live on both scenarios, so a liveness probe (`contentOrigin: "DeepLeo"`) reads the same on each — only a self-ID prompt shows that the included route is Sonnet 4.6 and the paid one Sonnet 5 (tone-probe ×3, 2026-09-28). The tone table alone is therefore not enough to route: `claude-sonnet-5` differs from `claude-sonnet` only in its scenario, which is why routing is derived from the **model ID** (`getScenarioForModel`, via `PAID_SCENARIO_MODELS`), not the tone.
 
 Two things worth separating, because conflating them wastes probes:
 
@@ -226,9 +229,15 @@ Two things worth separating, because conflating them wastes probes:
 
 This is an entitlement, not a bypass: the account has to actually hold the paid/premium access. On a seat that doesn't, requesting the paid scenario just doesn't produce Opus.
 
-**The gate is not a budget.** Opus is both entitlement-gated *and* metered by priority access (below), and while it was the only paid-scenario tone those two properties were indistinguishable — it was easy to read "paid scenario" as shorthand for "scarce". `Gpt_6_Reasoning` separates them: same gate, no priority-access allowance, throttled by the ordinary per-conversation cap and thread-rate governor like everything else. So membership of `PAID_SCENARIO_TONES` says what a tone needs to *reach* a model and nothing about what it costs once it does. Downstream code should not infer one from the other — the priority-access detector keys on the refusal text (so it simply never fires for GPT-6), and the framing default is decided per-tone, which is why GPT-6 keeps `baseline` where Opus takes `minimal`.
+**The gate is not a budget.** Opus is both entitlement-gated *and* metered by priority access (below), and while it was the only paid-scenario tone those two properties were indistinguishable — it was easy to read "paid scenario" as shorthand for "scarce". `Gpt_6_Reasoning` separates them: same gate, no priority-access allowance, throttled by the ordinary per-conversation cap and thread-rate governor like everything else. So membership of `PAID_SCENARIO_TONES` says what a tone needs to *reach* a model and nothing about what it costs once it does. Downstream code should not infer one from the other — the priority-access detector keys on the refusal text (so it simply never fires for GPT-6), and the framing default is decided per model (`defaultFramingForModel`), which is why GPT-6 keeps `baseline` where Opus takes `minimal`.
 
-Implemented in `getScenarioForTone()` (`copilot.ts`), applied per-turn in `session.ts` from the **resolved tone** — so a request routes itself and no caller has to know the rule. Override with `M365_SCENARIO` / `M365_LICENSE_TYPE` (independent, for a tenant whose entitlement is named differently).
+Implemented in `getScenarioForModel()` (`copilot.ts`), applied per-turn in `session.ts` from the **model ID** — paid when the resolved tone is in `PAID_SCENARIO_TONES` (Opus, GPT-6) or the ID is in `PAID_SCENARIO_MODELS` (Sonnet 5, including unmapped `claude-sonnet-5…` strings) — so a request routes itself and no caller has to know the rule. `getScenarioForTone()` remains for tone-only callers. Override with `M365_SCENARIO` / `M365_LICENSE_TYPE` (independent, for a tenant whose entitlement is named differently).
+
+### Claude Sonnet 5 arrives with its own tools — and reads our framing as an injection
+
+Under the paid scenario `Claude_Sonnet` is Sonnet 5, and it comes with a **real function-calling toolset of its own**: `bash_tool`, `create_file`, `str_replace`, `view` (it names them in its reasoning), running in a **remote sandbox** — cwd `/home/claude`, uploads `/mnt/user-data/uploads`, outputs `/mnt/user-data/outputs` (shared back as Teams artifact links). On the wire they are `Progress` frames (§6). Nothing the client sends turns them off: `pwd` ran natively → `/home/claude` with the proxy's optionsSets, with **no** optionsSets, and with no plugins and minimal variants; with `Progress` undeclared the frames vanish but the answer is still `/home/claude` — `scripts/sonnet5-native-tools-probe.mjs`, n=1 per cell, hypotheses §21 F36. Sonnet 4.6 has no such toolset; its sandbox is the M365 code interpreter (§ below).
+
+So a Sonnet 5 tool turn has two execution paths, and the wrong one looks right: the model inspects its own empty sandbox and reports, truthfully, that the task's files don't exist — or creates the file there and hands back a Teams link. What decides which path it takes is how our framing is **labelled**: a `<system>` block inside the user turn reads to Sonnet 5 as a forged system prompt, and its chain-of-thought summary says so ("an embedded "system" block… a prompt injection attempt I should disregard"). The same framing text relabelled `<harness_instructions>` stopped being flagged. The shipped default for Sonnet 5 is the `relay` framing — a user-voice note asking it to guide the user through their own terminal one command at a time, which also names the sandbox as the wrong machine (27/30 on the bench from 5/30; 5/5 through real pi). Sonnet 4.6 shows the same reflex more weakly and defaults to `relay` too. Measurements and the failed alternatives: hypotheses §21; the prompting lesson: prompt-engineering.md.
 
 ### Opus priority access is a separate, much smaller budget
 
@@ -284,7 +293,7 @@ A delta carries **no `messageId`**. It extends whichever message the most recent
 ```
 **Only treat a bot message as content when `messageType` is absent.** Messages *with* a `messageType` are control/meta (see below).
 
-**A turn can contain several bot messages** (distinct `messageId`s — separate bubbles in the real client). Claude narrates in one message and writes its tool fence in the next. Each message streams the same way: its **first token arrives only as a snapshot** that carries a `cursor` naming the message, then `writeAtCursor` deltas that extend it, then a final full snapshot. So text must be assembled **per message** — deltas routed by the last cursor, snapshots by their `messageId` — and the messages joined in order of first appearance. Folding everything into one string (what the proxy did until 2026-09-28) drops the head of every message after the first: the new message's head snapshot is shorter than the accumulated text, so it is ignored, and its deltas get glued onto the previous message. Every multi-message turn in that day's dumps was corrupted this way — mostly garbled prose (`"Let me fix that now.python\` tool runs…"`), and sometimes a lost tool call (`"…the SECRET_CODE.bash\ngrep -r …"`: the fence's opening backticks were the dropped head). `TurnTextComposer` (`session.ts`) implements the per-message assembly (#29).
+**A turn can contain several bot messages** (distinct `messageId`s — separate bubbles in the real client). Claude narrates in one message and writes its tool fence in the next; Sonnet 5 interleaves text with its own tool calls. Each message streams the same way: its **first token arrives only as a snapshot** that carries a `cursor` naming the message, then `writeAtCursor` deltas that extend it, then a final full snapshot. So text must be assembled **per message** — deltas routed by the last cursor, snapshots by their `messageId` — and the messages joined in order of first appearance. Folding everything into one string (what the proxy did until 2026-09-28) drops the head of every message after the first: the new message's head snapshot is shorter than the accumulated text, so it is ignored, and its deltas get glued onto the previous message. Every multi-message turn in that day's dumps was corrupted this way — mostly garbled prose (`"Let me fix that now.python\` tool runs…"`), and sometimes a lost tool call (`"…the SECRET_CODE.bash\ngrep -r …"`: the fence's opening backticks were the dropped head). `TurnTextComposer` (`session.ts`) implements the per-message assembly (#29).
 
 The final-state bot message (in either the last update frame or the `type:2` stream item) also carries:
 
@@ -309,6 +318,10 @@ See §7.
 
 ### Control messageTypes you'll see
 `Disengaged` (see §9), `ReferencesListComplete`, `Progress`, `InternalSearchQuery`, `RenderCardRequest`, `EndOfRequest`, … — none of these carry the answer text.
+
+Two `Progress` shapes are worth reading rather than skipping, both first seen on Claude Sonnet 5 (paid scenario, §5):
+- `contentOrigin: "ChainOfThoughtSummary"`, `addToChainOfThought: true` — a summary of the model's reasoning, streamed as it goes. It is the best RE instrument this API has: it says in plain words *why* the model refused a framing ("this looks like a prompt injection…").
+- `contentType: "Code"` (text "Coding and executing", the command in `hiddenText`) and `contentOrigin: "CreateFileExecutor"` — the model calling its **own** server-side tools. They are declare-to-receive: drop `Progress` from `allowedMessageTypes` and the frames vanish, but the reply still reports `/home/claude` after a tool-call-length pause (10.7 s), so hiding the frames doesn't stop the sandbox (n=1).
 
 ### End of turn
 A `type:2` (stream item), `type:3` (completion), or `type:7` (close) ends the turn; we close the socket. Reply to `type:6` pings in the meantime.

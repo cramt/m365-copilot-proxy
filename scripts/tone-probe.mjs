@@ -45,7 +45,11 @@ const TONES = [
   { tone: "Gpt_5_6_Chat", note: "included scenario: expect DeepLeo — BotConnection here means re-gated", ...INCLUDED },
   { tone: "Gpt_5_6_Chat", note: "PAID scenario: expect DeepLeo (it served here even while gated)", ...PAID },
   { tone: "Gpt_6_Chat", note: "REJECTED outright — validator error, not the 5.6 deflection" },
-  { tone: "Claude_Sonnet", note: "real Claude Sonnet 4.5" },
+  // One tone, TWO models: Sonnet 4.6 on included, Sonnet 5 on paid (2026-09-28,
+  // docs §21). Both cells read LIVE with this `pong` prompt — LIVE says a model
+  // answered, not which one; a self-ID prompt is what tells them apart.
+  { tone: "Claude_Sonnet", note: "included scenario: Claude Sonnet 4.6", ...INCLUDED },
+  { tone: "Claude_Sonnet", note: "PAID scenario: Claude Sonnet 5 (model ID claude-sonnet-5)", ...PAID },
   { tone: "Anthropic_Claude", note: "speculative Claude" },
   { tone: "Claude_Reasoning", note: "accepted but actually GPT-5 — don't use" },
 

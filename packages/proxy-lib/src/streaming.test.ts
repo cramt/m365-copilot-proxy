@@ -10,8 +10,8 @@ const scripted: {
   runs: number;
   /** Text of every run() call, in order. */
   texts: string[];
-  /** Per-call replies, consumed front-first; when empty, `deltas`/`fullText` apply. */
-  queue: Array<{ fullText: string }>;
+  /** Per-call overrides, consumed front-first (e.g. a Disengaged turn, then an answer). */
+  queue: Array<{ fullText: string; messageType?: string | null }>;
 } = { deltas: [], runs: 0, texts: [], queue: [] };
 
 vi.mock("@m365-copilot/core", async (importActual) => {
@@ -36,7 +36,7 @@ vi.mock("@m365-copilot/core", async (importActual) => {
         images: [],
         throttle: { current: 1, max: 600 },
         contentOrigin: "Claude",
-        messageType: null as string | null,
+        messageType: (next?.messageType ?? null) as string | null,
         messageId: "m1",
         scores: null,
         turnCount: 1,
@@ -263,5 +263,35 @@ describe("an explicitly Throttled turn (result.value = Throttled)", () => {
     expect(errors).toHaveLength(1);
     expect(errors[0].code).toBe("m365_throttled");
     scripted.result = null;
+  });
+});
+
+describe("Disengage retry keeps a model's <system>-free framing", () => {
+  const tools = [{ type: "function", function: { name: "bash", parameters: { type: "object", properties: { command: { type: "string" } } } } }];
+  async function disengageThenAnswer(model: string): Promise<string> {
+    scripted.result = null;
+    scripted.texts = [];
+    scripted.queue = [{ fullText: "", messageType: "Disengaged" }, { fullText: "```bash\nls\n```" }];
+    const body = ChatCompletionRequest.parse({
+      model, stream: false, tools,
+      messages: [{ role: "system", content: "sys" }, { role: "user", content: `do it ${model}` }],
+    });
+    const res = await handleChatCompletion(body, new SessionPool());
+    expect(res.status).toBe(200);
+    expect(scripted.texts).toHaveLength(2);
+    scripted.queue = [];
+    return scripted.texts[1];
+  }
+
+  it("retries Sonnet 5 with relay again, never a <system>-tagged framing", async () => {
+    const retry = await disengageThenAnswer("claude-sonnet-5");
+    expect(retry).not.toContain("<system>");
+    expect(retry).toContain("guide me through this from my terminal");
+  });
+
+  it("still retries the <system>-tagged defaults with softened (F22)", async () => {
+    const retry = await disengageThenAnswer("gpt-5.5-think-deeper");
+    expect(retry).toContain("<system>");
+    expect(retry).toContain("You are an automated coding agent working in a real working directory");
   });
 });

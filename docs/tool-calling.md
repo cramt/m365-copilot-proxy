@@ -87,10 +87,10 @@ prompt is tuned. The layers, in handler order:
   it) is always an action: its tail was written before the call's result existed. Judged by
   the whole text, that tail made 34 of 42 guard verdicts in one day's bench runs. (#33.)
 - **Only-the-first-call-ran note** (`executedOnlyFirstNote`): when the proxy runs less than the
-  model wrote (a cut invented result, batched calls dropped by one-call-per-turn, or a tail
-  written after the call), the next tool result is prefixed with a one-line note saying so. M365 keeps the whole reply in its own
-  history, and without the note the model believes its invented results happened ("the task is
-  already complete!"). (#31.)
+  model wrote (a cut invented result, dropped batched calls, or a tail after the call), the
+  next tool result is prefixed with a one-line note saying so. M365 keeps the whole reply in
+  its own history, and without the note the model believes its invented results happened
+  ("the task is already complete!"). (#31.)
 - **Confabulation retry** (`looksLikeConfabulation`): if a tool request comes back with no
   tool call and give-up prose ("can't access the files", "commands return no output", "the
   file appears empty", "paste the files"), the proxy re-prompts forcefully **in the same

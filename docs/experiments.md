@@ -182,6 +182,33 @@ All run with `scripts/_probe-chat.mjs` overrides; no license needed.
 
 ---
 
+## E. Claude Sonnet 5 (paid scenario — §21)
+
+### E-S1 — What gates Sonnet 5's own sandbox tools? (F36)
+- **Hypothesis:** some client-side field turns `bash_tool`/`create_file` off. Falsified so far for
+  optionsSets, plugins, variants and `allowedMessageTypes`; next candidates: `gptDefinitions`,
+  `clientOverrides.capabilities`, a different `clientInfo.clientPlatform`.
+- **Run:** `node scripts/sonnet5-native-tools-probe.mjs pwd-proxy,pwd-none,pwd-bare,pwd-noprogress`
+  (add a cell per candidate). **Read:** `native tool calls: N` and whether the reply says
+  `/home/claude`. **Cost:** 1 fresh thread per cell — needs a paid seat.
+
+### E-S2 — Framing sweep for Sonnet 5 (F37, F43)
+- **Done:** `relay_inline` (the relay note inside the first `<user>` block) is falsified: 1/20 vs
+  relay's 9/10 in the same session (F43). The variant was removed; F43 gives its prompt layout.
+- **Hypothesis under test next (H-opening):** Sonnet 5 settles provenance from how the real message
+  opens. Needs two single-change variants registered in `fenced.ts`: (a) relay with the harness
+  block moved first, note still untagged; (b) the `<user>`-tagged note + task first, harness block
+  after. Predicted: (a) fails like relay_inline, (b) works like relay.
+- **Run:** proxy with `M365_FRAMING_FILE`, then
+  `ARMS="<a> default <b> <a>" TAG=s5c bash scripts/bench/sonnet5-sweep.sh`, alternating so each
+  variant has a concurrent relay control.
+  **Read:** SOLVED per arm, then `ChainOfThoughtSummary` frames in the archived
+  `~/.config/opencode-m365/s5-sweep/<tag>-<n>-<arm>-frames` for *why* each miss refused.
+  **Cost:** ~12 fresh threads per arm; ~190 threads in one day tripped `PerUserThrottled` (F40),
+  so run at most ~8 arms per account per day.
+
+---
+
 ## Adding an experiment
 
 1. State the hypothesis + falsification criterion in `hypotheses.md`.

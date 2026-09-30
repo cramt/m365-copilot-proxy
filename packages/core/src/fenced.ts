@@ -1,5 +1,6 @@
 import { readFileSync } from "node:fs";
 import { createLogger } from "./log.js";
+import { getToneForModel, isSonnet5Model } from "./copilot.js";
 import type { ParsedToolCall, ToolDef } from "./tools.js";
 
 const log = createLogger("fenced");
@@ -281,10 +282,65 @@ export function currentFramingVariant(toneDefault?: string): string {
  *  than per-message. If it is per-message this buys latency and nothing else —
  *  it is still the right default for a model that doesn't need the cage, but
  *  don't read it as a measured quota win. Override with M365_FRAMING_VARIANT.
- *  Every other tone keeps the bench-tuned `baseline` byte-for-byte. */
+ *
+ *  `Claude_Sonnet` (Sonnet 4.6 on the included scenario, Sonnet 5 on the paid
+ *  one) defaults to `relay`: both read the `<system>`-tagged baseline as an
+ *  injected prompt, and relay beat baseline for each — Sonnet 5 45/50 vs 6/40,
+ *  Sonnet 4.6 78/90 vs 47/76 (docs §21). Every other tone keeps the bench-tuned
+ *  `baseline` byte-for-byte. */
 export function defaultFramingForTone(tone?: string): string | undefined {
-  return tone === "Claude_Opus" ? "minimal" : undefined;
+  if (tone === "Claude_Opus") return "minimal";
+  if (tone === "Claude_Sonnet") return "relay";
+  return undefined;
 }
+
+/** The framing a MODEL ID should default to. Differs from defaultFramingForTone
+ *  only where one tone serves two models: `Claude_Sonnet` is Sonnet 4.6 on the
+ *  included scenario and Sonnet 5 on the paid one, so a Sonnet-5-only framing
+ *  has to key on the model ID (see SONNET_5_DEFAULT_FRAMING). */
+export function defaultFramingForModel(model: string): string | undefined {
+  if (isSonnet5Model(model)) return SONNET_5_DEFAULT_FRAMING;
+  return defaultFramingForTone(getToneForModel(model));
+}
+
+// Sonnet 5 defaults to `relay` (docs §21): the model is asked to guide the user
+// through their own terminal one command at a time, which is an ordinary
+// assistant role, rather than being told it is an agent with a second tool
+// format. Under `baseline` it reads the framing as a prompt injection and works
+// in its own sandbox instead (6/40); relay: 45/50, and 5/5 through real pi.
+// Today this equals the `Claude_Sonnet` tone default; it stays separate so the
+// two models can diverge without a routing change.
+const SONNET_5_DEFAULT_FRAMING = "relay";
+
+/** How formatMessages wraps the framing block and the harness's own system
+ *  messages. Historically both went in `<system>` tags. Claude Sonnet 5 reads a
+ *  `<system>` block inside a user turn as a forged system prompt — its CoT says
+ *  "prompt injection" and it then ignores the whole framing (docs §21) — so
+ *  some variants label the text with its real provenance instead. */
+export interface TranscriptStyle {
+  /** Tag around the framing + <tools> block, or null for none (user-voice prose). */
+  framingTag: string | null;
+  /** Tag around a harness `system` message. */
+  systemTag: string;
+}
+const SYSTEM_STYLE: TranscriptStyle = { framingTag: "system", systemTag: "system" };
+const RETAG_STYLE: TranscriptStyle = { framingTag: "harness_instructions", systemTag: "harness_system_prompt" };
+const USER_VOICE_STYLE: TranscriptStyle = { framingTag: null, systemTag: "harness_system_prompt" };
+const TRANSCRIPT_STYLES: Record<string, TranscriptStyle> = {
+  retag: RETAG_STYLE,
+  honest: USER_VOICE_STYLE,
+  terse_user: USER_VOICE_STYLE,
+  relay: USER_VOICE_STYLE,
+};
+export function transcriptStyleForVariant(variant: string): TranscriptStyle {
+  return TRANSCRIPT_STYLES[variant] ?? SYSTEM_STYLE;
+}
+
+// The one fact Sonnet 5 is missing: it has REAL function-calling tools of its
+// own, in a remote sandbox, so an unexplained second tool format reads as an
+// attempt to redefine its tools. Named explicitly because its CoT names them.
+const BUILT_IN_SANDBOX = "bash_tool, create_file, str_replace, view, …";
+const SANDBOX_PATHS = "/home/claude, /mnt/user-data";
 
 type FramingBuilder = (tools: ToolDef[]) => string;
 
@@ -569,6 +625,58 @@ ${toolsBlock(tools)}`;
 - A <tool_response> is the real result of a command — the ground truth for what it printed.
 
 A session usually opens by looking at the files (\`ls -la\`, then \`cat\` the relevant ones), then makes the change, then re-runs to confirm it. One \`\`\`bash block per reply; the next reply follows its <tool_response>. Once a <tool_response> shows the task is complete, the final reply is a one-line summary.
+
+${toolsBlock(tools)}`;
+  },
+
+  // --- Sonnet 5 candidates (docs §21). Sonnet 5 (Claude_Sonnet on the paid
+  // scenario) has its own function-calling tools in a remote sandbox, and reads
+  // the framing below as an injection: a `<system>` block inside a user turn,
+  // redefining its identity ("execution core … not a chat assistant") and its
+  // tool format. Its CoT says so in most first turns. Each candidate attacks a
+  // different part of that. ---
+
+  // V12 — retag. `baseline` text byte-for-byte; only the wrapper changes
+  // (<harness_instructions> / <harness_system_prompt>, see TRANSCRIPT_STYLES).
+  // Isolates the `<system>` tag as the trigger.
+  retag(tools) {
+    return FRAMING_VARIANTS.baseline(tools);
+  },
+
+  // V13 — honest. The user explains the setup in their own voice: what the
+  // harness is, why the built-in sandbox is the wrong machine, how to reach the
+  // right one. No persona override and no override-shaped rules; the
+  // anti-confabulation meaning survives as plain fact ("the files are there").
+  honest(tools) {
+    const shell = findShellTool(tools);
+    const lang = shell ? "bash" : "<tool_name>";
+    return `A note from me (the user) on how I'm running this conversation, before the task:
+
+I'm using you through a coding-agent harness on my own computer. The files for this task are in the harness's working directory on my machine. Your built-in tools (${BUILT_IN_SANDBOX}) run in a separate cloud sandbox (${SANDBOX_PATHS}) that can't see my files, and anything you create there never reaches me — so please don't use them for this task.
+
+To work on my files, reply with a fenced code block whose info-string is one of my harness's tool names below; usually that's a \`\`\`${lang} block. My harness runs it on my machine, in the project directory, and sends the real output back to you in a <tool_response> message. The files the task mentions are there right now, so start by looking at them (e.g. \`ls -la\`, then \`cat\` the relevant ones) rather than assuming what they contain. Send one block per reply and wait for its result. Once the task is done, reply with a short plain-text summary instead of a block.
+
+My harness's tools:
+${toolsBlock(tools)}`;
+  },
+
+  // V14 — terse_user. The same two facts as `honest` in one parenthetical.
+  // Isolates length: less text for a reasoning model to scrutinise.
+  terse_user(tools) {
+    const lang = findShellTool(tools) ? "bash" : "<tool_name>";
+    return `(Note from me: my files are on my own machine, not in your sandbox, so please don't use your built-in tools. To run something on my machine, reply with one \`\`\`${lang} block — or another tool block from the list below — and my harness will send back its real output in a <tool_response>.)
+
+${toolsBlock(tools)}`;
+  },
+
+  // V15 — relay. A different ROLE rather than a different explanation: not an
+  // agent at all, but a pair-programmer telling the user which command to run
+  // next, one at a time — the most chat-native shape there is.
+  relay(tools) {
+    const lang = findShellTool(tools) ? "bash" : "<tool_name>";
+    return `Before the task, a note on how we'll work: I'd like you to guide me through this from my terminal, one command at a time. Please don't use your own sandbox tools (${BUILT_IN_SANDBOX}) — that's a separate cloud machine (${SANDBOX_PATHS}) and my project isn't on it.
+
+Each time you want something run or looked at, reply with just the command in a single \`\`\`${lang} block (or one of the other tool blocks below). I'll run it in my project directory right away and paste the real output back to you as a <tool_response>. The files the task mentions are already there, so it's best to start by looking at them. When the task is complete, tell me in a sentence instead of sending a block.
 
 ${toolsBlock(tools)}`;
   },

@@ -3,8 +3,13 @@ import { JwtClaims } from "./schemas.js";
 // Model name → tone mapping.
 // The server VALIDATES tones (an unknown tone errors with "Failed to invoke
 // 'Chat'"), so every entry here has been confirmed accepted against the live
-// API. Claude tones self-identify as "Claude Sonnet 4.5, by Anthropic"
-// (docs/hypotheses.md H8.6) — a genuine non-Microsoft model at zero marginal cost.
+// API. Claude tones self-identify as Anthropic models (docs/hypotheses.md
+// H8.6) — a genuine non-Microsoft model at zero marginal cost.
+//
+// A tone is not always one model: `Claude_Sonnet` serves Claude Sonnet 4.6 on
+// the included scenario and Claude Sonnet 5 on the paid one (tone-probe
+// 2026-09-28, docs §21). The scenario therefore has to be derivable from the
+// MODEL ID as well as the tone — see PAID_SCENARIO_MODELS below.
 //
 // Microsoft retired the `*_Quick` tones: `Gpt_Quick` and `Gpt_5_{2,3,4}_Quick`
 // are now REJECTED by the validator, and the `*_Chat` tones replaced them
@@ -25,9 +30,15 @@ const MODEL_TONES: Record<string, string> = {
   "think-deeper": "Gpt_5_5_Reasoning",
 
   // Claude (real Anthropic models, confirmed via self-id) — chat + reasoning.
+  // On the included scenario `Claude_Sonnet` is now Sonnet 4.6 (it was 4.5);
+  // `claude-sonnet-4.5` stays as a legacy alias so existing configs keep working.
   "claude": "Claude_Sonnet",
   "claude-sonnet": "Claude_Sonnet",
   "claude-sonnet-4.5": "Claude_Sonnet",
+  "claude-sonnet-4.6": "Claude_Sonnet",
+  // Same tone, paid scenario: Claude Sonnet 5 (self-IDs "Claude Sonnet 5",
+  // knowledge cutoff 2026-01). The scenario comes from PAID_SCENARIO_MODELS.
+  "claude-sonnet-5": "Claude_Sonnet",
   "claude-sonnet-think-deeper": "Claude_Sonnet_Reasoning",
   // Opus is real and strong, but it is NOT reachable on the default
   // `OfficeWebIncludedCopilot` scenario — there it deflects with a
@@ -151,22 +162,60 @@ export const PAID_SCENARIO_TONES: ReadonlySet<string> = new Set([
   "Gpt_6_Reasoning",
 ]);
 
+/**
+ * Model IDs that need the paid scenario even though their TONE does not.
+ *
+ * `Claude_Sonnet` is one tone and two models: Sonnet 4.6 on the included
+ * scenario, Sonnet 5 on the paid one. PAID_SCENARIO_TONES can't express that
+ * (it would drag `claude-sonnet` onto Sonnet 5 too), so the choice lives on
+ * the model ID. Unmapped strings a client may send for the same model
+ * (`claude-sonnet-5[1m]`, a dated `claude-sonnet-5-…`) are caught by
+ * SONNET_5_PATTERN rather than silently served by Sonnet 4.6.
+ */
+export const PAID_SCENARIO_MODELS: ReadonlySet<string> = new Set([
+  "claude-sonnet-5",
+]);
+// `sonnet-5`, `sonnet5`, `sonnet_5`, `sonnet 5`, and anything after it — but
+// not `sonnet-4.5` / `sonnet-4-5` (the digit after the separator is 4) and not
+// a hypothetical `sonnet-50`.
+const SONNET_5_PATTERN = /sonnet[-_ ]?5(?!\d)/i;
+
+/** True when this model ID is Claude Sonnet 5, i.e. `Claude_Sonnet` + paid scenario. */
+export function isSonnet5Model(model: string): boolean {
+  return PAID_SCENARIO_MODELS.has(model) ||
+    (getToneForModel(model) === "Claude_Sonnet" && SONNET_5_PATTERN.test(model));
+}
+
 export interface ScenarioRouting {
   scenario: string;
   licenseType: string;
+}
+
+function routing(paid: boolean): ScenarioRouting {
+  return {
+    scenario: process.env.M365_SCENARIO ?? (paid ? PAID_SCENARIO : DEFAULT_SCENARIO),
+    licenseType: process.env.M365_LICENSE_TYPE ?? (paid ? PAID_LICENSE_TYPE : DEFAULT_LICENSE_TYPE),
+  };
 }
 
 /**
  * The `scenario`/`licenseType` pair a given tone must be requested under.
  * Env overrides (`M365_SCENARIO` / `M365_LICENSE_TYPE`) win, so a tenant whose
  * entitlement is named differently can still be driven without a code change.
+ * Prefer getScenarioForModel when a model ID is at hand: a tone alone can't
+ * tell Sonnet 4.6 from Sonnet 5.
  */
 export function getScenarioForTone(tone: string): ScenarioRouting {
-  const paid = PAID_SCENARIO_TONES.has(tone);
-  return {
-    scenario: process.env.M365_SCENARIO ?? (paid ? PAID_SCENARIO : DEFAULT_SCENARIO),
-    licenseType: process.env.M365_LICENSE_TYPE ?? (paid ? PAID_LICENSE_TYPE : DEFAULT_LICENSE_TYPE),
-  };
+  return routing(PAID_SCENARIO_TONES.has(tone));
+}
+
+/**
+ * The scenario a MODEL ID must be requested under: paid when its tone is
+ * entitlement-gated (Opus, GPT-6) or when the ID itself selects the paid
+ * model behind a shared tone (Sonnet 5). This is what session.ts routes on.
+ */
+export function getScenarioForModel(model: string): ScenarioRouting {
+  return routing(PAID_SCENARIO_TONES.has(getToneForModel(model)) || isSonnet5Model(model));
 }
 
 export function getAvailableModels(): string[] {
