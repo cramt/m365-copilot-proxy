@@ -39,6 +39,8 @@ export {
   getScenarioForTone,
   getScenarioForModel,
   isSonnet5Model,
+  toneUsesToolAgent,
+  AGENTLESS_TOOL_TONES,
   PAID_SCENARIO_TONES,
   PAID_SCENARIO_MODELS,
   type ScenarioRouting,

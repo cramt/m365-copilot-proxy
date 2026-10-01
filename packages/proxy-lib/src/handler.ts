@@ -4,6 +4,7 @@ import {
   createLogger,
   trunc,
   getToneForModel,
+  toneUsesToolAgent,
   defaultFramingForModel,
   currentFramingVariant,
   transcriptStyleForVariant,
@@ -246,21 +247,18 @@ export async function handleChatCompletion(
   const hasTools = body.tools && body.tools.length > 0 && body.tool_choice !== "none";
   const model = body.model;
 
-  // Claude (Claude_Sonnet tone) tool-calls reliably AGENT-LESS (probe: 4/4 ```bash,
-  // 0 disengage) and self-IDs as Claude Sonnet 4.5; the declarative agent would
-  // override the tone back to GPT-5 (H8.6) AND add jailbreak-shape signal. GPT-the-
-  // chat-model, by contrast, won't tool-call agent-less (0/4) so it still needs the
-  // agent. So: attach the tool agent EXCEPT on Claude models — there, stay agent-less
-  // to get real Claude doing tools via shell-routing (docs §10 F23). Force the old
-  // behavior with M365_FORCE_AGENT=1.
-  // Stay agent-less ONLY when the tone is actually a Claude tone — empirically that's
-  // the path that tool-calls right now (route-probe 2026-07-07: Claude_Sonnet agent-less
-  // 2/2; the magic path 0/2). Derive it from the RESOLVED tone, not the raw model
-  // string: getToneForModel now routes any unmapped `claude-*` (e.g. the
-  // `claude-opus-5[1m]` a Claude Code client sends) to Claude_Sonnet, so this check
-  // then keeps that request on the working agent-less path. The old
-  // `/claude/i.test(model)` + `magic` fallback split a claude-* string into GPT-tone +
-  // agent-suppressed — the confab quadrant we observed. One resolved tone drives both.
+  // Which tool requests carry the declarative tool agent. GPT-the-chat-model won't
+  // tool-call agent-less (0/4), so it needs the agent. Claude tool-calls reliably
+  // AGENT-LESS via shell-routing (F23), and on a non-premium account the agent
+  // path doesn't serve Claude at all (§22 F44). `Gpt_6_Reasoning` doesn't serve
+  // with the agent on any account (§22 F45, #41). The rule lives in core
+  // (`toneUsesToolAgent`); force the agent with M365_FORCE_AGENT=1.
+  // Derive it from the RESOLVED tone, not the raw model string: getToneForModel
+  // routes any unmapped `claude-*` (e.g. the `claude-opus-5[1m]` a Claude Code
+  // client sends) to a Claude tone, so this keeps that request on the working
+  // agent-less path. The old `/claude/i.test(model)` + `magic` fallback split a
+  // claude-* string into GPT-tone + agent-suppressed — the confab quadrant we
+  // observed. One resolved tone drives both.
   const tone = getToneForModel(model);
   // Framing default follows the MODEL (defaultFramingForModel): Opus gets the
   // lean variant (it doesn't need the anti-narration cage, and its priority-
@@ -269,8 +267,7 @@ export async function handleChatCompletion(
   // bench-tuned `baseline`. Keyed on the model, not the tone, because one tone
   // can serve two models. M365_FRAMING_* still wins.
   const framingVariant = currentFramingVariant(defaultFramingForModel(model));
-  const isClaudeTone = /^Claude_/i.test(tone);
-  const useToolAgent = !!hasTools && (process.env.M365_FORCE_AGENT === "1" || !isClaudeTone);
+  const useToolAgent = !!hasTools && (process.env.M365_FORCE_AGENT === "1" || toneUsesToolAgent(tone));
 
   // Format message: full prompt on first turn, delta on follow-ups.
   // M365 is stateful — it remembers everything from prior turns,

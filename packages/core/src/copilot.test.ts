@@ -1,10 +1,12 @@
 import { describe, expect, it, afterEach } from "vitest";
 import {
+  AGENTLESS_TOOL_TONES,
   getAvailableModels,
   getScenarioForModel,
   getScenarioForTone,
   getToneForModel,
   isSonnet5Model,
+  toneUsesToolAgent,
 } from "./copilot.js";
 
 const INCLUDED = { scenario: "OfficeWebIncludedCopilot", licenseType: "Starter" };
@@ -106,6 +108,27 @@ describe("GPT-6 routing", () => {
     // model that can only ever fail.
     const advertisedTones = getAvailableModels().map(getToneForModel);
     expect(advertisedTones).not.toContain("Gpt_6_Chat");
+  });
+});
+
+describe("which tool requests carry the tool agent", () => {
+  const usesAgent = (model: string) => toneUsesToolAgent(getToneForModel(model));
+
+  it("keeps GPT-6 off the agent — it is a dead route with it attached (#41)", () => {
+    expect(AGENTLESS_TOOL_TONES.has("Gpt_6_Reasoning")).toBe(true);
+    expect(usesAgent("gpt-6-think-deeper")).toBe(false);
+  });
+
+  it("keeps every Claude model off the agent, mapped or not", () => {
+    for (const id of ["claude", "claude-sonnet", "claude-sonnet-5", "claude-sonnet-think-deeper", "claude-opus", "claude-opus-5[1m]", "claude-haiku-9"]) {
+      expect(usesAgent(id)).toBe(false);
+    }
+  });
+
+  it("still gives the GPT-5.x and default models the agent — they won't act without it", () => {
+    for (const id of ["m365-copilot", "quick", "think-deeper", "gpt-5.2", "gpt-5.4", "gpt-5.5", "gpt-5.5-think-deeper", "gpt-5.6", "gpt-5.6-think-deeper"]) {
+      expect(usesAgent(id)).toBe(true);
+    }
   });
 });
 

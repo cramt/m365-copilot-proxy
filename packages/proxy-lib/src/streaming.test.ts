@@ -1,4 +1,4 @@
-import { describe, it, expect, vi } from "vitest";
+import { describe, it, expect, vi, afterEach } from "vitest";
 
 // Replace core's ModelSession with a scripted fake so we can exercise the handler's
 // streaming path with no auth/WebSocket. Everything else in core stays real.
@@ -12,7 +12,9 @@ const scripted: {
   texts: string[];
   /** Per-call overrides, consumed front-first (e.g. a Disengaged turn, then an answer). */
   queue: Array<{ fullText: string; messageType?: string | null }>;
-} = { deltas: [], runs: 0, texts: [], queue: [] };
+  /** The `useAgent` argument of every run() call, in order. */
+  agentFlags: Array<boolean | undefined>;
+} = { deltas: [], runs: 0, texts: [], queue: [], agentFlags: [] };
 
 vi.mock("@m365-copilot/core", async (importActual) => {
   const actual = await importActual<typeof import("@m365-copilot/core")>();
@@ -22,10 +24,11 @@ vi.mock("@m365-copilot/core", async (importActual) => {
     reset() {}
     newConversation() { this.conversationId = "conv-test-2"; }
     async refreshAgent() { return false; }
-    async run(text: string) {
+    async run(text: string, _model?: string, _signal?: AbortSignal, useAgent?: boolean) {
       this.turnCount++; // like the real session: later requests go down the delta path
       scripted.runs++;
       scripted.texts.push(text);
+      scripted.agentFlags.push(useAgent);
       const next = scripted.queue.shift();
       const deltas = next ? (next.fullText ? [next.fullText] : []) : scripted.deltas;
       const full = next ? next.fullText : (scripted.fullText ?? deltas.join(""));
@@ -293,5 +296,51 @@ describe("Disengage retry keeps a model's <system>-free framing", () => {
     const retry = await disengageThenAnswer("gpt-5.5-think-deeper");
     expect(retry).toContain("<system>");
     expect(retry).toContain("You are an automated coding agent working in a real working directory");
+  });
+});
+
+describe("which requests carry the tool agent (#41)", () => {
+  const tools = [{ type: "function", function: { name: "bash", parameters: { type: "object", properties: { command: { type: "string" } } } } }];
+
+  /** The `useAgent` flag the handler passed for one request on `model`. */
+  async function agentFlagFor(model: string, withTools = true): Promise<boolean | undefined> {
+    scripted.result = null;
+    scripted.agentFlags = [];
+    scripted.queue = [{ fullText: "```bash\nls\n```" }];
+    const body = ChatCompletionRequest.parse({
+      model, stream: false,
+      ...(withTools ? { tools } : {}),
+      messages: [{ role: "user", content: `list files ${model} ${Math.random()}` }],
+    });
+    const res = await handleChatCompletion(body, new SessionPool());
+    expect(res.status).toBe(200);
+    scripted.queue = [];
+    expect(scripted.agentFlags).toHaveLength(1);
+    return scripted.agentFlags[0];
+  }
+
+  afterEach(() => { delete process.env.M365_FORCE_AGENT; });
+
+  it("sends gpt-6-think-deeper tool requests without the agent", async () => {
+    expect(await agentFlagFor("gpt-6-think-deeper")).toBe(false);
+  });
+
+  it("still sends GPT-5.x tool requests with the agent", async () => {
+    expect(await agentFlagFor("gpt-5.5-think-deeper")).toBe(true);
+    expect(await agentFlagFor("m365-copilot")).toBe(true);
+  });
+
+  it("still sends Claude tool requests without it", async () => {
+    expect(await agentFlagFor("claude-sonnet")).toBe(false);
+    expect(await agentFlagFor("claude-opus-5[1m]")).toBe(false);
+  });
+
+  it("never attaches it to a request without tools", async () => {
+    expect(await agentFlagFor("gpt-5.5-think-deeper", false)).toBe(false);
+  });
+
+  it("lets M365_FORCE_AGENT=1 put it back", async () => {
+    process.env.M365_FORCE_AGENT = "1";
+    expect(await agentFlagFor("gpt-6-think-deeper")).toBe(true);
   });
 });

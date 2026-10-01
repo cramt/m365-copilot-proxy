@@ -196,7 +196,8 @@ pnpm test:live      # M365_LIVE=1; live tests that hit real M365 (uses quota)
   scenario as Opus but carries **no** priority-access budget and throttles like everything else,
   so `PAID_SCENARIO_TONES` is about reaching a model, not about what it costs. Don't key metering
   or framing decisions off that set — the quota detector reads the refusal text and the framing
-  default is per-tone (Opus `minimal`, GPT-6 `baseline`). See docs/hypotheses.md §17.
+  default is per-tone (Opus `minimal` for its budget, GPT-6 `relay` for its sandbox — see the
+  agent bullet below). See docs/hypotheses.md §17, §22.
 - **One tone can be two models — `Claude_Sonnet` is Sonnet 4.6 (included) and Sonnet 5 (paid).**
   So routing follows the **model ID** (`getScenarioForModel`, `PAID_SCENARIO_MODELS`), and so does
   the framing default (`defaultFramingForModel`). Never add `Claude_Sonnet` to
@@ -210,6 +211,12 @@ pnpm test:live      # M365_LIVE=1; live tests that hit real M365 (uses quota)
   in `<user>` tags either: tags are just text to it, and the variant that did (`relay_inline`,
   removed) scored 1/20 (§21 F43).
   **Read its `ChainOfThoughtSummary` frames** (`M365_DUMP_FRAMES=1`) — they say why it refused.
+- **Not every tone serves with the tool agent — `toneUsesToolAgent()` decides, per exact tone.**
+  Claude tones and `Gpt_6_Reasoning` go agent-less even with tools. With the agent attached GPT-6 is
+  a dead route on every account (`result: InternalError`; the proxy used to 502 on it, #41), and
+  Claude is dead on non-premium accounts. Add a tone to `AGENTLESS_TOOL_TONES` only after
+  `scripts/agent-tone-probe.mjs` says so. Agent-less also means M365's code interpreter is on, and under `baseline` GPT-6
+  worked there instead of acting (0/30); its default is `relay` (30/30; 5/5 in real pi). See docs/hypotheses.md §22.
 - **A turn can hold several bot messages; assemble text per message.** Each new message's head
   arrives only as a snapshot with a `cursor`; folding everything into one string drops it (it ate
   a fence's backticks). `TurnTextComposer` in `session.ts` — don't "simplify" it away. #29.

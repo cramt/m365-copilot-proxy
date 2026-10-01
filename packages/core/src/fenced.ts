@@ -286,11 +286,21 @@ export function currentFramingVariant(toneDefault?: string): string {
  *  `Claude_Sonnet` (Sonnet 4.6 on the included scenario, Sonnet 5 on the paid
  *  one) defaults to `relay`: both read the `<system>`-tagged baseline as an
  *  injected prompt, and relay beat baseline for each — Sonnet 5 45/50 vs 6/40,
- *  Sonnet 4.6 78/90 vs 47/76 (docs §21). Every other tone keeps the bench-tuned
- *  `baseline` byte-for-byte. */
+ *  Sonnet 4.6 78/90 vs 47/76 (docs §21).
+ *
+ *  `Gpt_6_Reasoning` defaults to `relay` too. It used to keep `baseline` on the
+ *  theory that it drives M365's GPT agent path — but it never served WITH the
+ *  agent (#41), so its tool requests go agent-less, where the proxy also enables
+ *  M365's code interpreter. Under baseline GPT-6 worked in that sandbox
+ *  (`/mnt/data`, `bash -lc …`) instead of emitting tool calls, and 12 of 30 first
+ *  turns tripped the JailBreak Classifier: 0/30 solved, vs relay 30/30 (bench,
+ *  2026-10-01, confab-retry off; docs §22 F47).
+ *
+ *  Every other tone keeps the bench-tuned `baseline` byte-for-byte. */
 export function defaultFramingForTone(tone?: string): string | undefined {
   if (tone === "Claude_Opus") return "minimal";
   if (tone === "Claude_Sonnet") return "relay";
+  if (tone === "Gpt_6_Reasoning") return "relay";
   return undefined;
 }
 

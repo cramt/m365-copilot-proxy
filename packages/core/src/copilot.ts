@@ -150,12 +150,13 @@ const PAID_LICENSE_TYPE = "Premium";
  * Tones that only serve under the paid scenario.
  *
  * Membership means ENTITLEMENT and nothing else. It is not a proxy for "is
- * metered" or "needs lean framing": `Claude_Opus` happens to be both gated and
- * drawing on a small priority-access budget, but `Gpt_6_Reasoning` is gated and
- * throttled exactly like every other model, with no separate budget. The two
- * properties travelled together only while Opus was the sole member, so nothing
- * downstream should infer one from the other — `defaultFramingForTone` and
- * `parsePriorityAccessExhaustion` each decide for themselves.
+ * metered", "needs lean framing" or "goes without the tool agent":
+ * `Claude_Opus` happens to be both gated and drawing on a small priority-access
+ * budget, but `Gpt_6_Reasoning` is gated and throttled exactly like every other
+ * model, with no separate budget. The properties travelled together only while
+ * Opus was the sole member, so nothing downstream should infer one from the
+ * other — `defaultFramingForTone`, `parsePriorityAccessExhaustion` and
+ * `toneUsesToolAgent` each decide for themselves.
  */
 export const PAID_SCENARIO_TONES: ReadonlySet<string> = new Set([
   "Claude_Opus",
@@ -184,6 +185,30 @@ const SONNET_5_PATTERN = /sonnet[-_ ]?5(?!\d)/i;
 export function isSonnet5Model(model: string): boolean {
   return PAID_SCENARIO_MODELS.has(model) ||
     (getToneForModel(model) === "Claude_Sonnet" && SONNET_5_PATTERN.test(model));
+}
+
+// --- Which tool requests carry the Copilot Studio tool agent ------------------
+//
+// The proxy attaches its declarative tool agent to tool requests, because the
+// GPT chat path won't act without it. Some tones must NOT get it:
+//
+// - Claude tones tool-call reliably agent-less (F23), and a non-premium
+//   account's agent path doesn't serve Claude at all — a dead route
+//   (BotConnection, `result: InternalError`), hypotheses §22 F44.
+// - `Gpt_6_Reasoning` doesn't serve with the agent attached on any account:
+//   the same dead route, 4/4 across a premium and a non-premium account, while
+//   the same tone agent-less answers as GPT-6 (§22 F45, #41). Its bench score
+//   (24/30, §17) was measured agent-less.
+//
+// Listed by exact tone. Check a new tone with `scripts/agent-tone-probe.mjs`
+// before deciding which side it belongs on.
+export const AGENTLESS_TOOL_TONES: ReadonlySet<string> = new Set([
+  "Gpt_6_Reasoning",
+]);
+
+/** Whether a tool request on this tone should carry the tool agent. */
+export function toneUsesToolAgent(tone: string): boolean {
+  return !/^Claude_/i.test(tone) && !AGENTLESS_TOOL_TONES.has(tone);
 }
 
 export interface ScenarioRouting {

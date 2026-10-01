@@ -282,7 +282,7 @@ without NixOS: `nix run github:cramt/m365-copilot-proxy -- 4141`.
 
 | Model ID | M365 Tone | Description |
 |---|---|---|
-| `gpt-6-think-deeper` | Gpt_6_Reasoning | GPT-6 reasoning. **Needs a paid/premium Copilot seat** (see below); 24/30 on the bench |
+| `gpt-6-think-deeper` | Gpt_6_Reasoning | GPT-6 reasoning. **Needs a paid/premium Copilot seat** (see below); 30/30 on the bench (agent-less, `relay` framing) |
 | `gpt-5.6-think-deeper` | Gpt_5_6_Reasoning | GPT-5.6 reasoning — 27/30 on the bench, tied with `gpt-5.5-think-deeper` |
 | `gpt-5.6` / `gpt-5.6-quick` | Gpt_5_6_Chat | GPT-5.6 fast ("GPT 5.6 Quick response" in the web UI). **Weak at tool calling** — 7/30 on the bench (see below) |
 | `gpt-5.5-think-deeper` | Gpt_5_5_Reasoning | **Recommended default for agents/tool-calling** — 26/30 on the bench |
@@ -352,16 +352,16 @@ access will see the apology no matter which scenario is requested.
 **It is not metered separately, and that is the part worth stating.** The paid scenario is an
 entitlement gate; it does not imply a budget. GPT-6 has no priority-access allowance and is
 throttled by the same per-conversation cap and thread-rate governor as every other model, so
-none of the Opus advice about rationing turns applies. It also keeps the `baseline` framing:
-the lean `minimal` variant exists to conserve Opus's scarce budget, and GPT-6 drives M365's
-GPT path, which is what `baseline`'s anti-narration framing is tuned for.
+none of the Opus advice about rationing turns applies.
 
-**Tool calling: 24/30 on the bench**, with all six non-passing runs being prose give-ups —
-the model answering in narration instead of acting — rather than Disengaged or malformed
-calls. That is the failure mode the confab-retry already targets, though we have not measured
-how many of the six it recovers. `gpt-5.5-think-deeper` remains the recommended default and
-the no-model fallback: it benchmarks higher and needs no entitlement, so making GPT-6 the
-default would trade reliability for a model most seats can't reach.
+**Tool calls go without the tool agent, and with the `relay` framing.** With the Copilot Studio
+tool agent attached, `Gpt_6_Reasoning` doesn't serve at all (a canned apology, on every account),
+so the proxy sends GPT-6 tool requests agent-less, as it does Claude's (#41). Agent-less, under the
+`baseline` framing GPT-6 worked in M365's own code interpreter instead of calling your tools:
+0/30 on the bench. Under `relay` it scored **30/30** (confab-retry off, 2026-10-01), and 5/5 driving real pi. Both are the
+defaults now; `M365_FORCE_AGENT=1` and `M365_FRAMING_VARIANT` still override them.
+`gpt-5.5-think-deeper` remains the recommended default and the no-model fallback, because it needs
+no entitlement: making GPT-6 the default would hand most seats a model they can't reach.
 
 ### Sonnet 5 (`claude-sonnet-5`) — its own sandbox, and the `relay` framing
 
