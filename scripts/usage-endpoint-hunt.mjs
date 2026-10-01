@@ -7,7 +7,7 @@
 
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { getTokenForScope, getToken, decodeJwt } from "../packages/core/dist/index.mjs";
+import { getTokenForScope, getToken, decodeJwt, getEnvironmentUrl } from "../packages/core/dist/index.mjs";
 
 const TS = new Date().toISOString().replace(/[:.]/g, "-");
 const OUT = join(process.cwd(), "scripts", "usage-endpoint-out", TS);
@@ -24,24 +24,8 @@ const bap = await getTokenForScope(["https://api.bap.microsoft.com/.default"]).c
 console.log(`[hunt] sydney=${!!sydney} pp=${!!pp} bap=${!!bap}`);
 console.log(`[hunt] tid=${tid} oid=${oid}`);
 
-// --- Discover the env URL via BAP (same logic as agent.ts).
-let envUrl = null;
-if (bap) {
-  const er = await fetch(
-    `https://api.bap.microsoft.com/providers/Microsoft.BusinessAppPlatform/environments/~default?api-version=2023-06-01`,
-    { headers: { Authorization: `Bearer ${bap}` } },
-  );
-  const env = await er.json();
-  const envId = env.name.replace(/^Default-/i, "").replace(/-/g, "").toLowerCase();
-  const candidates = [
-    `https://default${envId}.df.environment.api.powerplatform.com`,
-    `https://default${envId.slice(0, -2)}.df.environment.api.powerplatform.com`,
-  ];
-  for (const c of candidates) {
-    const p = await fetch(`${c}/copilotstudio/minimalBots/api?api-version=2022-03-01-preview`, { method: "HEAD", headers: { Authorization: `Bearer ${pp}` } }).catch(() => null);
-    if (p) { envUrl = c; break; }
-  }
-}
+// --- Discover the env URL via BAP (shared with agent.ts).
+const envUrl = bap ? await getEnvironmentUrl(bap).catch(() => null) : null;
 console.log(`[hunt] envUrl=${envUrl}`);
 
 // --- Endpoints to probe. Pair each with the most plausible token.

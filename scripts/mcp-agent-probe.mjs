@@ -14,7 +14,7 @@
 // Cost: ~2 chat messages + PowerPlatform create/publish/delete (no BizChat quota for those).
 
 import { readFileSync } from "node:fs";
-import { getToken, decodeJwt, getTokenForScope } from "../packages/core/dist/index.mjs";
+import { getToken, decodeJwt, getTokenForScope, getEnvironmentUrl } from "../packages/core/dist/index.mjs";
 import { oneTurn } from "./_probe-chat.mjs";
 
 const TUNNEL = (process.argv[2] || readFileSync("/tmp/tunnel_url.txt", "utf8")).trim().replace(/\/$/, "");
@@ -22,7 +22,6 @@ const SHAPE = (() => { const i = process.argv.indexOf("--shape"); return i >= 0 
 const MCP_URL = `${TUNNEL}/mcp`;
 const SENTINEL = readFileSync("scripts/sentinel-value.txt", "utf8").trim();
 
-const BAP_API = "https://api.bap.microsoft.com";
 const PP_SCOPES = ["https://api.powerplatform.com/.default"];
 const BAP_SCOPES = ["https://api.bap.microsoft.com/.default"];
 const NAME = `m365-mcp-probe-${Date.now().toString(36)}`;
@@ -34,16 +33,8 @@ const ppToken = await getTokenForScope(PP_SCOPES);
 const bapToken = await getTokenForScope(BAP_SCOPES);
 if (!ppToken || !bapToken) { console.error("missing PP/BAP token"); process.exit(1); }
 
-// --- env discovery (mirror agent.ts) ---
-const envRes = await fetch(`${BAP_API}/providers/Microsoft.BusinessAppPlatform/environments/~default?api-version=2023-06-01`, { headers: { Authorization: `Bearer ${bapToken}` } });
-const envName = (await envRes.json()).name;
-const envId = envName.replace(/^Default-/i, "").replace(/-/g, "").toLowerCase();
-const base = ".df.environment.api.powerplatform.com";
-let envUrl = `https://default${envId}${base}`;
-// pick the resolvable host (full or last-2-trimmed)
-for (const u of [`https://default${envId}${base}`, `https://default${envId.slice(0, -2)}${base}`]) {
-  try { await fetch(`${u}/copilotstudio/minimalBots/api?api-version=2022-03-01-preview`, { method: "HEAD", headers: { Authorization: `Bearer ${ppToken}` } }); envUrl = u; break; } catch {}
-}
+// --- env discovery (shared with agent.ts) ---
+const envUrl = await getEnvironmentUrl(bapToken);
 console.log(`[mcp] env=${envUrl}`);
 
 const ppFetch = (url, opts = {}) => fetch(url, { ...opts, headers: { "Content-Type": "application/json", Authorization: `Bearer ${ppToken}`, "x-ms-user-agent": "PVA-Portal/1.0.0 (Web; ReactNative: false)", ...(opts.headers || {}) } });

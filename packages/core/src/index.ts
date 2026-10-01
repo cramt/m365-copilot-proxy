@@ -30,7 +30,7 @@ export {
   type BackoffOptions,
 } from "./auth-recovery.js";
 
-export { getOrCreateAgent } from "./agent.js";
+export { getOrCreateAgent, getEnvironmentUrl, environmentUrlFromName } from "./agent.js";
 
 export {
   decodeJwt,

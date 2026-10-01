@@ -4,11 +4,10 @@
 // Usage: M365_NO_INTERACTIVE=1 node scripts/listbots-probe.mjs
 process.env.M365_DEBUG = process.env.M365_DEBUG ?? "1";
 
-import { getTokenForScope } from "../packages/core/dist/index.mjs";
+import { getTokenForScope, getEnvironmentUrl } from "../packages/core/dist/index.mjs";
 
 const POWERPLATFORM_SCOPES = ["https://api.powerplatform.com/.default"];
 const BAP_SCOPES = ["https://api.bap.microsoft.com/.default"];
-const BAP_API = "https://api.bap.microsoft.com";
 
 const ppHeaders = (token) => ({
   "Content-Type": "application/json",
@@ -21,27 +20,7 @@ const ppToken = await getTokenForScope(POWERPLATFORM_SCOPES);
 console.log(`[probe] bap=${!!bapToken} pp=${!!ppToken}`);
 if (!bapToken || !ppToken) process.exit(1);
 
-// Discover the default environment (same logic as agent.ts).
-const envRes = await fetch(
-  `${BAP_API}/providers/Microsoft.BusinessAppPlatform/environments/~default?api-version=2023-06-01`,
-  { headers: { Authorization: `Bearer ${bapToken}` } },
-);
-const env = await envRes.json();
-const envId = env.name.replace(/^Default-/i, "").replace(/-/g, "").toLowerCase();
-const base = `.df.environment.api.powerplatform.com`;
-const candidates = [
-  `https://default${envId}${base}`,
-  `https://default${envId.slice(0, -2)}${base}`,
-];
-
-let envUrl = candidates[0];
-for (const url of candidates) {
-  const probe = await fetch(
-    `${url}/copilotstudio/minimalBots/api?api-version=2022-03-01-preview`,
-    { method: "HEAD", headers: { Authorization: `Bearer ${ppToken}` } },
-  ).catch(() => null);
-  if (probe) { envUrl = url; break; }
-}
+const envUrl = await getEnvironmentUrl(bapToken);
 console.log(`[probe] envUrl=${envUrl}`);
 
 const res = await fetch(

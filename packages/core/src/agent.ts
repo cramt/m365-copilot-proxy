@@ -65,23 +65,11 @@ The runtime returns the real result in a <tool_response> block — treat it as g
 When the message has no <tools> block, respond normally as a helpful assistant in natural language.`;
 }
 
-async function getEnvironmentUrl(ppToken: string): Promise<string> {
-  // Query BAP API to discover the default environment
-  const res = await fetch(
-    `${BAP_API}/providers/Microsoft.BusinessAppPlatform/environments/~default?api-version=2023-06-01`,
-    {
-      headers: {
-        Authorization: `Bearer ${ppToken}`,
-      },
-    },
-  );
-
-  if (!res.ok) {
-    throw new Error(`BAP API failed: ${res.status} ${await res.text()}`);
-  }
-
-  const data = await res.json();
-  const envName: string = data.name; // e.g. "Default-fa7f56d8-49c4-4327-b816-9a0eeaa273df"
+/**
+ * Derive the Power Platform environment host from a BAP environment name
+ * (e.g. "Default-fa7f56d8-49c4-4327-b816-9a0eeaa273df"). Pure — no network.
+ */
+export function environmentUrlFromName(envName: string): string {
   const envId = envName
     .replace(/^Default-/i, "")
     .replace(/-/g, "")
@@ -97,19 +85,42 @@ async function getEnvironmentUrl(ppToken: string): Promise<string> {
   // Found by @FreemindTrader (#8); confirmed live: for an ID ending "df" both
   // forms reach the same host (200, identical bot list), for any other ending the
   // hardcoded form produces two names that don't resolve at all.
+  //
+  // Scripts under scripts/ used to carry their own copy of the old `.df.` logic and
+  // kept failing with "fetch failed" after the fix — import this, don't re-derive.
   if (envId.length < 3) {
     throw new Error(`Unexpected Power Platform environment ID: ${envId}`);
   }
-  const url =
+  return (
     `https://default${envId.slice(0, -2)}.${envId.slice(-2)}` +
-    `.environment.api.powerplatform.com`;
+    `.environment.api.powerplatform.com`
+  );
+}
+
+/** Discover the default environment via BAP and return its Power Platform host. */
+export async function getEnvironmentUrl(bapToken: string): Promise<string> {
+  const res = await fetch(
+    `${BAP_API}/providers/Microsoft.BusinessAppPlatform/environments/~default?api-version=2023-06-01`,
+    {
+      headers: {
+        Authorization: `Bearer ${bapToken}`,
+      },
+    },
+  );
+
+  if (!res.ok) {
+    throw new Error(`BAP API failed: ${res.status} ${await res.text()}`);
+  }
+
+  const data = await res.json();
+  const url = environmentUrlFromName(data.name);
 
   try {
     // Any response at all (401/403 included) proves the host resolved; we only
     // care about DNS here, not authorization.
     await fetch(`${url}/copilotstudio/minimalBots/api?api-version=2022-03-01-preview`, {
       method: "HEAD",
-      headers: { Authorization: `Bearer ${ppToken}` },
+      headers: { Authorization: `Bearer ${bapToken}` },
     });
     log.info(`Resolved environment URL: ${url}`);
   } catch {
