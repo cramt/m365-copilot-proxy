@@ -299,12 +299,12 @@ describe("defaultFramingForTone", () => {
     expect(defaultFramingForTone("Claude_Sonnet")).toBe("relay");
   });
 
-  it("keeps the paid-gated GPT-6 tone on baseline — the gate is not a budget", () => {
-    // Opus gets `minimal` because its priority-access budget is the scarce
-    // thing, not because it is entitlement-gated. Gpt_6_Reasoning is gated the
-    // same way and metered like everything else, and it drives M365's GPT path,
-    // which is what baseline's anti-narration cage exists for.
-    expect(defaultFramingForTone("Gpt_6_Reasoning")).toBeUndefined();
+  it("gives GPT-6 relay — it runs agent-less, next to M365's code interpreter (#41)", () => {
+    // Not because it is paid-gated (Opus is gated too and gets `minimal`): GPT-6
+    // never served with the tool agent, and agent-less under baseline it worked
+    // in the code interpreter instead of acting — 0/30 vs relay 30/30 (docs §22 F47).
+    expect(defaultFramingForTone("Gpt_6_Reasoning")).toBe("relay");
+    expect(defaultFramingForModel("gpt-6-think-deeper")).toBe("relay");
   });
 
   it("is materially shorter than baseline for the same toolset", () => {

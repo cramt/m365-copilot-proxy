@@ -2781,6 +2781,9 @@ kept apart in code, not just in prose:
   and it drives M365's GPT path, which is what `baseline`'s anti-narration cage was tuned for.
   A `defaultFramingForTone` keyed on the paid scenario would have silently handed the GPT path
   the variant built for a model that doesn't need convincing.
+  **Superseded 2026-10-01 (§22 F45, F47):** GPT-6 never ran on the GPT agent path. Its tool
+  requests now go agent-less and default to `relay` (30/30 vs baseline 0/30). The principle
+  stands: the framing is still chosen per tone, not keyed on the paid scenario.
 
 Both are now asserted by unit test rather than left as a reading of the comments.
 
@@ -2805,6 +2808,9 @@ an error*. A tone table built by probing for errors would have caught `Gpt_6_Cha
 the gate is measured in a routine sweep instead of assumed from this note.
 
 ### Bench: 24/30, and why that doesn't make it the default
+
+**Ran agent-less** (user, 2026-10-01). With the tool agent attached GPT-6 is a dead route, so the
+shipped proxy, which attaches it to non-Claude tool requests, does not reproduce this score — §22 F45.
 
 Tool calling scores **24/30**, with all six non-passing runs being prose give-ups — the model
 narrating instead of acting — rather than Disengaged or malformed fences. That is the
@@ -3354,3 +3360,137 @@ relay                                   relay_inline
 Raw data (local, not in the repo):
 `~/.config/opencode-m365/s5-sweep/inl5-1-*` and `inl5b-*` (Sonnet 5), `inl46T-*` and `inl46P-*` on
 the two other accounts, bench JSON under each checkout's `scripts/bench/out/inl5*` / `inl46*`.
+
+---
+
+## 22. Oct 1 2026 — which tones the tool agent honours (`agent-tone-probe.mjs`)
+
+**Question.** §5's warning ("the declarative agent overrides the tone and forces GPT-5", June 2026,
+H8.6) is why the proxy keeps Claude tool requests agent-less (`handler.ts`, `useToolAgent`). Is it
+still true, and what does the agent do to the tones that *do* take it?
+
+**Method.** `scripts/agent-tone-probe.mjs`: one fresh thread per cell, agent attached exactly as
+`session.ts` attaches it (`threadLevelGptId` + `gpts[]`), a self-ID prompt instead of `pong`, and
+`gptIdentifiers[].compliantAgentName` checked so a reply the agent didn't handle can't count.
+`--baseline` repeats each cell agent-less. Service `1.0.03559.55742`. Two accounts in one tenant:
+
+- **Premium**: two runs (05:53Z, 12 cells; 05:56Z, 3 cells × `--baseline`).
+- **Non-premium**: two runs by the user (08:12Z and 08:47Z, 12 cells each, agent `T_9cc0f1d6…`).
+  The two runs agree cell for cell.
+
+No throttling. Raw data (local, not in the repo): `scripts/agent-tone-out/<timestamp>/` in each
+account's checkout.
+
+| tone @ scenario | premium, agent | non-premium, agent | premium, agent-less |
+|---|---|---|---|
+| `magic`, `Gpt_5_5_Chat`, `Gpt_5_6_Chat` @ included | GPT-5 chat model | GPT-5 chat model | — |
+| `Gpt_5_5_Reasoning`, `Gpt_5_6_Reasoning` | GPT-5 reasoning model | GPT-5 reasoning model | — |
+| `Gpt_5_6_Chat` @ paid | GPT-5 chat model | **unlicensed** (2/2) | — |
+| `Gpt_6_Reasoning` @ paid | **dead: BotConnection, `InternalError`** (2/2) | **dead: BotConnection, `InternalError`** (2/2) — not unlicensed, see F46 | "GPT-6 reasoning model" (1/1) |
+| `Claude_Sonnet` @ included | **"Claude Sonnet 4.6"** (2/2) | **dead: BotConnection, `InternalError`** (2/2) | "Claude Sonnet 4.6" (1/1) |
+| `Claude_Sonnet` @ paid | **"Claude Sonnet 5"** (1/1) | **unlicensed** (2/2) | — |
+| `Claude_Opus` @ paid | **"Claude Opus 5.5"** (1/1) | **unlicensed** (2/2) | — |
+| invalid-tone control | rejected | rejected | — |
+
+"Unlicensed" = `result: ForbiddenRequest`, `errorCode: InvalidCopilotLicense` (F46). Every answered
+agent cell carried `compliantAgentName: 3PDeclarativeAgent`, and the control was rejected on both
+accounts, so the agent path still validates `tone` and the rows are about the tone.
+
+### F44 — whether the agent lets Claude through depends on the account 🟡
+**Premium:** with the agent attached, `Claude_Sonnet` self-IDs as Sonnet 4.6 (included, 2/2) and
+Sonnet 5 (paid, 1/1), and `Claude_Opus` as Opus (1/1). The Claude replies also open differently from
+the GPT ones ("Microsoft Enterprise Copilot, based on…" vs "M365 Copilot, based on the GPT-5 chat
+model"), which is hard to explain with a GPT model claiming to be Claude.
+**Non-premium:** `Claude_Sonnet` on the included scenario is a dead route with the agent attached
+(BotConnection apology, `result: InternalError`, 2/2). The paid cells can't be read: the account has
+no paid licence (F46).
+Neither account reproduces June's *silent* switch to GPT-5: premium gets Claude, non-premium gets
+nothing.
+**Consequence for the proxy:** Claude tool requests stay agent-less. On non-premium accounts it is
+the only path that reaches Claude: F42's non-premium bench numbers (relay 78/90) are agent-less.
+**Not tested:** whether Claude tool-calls better or worse *with* the agent on a premium account
+(bench A/B, `M365_FORCE_AGENT=1` vs default).
+**Confidence:** 🟡. Premium: 4 Claude cells. Non-premium: 2 readable Claude cells. Self-ID only, one
+service build.
+
+### F45 — `Gpt_6_Reasoning` has never worked with the agent 🟢
+Agent attached → dead route (BotConnection apology, `result: InternalError`) on both accounts (4/4).
+Agent-less → DeepLeo, "GPT-6 reasoning model" (1/1). This is not a regression: GPT-6 has never served
+with the agent, and §17's 24/30 bench ran agent-less (user, 2026-10-01).
+The shipped proxy, though, attaches the agent to every tool request on a non-Claude tone
+(`handler.ts` `useToolAgent`; `SessionPool` defaults to `useAgent`). So `gpt-6-think-deeper` tool
+requests hit the dead route. Reproduced on the premium account (`proxy-verify.mjs --agent --tools
+--model=gpt-6-think-deeper`, 06:21Z): `InternalError` on the first try and on both "Please
+continue." retries, then a 502. The 24/30 suggests the fix: route GPT-6 tool requests agent-less, as
+Claude's already are (#41).
+**Shipped (#41):** `toneUsesToolAgent()` / `AGENTLESS_TOOL_TONES` in `copilot.ts` decide which tool
+requests carry the agent: not Claude tones, not `Gpt_6_Reasoning`. `M365_FORCE_AGENT=1` still
+overrides. Routing alone wasn't enough, though: see F47.
+
+### F46 — the paid scenario on a non-premium account: `ForbiddenRequest` / `InvalidCopilotLicense` 🟢
+On the non-premium account, `Gpt_5_6_Chat`, `Claude_Sonnet` and `Claude_Opus` on the paid scenario
+(6/6 across two runs, agent attached) returned `result.value: "ForbiddenRequest"`,
+`errorCode: "InvalidCopilotLicense"`, a BotConnection reply "It looks like you don't have a valid
+licence. To get access, please check with your administrator…", in ~2.5 s. This is distinct on the
+wire from the dead route (`InternalError` + "Sorry, I wasn't able to respond to that"), and it is
+about the account, not the tone or the agent: `Gpt_5_6_Chat` serves on the same account under the
+included scenario. The probe classifies it as `UNLICENSED`.
+**Exception: `Gpt_6_Reasoning`.** On the same account and scenario it returns its dead-route
+`InternalError` instead (2/2). With the agent attached, GPT-6's dead route answers before any licence
+check does, so an `InternalError` on the paid scenario doesn't mean the account is licensed.
+**Open:** (a) agent-less on the same account — expected identical, since it is the scenario that's
+refused, but unmeasured; (b) what the proxy does with it. It only special-cases `Throttled`
+(`handler.ts`), and this refusal carries reply text, so `claude-sonnet-5` / `claude-opus` /
+`gpt-6-think-deeper` on a non-premium account probably return the licence message to the client as
+a 200 "answer". That's the same failure class as the Opus quota refusal (F27). Untested.
+
+### F47 — agent-less GPT-6 needs `relay`: baseline 0/30, relay 30/30 🟢
+**Trigger.** With the #41 routing in place, `proxy-verify.mjs --tools --multiturn
+--model=gpt-6-think-deeper` on the default `baseline` framing returned no tool call. GPT-6 had run
+`cat /etc/hostname` itself, in M365's code interpreter, and answered "The hostname is
+`SandboxHost-639264422355109436`". Re-run with `M365_FRAMING_VARIANT=relay`: tool call, PASS. The user's
+Sep 30 bench had already scored relay + no agent at 30/30
+(`scripts/bench/out/gpt-6-think-deeper-relay-no-agent-no-confab-*`).
+
+**Sweep.** `scripts/bench/sonnet5-sweep.sh`, `MODEL=gpt-6-think-deeper`, one proxy with the #41 build,
+`M365_NO_CONFAB_RETRY=1`, 10 tasks × 6 arms in the order default, baseline, baseline, default,
+default, baseline (`default` = the new shipped default, i.e. relay), 60 s between arms, premium
+account, 09:16–10:07Z. No throttled rows.
+
+| | `relay` (default) | `baseline` |
+|---|---|---|
+| solved | **30/30** | **0/30** |
+| outcomes | SOLVED 30 | GAVE_UP_PROSE 18, ERROR 12 |
+| first turn wrote a harness fence | 30/30 | 0/42 requests |
+| first turn worked in the code interpreter | 0 | 30 |
+| Disengaged (JailBreak Classifier) | 0 | 12/30 first turns |
+
+Fisher two-sided: p = 1.5×10⁻¹⁴. The 42 baseline first-turn requests are the 30 tasks plus the 12
+Disengaged ones re-sent by the F22 retry with `softened` in a fresh conversation. 11 of the 12 ERRORs
+are the remote-artifact guard (the model wrote the file to `/mnt/data` and offered it back), and 1 is
+a bench client timeout. The prose give-ups are the model reporting, truthfully, on its own sandbox:
+"I couldn't find `config.json` in the working directory, so no changes were made. Upload the file…".
+
+**What the sandbox is.** M365's code interpreter, which the proxy enables on the agent-less path
+(`CODE_INTERPRETER_OPTIONS_SETS`): Progress frames with `contentOrigin: CodeGenerator` running
+`bash -lc pwd; ls -la; …` / `find / -name config.json …`, and Python writing to `/mnt/data/…`. Not a
+Sonnet-5-style `bash_tool` / `/home/claude` toolset (F36). relay's note names Sonnet 5's tools and
+paths, not `/mnt/data`, and works anyway.
+
+**Shipped:** `defaultFramingForTone("Gpt_6_Reasoning") = "relay"`. This supersedes §17's "GPT-6 keeps
+`baseline`", which assumed GPT-6 ran on the GPT agent path that baseline was tuned for.
+
+**The Sep 22–23 runs failed differently.** Their give-ups were "I can't run shell commands or access a
+real filesystem in this chat" and secret-refusals on find-needle. None mentions a working directory,
+and 24/30 solved. Today's baseline give-ups describe a filesystem the model searched. So either GPT-6
+has started using the code interpreter since then, or something else changed between the builds (the
+Sep runs probably had the confab retry on). 🟡, not separated.
+
+**Real harness: 5/5 SOLVED.** `scripts/bench/pi-reliability.sh`, actual pi, `gpt-6-think-deeper`, shipped
+defaults (no framing or agent overrides), fix-bug, N=5, 60 s cooldown, 10:06–10:16Z: 5/5 SOLVED in
+39–72 s. On the wire, every one of the 25 turns (5 per run, streaming) went agent-less, every first
+turn used `relay`, and there were no Throttled, Disengaged or remote-artifact turns. No frame in the
+run came from the code interpreter or the jailbreak classifier.
+
+**Open.** Would `M365_NO_CODE_INTERPRETER=1` alone rescue baseline? Untested; relay already scores
+30/30.

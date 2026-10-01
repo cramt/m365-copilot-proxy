@@ -79,11 +79,11 @@ export class ModelSession {
    *
    * `useAgent` decides whether THIS turn attaches the tool-calling Copilot Studio
    * agent (`threadLevelGptId`). The handler passes `false` for tool-less requests
-   * — the agent is only needed to coerce tool-call output, and crucially it
-   * **overrides the `tone` and forces GPT-5** (docs/hypotheses.md H8.6): with the
-   * agent attached a `Claude_*` tone silently routes to GPT, and heavy tool
-   * prompts can Disengage. So plain chat skips the agent and gets the real model
-   * the tone selects (e.g. Claude Sonnet 4.5).
+   * — the agent is only needed to coerce tool-call output — and for tool requests
+   * on tones that don't serve with it (`toneUsesToolAgent`: Claude, GPT-6; with
+   * the agent attached those return a dead route or, in June 2026, silently
+   * routed to GPT — docs/hypotheses.md H8.6, §22). Plain chat therefore always
+   * gets the real model the tone selects.
    *
    * If `signal` aborts (the HTTP client disconnects) the in-flight turn is
    * cancelled by sending M365's Stop frame, mirroring the real UI's Stop button.
