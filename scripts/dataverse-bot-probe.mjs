@@ -12,7 +12,7 @@ const DV = "https://org8f4d7421.crm4.dynamics.com"; // discovered from Studio ne
 const token = await getTokenForScope([`${DV}/.default`]);
 if (!token) { console.log("no dataverse token"); process.exit(1); }
 
-const botId = JSON.parse(readFileSync(join(homedir(), ".config", "opencode-m365", "agent-id.json"), "utf-8")).botId;
+const botId = JSON.parse(readFileSync(join(homedir(), ".config", "m365-proxy", "agent-id.json"), "utf-8")).botId;
 console.log(`[dv] botId=${botId}`);
 
 const hdr = { Authorization: `Bearer ${token}`, Accept: "application/json", "OData-MaxVersion": "4.0", "OData-Version": "4.0" };

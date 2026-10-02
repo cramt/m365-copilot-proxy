@@ -27,7 +27,7 @@ const envUrl = await getEnvironmentUrl(bapToken);
 console.log(`[probe] envUrl=${envUrl}`);
 
 // botId from cache
-const cache = JSON.parse(readFileSync(join(homedir(), ".config", "opencode-m365", "agent-id.json"), "utf-8"));
+const cache = JSON.parse(readFileSync(join(homedir(), ".config", "m365-proxy", "agent-id.json"), "utf-8"));
 const botId = cache.botId;
 console.log(`[probe] botId=${botId}`);
 

@@ -15,7 +15,6 @@ import {
   getScenarioForModel,
   getToneForModel,
   type CopilotStream,
-  type CapturedImage,
 } from "./copilot.js";
 import {
   parseActionConfirmation,
@@ -49,33 +48,12 @@ const CODE_INTERPRETER_OPTIONS_SETS = [
   "code_interpreter_matplotlib_patching",
 ];
 
-// The image-generation optionsSets, lifted verbatim from the official web client
-// capture (§14). `flux_v3` is BizChat's orchestration codename, NOT the model —
-// artifacts come back DallE-named. The GUI sends this WHOLE set on every turn and
-// lets the model pick the type from the prompt (standard / icon / story / designer
-// dimensions), which is why "draw me X" works with no UI toggle — so we match it:
-// send everything the GUI enables. Excludes only the GPT-V/upload family, which is
-// image *input* (a separate capability), not generation. `…non_watermarked_storage`
-// keeps the artifact unwatermarked.
-const IMAGE_GEN_OPTIONS_SETS = [
-  "cwc_flux_image",
-  "cwc_flux_v3",
-  "enable_gg_gpt",
-  "flux_v3_progress_messages",
-  "flux_v3_image_gen_enable_dimensions",
-  "flux_v3_image_gen_enable_icon_dimensions",
-  "flux_v3_image_gen_enable_story",
-  "flux_v3_image_gen_enable_designer_dimensions_meta_prompting_in_system_prompts",
-  "flux_v3_image_gen_enable_system_text_with_params",
-  "flux_v3_image_gen_enable_non_watermarked_storage",
-];
-
 // --- Optional per-request frame dumping for reverse engineering ---
 // Enabled by M365_DUMP_FRAMES=1. Every SignalR frame received is appended to a
-// per-request NDJSON file under ~/.config/opencode-m365/frames/. Cheap to run
+// per-request NDJSON file under ~/.config/m365-proxy/frames/. Cheap to run
 // in production; gives us forensic data when M365 starts emitting new fields.
 const DUMP_FRAMES = !!process.env.M365_DUMP_FRAMES;
-const DUMP_DIR = join(homedir(), ".config", "opencode-m365", "frames");
+const DUMP_DIR = join(homedir(), ".config", "m365-proxy", "frames");
 function dumpFrame(requestId: string, parsed: unknown, direction: "recv" | "send") {
   if (!DUMP_FRAMES) return;
   try {
@@ -98,7 +76,6 @@ const VARIANTS = [
   "feature.EnableSensitivityLabels",
   "EnableUnsupportedUrlDetector",
   "feature.IsCustomEngineCopilotEnabled",
-  "feature.bizchatfluxv3",
   "feature.enablechatpages",
   "feature.enableCodeCanvas",
   "feature.turnOnWorkTabRecommendation",
@@ -117,8 +94,6 @@ const VARIANTS = [
   "feature.cwcallowedos",
   "feature.disabledisallowedmsgs",
   "feature.enableCitationsForSynthesisData",
-  "feature.enableGenerateGraphicArtOptionsSet",
-  "cdximagen",
   "feature.EnableUpdatedUXForConfirmationDialog",
   "feature.EnableClientFileURLSupportForOfficeWebPaidCopilot",
   "feature.EnableDesignEditorImageGrounding",
@@ -230,14 +205,6 @@ export interface NativeActionConfig {
   autoConfirmAll?: boolean;
 }
 
-/** Per-turn chat options. */
-export interface ChatTurnOptions {
-  /** Request server-side image generation for this turn (§14). Adds the flux
-   *  optionsSets + the GenerateGraphicArt allowedMessageType; the generated
-   *  images surface on `stream.images`. Agent-less only. */
-  generateImages?: boolean;
-}
-
 export interface CopilotSessionOptions {
   agentId?: string;
   /** Reuse an existing session ID across reconnections. */
@@ -298,10 +265,9 @@ export class CopilotSession {
    * Each turn opens a fresh WebSocket with invocationId "0" (per SignalR protocol).
    * Session/conversation IDs are reused so M365 maintains server-side context.
    */
-  chat(token: string, text: string, model: string = "m365-copilot", signal?: AbortSignal, opts?: ChatTurnOptions): Promise<CopilotStream> {
+  chat(token: string, text: string, model: string = "m365-copilot", signal?: AbortSignal): Promise<CopilotStream> {
     const isFirst = this._turnCount === 0;
     this._turnCount++;
-    const wantImages = opts?.generateImages ?? false;
 
     log.info(`Chat turn ${this._turnCount - 1}: model=${model}, isFirst=${isFirst}, text=${JSON.stringify(trunc(text, 200))}`);
 
@@ -363,9 +329,6 @@ export class CopilotSession {
       // account is rate-limited: the turn then carries NO content frames, only a
       // BotConnection apology inside that item (#35).
       let serverResult: { value: string; errorCode?: string; message?: string } | null = null;
-      // Generated images captured this turn (§14). Keyed by fileToken so the
-      // repeated progress snapshots for one image collapse to a single entry.
-      const imagesByToken = new Map<string, CapturedImage>();
       // Native-action round-trip state (H-NATIVE-6). `baseArgs` is the sent chat
       // envelope's arguments[0], reused verbatim (minus `message`) to resume an
       // action. `sawAction` records that the model triggered a custom action this
@@ -414,29 +377,6 @@ export class CopilotSession {
         }
       };
 
-      // Pull any generated images off a bot message. The GraphicArt frame arrives
-      // repeatedly as a Progress snapshot (status climbs to 2 = ready) and again in
-      // the final type:2 item, so we upsert by fileToken and keep the readiest copy.
-      const captureImages = (m: any) => {
-        const list = m?.contentGenerationProgressList;
-        if (!Array.isArray(list)) return;
-        for (const entry of list) {
-          const urls = entry?.ImageReferenceUrls;
-          if (!Array.isArray(urls) || urls.length === 0) continue;
-          const key = entry.fileToken ?? urls[0];
-          const prev = imagesByToken.get(key);
-          if (prev && (prev.status ?? 0) >= (entry.status ?? 0)) continue;
-          imagesByToken.set(key, {
-            referenceUrls: urls,
-            fileToken: entry.fileToken,
-            pollUrl: entry.pollUrl,
-            size: entry.size,
-            orientation: entry.orientation,
-            status: entry.status,
-          });
-        }
-      };
-
       // Fold a token delta OR a full-text snapshot into `answer` and stream the
       // newly-appended suffix (see foldStreamText for the prefix-safe rules).
       const advance = (next: string) => {
@@ -478,9 +418,6 @@ export class CopilotSession {
         },
         get result() {
           return serverResult;
-        },
-        get images() {
-          return [...imagesByToken.values()];
         },
         get sawAction() {
           return sawAction;
@@ -614,7 +551,6 @@ export class CopilotSession {
               // set + NO agent; we send [] + agent and Disengage.
               optionsSets: [
                 ...((!agentId && !process.env.M365_NO_CODE_INTERPRETER) ? CODE_INTERPRETER_OPTIONS_SETS : []),
-                ...(wantImages ? IMAGE_GEN_OPTIONS_SETS : []),
                 ...(process.env.M365_EXTRA_OPTIONSSETS ? process.env.M365_EXTRA_OPTIONSSETS.split(",").map((s) => s.trim()).filter(Boolean) : []),
               ],
               streamingMode: "ConciseWithPadding",
@@ -637,10 +573,6 @@ export class CopilotSession {
                 "EndOfRequest",
                 "ReferencesListComplete",
                 "GeneratedCode",        // code-interpreter execution frames
-                // Image generation (§14): the server only SENDS the GraphicArt
-                // frame if the client declares it can handle it — same
-                // declare-to-receive rule as native actions.
-                ...(wantImages ? ["GenerateGraphicArt"] : []),
                 // Native custom-action vocabulary (H-NATIVE-6): the server only
                 // SENDS these trigger frames if the client says it can handle them.
                 ...(nativeActions ? ACTION_ALLOWED_MESSAGE_TYPES : []),
@@ -822,7 +754,6 @@ export class CopilotSession {
             let resumedHere = false;
             for (const m of item.messages ?? []) {
               if (m.author !== "bot") continue;
-              captureImages(m);
               if (m.contentOrigin) contentOrigin = m.contentOrigin;
               if (m.messageType) messageType = m.messageType;
               if (m.messageId) messageId = m.messageId;
@@ -865,7 +796,6 @@ export class CopilotSession {
                 // control-typed ones — so callers can tell apart `DeepLeo` from
                 // `3PDeclarativeAgent` and surface `Disengaged` cleanly.
                 if (m.author === "bot") {
-                  captureImages(m);
                   if (m.contentOrigin) contentOrigin = m.contentOrigin;
                   if (m.messageType) messageType = m.messageType;
                   if (m.messageId) messageId = m.messageId;

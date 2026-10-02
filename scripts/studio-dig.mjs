@@ -14,7 +14,7 @@ mkdirSync(OUT, { recursive: true });
 
 const creds = loadSecrets();
 if (!creds) { console.log("no secrets"); process.exit(1); }
-const cache = JSON.parse(readFileSync(join(homedir(), ".config", "opencode-m365", "agent-id.json"), "utf-8"));
+const cache = JSON.parse(readFileSync(join(homedir(), ".config", "m365-proxy", "agent-id.json"), "utf-8"));
 const botId = cache.botId;
 
 const ROOT = process.cwd();

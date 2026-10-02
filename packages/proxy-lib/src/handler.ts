@@ -23,39 +23,11 @@ import {
   getMessageContent,
   noteRequestOutcome,
   awaitDegradationBackoff,
-  getImageArtifactToken,
-  fetchImageBytes,
-  type CapturedImage,
 } from "@m365-copilot/core";
 import { ChatCompletionRequest } from "./schemas.js";
 import type { z } from "zod/v4";
 
 const log = createLogger("handler");
-
-// Render generated images (§14) as markdown so any OpenAI-compatible client shows
-// them inline. The artifact URL 401s without the designerappservice token, so we
-// fetch the bytes ourselves and embed a self-contained data URI — a bare URL would
-// be useless to the client. On fetch failure we fall back to the raw URL so the
-// response is never silently empty.
-async function renderImagesMarkdown(images: CapturedImage[]): Promise<string> {
-  if (images.length === 0) return "";
-  let artifactToken: string | null = null;
-  try { artifactToken = await getImageArtifactToken(); } catch (e: any) { log.info(`image token failed: ${e.message}`); }
-  const parts: string[] = [];
-  for (const img of images) {
-    const url = img.referenceUrls[0];
-    if (!url) continue;
-    if (artifactToken) {
-      try {
-        const { data, contentType } = await fetchImageBytes(url, artifactToken);
-        parts.push(`![generated image](data:${contentType};base64,${data.toString("base64")})`);
-        continue;
-      } catch (e: any) { log.info(`image fetch failed: ${e.message}`); }
-    }
-    parts.push(`![generated image](${url})`);
-  }
-  return parts.join("\n\n");
-}
 
 // Forcing follow-up sent (in the same conversation) when M365 confabulates an
 // inability to act instead of calling a tool. See the confab-retry loop below.
@@ -82,6 +54,8 @@ const OUTPUT_CHAR_CEILING = process.env.M365_OUTPUT_CHAR_CEILING !== undefined
   ? Number(process.env.M365_OUTPUT_CHAR_CEILING)
   : 12_000;
 
+const SYSTEM_EXACT_REPLY_GUARD_ENABLED = process.env.M365_SYSTEM_EXACT_REPLY_GUARD !== "0";
+
 /** "length" when the answer is at/over the empirical output ceiling, else "stop". */
 function outputFinishReason(text: string): "stop" | "length" {
   if (OUTPUT_CHAR_CEILING > 0 && text.length >= OUTPUT_CHAR_CEILING) {
@@ -94,12 +68,39 @@ function outputFinishReason(text: string): "stop" | "length" {
 type ChatBody = z.infer<typeof ChatCompletionRequest>;
 type ParsedMessage = ChatBody["messages"][number];
 
+export interface SessionUsageSnapshot {
+  updatedAt: number;
+  model: string;
+  promptTokens: number;
+  completionTokens: number;
+  totalTokens: number;
+  conversationMessages: number | null;
+  conversationMax: number | null;
+  conversationRemaining: number | null;
+  modelLatencyMs: number | null;
+  messageType: string | null;
+}
+
+export interface ActiveConversationSnapshot {
+  fingerprint: string;
+  sessionId: string;
+  conversationId: string;
+  turnCount: number;
+  sentMessageCount: number;
+  lastAccessedAt: number;
+  model: string;
+  usage: SessionUsageSnapshot | null;
+}
+
 // --- Per-conversation state ---
 
 interface ConversationState {
+  fingerprint: string;
   session: ModelSession;
   sentMessageCount: number;
   lastAccessedAt: number;
+  lastModel: string;
+  lastUsage: SessionUsageSnapshot | null;
   /** Sent ahead of the next tool result when the proxy executed less than the
    *  model wrote last turn (see executedOnlyFirstNote). */
   pendingNote: string | null;
@@ -148,12 +149,12 @@ export class SessionPool {
 
   /**
    * Resolve the conversation state for an incoming request.
-   * Fingerprint is the hash of the first user message — same first user message = same conversation.
+   * Fingerprint includes the model and first user message.
    */
-  resolve(messages: ParsedMessage[]): ConversationState {
+  resolve(messages: ParsedMessage[], model: string = "m365-copilot"): ConversationState {
     this.evictStale();
 
-    const fingerprint = this.fingerprint(messages);
+    const fingerprint = this.fingerprint(messages, model);
     const existing = this.conversations.get(fingerprint);
 
     if (existing) {
@@ -163,6 +164,7 @@ export class SessionPool {
         existing.session.reset();
         existing.sentMessageCount = 0;
         existing.pendingNote = null;
+        existing.lastUsage = null;
       }
       existing.lastAccessedAt = Date.now();
       return existing;
@@ -171,19 +173,22 @@ export class SessionPool {
     // New conversation
     log.info(`New conversation ${fingerprint}, ${this.conversations.size} active`);
     const state: ConversationState = {
+      fingerprint,
       session: new ModelSession(this.sessionOptions),
       sentMessageCount: 0,
       pendingNote: null,
       lastAccessedAt: Date.now(),
+      lastModel: model,
+      lastUsage: null,
     };
     this.conversations.set(fingerprint, state);
     return state;
   }
 
-  private fingerprint(messages: ParsedMessage[]): string {
+  private fingerprint(messages: ParsedMessage[], model: string): string {
     const firstUser = messages.find(m => m.role === "user");
     const text = firstUser ? getMessageContent(firstUser) : "";
-    return simpleHash(text);
+    return simpleHash(`${model}\n${text}`);
   }
 
   private evictStale() {
@@ -198,6 +203,22 @@ export class SessionPool {
 
   get size(): number {
     return this.conversations.size;
+  }
+
+  getActiveConversations(): ActiveConversationSnapshot[] {
+    this.evictStale();
+    return [...this.conversations.values()]
+      .map((state) => ({
+        fingerprint: state.fingerprint,
+        sessionId: state.session.sessionId,
+        conversationId: state.session.conversationId,
+        turnCount: state.session.turnCount,
+        sentMessageCount: state.sentMessageCount,
+        lastAccessedAt: state.lastAccessedAt,
+        model: state.lastModel,
+        usage: state.lastUsage,
+      }))
+      .sort((left, right) => right.lastAccessedAt - left.lastAccessedAt);
   }
 }
 
@@ -223,12 +244,44 @@ function formatDeltaMessages(messages: ParsedMessage[]): string {
       const callId = m.tool_call_id || "?";
       parts.push(`<tool_response name="${name}" call_id="${callId}">\n${getMessageContent(m)}\n</tool_response>`);
     } else if (m.role === "system") {
-      // Skip system messages on follow-up turns
+      parts.push(`<system>\n${getMessageContent(m)}\n</system>`);
     } else {
       parts.push(`<${m.role}>\n${getMessageContent(m)}\n</${m.role}>`);
     }
   }
   return parts.join("\n\n");
+}
+
+function parseExactReplyDirective(systemText: string): string | null {
+  const patterns = [
+    /^only\s+reply(?:\s+with)?\s+(.+?)(?:\s+and\s+do\s+not\s+answer\b.*)?[.!]?$/i,
+    /^(?:reply|respond|answer)\s+with\s+exactly\s+(.+?)(?:\s+and\s+nothing\s+else\b.*)?[.!]?$/i,
+    /^output\s+only\s+(.+?)(?:\s+and\s+nothing\s+else\b.*)?[.!]?$/i,
+  ];
+  for (const pattern of patterns) {
+    const match = systemText.match(pattern);
+    if (!match) continue;
+    let output = match[1].trim().replace(/^exactly\s+/i, "").trim();
+    const quoted = (output.startsWith('"') && output.endsWith('"'))
+      || (output.startsWith("'") && output.endsWith("'"))
+      || (output.startsWith("`") && output.endsWith("`"));
+    output = quoted ? output.slice(1, -1).trim() : output.replace(/[.?!]\s*$/, "").trim();
+    if (output && output.length <= 120 && !output.includes("\n")) return output;
+  }
+  return null;
+}
+
+function extractForcedExactReply(messages: ParsedMessage[]): string | null {
+  if (!SYSTEM_EXACT_REPLY_GUARD_ENABLED) return null;
+  for (let index = messages.length - 1; index >= 0; index--) {
+    const message = messages[index];
+    if (message.role !== "system") continue;
+    const systemText = getMessageContent(message).replace(/\s+/g, " ").trim();
+    if (!systemText || systemText.length > 220) continue;
+    const forced = parseExactReplyDirective(systemText);
+    if (forced) return forced;
+  }
+  return null;
 }
 
 // --- Main handler ---
@@ -240,12 +293,19 @@ function formatDeltaMessages(messages: ParsedMessage[]): string {
 export async function handleChatCompletion(
   body: ChatBody,
   pool: SessionPool,
-  opts: { signal?: AbortSignal } = {},
+  opts: { signal?: AbortSignal; onComplete?: (response: Response, error?: { type: string; message: string }) => void } = {},
 ): Promise<Response> {
-  const conv = pool.resolve(body.messages);
+  const conv = pool.resolve(body.messages, body.model);
   const { session } = conv;
   const hasTools = body.tools && body.tools.length > 0 && body.tool_choice !== "none";
   const model = body.model;
+  conv.lastModel = model;
+  const forcedExactReply = !hasTools ? extractForcedExactReply(body.messages) : null;
+  const applyForcedExactReply = (responseText: string): string => {
+    if (!forcedExactReply || responseText.trim() === forcedExactReply) return responseText;
+    log.info(`System exact-reply override applied: expected ${JSON.stringify(forcedExactReply)}, got ${JSON.stringify(trunc(responseText, 80))}`);
+    return forcedExactReply;
+  };
 
   // Which tool requests carry the declarative tool agent. GPT-the-chat-model won't
   // tool-call agent-less (0/4), so it needs the agent. Claude tool-calls reliably
@@ -314,6 +374,7 @@ export async function handleChatCompletion(
   let lastMessageType: string | null | undefined;
   let lastScores: Record<string, number> | null | undefined;
   let lastTurnCount: number | null | undefined;
+  let lastModelLatencyMs: number | null = null;
 
   // `onDelta` (when provided) forwards each text delta to the caller AS IT ARRIVES,
   // for live incremental streaming. It's safe to forward without ever retracting:
@@ -323,6 +384,12 @@ export async function handleChatCompletion(
   async function runBuffered(
     onDelta?: (delta: string) => void,
   ): Promise<{ fullText: string } | { error: Response }> {
+    const runStartedAt = Date.now();
+    const finish = <Result extends { fullText: string } | { error: Response }>(value: Result): Result => {
+      lastModelLatencyMs = Date.now() - runStartedAt;
+      usageForResponse();
+      return value;
+    };
     let agentRefreshed = false;
     let disengageRetried = false;
     const originalText = text;
@@ -341,7 +408,7 @@ export async function handleChatCompletion(
         // ModelSession.run / docs H8.6.
         copilotStream = await session.run(text, model, opts.signal, useToolAgent);
       } catch (err: any) {
-        return { error: jsonResponse(502, { error: { message: err.message, type: "upstream_error" } }) };
+        return finish({ error: jsonResponse(502, { error: { message: err.message, type: "upstream_error" } }) });
       }
 
       let fullText = "";
@@ -354,21 +421,7 @@ export async function handleChatCompletion(
           fullText = copilotStream.fullText;
         }
       } catch (err: any) {
-        return { error: jsonResponse(502, { error: { message: err.message, type: "upstream_error" } }) };
-      }
-
-      // Image gen (§14): the picture arrives on a GraphicArt frame, usually with NO
-      // chat text — so an image turn looks empty to the checks below and would burn
-      // a retry. Render the image(s) into the response instead, and (for streaming)
-      // emit the markdown as a trailing delta so the client isn't left with nothing.
-      const images = copilotStream.images ?? [];
-      if (images.length > 0) {
-        const imageMd = await renderImagesMarkdown(images);
-        if (imageMd) {
-          const addition = fullText.length > 0 ? `\n\n${imageMd}` : imageMd;
-          fullText += addition;
-          onDelta?.(addition);   // stream the appended markdown (text deltas already sent)
-        }
+        return finish({ error: jsonResponse(502, { error: { message: err.message, type: "upstream_error" } }) });
       }
 
       lastThrottle = copilotStream.throttle;
@@ -386,7 +439,7 @@ export async function handleChatCompletion(
       if (copilotStream.result?.value === "Throttled") {
         noteRequestOutcome(true, convId);
         log.info(`Upstream Throttled (${copilotStream.result.errorCode ?? "no errorCode"}) — 429, no retry`);
-        return { error: throttledResponse(copilotStream.result) };
+        return finish({ error: throttledResponse(copilotStream.result) });
       }
 
       if (copilotStream.hasContent || fullText.length > 0) {
@@ -399,9 +452,9 @@ export async function handleChatCompletion(
         const exhausted = parsePriorityAccessExhaustion(fullText);
         if (exhausted) {
           log.info(`Priority access exhausted (${exhausted.window}) — resets ${exhausted.resetsAt.toISOString()}`);
-          return { error: priorityAccessResponse(exhausted, model) };
+          return finish({ error: priorityAccessResponse(exhausted, model) });
         }
-        return { fullText };
+        return finish({ fullText });
       }
 
       // Disengaged is a deliberate safety refusal, NOT a transient empty. Retrying
@@ -430,14 +483,14 @@ export async function handleChatCompletion(
           continue;
         }
         log.info("Upstream Disengaged — failing fast (no retry) to preserve quota");
-        return {
+        return finish({
           error: jsonResponse(502, {
             error: {
               message: "M365 Copilot disengaged from this request (its safety filter declined to answer). Common causes: too many tools, jailbreak-shaped instructions, or pairing a non-default model with the tool agent. Reduce the toolset or use the default model.",
               type: "disengaged",
             },
           }),
-        };
+        });
       }
 
       // Empty response. Only an at-limit throttle warrants treating this as rate
@@ -447,7 +500,7 @@ export async function handleChatCompletion(
       // quick retries instead.
       const t = copilotStream.throttle;
       if (t && t.current >= t.max) {
-        return { error: rateLimitResponse(t) };
+        return finish({ error: rateLimitResponse(t) });
       }
       if (attempt < MAX_RETRIES) {
         // A dead/deleted agent returns an instant empty reply (throttle: null).
@@ -475,11 +528,28 @@ export async function handleChatCompletion(
         // backoff policy — once empties span enough distinct conversations it paces
         // subsequent turns so the account can self-heal (H-R1). Never blocks this request.
         noteRequestOutcome(true, convId);
-        return { error: emptyResponseResponse(t) };
+        return finish({ error: emptyResponseResponse(t) });
       }
     }
     noteRequestOutcome(true, convId);
-    return { error: emptyResponseResponse(null) };
+    return finish({ error: emptyResponseResponse(null) });
+  }
+
+  function usageForResponse(): Record<string, unknown> {
+    const usage = buildUsage(lastThrottle, lastContentOrigin, lastMessageType, lastScores, lastTurnCount, lastModelLatencyMs);
+    conv.lastUsage = usageToSessionSnapshot(model, usage, lastMessageType, lastModelLatencyMs);
+    return usage;
+  }
+
+  function withProxyHeaders(response: Response, finishReason?: string): Response {
+    response.headers.set("x-proxy-model", model);
+    response.headers.set("x-proxy-stream", body.stream ? "1" : "0");
+    response.headers.set("x-proxy-session-id", session.sessionId);
+    response.headers.set("x-proxy-conversation-id", session.conversationId);
+    if (lastMessageType) response.headers.set("x-proxy-message-type", lastMessageType);
+    if (finishReason) response.headers.set("x-proxy-finish-reason", finishReason);
+    if (lastModelLatencyMs !== null) response.headers.set("x-proxy-usage", JSON.stringify(usageForResponse()));
+    return response;
   }
 
   // Produce the final turn result as DATA (not a Response), so the same logic
@@ -639,29 +709,29 @@ export async function handleChatCompletion(
     const result = await runBuffered(onDelta);
     if ("error" in result) return { kind: "error", resp: result.error };
     conv.sentMessageCount = body.messages.length;
-    return { kind: "text", text: result.fullText };
+    return { kind: "text", text: applyForcedExactReply(result.fullText) };
   }
   } // end produce()
 
   // --- Render: JSON (non-stream) or an early-flushed SSE stream (stream) ---
   const includeUsage = !!body.stream_options?.include_usage;
-  const usage = () => buildUsage(lastThrottle, lastContentOrigin, lastMessageType, lastScores, lastTurnCount);
+  const usage = usageForResponse;
 
   if (!body.stream) {
     const p = await produce();
-    if (p.kind === "error") return p.resp;
+    if (p.kind === "error") return withProxyHeaders(p.resp);
     if (p.kind === "tools") {
-      return jsonResponse(200, {
+      return withProxyHeaders(jsonResponse(200, {
         id: completionId, object: "chat.completion", created, model,
         choices: [{ index: 0, message: { role: "assistant", content: null, tool_calls: p.toolCalls }, finish_reason: "tool_calls" }],
         usage: usage(),
-      });
+      }), "tool_calls");
     }
-    return jsonResponse(200, {
+    return withProxyHeaders(jsonResponse(200, {
       id: completionId, object: "chat.completion", created, model,
       choices: [{ index: 0, message: { role: "assistant", content: p.text }, finish_reason: outputFinishReason(p.text) }],
       usage: usage(),
-    });
+    }), outputFinishReason(p.text));
   }
 
   // Streaming: send HTTP 200 + a role chunk + keepalive comments from t=0, then run
@@ -672,7 +742,7 @@ export async function handleChatCompletion(
   // `stream:true` is genuinely incremental. Tool mode still buffers: the raw text is
   // parsed for tool-call fences and can't be shown verbatim, so its tool_calls (or a
   // prose fallback) are emitted once at the end.
-  return sseResponse(new ReadableStream({
+  const streamingResponse = withProxyHeaders(sseResponse(new ReadableStream({
     async start(controller) {
       const enc = new TextEncoder();
       const send = (obj: unknown) => controller.enqueue(enc.encode(`data: ${JSON.stringify(obj)}\n\n`));
@@ -692,7 +762,7 @@ export async function handleChatCompletion(
       // gate releases within ~45 chars, i.e. one short delta on a normal turn.
       let head = "";
       let gated = true;
-      const liveDelta = hasTools ? undefined : (delta: string) => {
+      const liveDelta = hasTools || forcedExactReply ? undefined : (delta: string) => {
         if (!delta) return;
         if (gated) {
           head += delta;
@@ -708,6 +778,8 @@ export async function handleChatCompletion(
       try { p = await produce(liveDelta); }
       catch (err: any) { p = { kind: "error", resp: jsonResponse(502, { error: { message: err?.message ?? "stream error", type: "upstream_error" } }) }; }
       clearInterval(hb);
+      let finishReason: string | undefined;
+      let streamError: { type: string; message: string } | undefined;
       try {
         if (p.kind === "error") {
           let message = "upstream error";
@@ -723,16 +795,19 @@ export async function handleChatCompletion(
             if (parsed?.type) type = parsed.type;
             if (parsed?.code) code = parsed.code;
           } catch {}
+          streamError = { message, type };
           const retryAfter = p.resp.headers.get("Retry-After");
           // HTTP 200 is already committed, so surface the failure as an in-stream error chunk.
           send({ ...base, error: { message, type, ...(code ? { code } : {}), ...(retryAfter ? { retry_after: Number(retryAfter) } : {}) } });
         } else if (p.kind === "tools") {
+          finishReason = "tool_calls";
           p.toolCalls.forEach((tc, i) => {
             log.debug(`Tool call: ${tc.function.name} ${trunc(tc.function.arguments, 200)}`);
             send({ ...base, choices: [{ index: 0, delta: { tool_calls: [{ index: i, id: tc.id, type: "function", function: { name: tc.function.name, arguments: tc.function.arguments } }] }, finish_reason: null }] });
           });
           send({ ...base, choices: [{ index: 0, delta: {}, finish_reason: "tool_calls" }], ...(includeUsage ? { usage: usage() } : {}) });
         } else {
+          finishReason = outputFinishReason(p.text);
           // Emit only what wasn't already streamed live: the whole text if nothing was
           // (tool-mode prose fallback, or a fully-buffered turn), or just the tail when
           // live deltas already covered a prefix. If `sent` somehow isn't a prefix of
@@ -746,10 +821,14 @@ export async function handleChatCompletion(
       } catch {
         // client likely disconnected mid-emit — nothing more to do
       } finally {
+        withProxyHeaders(streamingResponse, finishReason);
+        try { opts.onComplete?.(streamingResponse, streamError); }
+        catch (err: any) { log.info(`Completion observer failed: ${err?.message ?? err}`); }
         try { controller.enqueue(enc.encode("data: [DONE]\n\n")); controller.close(); } catch {}
       }
     },
-  }));
+  })));
+  return streamingResponse;
 }
 
 /**
@@ -770,6 +849,7 @@ function buildUsage(
   messageType?: string | null,
   scores?: Record<string, number> | null,
   turnCount?: number | null,
+  modelLatencyMs?: number | null,
 ): Record<string, unknown> {
   const base: Record<string, unknown> = {
     prompt_tokens: 0,
@@ -795,7 +875,36 @@ function buildUsage(
     if (typeof scores.dea_violation === "number") base.x_m365_dea_score = scores.dea_violation;
     if (typeof scores.BotOffense === "number") base.x_m365_offense_score = scores.BotOffense;
   }
+  if (typeof modelLatencyMs === "number") base.x_proxy_model_latency_ms = modelLatencyMs;
   return base;
+}
+
+function usageToSessionSnapshot(
+  model: string,
+  usage: Record<string, unknown>,
+  messageType?: string | null,
+  modelLatencyMs?: number | null,
+): SessionUsageSnapshot {
+  return {
+    updatedAt: Date.now(),
+    model,
+    promptTokens: asNumber(usage.prompt_tokens),
+    completionTokens: asNumber(usage.completion_tokens),
+    totalTokens: asNumber(usage.total_tokens),
+    conversationMessages: asNumberOrNull(usage.x_m365_conversation_messages),
+    conversationMax: asNumberOrNull(usage.x_m365_conversation_max),
+    conversationRemaining: asNumberOrNull(usage.x_m365_conversation_remaining),
+    modelLatencyMs: typeof modelLatencyMs === "number" ? modelLatencyMs : asNumberOrNull(usage.x_proxy_model_latency_ms),
+    messageType: typeof usage.x_m365_message_type === "string" ? usage.x_m365_message_type : messageType ?? null,
+  };
+}
+
+function asNumber(value: unknown): number {
+  return typeof value === "number" && Number.isFinite(value) ? value : 0;
+}
+
+function asNumberOrNull(value: unknown): number | null {
+  return typeof value === "number" && Number.isFinite(value) ? value : null;
 }
 
 // --- Helpers ---

@@ -21,7 +21,7 @@ const MODEL = process.argv[2] || "gpt-5.5-think-deeper";
 const openApiUrl = `${URL}/openapi.json`;
 
 const hits = () => { try { return readFileSync(HITLOG, "utf8").split("\n").filter(l => /GET \/sentinel\b/.test(l)).length; } catch { return 0; } };
-const FRAMES_DIR = join(homedir(), ".config", "opencode-m365", "frames");
+const FRAMES_DIR = join(homedir(), ".config", "m365-proxy", "frames");
 const listFrames = () => { try { return readdirSync(FRAMES_DIR).filter(f => f.endsWith(".ndjson")).map(f => join(FRAMES_DIR, f)); } catch { return []; } };
 
 const instructions = buildNativeActionPrompt([

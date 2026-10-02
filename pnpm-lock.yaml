@@ -43,18 +43,6 @@ importers:
         specifier: ^8.18.1
         version: 8.18.1
 
-  packages/openclaw-plugin:
-    dependencies:
-      '@m365-copilot/core':
-        specifier: workspace:*
-        version: link:../core
-      '@m365-copilot/proxy-lib':
-        specifier: workspace:*
-        version: link:../proxy-lib
-      srvx:
-        specifier: ^0.8.0
-        version: 0.8.16
-
   packages/proxy:
     dependencies:
       '@m365-copilot/core':
@@ -2271,11 +2259,6 @@ packages:
   source-map@0.7.6:
     resolution: {integrity: sha512-i5uvt8C3ikiWeNZSVZNWcfZPItFQOsYTUAOkcUPGd8DqDy1uOUikjt5dG+uRlwyvR108Fb9DOd4GvXfT0N2/uQ==}
     engines: {node: '>= 12'}
-
-  srvx@0.8.16:
-    resolution: {integrity: sha512-hmcGW4CgroeSmzgF1Ihwgl+Ths0JqAJ7HwjP2X7e3JzY7u4IydLMcdnlqGQiQGUswz+PO9oh/KtCpOISIvs9QQ==}
-    engines: {node: '>=20.16.0'}
-    hasBin: true
 
   stackback@0.0.2:
     resolution: {integrity: sha512-1XMJE5fQo1jGH6Y/7ebnwPOBEkIEnT4QF32d5R1+VXdXveM0IBMJt8zfaxX1P3QhVwrYe+576+jkANtSS2mBbw==}
@@ -4663,8 +4646,6 @@ snapshots:
 
   source-map@0.7.6: {}
 
-  srvx@0.8.16: {}
-
   stackback@0.0.2: {}
 
   standard-as-callback@2.1.0: {}
@@ -4956,7 +4937,7 @@ snapshots:
       picomatch: 4.0.4
       postcss: 8.5.8
       rolldown: 1.0.0-rc.12
-      tinyglobby: 0.2.15
+      tinyglobby: 0.2.17
     optionalDependencies:
       '@types/node': 25.5.0
       esbuild: 0.27.4

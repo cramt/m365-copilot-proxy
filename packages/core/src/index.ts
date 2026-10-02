@@ -2,24 +2,11 @@ export {
   getToken,
   getTokenSilent,
   getTokenForScope,
-  getImageArtifactToken,
   loginAutomated,
+  loginInteractive,
   loadSecrets,
   forceReauth,
 } from "./auth.js";
-
-export {
-  generateImage,
-  fetchImageBytes,
-  buildImagePrompt,
-  classifyImageFailure,
-  ImageGenerationError,
-  type GeneratedImage,
-  type GenerateImageOptions,
-  type ImageOrientation,
-  type ImageStyle,
-  type ImageGenFailureReason,
-} from "./image.js";
 
 export {
   noteRequestOutcome,
@@ -45,7 +32,6 @@ export {
   PAID_SCENARIO_MODELS,
   type ScenarioRouting,
   type CopilotStream,
-  type CapturedImage,
 } from "./copilot.js";
 
 export {
@@ -68,7 +54,6 @@ export {
 export {
   CopilotSession,
   type CopilotSessionOptions,
-  type ChatTurnOptions,
   type NativeActionConfig,
 } from "./session.js";
 

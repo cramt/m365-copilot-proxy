@@ -11,7 +11,7 @@ import { loadSecrets } from "../packages/core/dist/index.mjs";
 const OUT = join(process.cwd(), "scripts", "gateway-explore-out");
 mkdirSync(OUT, { recursive: true });
 const creds = loadSecrets();
-const cache = JSON.parse(readFileSync(join(homedir(), ".config", "opencode-m365", "agent-id.json"), "utf8"));
+const cache = JSON.parse(readFileSync(join(homedir(), ".config", "m365-proxy", "agent-id.json"), "utf8"));
 const BOT_ID = cache.botId;
 const TENANT = "fa7f56d8-49c4-4327-b816-9a0eeaa273df";
 const ENV = `Default-${TENANT}`;

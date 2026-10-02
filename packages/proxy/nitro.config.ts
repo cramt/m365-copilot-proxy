@@ -3,6 +3,11 @@
 export default defineNitroConfig({
   compatibilityDate: "2025-01-01",
   preset: "node-server",
+  rollupConfig: {
+    // Node 22 builtin. Mark as explicit external to avoid unresolved warnings
+    // from Rollup's builtin resolver list.
+    external: ["node:sqlite"],
+  },
   externals: {
     // pnpm2nix serves node_modules from the read-only Nix store. Nitro's
     // node-externals plugin copyFile's each external into
