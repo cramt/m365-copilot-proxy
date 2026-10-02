@@ -139,10 +139,10 @@ pnpm test:live      # M365_LIVE=1; live tests that hit real M365 (uses quota)
 
 - **Run inside the Nix dev shell**: `nix develop --command bash -c '...'`. It provides
   `CHROMIUM_PATH` (a system Chromium); Playwright's bundled one is broken on NixOS.
-- Auth uses `~/.config/opencode-m365/secrets.json` (email/password/mfaSecret) +
-  `msal-cache.json`. **This data dir keeps the legacy `opencode-m365` name** — do not
-  rename it or you orphan working credentials.
-- Set `M365_DEBUG=1` to log to `~/.config/opencode-m365/debug.log`. There is **no
+- Auth uses `~/.config/m365-proxy/secrets.json` (email/password/mfaSecret) +
+  `msal-cache.json`. **This checkout uses the `m365-proxy` data dir.** Move existing
+  credentials from the previous directory before starting.
+- Set `M365_DEBUG=1` to log to `~/.config/m365-proxy/debug.log`. There is **no
   interactive login** — auth is silent-refresh → automated (secrets.json) → fail loudly.
   A headless host / second PC never opens a browser tab or hangs on a paste-the-URL prompt.
 - **Mind the quota**: ~600 messages **per conversation**, plus account-level throttling.

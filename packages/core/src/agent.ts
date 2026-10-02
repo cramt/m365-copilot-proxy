@@ -7,7 +7,7 @@ import { getTokenForScope } from "./auth.js";
 
 const log = createLogger("agent");
 
-const CONFIG_DIR = join(homedir(), ".config", "opencode-m365");
+const CONFIG_DIR = join(homedir(), ".config", "m365-proxy");
 const AGENT_CACHE_FILE = join(CONFIG_DIR, "agent-id.json");
 
 const POWERPLATFORM_SCOPES = ["https://api.powerplatform.com/.default"];

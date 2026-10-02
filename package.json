@@ -3,6 +3,9 @@
   "private": true,
   "license": "MIT",
   "type": "module",
+  "engines": {
+    "node": ">=22.13.0"
+  },
   "scripts": {
     "dev": "pnpm --filter @m365-copilot/proxy dev",
     "build": "pnpm -r build",

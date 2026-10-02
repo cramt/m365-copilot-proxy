@@ -9,6 +9,7 @@ export default defineNitroPlugin(async () => {
   console.log("Authenticating...");
   try {
     await getToken();
+    console.log("Authenticated.");
   } catch (err: any) {
     console.error(`Auth failed: ${err.message}`);
     throw err;

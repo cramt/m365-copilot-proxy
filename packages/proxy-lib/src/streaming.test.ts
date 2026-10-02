@@ -20,6 +20,7 @@ vi.mock("@m365-copilot/core", async (importActual) => {
   const actual = await importActual<typeof import("@m365-copilot/core")>();
   class FakeModelSession {
     turnCount = 0;
+    sessionId = "session-test";
     conversationId = "conv-test";
     reset() {}
     newConversation() { this.conversationId = "conv-test-2"; }
@@ -58,6 +59,79 @@ vi.mock("@m365-copilot/core", async (importActual) => {
 });
 
 const { handleChatCompletion, SessionPool, ChatCompletionRequest } = await import("./index.js");
+
+describe("model-aware conversation snapshots", () => {
+  it("reuses a conversation only for the same model and first user message", () => {
+    const pool = new SessionPool();
+    const messages = ChatCompletionRequest.parse({ messages: [{ role: "user", content: "same prompt" }] }).messages;
+    const sonnet = pool.resolve(messages, "claude-sonnet");
+    expect(pool.resolve(messages, "claude-sonnet")).toBe(sonnet);
+    expect(pool.resolve(messages, "gpt-6-think-deeper")).not.toBe(sonnet);
+    expect(pool.getActiveConversations().map((snapshot) => snapshot.model).sort()).toEqual([
+      "claude-sonnet", "gpt-6-think-deeper",
+    ]);
+  });
+
+  it("publishes usage and proxy headers for completed JSON responses", async () => {
+    scripted.result = null;
+    scripted.fullText = "Hello";
+    scripted.deltas = ["Hello"];
+    const pool = new SessionPool();
+    const response = await handleChatCompletion(ChatCompletionRequest.parse({
+      model: "claude-sonnet", messages: [{ role: "user", content: "usage" }],
+    }), pool);
+    expect(response.headers.get("x-proxy-session-id")).toBe("session-test");
+    expect(response.headers.get("x-proxy-model")).toBe("claude-sonnet");
+    expect(response.headers.get("x-proxy-finish-reason")).toBe("stop");
+    expect(JSON.parse(response.headers.get("x-proxy-usage")!).x_proxy_model_latency_ms).toBeGreaterThanOrEqual(0);
+    expect(pool.getActiveConversations()[0].usage).toMatchObject({ model: "claude-sonnet", conversationMessages: 1 });
+  });
+
+  it("reports streaming usage only after the turn completes", async () => {
+    scripted.result = null;
+    scripted.fullText = "Hello";
+    scripted.deltas = ["Hello"];
+    const onComplete = vi.fn();
+    const pool = new SessionPool();
+    const response = await handleChatCompletion(ChatCompletionRequest.parse({
+      stream: true, stream_options: { include_usage: true }, messages: [{ role: "user", content: "stream usage" }],
+    }), pool, { onComplete });
+    expect(response.headers.get("x-proxy-session-id")).toBe("session-test");
+    const text = await response.text();
+    expect(text).toContain("x_proxy_model_latency_ms");
+    expect(onComplete).toHaveBeenCalledOnce();
+    const completedResponse = onComplete.mock.calls[0][0] as Response;
+    expect(JSON.parse(completedResponse.headers.get("x-proxy-usage")!).x_m365_conversation_remaining).toBe(599);
+    expect(pool.getActiveConversations()[0].usage?.modelLatencyMs).toBeGreaterThanOrEqual(0);
+  });
+});
+
+describe("exact-reply system guard", () => {
+  it.each([false, true])("enforces the directive without leaking upstream prose (stream=%s)", async (stream) => {
+    scripted.result = null;
+    scripted.fullText = "This is not the requested answer.";
+    scripted.deltas = ["This is not ", "the requested answer."];
+    const response = await handleChatCompletion(ChatCompletionRequest.parse({
+      stream, messages: [{ role: "system", content: 'Only reply with "EXACT".' }, { role: "user", content: "hello" }],
+    }), new SessionPool());
+    const result = await response.text();
+    expect(result).toContain("EXACT");
+    expect(result).not.toContain("This is not");
+  });
+
+  it("forwards system messages introduced on a follow-up turn", async () => {
+    scripted.result = null;
+    scripted.fullText = "Hello";
+    scripted.deltas = ["Hello"];
+    scripted.texts = [];
+    const pool = new SessionPool();
+    const messages = [{ role: "user", content: "follow-up system" }];
+    await handleChatCompletion(ChatCompletionRequest.parse({ messages }), pool);
+    messages.push({ role: "system", content: "Use concise prose." }, { role: "user", content: "continue" });
+    await handleChatCompletion(ChatCompletionRequest.parse({ messages }), pool);
+    expect(scripted.texts[1]).toContain("<system>\nUse concise prose.\n</system>");
+  });
+});
 
 /** Drive one streaming request and collect the ordered content-delta strings. */
 async function streamContents(deltas: string[], fullText?: string): Promise<string[]> {

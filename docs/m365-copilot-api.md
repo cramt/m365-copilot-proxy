@@ -66,7 +66,7 @@ wss://substrate.office.com/m365Copilot/Chathub/{oid}@{tid}?{query}
   - `https://api.bap.microsoft.com/.default` (environment discovery)
 
 ### Flow: MSAL PKCE
-We use `@azure/msal-node` `PublicClientApplication` with PKCE. The token cache is persisted to `~/.config/opencode-m365/msal-cache.json` and refreshed silently when possible.
+We use `@azure/msal-node` `PublicClientApplication` with PKCE. The token cache is persisted to `~/.config/m365-proxy/msal-cache.json` and refreshed silently when possible.
 
 > **The cache is disposable (tested June 2026, `scripts/token-regen-probe.mjs`).** Delete `msal-cache.json` and the next `getToken()` self-heals: silent fails → automated browser login (stored creds + TOTP) → a fresh, working token in **~12s**, no human in the loop. The regenerated token is **functionally identical** — same `aud`/`appid`/`tid`/`oid`/scopes, only `iat`/`exp`/`uti` change. Point auth at a throwaway cache with `M365_CACHE_FILE` to test this without touching the real one.
 >
@@ -520,7 +520,7 @@ Two behaviours of the chat-tuned model distort any naïve "is it tool-calling ye
    **This was previously documented (and implemented) as a hardcoded `.df.` plus a "trim the last 2 characters" DNS quirk.** That is wrong, and it was invisible here because this tenant's env ID *ends in* `df` — so the trimmed candidate landed on the correct host by coincidence. Any tenant whose env ID ends in something else got two names that don't resolve, and provisioning failed outright. Measured (@FreemindTrader, [#8](https://github.com/cramt/m365-copilot-proxy/issues/8)): for an ID ending `df` the old and new forms hit the same host (200, byte-identical bot list); the full-length label `ENOTFOUND` either way. Implemented in `getEnvironmentUrl()`.
 3. **Create a bot** via the Copilot Studio `minimalBots` API (`…/copilotstudio/minimalBots/api?api-version=2022-03-01-preview`), with the tool-calling instructions as the GPT component's `instructions` text.
 4. **Publish** it → returns a `TitleId`.
-5. The usable **agent id** is `T_{titleId}.{botId}.gpt.default`, cached in `~/.config/opencode-m365/agent-id.json`.
+5. The usable **agent id** is `T_{titleId}.{botId}.gpt.default`, cached in `~/.config/m365-proxy/agent-id.json`.
 
 ### Referencing the agent in a chat turn
 Instead of `plugins`, set on the chat message:
@@ -638,7 +638,7 @@ Run unsandboxed with `CHROMIUM_PATH` set and `M365_NO_INTERACTIVE=1`. They reuse
 
 When set, `CopilotSession` appends every WS frame (both `send` and `recv`,
 both raw chat invocation and bot updates) to
-`~/.config/opencode-m365/frames/<requestId>.ndjson`. Use this in production
+`~/.config/m365-proxy/frames/<requestId>.ndjson`. Use this in production
 to catch a regression mid-flight: ship the suspect NDJSON to a dev box and
 diff against a known-good capture. Negligible overhead since the data is
 already in memory.

@@ -1,0 +1,886 @@
+[
+  {
+    "method": "GET",
+    "url": "https://copilotstudio.microsoft.com/",
+    "host": "copilotstudio.microsoft.com",
+    "path": "/",
+    "hot": false,
+    "token": null
+  },
+  {
+    "method": "GET",
+    "url": "https://login.microsoftonline.com/common/oauth2/v2.0/authorize?client_id=96ff4394-9197-43aa-b393-6a41652e21f8&scope=openid%20profile%20offline_access&redirect_uri=https%3A%2F%2Fcopilotstudio.microsoft.com%2Fauth&client-request-id=cf767447-d7be-4817-b3e5-eaacd7be9f22&response_mode=fragment&client_info=1&clidata=1&nonce=019f0262-eca5-7918-9628-eb14a1e4d330&state=eyJpZCI6IjAxOWYwMjYyLWVjYTUtNzk0NC05MjEyLThmZjgzMGZlMjBiOSIsIm1ldGEiOnsiaW50ZXJhY3Rpb25UeXBlIjoicmVkaXJlY3QifX0%3D&x-client-SKU=msal.js.browser&x-client-VER=5.6.3&response_type=code&code_challenge=4lfpkN6nwX64dp6d9LcIIZt-EEMUr-joXTQlKZAXx5c&code_challenge_method=S256",
+    "host": "login.microsoftonline.com",
+    "path": "/common/oauth2/v2.0/authorize",
+    "hot": false,
+    "token": null
+  },
+  {
+    "method": "GET",
+    "url": "https://copilotstudio.microsoft.com/auth",
+    "host": "copilotstudio.microsoft.com",
+    "path": "/auth",
+    "hot": false,
+    "token": null
+  },
+  {
+    "method": "GET",
+    "url": "https://copilotstudio.microsoft.com/favicon.ico?v=2",
+    "host": "copilotstudio.microsoft.com",
+    "path": "/favicon.ico",
+    "hot": false,
+    "token": null
+  },
+  {
+    "method": "GET",
+    "url": "https://ecs.office.com/config/v1/CopilotStudio/1.0.0.0?SessionID=95a21bb0-711f-11f1-99f8-49bf1cbf364d&Region=prod&Location=SIN&Locale=en-US&UserAgent=Mozilla/5.0%20(Macintosh;%20Intel%20Mac%20OS%20X%2010_15_7)%20AppleWebKit/537.36%20(KHTML,%20like%20Gecko)%20Chrome/149.0.0.0%20Safari/537.36%20Edg/149.0.0.0&BuildBranch=26.06.21&BuildNumber=0.0.20260621.1-26.06.21-prod&AppName=powerva-microsoft-com&UserID=21af3469-93b5-4bf7-9ce1-8780900dfb33&TenantID=105b2061-b669-4b31-92ac-24d304d195dc&UX_Station=station5&Agents=PowerVA-Test,Copilot-Studio&agents=Copilot-Studio&ECSCanary=1",
+    "host": "ecs.office.com",
+    "path": "/config/v1/CopilotStudio/1.0.0.0",
+    "hot": false,
+    "token": null
+  },
+  {
+    "method": "GET",
+    "url": "https://105b2061b6694b3192ac24d304d195.dc.tenant.api.powerplatform.com/governance/userRoutingEnvironment?api-version=2022-03-01-preview&clientId=powerva-microsoft-com&portal=CopilotStudio",
+    "host": "105b2061b6694b3192ac24d304d195.dc.tenant.api.powerplatform.com",
+    "path": "/governance/userRoutingEnvironment",
+    "hot": false,
+    "token": {
+      "aud": "https://api.powerplatform.com",
+      "scp": "AiFlows.Ai.Execute AiFlows.Ai.Write AiFlows.Runs.Execute AiFlows.Runs.Read AiFlows.Runs.Write AiTools.Prompt.Invoke AiTools.Prompt.Read AiTools.Prompt.Write AppManagement.ApplicationPackages.Install AppManagement.ApplicationPackages.Read Connectivity.ConnectionPermissions.Read Connectivity.ConnectionPermissions.Write Connectivity.Connections.Read Connectivity.Connections.Write Connectivity.Connectors.Read Connectivity.Connectors.Write Connectivity.Gateways.Read CopilotFlows.ChatAssistant.Execute CopilotFlows.CloudFlows.ChatAssistant CopilotGovernance.Features.Execute CopilotGovernance.Features.Read CopilotGovernance.Settings.Read CopilotGovernance.Settings.Write CopilotStudio.AgentNodes.Invoke CopilotStudio.MakerOperations.Delete CopilotStudio.MakerOperations.Read CopilotStudio.MakerOperations.ReadWrite CopilotStudio.MinimalBot.Read CopilotStudio.MinimalBot.ReadWrite Dors.MRUSync.Execute DynamicsCustomerService.Copilot.Invoke EnvironmentManagement.Settings.Read EnvironmentManagement.Settings.ReadWrite PowerApps.Environments.Create PowerApps.Environments.GenerateResourceStorage PowerApps.Environments.Read PowerApps.UserSettings.Read PowerApps.UserSettings.Write PowerAutomate.DesktopFlows.Aggregation PowerAutomate.DesktopFlows.InvokeAI PowerAutomate.DesktopFlows.ProvisionCUAServicePrincipal PowerPages.Websites.Read PowerPages.Websites.Write PowerVirtualAgents.Channels.ReadWrite PowerVirtualAgents.Components.ReadWrite PowerVirtualAgents.Conversations.Read PowerVirtualAgents.Copilots.Create PowerVirtualAgents.FirstPartyBots.Invoke PowerVirtualAgents.Tokens.Read Support.Settings.Read Support.Tickets.Create Support.Tickets.Read Support.Tickets.Update",
+      "appid": "96ff4394-9197-43aa-b393-6a41652e21f8"
+    }
+  },
+  {
+    "method": "GET",
+    "url": "https://api.bap.microsoft.com/providers/Microsoft.BusinessAppPlatform/environments?api-version=2023-06-01&$top=100&$filter=minimumAppPermission+eq+%27CanEdit%27+and+properties%2FenvironmentSku+ne+%27Platform%27&$expand=properties.permissions,properties%2Fcopilotauth",
+    "host": "api.bap.microsoft.com",
+    "path": "/providers/Microsoft.BusinessAppPlatform/environments",
+    "hot": false,
+    "token": {
+      "aud": "https://service.powerapps.com/",
+      "scp": "user_impersonation",
+      "appid": "96ff4394-9197-43aa-b393-6a41652e21f8"
+    }
+  },
+  {
+    "method": "GET",
+    "url": "https://api.powerapps.com/api/invoke",
+    "host": "api.powerapps.com",
+    "path": "/api/invoke",
+    "hot": false,
+    "token": {
+      "aud": "https://service.powerapps.com/",
+      "scp": "user_impersonation",
+      "appid": "96ff4394-9197-43aa-b393-6a41652e21f8"
+    }
+  },
+  {
+    "method": "GET",
+    "url": "https://api.bap.microsoft.com/providers/Microsoft.BusinessAppPlatform/environments/~default?api-version=2023-06-01&$expand=properties.permissions,properties%2FcopilotPolicies,properties%2FbingChatEnabled,properties%2Fcopilotauth",
+    "host": "api.bap.microsoft.com",
+    "path": "/providers/Microsoft.BusinessAppPlatform/environments/~default",
+    "hot": false,
+    "token": {
+      "aud": "https://service.powerapps.com/",
+      "scp": "user_impersonation",
+      "appid": "96ff4394-9197-43aa-b393-6a41652e21f8"
+    }
+  },
+  {
+    "method": "POST",
+    "url": "https://api.bap.microsoft.com/providers/Microsoft.BusinessAppPlatform/listTenantSettings?api-version=2023-06-01",
+    "host": "api.bap.microsoft.com",
+    "path": "/providers/Microsoft.BusinessAppPlatform/listTenantSettings",
+    "hot": false,
+    "token": {
+      "aud": "https://service.powerapps.com/",
+      "scp": "user_impersonation",
+      "appid": "96ff4394-9197-43aa-b393-6a41652e21f8"
+    }
+  },
+  {
+    "method": "GET",
+    "url": "https://api.bap.microsoft.com/providers/Microsoft.BusinessAppPlatform/environments/Default-105b2061-b669-4b31-92ac-24d304d195dc?api-version=2023-06-01&$expand=properties.permissions,properties%2FcopilotPolicies,properties%2FbingChatEnabled,properties%2Fcopilotauth",
+    "host": "api.bap.microsoft.com",
+    "path": "/providers/Microsoft.BusinessAppPlatform/environments/Default-105b2061-b669-4b31-92ac-24d304d195dc",
+    "hot": false,
+    "token": {
+      "aud": "https://service.powerapps.com/",
+      "scp": "user_impersonation",
+      "appid": "96ff4394-9197-43aa-b393-6a41652e21f8"
+    }
+  },
+  {
+    "method": "GET",
+    "url": "https://powervamg.us-il104.gateway.prod.island.powerapps.com/chatbotmanagement/tenants/105b2061-b669-4b31-92ac-24d304d195dc/environments/Default-105b2061-b669-4b31-92ac-24d304d195dc/api/featureSettings/clientSettings",
+    "host": "powervamg.us-il104.gateway.prod.island.powerapps.com",
+    "path": "/chatbotmanagement/tenants/105b2061-b669-4b31-92ac-24d304d195dc/environments/Default-105b2061-b669-4b31-92ac-24d304d195dc/api/featureSettings/clientSettings",
+    "hot": true,
+    "token": {
+      "aud": "96ff4394-9197-43aa-b393-6a41652e21f8",
+      "scp": "AppCatalog.ReadWrite.All Application.Read.All Calendars.Read Channel.ReadBasic.All ChannelMessage.Send Chat.ReadBasic ChatMessage.Send ExternalItem.Read.All Files.Read.All Files.ReadWrite.All FileStorageContainer.Selected Group.Read.All InformationProtectionPolicy.Read MailboxSettings.Read Organization.Read.All People.Read SensitivityLabel.Read Sites.Read.All Sites.ReadWrite.All Team.ReadBasic.All TeamsAppInstallation.ReadForTeam TeamsAppInstallation.ReadWriteForTeam User.Read.All",
+      "appid": "96ff4394-9197-43aa-b393-6a41652e21f8"
+    }
+  },
+  {
+    "method": "GET",
+    "url": "https://powervamg.us-il104.gateway.prod.island.powerapps.com/api/botmanagement/v1/onboarding/cpmConsentInfo",
+    "host": "powervamg.us-il104.gateway.prod.island.powerapps.com",
+    "path": "/api/botmanagement/v1/onboarding/cpmConsentInfo",
+    "hot": true,
+    "token": {
+      "aud": "96ff4394-9197-43aa-b393-6a41652e21f8",
+      "scp": "AppCatalog.ReadWrite.All Application.Read.All Calendars.Read Channel.ReadBasic.All ChannelMessage.Send Chat.ReadBasic ChatMessage.Send ExternalItem.Read.All Files.Read.All Files.ReadWrite.All FileStorageContainer.Selected Group.Read.All InformationProtectionPolicy.Read MailboxSettings.Read Organization.Read.All People.Read SensitivityLabel.Read Sites.Read.All Sites.ReadWrite.All Team.ReadBasic.All TeamsAppInstallation.ReadForTeam TeamsAppInstallation.ReadWriteForTeam User.Read.All",
+      "appid": "96ff4394-9197-43aa-b393-6a41652e21f8"
+    }
+  },
+  {
+    "method": "GET",
+    "url": "https://powervamg.us-il104.gateway.prod.island.powerapps.com/api/botmanagement/v1/settings/client?environmentId=Default-105b2061-b669-4b31-92ac-24d304d195dc",
+    "host": "powervamg.us-il104.gateway.prod.island.powerapps.com",
+    "path": "/api/botmanagement/v1/settings/client",
+    "hot": true,
+    "token": {
+      "aud": "96ff4394-9197-43aa-b393-6a41652e21f8",
+      "scp": "AppCatalog.ReadWrite.All Application.Read.All Calendars.Read Channel.ReadBasic.All ChannelMessage.Send Chat.ReadBasic ChatMessage.Send ExternalItem.Read.All Files.Read.All Files.ReadWrite.All FileStorageContainer.Selected Group.Read.All InformationProtectionPolicy.Read MailboxSettings.Read Organization.Read.All People.Read SensitivityLabel.Read Sites.Read.All Sites.ReadWrite.All Team.ReadBasic.All TeamsAppInstallation.ReadForTeam TeamsAppInstallation.ReadWriteForTeam User.Read.All",
+      "appid": "96ff4394-9197-43aa-b393-6a41652e21f8"
+    }
+  },
+  {
+    "method": "GET",
+    "url": "https://powervamg.us-il104.gateway.prod.island.powerapps.com/api/botmanagement/v2/environments/Default-105b2061-b669-4b31-92ac-24d304d195dc/viral-signup/create/status",
+    "host": "powervamg.us-il104.gateway.prod.island.powerapps.com",
+    "path": "/api/botmanagement/v2/environments/Default-105b2061-b669-4b31-92ac-24d304d195dc/viral-signup/create/status",
+    "hot": true,
+    "token": {
+      "aud": "96ff4394-9197-43aa-b393-6a41652e21f8",
+      "scp": "AppCatalog.ReadWrite.All Application.Read.All Calendars.Read Channel.ReadBasic.All ChannelMessage.Send Chat.ReadBasic ChatMessage.Send ExternalItem.Read.All Files.Read.All Files.ReadWrite.All FileStorageContainer.Selected Group.Read.All InformationProtectionPolicy.Read MailboxSettings.Read Organization.Read.All People.Read SensitivityLabel.Read Sites.Read.All Sites.ReadWrite.All Team.ReadBasic.All TeamsAppInstallation.ReadForTeam TeamsAppInstallation.ReadWriteForTeam User.Read.All",
+      "appid": "96ff4394-9197-43aa-b393-6a41652e21f8"
+    }
+  },
+  {
+    "method": "POST",
+    "url": "https://powervamg.us-il104.gateway.prod.island.powerapps.com/api/botmanagement/v1/email/sendwelcomemessage",
+    "host": "powervamg.us-il104.gateway.prod.island.powerapps.com",
+    "path": "/api/botmanagement/v1/email/sendwelcomemessage",
+    "hot": true,
+    "token": {
+      "aud": "96ff4394-9197-43aa-b393-6a41652e21f8",
+      "scp": "AppCatalog.ReadWrite.All Application.Read.All Calendars.Read Channel.ReadBasic.All ChannelMessage.Send Chat.ReadBasic ChatMessage.Send ExternalItem.Read.All Files.Read.All Files.ReadWrite.All FileStorageContainer.Selected Group.Read.All InformationProtectionPolicy.Read MailboxSettings.Read Organization.Read.All People.Read SensitivityLabel.Read Sites.Read.All Sites.ReadWrite.All Team.ReadBasic.All TeamsAppInstallation.ReadForTeam TeamsAppInstallation.ReadWriteForTeam User.Read.All",
+      "appid": "96ff4394-9197-43aa-b393-6a41652e21f8"
+    }
+  },
+  {
+    "method": "GET",
+    "url": "https://powervamg.us-il104.gateway.prod.island.powerapps.com/api/botmanagement/v1/languages",
+    "host": "powervamg.us-il104.gateway.prod.island.powerapps.com",
+    "path": "/api/botmanagement/v1/languages",
+    "hot": true,
+    "token": {
+      "aud": "96ff4394-9197-43aa-b393-6a41652e21f8",
+      "scp": "AppCatalog.ReadWrite.All Application.Read.All Calendars.Read Channel.ReadBasic.All ChannelMessage.Send Chat.ReadBasic ChatMessage.Send ExternalItem.Read.All Files.Read.All Files.ReadWrite.All FileStorageContainer.Selected Group.Read.All InformationProtectionPolicy.Read MailboxSettings.Read Organization.Read.All People.Read SensitivityLabel.Read Sites.Read.All Sites.ReadWrite.All Team.ReadBasic.All TeamsAppInstallation.ReadForTeam TeamsAppInstallation.ReadWriteForTeam User.Read.All",
+      "appid": "96ff4394-9197-43aa-b393-6a41652e21f8"
+    }
+  },
+  {
+    "method": "GET",
+    "url": "https://content.powerapps.com/resource/makerx/static/FjvOrqHT_o27/locales/en-US/BotSchema.json",
+    "host": "content.powerapps.com",
+    "path": "/resource/makerx/static/FjvOrqHT_o27/locales/en-US/BotSchema.json",
+    "hot": false,
+    "token": null
+  },
+  {
+    "method": "GET",
+    "url": "https://webshell.suite.office.com/iframe/TokenFactoryIframe?origin=https%3A%2F%2Fcopilotstudio.microsoft.com&shsid=8b05231f-3063-4da7-ba8f-bf34ec8ca644&apiver=oneshell&cshver=1.20260612.6.0&upn=yashas.m-n%40hpe.com",
+    "host": "webshell.suite.office.com",
+    "path": "/iframe/TokenFactoryIframe",
+    "hot": false,
+    "token": null
+  },
+  {
+    "method": "GET",
+    "url": "https://content.powerapps.com/resource/makerx/static/media/copilotstudio_24_color.56cc042f.svg",
+    "host": "content.powerapps.com",
+    "path": "/resource/makerx/static/media/copilotstudio_24_color.56cc042f.svg",
+    "hot": false,
+    "token": null
+  },
+  {
+    "method": "GET",
+    "url": "https://105b2061b6694b3192ac24d304d195.dc.tenant.api.powerplatform.com/appmanagement/environments/Default-105b2061-b669-4b31-92ac-24d304d195dc/AvailablePackages/Microsoft.Crm.Cloud.Pes.Tps.UserGetAvailableInstancePackages(Lcid='1033',InstanceCountryCode='IN',CrmVersion='9.2.26053.152')?api-version=1",
+    "host": "105b2061b6694b3192ac24d304d195.dc.tenant.api.powerplatform.com",
+    "path": "/appmanagement/environments/Default-105b2061-b669-4b31-92ac-24d304d195dc/AvailablePackages/Microsoft.Crm.Cloud.Pes.Tps.UserGetAvailableInstancePackages(Lcid='1033',InstanceCountryCode='IN',CrmVersion='9.2.26053.152')",
+    "hot": false,
+    "token": {
+      "aud": "https://api.powerplatform.com",
+      "scp": "AiFlows.Ai.Execute AiFlows.Ai.Write AiFlows.Runs.Execute AiFlows.Runs.Read AiFlows.Runs.Write AiTools.Prompt.Invoke AiTools.Prompt.Read AiTools.Prompt.Write AppManagement.ApplicationPackages.Install AppManagement.ApplicationPackages.Read Connectivity.ConnectionPermissions.Read Connectivity.ConnectionPermissions.Write Connectivity.Connections.Read Connectivity.Connections.Write Connectivity.Connectors.Read Connectivity.Connectors.Write Connectivity.Gateways.Read CopilotFlows.ChatAssistant.Execute CopilotFlows.CloudFlows.ChatAssistant CopilotGovernance.Features.Execute CopilotGovernance.Features.Read CopilotGovernance.Settings.Read CopilotGovernance.Settings.Write CopilotStudio.AgentNodes.Invoke CopilotStudio.MakerOperations.Delete CopilotStudio.MakerOperations.Read CopilotStudio.MakerOperations.ReadWrite CopilotStudio.MinimalBot.Read CopilotStudio.MinimalBot.ReadWrite Dors.MRUSync.Execute DynamicsCustomerService.Copilot.Invoke EnvironmentManagement.Settings.Read EnvironmentManagement.Settings.ReadWrite PowerApps.Environments.Create PowerApps.Environments.GenerateResourceStorage PowerApps.Environments.Read PowerApps.UserSettings.Read PowerApps.UserSettings.Write PowerAutomate.DesktopFlows.Aggregation PowerAutomate.DesktopFlows.InvokeAI PowerAutomate.DesktopFlows.ProvisionCUAServicePrincipal PowerPages.Websites.Read PowerPages.Websites.Write PowerVirtualAgents.Channels.ReadWrite PowerVirtualAgents.Components.ReadWrite PowerVirtualAgents.Conversations.Read PowerVirtualAgents.Copilots.Create PowerVirtualAgents.FirstPartyBots.Invoke PowerVirtualAgents.Tokens.Read Support.Settings.Read Support.Tickets.Create Support.Tickets.Read Support.Tickets.Update",
+      "appid": "96ff4394-9197-43aa-b393-6a41652e21f8"
+    }
+  },
+  {
+    "method": "GET",
+    "url": "https://orga47660bd.crm.dynamics.com/api/data/v9.2/bots?$filter=not+startswith(template,+%27gpt%27)+and+schemaname+ne+%27msdyn_CustomerServiceCopilot%27&$expand=createdby($select%3Dsystemuserid,fullname),modifiedby($select%3Dsystemuserid,fullname),owninguser($select%3Dsystemuserid,fullname)",
+    "host": "orga47660bd.crm.dynamics.com",
+    "path": "/api/data/v9.2/bots",
+    "hot": true,
+    "token": {
+      "aud": "https://orga47660bd.crm.dynamics.com/",
+      "scp": "user_impersonation",
+      "appid": "96ff4394-9197-43aa-b393-6a41652e21f8"
+    }
+  },
+  {
+    "method": "GET",
+    "url": "https://powervamg.us-il104.gateway.prod.island.powerapps.com/api/botmanagement/v1/userlicenseinfo/viralsku",
+    "host": "powervamg.us-il104.gateway.prod.island.powerapps.com",
+    "path": "/api/botmanagement/v1/userlicenseinfo/viralsku",
+    "hot": true,
+    "token": {
+      "aud": "96ff4394-9197-43aa-b393-6a41652e21f8",
+      "scp": "AppCatalog.ReadWrite.All Application.Read.All Calendars.Read Channel.ReadBasic.All ChannelMessage.Send Chat.ReadBasic ChatMessage.Send ExternalItem.Read.All Files.Read.All Files.ReadWrite.All FileStorageContainer.Selected Group.Read.All InformationProtectionPolicy.Read MailboxSettings.Read Organization.Read.All People.Read SensitivityLabel.Read Sites.Read.All Sites.ReadWrite.All Team.ReadBasic.All TeamsAppInstallation.ReadForTeam TeamsAppInstallation.ReadWriteForTeam User.Read.All",
+      "appid": "96ff4394-9197-43aa-b393-6a41652e21f8"
+    }
+  },
+  {
+    "method": "POST",
+    "url": "https://powervamg.us-il104.gateway.prod.island.powerapps.com/api/botmanagement/v1/userlicenseinfo/updateskusetting",
+    "host": "powervamg.us-il104.gateway.prod.island.powerapps.com",
+    "path": "/api/botmanagement/v1/userlicenseinfo/updateskusetting",
+    "hot": true,
+    "token": {
+      "aud": "96ff4394-9197-43aa-b393-6a41652e21f8",
+      "scp": "AppCatalog.ReadWrite.All Application.Read.All Calendars.Read Channel.ReadBasic.All ChannelMessage.Send Chat.ReadBasic ChatMessage.Send ExternalItem.Read.All Files.Read.All Files.ReadWrite.All FileStorageContainer.Selected Group.Read.All InformationProtectionPolicy.Read MailboxSettings.Read Organization.Read.All People.Read SensitivityLabel.Read Sites.Read.All Sites.ReadWrite.All Team.ReadBasic.All TeamsAppInstallation.ReadForTeam TeamsAppInstallation.ReadWriteForTeam User.Read.All",
+      "appid": "96ff4394-9197-43aa-b393-6a41652e21f8"
+    }
+  },
+  {
+    "method": "GET",
+    "url": "https://powervamg.us-il104.gateway.prod.island.powerapps.com/api/botmanagement/v1/environments/Default-105b2061-b669-4b31-92ac-24d304d195dc/notifications",
+    "host": "powervamg.us-il104.gateway.prod.island.powerapps.com",
+    "path": "/api/botmanagement/v1/environments/Default-105b2061-b669-4b31-92ac-24d304d195dc/notifications",
+    "hot": true,
+    "token": {
+      "aud": "96ff4394-9197-43aa-b393-6a41652e21f8",
+      "scp": "AppCatalog.ReadWrite.All Application.Read.All Calendars.Read Channel.ReadBasic.All ChannelMessage.Send Chat.ReadBasic ChatMessage.Send ExternalItem.Read.All Files.Read.All Files.ReadWrite.All FileStorageContainer.Selected Group.Read.All InformationProtectionPolicy.Read MailboxSettings.Read Organization.Read.All People.Read SensitivityLabel.Read Sites.Read.All Sites.ReadWrite.All Team.ReadBasic.All TeamsAppInstallation.ReadForTeam TeamsAppInstallation.ReadWriteForTeam User.Read.All",
+      "appid": "96ff4394-9197-43aa-b393-6a41652e21f8"
+    }
+  },
+  {
+    "method": "GET",
+    "url": "https://powervamg.us-il104.gateway.prod.island.powerapps.com/api/botmanagement/v1/userlicenseinfo/entitlements",
+    "host": "powervamg.us-il104.gateway.prod.island.powerapps.com",
+    "path": "/api/botmanagement/v1/userlicenseinfo/entitlements",
+    "hot": true,
+    "token": {
+      "aud": "96ff4394-9197-43aa-b393-6a41652e21f8",
+      "scp": "AppCatalog.ReadWrite.All Application.Read.All Calendars.Read Channel.ReadBasic.All ChannelMessage.Send Chat.ReadBasic ChatMessage.Send ExternalItem.Read.All Files.Read.All Files.ReadWrite.All FileStorageContainer.Selected Group.Read.All InformationProtectionPolicy.Read MailboxSettings.Read Organization.Read.All People.Read SensitivityLabel.Read Sites.Read.All Sites.ReadWrite.All Team.ReadBasic.All TeamsAppInstallation.ReadForTeam TeamsAppInstallation.ReadWriteForTeam User.Read.All",
+      "appid": "96ff4394-9197-43aa-b393-6a41652e21f8"
+    }
+  },
+  {
+    "method": "GET",
+    "url": "https://config.edge.skype.com/config/v1/CHILL/0.0.13?disableexperiments=true&disablerollouts=false&agent=ChillCopilotStudio&SurveyValidation=true&Application=Copilot%20Studio&version=0.0.20260621.1-26.06.21-prod",
+    "host": "config.edge.skype.com",
+    "path": "/config/v1/CHILL/0.0.13",
+    "hot": false,
+    "token": null
+  },
+  {
+    "method": "GET",
+    "url": "https://webshell.suite.office.com/api/clientshell/GetOriginAllowList?api-version=1&OriginUri=https%3A%2F%2Fcopilotstudio.microsoft.com",
+    "host": "webshell.suite.office.com",
+    "path": "/api/clientshell/GetOriginAllowList",
+    "hot": false,
+    "token": null
+  },
+  {
+    "method": "POST",
+    "url": "https://105b2061b6694b3192ac24d304d195.dc.tenant.api.powerplatform.com/powerapps/groups/9ef444b6-7b32-47ac-b926-0daaab5e66ef/createEnvironment?api-version=2024-10-01",
+    "host": "105b2061b6694b3192ac24d304d195.dc.tenant.api.powerplatform.com",
+    "path": "/powerapps/groups/9ef444b6-7b32-47ac-b926-0daaab5e66ef/createEnvironment",
+    "hot": false,
+    "token": {
+      "aud": "https://api.powerplatform.com",
+      "scp": "AiFlows.Ai.Execute AiFlows.Ai.Write AiFlows.Runs.Execute AiFlows.Runs.Read AiFlows.Runs.Write AiTools.Prompt.Invoke AiTools.Prompt.Read AiTools.Prompt.Write AppManagement.ApplicationPackages.Install AppManagement.ApplicationPackages.Read Connectivity.ConnectionPermissions.Read Connectivity.ConnectionPermissions.Write Connectivity.Connections.Read Connectivity.Connections.Write Connectivity.Connectors.Read Connectivity.Connectors.Write Connectivity.Gateways.Read CopilotFlows.ChatAssistant.Execute CopilotFlows.CloudFlows.ChatAssistant CopilotGovernance.Features.Execute CopilotGovernance.Features.Read CopilotGovernance.Settings.Read CopilotGovernance.Settings.Write CopilotStudio.AgentNodes.Invoke CopilotStudio.MakerOperations.Delete CopilotStudio.MakerOperations.Read CopilotStudio.MakerOperations.ReadWrite CopilotStudio.MinimalBot.Read CopilotStudio.MinimalBot.ReadWrite Dors.MRUSync.Execute DynamicsCustomerService.Copilot.Invoke EnvironmentManagement.Settings.Read EnvironmentManagement.Settings.ReadWrite PowerApps.Environments.Create PowerApps.Environments.GenerateResourceStorage PowerApps.Environments.Read PowerApps.UserSettings.Read PowerApps.UserSettings.Write PowerAutomate.DesktopFlows.Aggregation PowerAutomate.DesktopFlows.InvokeAI PowerAutomate.DesktopFlows.ProvisionCUAServicePrincipal PowerPages.Websites.Read PowerPages.Websites.Write PowerVirtualAgents.Channels.ReadWrite PowerVirtualAgents.Components.ReadWrite PowerVirtualAgents.Conversations.Read PowerVirtualAgents.Copilots.Create PowerVirtualAgents.FirstPartyBots.Invoke PowerVirtualAgents.Tokens.Read Support.Settings.Read Support.Tickets.Create Support.Tickets.Read Support.Tickets.Update",
+      "appid": "96ff4394-9197-43aa-b393-6a41652e21f8"
+    }
+  },
+  {
+    "method": "GET",
+    "url": "https://105b2061b6694b3192ac24d304d195.dc.tenant.api.powerplatform.com/powerapps/environmentOperations/unitedstates~00e1818d-8603-4935-ac32-c566b97b719f~priority~ppms?api-version=1",
+    "host": "105b2061b6694b3192ac24d304d195.dc.tenant.api.powerplatform.com",
+    "path": "/powerapps/environmentOperations/unitedstates~00e1818d-8603-4935-ac32-c566b97b719f~priority~ppms",
+    "hot": false,
+    "token": {
+      "aud": "https://api.powerplatform.com",
+      "scp": "AiFlows.Ai.Execute AiFlows.Ai.Write AiFlows.Runs.Execute AiFlows.Runs.Read AiFlows.Runs.Write AiTools.Prompt.Invoke AiTools.Prompt.Read AiTools.Prompt.Write AppManagement.ApplicationPackages.Install AppManagement.ApplicationPackages.Read Connectivity.ConnectionPermissions.Read Connectivity.ConnectionPermissions.Write Connectivity.Connections.Read Connectivity.Connections.Write Connectivity.Connectors.Read Connectivity.Connectors.Write Connectivity.Gateways.Read CopilotFlows.ChatAssistant.Execute CopilotFlows.CloudFlows.ChatAssistant CopilotGovernance.Features.Execute CopilotGovernance.Features.Read CopilotGovernance.Settings.Read CopilotGovernance.Settings.Write CopilotStudio.AgentNodes.Invoke CopilotStudio.MakerOperations.Delete CopilotStudio.MakerOperations.Read CopilotStudio.MakerOperations.ReadWrite CopilotStudio.MinimalBot.Read CopilotStudio.MinimalBot.ReadWrite Dors.MRUSync.Execute DynamicsCustomerService.Copilot.Invoke EnvironmentManagement.Settings.Read EnvironmentManagement.Settings.ReadWrite PowerApps.Environments.Create PowerApps.Environments.GenerateResourceStorage PowerApps.Environments.Read PowerApps.UserSettings.Read PowerApps.UserSettings.Write PowerAutomate.DesktopFlows.Aggregation PowerAutomate.DesktopFlows.InvokeAI PowerAutomate.DesktopFlows.ProvisionCUAServicePrincipal PowerPages.Websites.Read PowerPages.Websites.Write PowerVirtualAgents.Channels.ReadWrite PowerVirtualAgents.Components.ReadWrite PowerVirtualAgents.Conversations.Read PowerVirtualAgents.Copilots.Create PowerVirtualAgents.FirstPartyBots.Invoke PowerVirtualAgents.Tokens.Read Support.Settings.Read Support.Tickets.Create Support.Tickets.Read Support.Tickets.Update",
+      "appid": "96ff4394-9197-43aa-b393-6a41652e21f8"
+    }
+  },
+  {
+    "method": "GET",
+    "url": "https://copilotstudio.microsoft.com/environments/2690e5fa-0f5c-ea5c-b2a4-6dc0e13c111d/home",
+    "host": "copilotstudio.microsoft.com",
+    "path": "/environments/2690e5fa-0f5c-ea5c-b2a4-6dc0e13c111d/home",
+    "hot": false,
+    "token": null
+  },
+  {
+    "method": "GET",
+    "url": "https://api.bap.microsoft.com/providers/Microsoft.BusinessAppPlatform/environments/2690e5fa-0f5c-ea5c-b2a4-6dc0e13c111d?api-version=2023-06-01&$expand=properties.permissions,properties%2FcopilotPolicies,properties%2FbingChatEnabled,properties%2Fcopilotauth",
+    "host": "api.bap.microsoft.com",
+    "path": "/providers/Microsoft.BusinessAppPlatform/environments/2690e5fa-0f5c-ea5c-b2a4-6dc0e13c111d",
+    "hot": false,
+    "token": {
+      "aud": "https://service.powerapps.com/",
+      "scp": "user_impersonation",
+      "appid": "96ff4394-9197-43aa-b393-6a41652e21f8"
+    }
+  },
+  {
+    "method": "GET",
+    "url": "https://powerva.microsoft.com/api/botmanagement/v1/settings/client?environmentId=2690e5fa-0f5c-ea5c-b2a4-6dc0e13c111d",
+    "host": "powerva.microsoft.com",
+    "path": "/api/botmanagement/v1/settings/client",
+    "hot": true,
+    "token": {
+      "aud": "96ff4394-9197-43aa-b393-6a41652e21f8",
+      "scp": "AppCatalog.ReadWrite.All Application.Read.All Calendars.Read Channel.ReadBasic.All ChannelMessage.Send Chat.ReadBasic ChatMessage.Send ExternalItem.Read.All Files.Read.All Files.ReadWrite.All FileStorageContainer.Selected Group.Read.All InformationProtectionPolicy.Read MailboxSettings.Read Organization.Read.All People.Read SensitivityLabel.Read Sites.Read.All Sites.ReadWrite.All Team.ReadBasic.All TeamsAppInstallation.ReadForTeam TeamsAppInstallation.ReadWriteForTeam User.Read.All",
+      "appid": "96ff4394-9197-43aa-b393-6a41652e21f8"
+    }
+  },
+  {
+    "method": "POST",
+    "url": "https://powerva.microsoft.com/api/botmanagement/v1/email/sendwelcomemessage",
+    "host": "powerva.microsoft.com",
+    "path": "/api/botmanagement/v1/email/sendwelcomemessage",
+    "hot": true,
+    "token": {
+      "aud": "96ff4394-9197-43aa-b393-6a41652e21f8",
+      "scp": "AppCatalog.ReadWrite.All Application.Read.All Calendars.Read Channel.ReadBasic.All ChannelMessage.Send Chat.ReadBasic ChatMessage.Send ExternalItem.Read.All Files.Read.All Files.ReadWrite.All FileStorageContainer.Selected Group.Read.All InformationProtectionPolicy.Read MailboxSettings.Read Organization.Read.All People.Read SensitivityLabel.Read Sites.Read.All Sites.ReadWrite.All Team.ReadBasic.All TeamsAppInstallation.ReadForTeam TeamsAppInstallation.ReadWriteForTeam User.Read.All",
+      "appid": "96ff4394-9197-43aa-b393-6a41652e21f8"
+    }
+  },
+  {
+    "method": "GET",
+    "url": "https://powervamg.us-il109.gateway.prod.island.powerapps.com/chatbotmanagement/tenants/105b2061-b669-4b31-92ac-24d304d195dc/environments/2690e5fa-0f5c-ea5c-b2a4-6dc0e13c111d/api/featureSettings/clientSettings",
+    "host": "powervamg.us-il109.gateway.prod.island.powerapps.com",
+    "path": "/chatbotmanagement/tenants/105b2061-b669-4b31-92ac-24d304d195dc/environments/2690e5fa-0f5c-ea5c-b2a4-6dc0e13c111d/api/featureSettings/clientSettings",
+    "hot": true,
+    "token": {
+      "aud": "96ff4394-9197-43aa-b393-6a41652e21f8",
+      "scp": "AppCatalog.ReadWrite.All Application.Read.All Calendars.Read Channel.ReadBasic.All ChannelMessage.Send Chat.ReadBasic ChatMessage.Send ExternalItem.Read.All Files.Read.All Files.ReadWrite.All FileStorageContainer.Selected Group.Read.All InformationProtectionPolicy.Read MailboxSettings.Read Organization.Read.All People.Read SensitivityLabel.Read Sites.Read.All Sites.ReadWrite.All Team.ReadBasic.All TeamsAppInstallation.ReadForTeam TeamsAppInstallation.ReadWriteForTeam User.Read.All",
+      "appid": "96ff4394-9197-43aa-b393-6a41652e21f8"
+    }
+  },
+  {
+    "method": "GET",
+    "url": "https://powervamg.us-il109.gateway.prod.island.powerapps.com/api/botmanagement/v1/languages",
+    "host": "powervamg.us-il109.gateway.prod.island.powerapps.com",
+    "path": "/api/botmanagement/v1/languages",
+    "hot": true,
+    "token": {
+      "aud": "96ff4394-9197-43aa-b393-6a41652e21f8",
+      "scp": "AppCatalog.ReadWrite.All Application.Read.All Calendars.Read Channel.ReadBasic.All ChannelMessage.Send Chat.ReadBasic ChatMessage.Send ExternalItem.Read.All Files.Read.All Files.ReadWrite.All FileStorageContainer.Selected Group.Read.All InformationProtectionPolicy.Read MailboxSettings.Read Organization.Read.All People.Read SensitivityLabel.Read Sites.Read.All Sites.ReadWrite.All Team.ReadBasic.All TeamsAppInstallation.ReadForTeam TeamsAppInstallation.ReadWriteForTeam User.Read.All",
+      "appid": "96ff4394-9197-43aa-b393-6a41652e21f8"
+    }
+  },
+  {
+    "method": "GET",
+    "url": "https://105b2061b6694b3192ac24d304d195.dc.tenant.api.powerplatform.com/appmanagement/environments/2690e5fa-0f5c-ea5c-b2a4-6dc0e13c111d/AvailablePackages/Microsoft.Crm.Cloud.Pes.Tps.UserGetAvailableInstancePackages(Lcid='1033',InstanceCountryCode='IN',CrmVersion='9.2.26043.173')?api-version=1",
+    "host": "105b2061b6694b3192ac24d304d195.dc.tenant.api.powerplatform.com",
+    "path": "/appmanagement/environments/2690e5fa-0f5c-ea5c-b2a4-6dc0e13c111d/AvailablePackages/Microsoft.Crm.Cloud.Pes.Tps.UserGetAvailableInstancePackages(Lcid='1033',InstanceCountryCode='IN',CrmVersion='9.2.26043.173')",
+    "hot": false,
+    "token": {
+      "aud": "https://api.powerplatform.com",
+      "scp": "AiFlows.Ai.Execute AiFlows.Ai.Write AiFlows.Runs.Execute AiFlows.Runs.Read AiFlows.Runs.Write AiTools.Prompt.Invoke AiTools.Prompt.Read AiTools.Prompt.Write AppManagement.ApplicationPackages.Install AppManagement.ApplicationPackages.Read Connectivity.ConnectionPermissions.Read Connectivity.ConnectionPermissions.Write Connectivity.Connections.Read Connectivity.Connections.Write Connectivity.Connectors.Read Connectivity.Connectors.Write Connectivity.Gateways.Read CopilotFlows.ChatAssistant.Execute CopilotFlows.CloudFlows.ChatAssistant CopilotGovernance.Features.Execute CopilotGovernance.Features.Read CopilotGovernance.Settings.Read CopilotGovernance.Settings.Write CopilotStudio.AgentNodes.Invoke CopilotStudio.MakerOperations.Delete CopilotStudio.MakerOperations.Read CopilotStudio.MakerOperations.ReadWrite CopilotStudio.MinimalBot.Read CopilotStudio.MinimalBot.ReadWrite Dors.MRUSync.Execute DynamicsCustomerService.Copilot.Invoke EnvironmentManagement.Settings.Read EnvironmentManagement.Settings.ReadWrite PowerApps.Environments.Create PowerApps.Environments.GenerateResourceStorage PowerApps.Environments.Read PowerApps.UserSettings.Read PowerApps.UserSettings.Write PowerAutomate.DesktopFlows.Aggregation PowerAutomate.DesktopFlows.InvokeAI PowerAutomate.DesktopFlows.ProvisionCUAServicePrincipal PowerPages.Websites.Read PowerPages.Websites.Write PowerVirtualAgents.Channels.ReadWrite PowerVirtualAgents.Components.ReadWrite PowerVirtualAgents.Conversations.Read PowerVirtualAgents.Copilots.Create PowerVirtualAgents.FirstPartyBots.Invoke PowerVirtualAgents.Tokens.Read Support.Settings.Read Support.Tickets.Create Support.Tickets.Read Support.Tickets.Update",
+      "appid": "96ff4394-9197-43aa-b393-6a41652e21f8"
+    }
+  },
+  {
+    "method": "GET",
+    "url": "https://orgd6d24a89.crm.dynamics.com/api/data/v9.2/bots?$filter=not+startswith(template,+%27gpt%27)+and+schemaname+ne+%27msdyn_CustomerServiceCopilot%27&$expand=createdby($select%3Dsystemuserid,fullname),modifiedby($select%3Dsystemuserid,fullname),owninguser($select%3Dsystemuserid,fullname)",
+    "host": "orgd6d24a89.crm.dynamics.com",
+    "path": "/api/data/v9.2/bots",
+    "hot": true,
+    "token": {
+      "aud": "https://orgd6d24a89.crm.dynamics.com/",
+      "scp": "user_impersonation",
+      "appid": "96ff4394-9197-43aa-b393-6a41652e21f8"
+    }
+  },
+  {
+    "method": "GET",
+    "url": "https://powervamg.us-il109.gateway.prod.island.powerapps.com/api/botmanagement/v1/userlicenseinfo/viralsku",
+    "host": "powervamg.us-il109.gateway.prod.island.powerapps.com",
+    "path": "/api/botmanagement/v1/userlicenseinfo/viralsku",
+    "hot": true,
+    "token": {
+      "aud": "96ff4394-9197-43aa-b393-6a41652e21f8",
+      "scp": "AppCatalog.ReadWrite.All Application.Read.All Calendars.Read Channel.ReadBasic.All ChannelMessage.Send Chat.ReadBasic ChatMessage.Send ExternalItem.Read.All Files.Read.All Files.ReadWrite.All FileStorageContainer.Selected Group.Read.All InformationProtectionPolicy.Read MailboxSettings.Read Organization.Read.All People.Read SensitivityLabel.Read Sites.Read.All Sites.ReadWrite.All Team.ReadBasic.All TeamsAppInstallation.ReadForTeam TeamsAppInstallation.ReadWriteForTeam User.Read.All",
+      "appid": "96ff4394-9197-43aa-b393-6a41652e21f8"
+    }
+  },
+  {
+    "method": "POST",
+    "url": "https://powervamg.us-il109.gateway.prod.island.powerapps.com/api/botmanagement/v1/userlicenseinfo/updateskusetting",
+    "host": "powervamg.us-il109.gateway.prod.island.powerapps.com",
+    "path": "/api/botmanagement/v1/userlicenseinfo/updateskusetting",
+    "hot": true,
+    "token": {
+      "aud": "96ff4394-9197-43aa-b393-6a41652e21f8",
+      "scp": "AppCatalog.ReadWrite.All Application.Read.All Calendars.Read Channel.ReadBasic.All ChannelMessage.Send Chat.ReadBasic ChatMessage.Send ExternalItem.Read.All Files.Read.All Files.ReadWrite.All FileStorageContainer.Selected Group.Read.All InformationProtectionPolicy.Read MailboxSettings.Read Organization.Read.All People.Read SensitivityLabel.Read Sites.Read.All Sites.ReadWrite.All Team.ReadBasic.All TeamsAppInstallation.ReadForTeam TeamsAppInstallation.ReadWriteForTeam User.Read.All",
+      "appid": "96ff4394-9197-43aa-b393-6a41652e21f8"
+    }
+  },
+  {
+    "method": "GET",
+    "url": "https://powervamg.us-il109.gateway.prod.island.powerapps.com/api/botmanagement/v1/environments/2690e5fa-0f5c-ea5c-b2a4-6dc0e13c111d/notifications",
+    "host": "powervamg.us-il109.gateway.prod.island.powerapps.com",
+    "path": "/api/botmanagement/v1/environments/2690e5fa-0f5c-ea5c-b2a4-6dc0e13c111d/notifications",
+    "hot": true,
+    "token": {
+      "aud": "96ff4394-9197-43aa-b393-6a41652e21f8",
+      "scp": "AppCatalog.ReadWrite.All Application.Read.All Calendars.Read Channel.ReadBasic.All ChannelMessage.Send Chat.ReadBasic ChatMessage.Send ExternalItem.Read.All Files.Read.All Files.ReadWrite.All FileStorageContainer.Selected Group.Read.All InformationProtectionPolicy.Read MailboxSettings.Read Organization.Read.All People.Read SensitivityLabel.Read Sites.Read.All Sites.ReadWrite.All Team.ReadBasic.All TeamsAppInstallation.ReadForTeam TeamsAppInstallation.ReadWriteForTeam User.Read.All",
+      "appid": "96ff4394-9197-43aa-b393-6a41652e21f8"
+    }
+  },
+  {
+    "method": "GET",
+    "url": "https://powervamg.us-il109.gateway.prod.island.powerapps.com/api/botmanagement/v1/userlicenseinfo/entitlements",
+    "host": "powervamg.us-il109.gateway.prod.island.powerapps.com",
+    "path": "/api/botmanagement/v1/userlicenseinfo/entitlements",
+    "hot": true,
+    "token": {
+      "aud": "96ff4394-9197-43aa-b393-6a41652e21f8",
+      "scp": "AppCatalog.ReadWrite.All Application.Read.All Calendars.Read Channel.ReadBasic.All ChannelMessage.Send Chat.ReadBasic ChatMessage.Send ExternalItem.Read.All Files.Read.All Files.ReadWrite.All FileStorageContainer.Selected Group.Read.All InformationProtectionPolicy.Read MailboxSettings.Read Organization.Read.All People.Read SensitivityLabel.Read Sites.Read.All Sites.ReadWrite.All Team.ReadBasic.All TeamsAppInstallation.ReadForTeam TeamsAppInstallation.ReadWriteForTeam User.Read.All",
+      "appid": "96ff4394-9197-43aa-b393-6a41652e21f8"
+    }
+  },
+  {
+    "method": "GET",
+    "url": "https://2690e5fa0f5cea5cb2a46dc0e13c11.1d.environment.api.powerplatform.com/connectivity/getCopilotListWithLicenseCheck?api-version=2022-03-01-preview",
+    "host": "2690e5fa0f5cea5cb2a46dc0e13c11.1d.environment.api.powerplatform.com",
+    "path": "/connectivity/getCopilotListWithLicenseCheck",
+    "hot": false,
+    "token": {
+      "aud": "https://api.powerplatform.com",
+      "scp": "AiFlows.Ai.Execute AiFlows.Ai.Write AiFlows.Runs.Execute AiFlows.Runs.Read AiFlows.Runs.Write AiTools.Prompt.Invoke AiTools.Prompt.Read AiTools.Prompt.Write AppManagement.ApplicationPackages.Install AppManagement.ApplicationPackages.Read Connectivity.ConnectionPermissions.Read Connectivity.ConnectionPermissions.Write Connectivity.Connections.Read Connectivity.Connections.Write Connectivity.Connectors.Read Connectivity.Connectors.Write Connectivity.Gateways.Read CopilotFlows.ChatAssistant.Execute CopilotFlows.CloudFlows.ChatAssistant CopilotGovernance.Features.Execute CopilotGovernance.Features.Read CopilotGovernance.Settings.Read CopilotGovernance.Settings.Write CopilotStudio.AgentNodes.Invoke CopilotStudio.MakerOperations.Delete CopilotStudio.MakerOperations.Read CopilotStudio.MakerOperations.ReadWrite CopilotStudio.MinimalBot.Read CopilotStudio.MinimalBot.ReadWrite Dors.MRUSync.Execute DynamicsCustomerService.Copilot.Invoke EnvironmentManagement.Settings.Read EnvironmentManagement.Settings.ReadWrite PowerApps.Environments.Create PowerApps.Environments.GenerateResourceStorage PowerApps.Environments.Read PowerApps.UserSettings.Read PowerApps.UserSettings.Write PowerAutomate.DesktopFlows.Aggregation PowerAutomate.DesktopFlows.InvokeAI PowerAutomate.DesktopFlows.ProvisionCUAServicePrincipal PowerPages.Websites.Read PowerPages.Websites.Write PowerVirtualAgents.Channels.ReadWrite PowerVirtualAgents.Components.ReadWrite PowerVirtualAgents.Conversations.Read PowerVirtualAgents.Copilots.Create PowerVirtualAgents.FirstPartyBots.Invoke PowerVirtualAgents.Tokens.Read Support.Settings.Read Support.Tickets.Create Support.Tickets.Read Support.Tickets.Update",
+      "appid": "96ff4394-9197-43aa-b393-6a41652e21f8"
+    }
+  },
+  {
+    "method": "GET",
+    "url": "https://powervamg.us-il109.gateway.prod.island.powerapps.com/api/botmanagement/v1/nps/renderUrl",
+    "host": "powervamg.us-il109.gateway.prod.island.powerapps.com",
+    "path": "/api/botmanagement/v1/nps/renderUrl",
+    "hot": true,
+    "token": {
+      "aud": "96ff4394-9197-43aa-b393-6a41652e21f8",
+      "scp": "AppCatalog.ReadWrite.All Application.Read.All Calendars.Read Channel.ReadBasic.All ChannelMessage.Send Chat.ReadBasic ChatMessage.Send ExternalItem.Read.All Files.Read.All Files.ReadWrite.All FileStorageContainer.Selected Group.Read.All InformationProtectionPolicy.Read MailboxSettings.Read Organization.Read.All People.Read SensitivityLabel.Read Sites.Read.All Sites.ReadWrite.All Team.ReadBasic.All TeamsAppInstallation.ReadForTeam TeamsAppInstallation.ReadWriteForTeam User.Read.All",
+      "appid": "96ff4394-9197-43aa-b393-6a41652e21f8"
+    }
+  },
+  {
+    "method": "GET",
+    "url": "https://2690e5fa0f5cea5cb2a46dc0e13c11.1d.environment.api.powerplatform.com/connectivity/connectors?$filter=environment+eq+%272690e5fa-0f5c-ea5c-b2a4-6dc0e13c111d%27+and+IsCustomApi+eq+%27True%27&api-version=2022-03-01-preview&showApisWithTos=true",
+    "host": "2690e5fa0f5cea5cb2a46dc0e13c11.1d.environment.api.powerplatform.com",
+    "path": "/connectivity/connectors",
+    "hot": false,
+    "token": {
+      "aud": "https://api.powerplatform.com",
+      "scp": "AiFlows.Ai.Execute AiFlows.Ai.Write AiFlows.Runs.Execute AiFlows.Runs.Read AiFlows.Runs.Write AiTools.Prompt.Invoke AiTools.Prompt.Read AiTools.Prompt.Write AppManagement.ApplicationPackages.Install AppManagement.ApplicationPackages.Read Connectivity.ConnectionPermissions.Read Connectivity.ConnectionPermissions.Write Connectivity.Connections.Read Connectivity.Connections.Write Connectivity.Connectors.Read Connectivity.Connectors.Write Connectivity.Gateways.Read CopilotFlows.ChatAssistant.Execute CopilotFlows.CloudFlows.ChatAssistant CopilotGovernance.Features.Execute CopilotGovernance.Features.Read CopilotGovernance.Settings.Read CopilotGovernance.Settings.Write CopilotStudio.AgentNodes.Invoke CopilotStudio.MakerOperations.Delete CopilotStudio.MakerOperations.Read CopilotStudio.MakerOperations.ReadWrite CopilotStudio.MinimalBot.Read CopilotStudio.MinimalBot.ReadWrite Dors.MRUSync.Execute DynamicsCustomerService.Copilot.Invoke EnvironmentManagement.Settings.Read EnvironmentManagement.Settings.ReadWrite PowerApps.Environments.Create PowerApps.Environments.GenerateResourceStorage PowerApps.Environments.Read PowerApps.UserSettings.Read PowerApps.UserSettings.Write PowerAutomate.DesktopFlows.Aggregation PowerAutomate.DesktopFlows.InvokeAI PowerAutomate.DesktopFlows.ProvisionCUAServicePrincipal PowerPages.Websites.Read PowerPages.Websites.Write PowerVirtualAgents.Channels.ReadWrite PowerVirtualAgents.Components.ReadWrite PowerVirtualAgents.Conversations.Read PowerVirtualAgents.Copilots.Create PowerVirtualAgents.FirstPartyBots.Invoke PowerVirtualAgents.Tokens.Read Support.Settings.Read Support.Tickets.Create Support.Tickets.Read Support.Tickets.Update",
+      "appid": "96ff4394-9197-43aa-b393-6a41652e21f8"
+    }
+  },
+  {
+    "method": "POST",
+    "url": "https://2690e5fa0f5cea5cb2a46dc0e13c11.1d.environment.api.powerplatform.com/connectivity/discoveraiplugins?api-version=2022-03-01-preview&$expand=swagger&IsDraft=1",
+    "host": "2690e5fa0f5cea5cb2a46dc0e13c11.1d.environment.api.powerplatform.com",
+    "path": "/connectivity/discoveraiplugins",
+    "hot": false,
+    "token": {
+      "aud": "https://api.powerplatform.com",
+      "scp": "AiFlows.Ai.Execute AiFlows.Ai.Write AiFlows.Runs.Execute AiFlows.Runs.Read AiFlows.Runs.Write AiTools.Prompt.Invoke AiTools.Prompt.Read AiTools.Prompt.Write AppManagement.ApplicationPackages.Install AppManagement.ApplicationPackages.Read Connectivity.ConnectionPermissions.Read Connectivity.ConnectionPermissions.Write Connectivity.Connections.Read Connectivity.Connections.Write Connectivity.Connectors.Read Connectivity.Connectors.Write Connectivity.Gateways.Read CopilotFlows.ChatAssistant.Execute CopilotFlows.CloudFlows.ChatAssistant CopilotGovernance.Features.Execute CopilotGovernance.Features.Read CopilotGovernance.Settings.Read CopilotGovernance.Settings.Write CopilotStudio.AgentNodes.Invoke CopilotStudio.MakerOperations.Delete CopilotStudio.MakerOperations.Read CopilotStudio.MakerOperations.ReadWrite CopilotStudio.MinimalBot.Read CopilotStudio.MinimalBot.ReadWrite Dors.MRUSync.Execute DynamicsCustomerService.Copilot.Invoke EnvironmentManagement.Settings.Read EnvironmentManagement.Settings.ReadWrite PowerApps.Environments.Create PowerApps.Environments.GenerateResourceStorage PowerApps.Environments.Read PowerApps.UserSettings.Read PowerApps.UserSettings.Write PowerAutomate.DesktopFlows.Aggregation PowerAutomate.DesktopFlows.InvokeAI PowerAutomate.DesktopFlows.ProvisionCUAServicePrincipal PowerPages.Websites.Read PowerPages.Websites.Write PowerVirtualAgents.Channels.ReadWrite PowerVirtualAgents.Components.ReadWrite PowerVirtualAgents.Conversations.Read PowerVirtualAgents.Copilots.Create PowerVirtualAgents.FirstPartyBots.Invoke PowerVirtualAgents.Tokens.Read Support.Settings.Read Support.Tickets.Create Support.Tickets.Read Support.Tickets.Update",
+      "appid": "96ff4394-9197-43aa-b393-6a41652e21f8"
+    }
+  },
+  {
+    "method": "GET",
+    "url": "https://us.api.flow.microsoft.com/providers/Microsoft.ProcessSimple/environments/2690e5fa-0f5c-ea5c-b2a4-6dc0e13c111d?api-version=2016-11-01-beta&$expand=properties.permissions",
+    "host": "us.api.flow.microsoft.com",
+    "path": "/providers/Microsoft.ProcessSimple/environments/2690e5fa-0f5c-ea5c-b2a4-6dc0e13c111d",
+    "hot": false,
+    "token": {
+      "aud": "https://service.flow.microsoft.com/",
+      "scp": "Flows.Manage.All Flows.Read.All",
+      "appid": "96ff4394-9197-43aa-b393-6a41652e21f8"
+    }
+  },
+  {
+    "method": "POST",
+    "url": "https://105b2061b6694b3192ac24d304d195.dc.tenant.api.powerplatform.com/powerautomate/listUserDetails?exclude=licenseInfo,userFeatures&api-version=1",
+    "host": "105b2061b6694b3192ac24d304d195.dc.tenant.api.powerplatform.com",
+    "path": "/powerautomate/listUserDetails",
+    "hot": false,
+    "token": {
+      "aud": "https://service.flow.microsoft.com/",
+      "scp": "Flows.Manage.All Flows.Read.All",
+      "appid": "96ff4394-9197-43aa-b393-6a41652e21f8"
+    }
+  },
+  {
+    "method": "GET",
+    "url": "https://105b2061b6694b3192ac24d304d195.dc.tenant.api.powerplatform.com/powerautomate/servicePlans?api-version=1",
+    "host": "105b2061b6694b3192ac24d304d195.dc.tenant.api.powerplatform.com",
+    "path": "/powerautomate/servicePlans",
+    "hot": false,
+    "token": {
+      "aud": "https://service.flow.microsoft.com/",
+      "scp": "Flows.Manage.All Flows.Read.All",
+      "appid": "96ff4394-9197-43aa-b393-6a41652e21f8"
+    }
+  },
+  {
+    "method": "GET",
+    "url": "https://ecs.office.com/config/v1/PowerAutomate/1.0.0.0?SessionID=bcadd5f0-711f-11f1-b861-dfc64db28f48&Region=prod&Location=SIN&Locale=en-US&UserAgent=Mozilla%2F5.0%20(Macintosh%3B%20Intel%20Mac%20OS%20X%2010_15_7)%20AppleWebKit%2F537.36%20(KHTML%2C%20like%20Gecko)%20Chrome%2F149.0.0.0%20Safari%2F537.36%20Edg%2F149.0.0.0&BuildBranch=26.06.21&BuildNumber=0.0.20260621.1-26.06.21-prod&AppName=powerva-microsoft-com&UserID=21af3469-93b5-4bf7-9ce1-8780900dfb33&TenantID=105b2061-b669-4b31-92ac-24d304d195dc&IsConsented=false&IsMsaUser=false&HasServicePlan=true&WidgetMode=false&WidgetType=none&WidgetHostId=none&EnvironmentID=2690e5fa-0f5c-ea5c-b2a4-6dc0e13c111d&EnvironmentGeo=US&CS_GEONAME=US&CS_CLUSTERCATEGORY=Prod&CS_CLUSTERNUMBER=109&CloudGroup=prod&CloudRoleRegion=US&Agents=AIBuilderPowerAutomate%2CConnectorAICoPilot%2CContentIntelligence%2CCopilotFlows%2CDesktopFlows_Portal%2CEcosystemsAndExperience%2CPowerAutomateClientTeam%2CProcessInsights",
+    "host": "ecs.office.com",
+    "path": "/config/v1/PowerAutomate/1.0.0.0",
+    "hot": false,
+    "token": null
+  },
+  {
+    "method": "GET",
+    "url": "https://powervamg.us-il109.gateway.prod.island.powerapps.com/api/botmanagement/v1/environments/2690e5fa-0f5c-ea5c-b2a4-6dc0e13c111d/custom-templates/manifests/o365LicenseRestrictedAgent-1.0.0?localeCode=1033",
+    "host": "powervamg.us-il109.gateway.prod.island.powerapps.com",
+    "path": "/api/botmanagement/v1/environments/2690e5fa-0f5c-ea5c-b2a4-6dc0e13c111d/custom-templates/manifests/o365LicenseRestrictedAgent-1.0.0",
+    "hot": true,
+    "token": {
+      "aud": "96ff4394-9197-43aa-b393-6a41652e21f8",
+      "scp": "AppCatalog.ReadWrite.All Application.Read.All Calendars.Read Channel.ReadBasic.All ChannelMessage.Send Chat.ReadBasic ChatMessage.Send ExternalItem.Read.All Files.Read.All Files.ReadWrite.All FileStorageContainer.Selected Group.Read.All InformationProtectionPolicy.Read MailboxSettings.Read Organization.Read.All People.Read SensitivityLabel.Read Sites.Read.All Sites.ReadWrite.All Team.ReadBasic.All TeamsAppInstallation.ReadForTeam TeamsAppInstallation.ReadWriteForTeam User.Read.All",
+      "appid": "96ff4394-9197-43aa-b393-6a41652e21f8"
+    }
+  },
+  {
+    "method": "POST",
+    "url": "https://orgd6d24a89.crm.dynamics.com/api/data/v9.2/bots?$select=botid",
+    "host": "orgd6d24a89.crm.dynamics.com",
+    "path": "/api/data/v9.2/bots",
+    "hot": true,
+    "token": {
+      "aud": "https://orgd6d24a89.crm.dynamics.com/",
+      "scp": "user_impersonation",
+      "appid": "96ff4394-9197-43aa-b393-6a41652e21f8"
+    }
+  },
+  {
+    "method": "POST",
+    "url": "https://2690e5fa0f5cea5cb2a46dc0e13c11.1d.environment.api.powerplatform.com/powervirtualagents/bots/3f39222a-2071-f111-ab0e-0022480bb903/api/botcomponents?api-version=2022-03-01-preview",
+    "host": "2690e5fa0f5cea5cb2a46dc0e13c11.1d.environment.api.powerplatform.com",
+    "path": "/powervirtualagents/bots/3f39222a-2071-f111-ab0e-0022480bb903/api/botcomponents",
+    "hot": true,
+    "token": {
+      "aud": "https://api.powerplatform.com",
+      "scp": "AiFlows.Ai.Execute AiFlows.Ai.Write AiFlows.Runs.Execute AiFlows.Runs.Read AiFlows.Runs.Write AiTools.Prompt.Invoke AiTools.Prompt.Read AiTools.Prompt.Write AppManagement.ApplicationPackages.Install AppManagement.ApplicationPackages.Read Connectivity.ConnectionPermissions.Read Connectivity.ConnectionPermissions.Write Connectivity.Connections.Read Connectivity.Connections.Write Connectivity.Connectors.Read Connectivity.Connectors.Write Connectivity.Gateways.Read CopilotFlows.ChatAssistant.Execute CopilotFlows.CloudFlows.ChatAssistant CopilotGovernance.Features.Execute CopilotGovernance.Features.Read CopilotGovernance.Settings.Read CopilotGovernance.Settings.Write CopilotStudio.AgentNodes.Invoke CopilotStudio.MakerOperations.Delete CopilotStudio.MakerOperations.Read CopilotStudio.MakerOperations.ReadWrite CopilotStudio.MinimalBot.Read CopilotStudio.MinimalBot.ReadWrite Dors.MRUSync.Execute DynamicsCustomerService.Copilot.Invoke EnvironmentManagement.Settings.Read EnvironmentManagement.Settings.ReadWrite PowerApps.Environments.Create PowerApps.Environments.GenerateResourceStorage PowerApps.Environments.Read PowerApps.UserSettings.Read PowerApps.UserSettings.Write PowerAutomate.DesktopFlows.Aggregation PowerAutomate.DesktopFlows.InvokeAI PowerAutomate.DesktopFlows.ProvisionCUAServicePrincipal PowerPages.Websites.Read PowerPages.Websites.Write PowerVirtualAgents.Channels.ReadWrite PowerVirtualAgents.Components.ReadWrite PowerVirtualAgents.Conversations.Read PowerVirtualAgents.Copilots.Create PowerVirtualAgents.FirstPartyBots.Invoke PowerVirtualAgents.Tokens.Read Support.Settings.Read Support.Tickets.Create Support.Tickets.Read Support.Tickets.Update",
+      "appid": "96ff4394-9197-43aa-b393-6a41652e21f8"
+    }
+  },
+  {
+    "method": "GET",
+    "url": "https://orgd6d24a89.crm.dynamics.com/api/data/v9.2/bots(3f39222a-2071-f111-ab0e-0022480bb903)?$select=createdby,modifiedby,owninguser,createdon,modifiedon,applicationmanifestinformation&$expand=createdby($select%3Dsystemuserid,fullname),modifiedby($select%3Dsystemuserid,fullname),owninguser($select%3Dsystemuserid,fullname)",
+    "host": "orgd6d24a89.crm.dynamics.com",
+    "path": "/api/data/v9.2/bots(3f39222a-2071-f111-ab0e-0022480bb903)",
+    "hot": true,
+    "token": {
+      "aud": "https://orgd6d24a89.crm.dynamics.com/",
+      "scp": "user_impersonation",
+      "appid": "96ff4394-9197-43aa-b393-6a41652e21f8"
+    }
+  },
+  {
+    "method": "GET",
+    "url": "blob:https://copilotstudio.microsoft.com/c0b13cec-8fce-4d41-9f0d-9fad4db43a9c",
+    "host": "",
+    "path": "https://copilotstudio.microsoft.com/c0b13cec-8fce-4d41-9f0d-9fad4db43a9c",
+    "hot": false,
+    "token": null
+  },
+  {
+    "method": "GET",
+    "url": "blob:https://copilotstudio.microsoft.com/15aa5e47-bc1e-4949-9622-e5202fadc720",
+    "host": "",
+    "path": "https://copilotstudio.microsoft.com/15aa5e47-bc1e-4949-9622-e5202fadc720",
+    "hot": false,
+    "token": null
+  },
+  {
+    "method": "GET",
+    "url": "https://powervamg.us-il109.gateway.prod.island.powerapps.com/api/botmanagement/v1/environments/2690e5fa-0f5c-ea5c-b2a4-6dc0e13c111d/botroutinginfo?cdsBotId=3f39222a-2071-f111-ab0e-0022480bb903",
+    "host": "powervamg.us-il109.gateway.prod.island.powerapps.com",
+    "path": "/api/botmanagement/v1/environments/2690e5fa-0f5c-ea5c-b2a4-6dc0e13c111d/botroutinginfo",
+    "hot": true,
+    "token": {
+      "aud": "96ff4394-9197-43aa-b393-6a41652e21f8",
+      "scp": "AppCatalog.ReadWrite.All Application.Read.All Calendars.Read Channel.ReadBasic.All ChannelMessage.Send Chat.ReadBasic ChatMessage.Send ExternalItem.Read.All Files.Read.All Files.ReadWrite.All FileStorageContainer.Selected Group.Read.All InformationProtectionPolicy.Read MailboxSettings.Read Organization.Read.All People.Read SensitivityLabel.Read Sites.Read.All Sites.ReadWrite.All Team.ReadBasic.All TeamsAppInstallation.ReadForTeam TeamsAppInstallation.ReadWriteForTeam User.Read.All",
+      "appid": "96ff4394-9197-43aa-b393-6a41652e21f8"
+    }
+  },
+  {
+    "method": "POST",
+    "url": "https://powervamg.us-il109.gateway.prod.island.powerapps.com/api/botmanagement/v1/environments/2690e5fa-0f5c-ea5c-b2a4-6dc0e13c111d/bots/3f39222a-2071-f111-ab0e-0022480bb903/content/botcomponents",
+    "host": "powervamg.us-il109.gateway.prod.island.powerapps.com",
+    "path": "/api/botmanagement/v1/environments/2690e5fa-0f5c-ea5c-b2a4-6dc0e13c111d/bots/3f39222a-2071-f111-ab0e-0022480bb903/content/botcomponents",
+    "hot": true,
+    "token": {
+      "aud": "96ff4394-9197-43aa-b393-6a41652e21f8",
+      "scp": "AppCatalog.ReadWrite.All Application.Read.All Calendars.Read Channel.ReadBasic.All ChannelMessage.Send Chat.ReadBasic ChatMessage.Send ExternalItem.Read.All Files.Read.All Files.ReadWrite.All FileStorageContainer.Selected Group.Read.All InformationProtectionPolicy.Read MailboxSettings.Read Organization.Read.All People.Read SensitivityLabel.Read Sites.Read.All Sites.ReadWrite.All Team.ReadBasic.All TeamsAppInstallation.ReadForTeam TeamsAppInstallation.ReadWriteForTeam User.Read.All",
+      "appid": "96ff4394-9197-43aa-b393-6a41652e21f8"
+    }
+  },
+  {
+    "method": "GET",
+    "url": "https://powervamg.us-il109.gateway.prod.island.powerapps.com/api/botmanagement/v1/environments/2690e5fa-0f5c-ea5c-b2a4-6dc0e13c111d/bots/3f39222a-2071-f111-ab0e-0022480bb903/settings",
+    "host": "powervamg.us-il109.gateway.prod.island.powerapps.com",
+    "path": "/api/botmanagement/v1/environments/2690e5fa-0f5c-ea5c-b2a4-6dc0e13c111d/bots/3f39222a-2071-f111-ab0e-0022480bb903/settings",
+    "hot": true,
+    "token": {
+      "aud": "96ff4394-9197-43aa-b393-6a41652e21f8",
+      "scp": "AppCatalog.ReadWrite.All Application.Read.All Calendars.Read Channel.ReadBasic.All ChannelMessage.Send Chat.ReadBasic ChatMessage.Send ExternalItem.Read.All Files.Read.All Files.ReadWrite.All FileStorageContainer.Selected Group.Read.All InformationProtectionPolicy.Read MailboxSettings.Read Organization.Read.All People.Read SensitivityLabel.Read Sites.Read.All Sites.ReadWrite.All Team.ReadBasic.All TeamsAppInstallation.ReadForTeam TeamsAppInstallation.ReadWriteForTeam User.Read.All",
+      "appid": "96ff4394-9197-43aa-b393-6a41652e21f8"
+    }
+  },
+  {
+    "method": "GET",
+    "url": "https://powervamg.us-il109.gateway.prod.island.powerapps.com/api/botmanagement/2022-01-15/environments/2690e5fa-0f5c-ea5c-b2a4-6dc0e13c111d/bots/3f39222a-2071-f111-ab0e-0022480bb903/sharepointsiteconfiguration",
+    "host": "powervamg.us-il109.gateway.prod.island.powerapps.com",
+    "path": "/api/botmanagement/2022-01-15/environments/2690e5fa-0f5c-ea5c-b2a4-6dc0e13c111d/bots/3f39222a-2071-f111-ab0e-0022480bb903/sharepointsiteconfiguration",
+    "hot": true,
+    "token": {
+      "aud": "96ff4394-9197-43aa-b393-6a41652e21f8",
+      "scp": "AppCatalog.ReadWrite.All Application.Read.All Calendars.Read Channel.ReadBasic.All ChannelMessage.Send Chat.ReadBasic ChatMessage.Send ExternalItem.Read.All Files.Read.All Files.ReadWrite.All FileStorageContainer.Selected Group.Read.All InformationProtectionPolicy.Read MailboxSettings.Read Organization.Read.All People.Read SensitivityLabel.Read Sites.Read.All Sites.ReadWrite.All Team.ReadBasic.All TeamsAppInstallation.ReadForTeam TeamsAppInstallation.ReadWriteForTeam User.Read.All",
+      "appid": "96ff4394-9197-43aa-b393-6a41652e21f8"
+    }
+  },
+  {
+    "method": "GET",
+    "url": "https://content.powerapps.com/resource/makerx/static/FjvOrqHT_o27/locales/en-US/GPTAuthoring.json",
+    "host": "content.powerapps.com",
+    "path": "/resource/makerx/static/FjvOrqHT_o27/locales/en-US/GPTAuthoring.json",
+    "hot": false,
+    "token": null
+  },
+  {
+    "method": "GET",
+    "url": "https://powervamg.us-il109.gateway.prod.island.powerapps.com/api/botmanagement/v1/environments/2690e5fa-0f5c-ea5c-b2a4-6dc0e13c111d/bots/3f39222a-2071-f111-ab0e-0022480bb903/publishv2-operations",
+    "host": "powervamg.us-il109.gateway.prod.island.powerapps.com",
+    "path": "/api/botmanagement/v1/environments/2690e5fa-0f5c-ea5c-b2a4-6dc0e13c111d/bots/3f39222a-2071-f111-ab0e-0022480bb903/publishv2-operations",
+    "hot": true,
+    "token": {
+      "aud": "96ff4394-9197-43aa-b393-6a41652e21f8",
+      "scp": "AppCatalog.ReadWrite.All Application.Read.All Calendars.Read Channel.ReadBasic.All ChannelMessage.Send Chat.ReadBasic ChatMessage.Send ExternalItem.Read.All Files.Read.All Files.ReadWrite.All FileStorageContainer.Selected Group.Read.All InformationProtectionPolicy.Read MailboxSettings.Read Organization.Read.All People.Read SensitivityLabel.Read Sites.Read.All Sites.ReadWrite.All Team.ReadBasic.All TeamsAppInstallation.ReadForTeam TeamsAppInstallation.ReadWriteForTeam User.Read.All",
+      "appid": "96ff4394-9197-43aa-b393-6a41652e21f8"
+    }
+  },
+  {
+    "method": "GET",
+    "url": "https://2690e5fa0f5cea5cb2a46dc0e13c11.1d.environment.api.powerplatform.com/copilotgovernance/settings/PowerPlatform_XAI?api-version=2022-03-01-preview",
+    "host": "2690e5fa0f5cea5cb2a46dc0e13c11.1d.environment.api.powerplatform.com",
+    "path": "/copilotgovernance/settings/PowerPlatform_XAI",
+    "hot": false,
+    "token": {
+      "aud": "https://api.powerplatform.com",
+      "scp": "AiFlows.Ai.Execute AiFlows.Ai.Write AiFlows.Runs.Execute AiFlows.Runs.Read AiFlows.Runs.Write AiTools.Prompt.Invoke AiTools.Prompt.Read AiTools.Prompt.Write AppManagement.ApplicationPackages.Install AppManagement.ApplicationPackages.Read Connectivity.ConnectionPermissions.Read Connectivity.ConnectionPermissions.Write Connectivity.Connections.Read Connectivity.Connections.Write Connectivity.Connectors.Read Connectivity.Connectors.Write Connectivity.Gateways.Read CopilotFlows.ChatAssistant.Execute CopilotFlows.CloudFlows.ChatAssistant CopilotGovernance.Features.Execute CopilotGovernance.Features.Read CopilotGovernance.Settings.Read CopilotGovernance.Settings.Write CopilotStudio.AgentNodes.Invoke CopilotStudio.MakerOperations.Delete CopilotStudio.MakerOperations.Read CopilotStudio.MakerOperations.ReadWrite CopilotStudio.MinimalBot.Read CopilotStudio.MinimalBot.ReadWrite Dors.MRUSync.Execute DynamicsCustomerService.Copilot.Invoke EnvironmentManagement.Settings.Read EnvironmentManagement.Settings.ReadWrite PowerApps.Environments.Create PowerApps.Environments.GenerateResourceStorage PowerApps.Environments.Read PowerApps.UserSettings.Read PowerApps.UserSettings.Write PowerAutomate.DesktopFlows.Aggregation PowerAutomate.DesktopFlows.InvokeAI PowerAutomate.DesktopFlows.ProvisionCUAServicePrincipal PowerPages.Websites.Read PowerPages.Websites.Write PowerVirtualAgents.Channels.ReadWrite PowerVirtualAgents.Components.ReadWrite PowerVirtualAgents.Conversations.Read PowerVirtualAgents.Copilots.Create PowerVirtualAgents.FirstPartyBots.Invoke PowerVirtualAgents.Tokens.Read Support.Settings.Read Support.Tickets.Create Support.Tickets.Read Support.Tickets.Update",
+      "appid": "96ff4394-9197-43aa-b393-6a41652e21f8"
+    }
+  },
+  {
+    "method": "GET",
+    "url": "https://2690e5fa0f5cea5cb2a46dc0e13c11.1d.environment.api.powerplatform.com/copilotgovernance/settings/PowerPlatform_Mistral?api-version=2022-03-01-preview",
+    "host": "2690e5fa0f5cea5cb2a46dc0e13c11.1d.environment.api.powerplatform.com",
+    "path": "/copilotgovernance/settings/PowerPlatform_Mistral",
+    "hot": false,
+    "token": {
+      "aud": "https://api.powerplatform.com",
+      "scp": "AiFlows.Ai.Execute AiFlows.Ai.Write AiFlows.Runs.Execute AiFlows.Runs.Read AiFlows.Runs.Write AiTools.Prompt.Invoke AiTools.Prompt.Read AiTools.Prompt.Write AppManagement.ApplicationPackages.Install AppManagement.ApplicationPackages.Read Connectivity.ConnectionPermissions.Read Connectivity.ConnectionPermissions.Write Connectivity.Connections.Read Connectivity.Connections.Write Connectivity.Connectors.Read Connectivity.Connectors.Write Connectivity.Gateways.Read CopilotFlows.ChatAssistant.Execute CopilotFlows.CloudFlows.ChatAssistant CopilotGovernance.Features.Execute CopilotGovernance.Features.Read CopilotGovernance.Settings.Read CopilotGovernance.Settings.Write CopilotStudio.AgentNodes.Invoke CopilotStudio.MakerOperations.Delete CopilotStudio.MakerOperations.Read CopilotStudio.MakerOperations.ReadWrite CopilotStudio.MinimalBot.Read CopilotStudio.MinimalBot.ReadWrite Dors.MRUSync.Execute DynamicsCustomerService.Copilot.Invoke EnvironmentManagement.Settings.Read EnvironmentManagement.Settings.ReadWrite PowerApps.Environments.Create PowerApps.Environments.GenerateResourceStorage PowerApps.Environments.Read PowerApps.UserSettings.Read PowerApps.UserSettings.Write PowerAutomate.DesktopFlows.Aggregation PowerAutomate.DesktopFlows.InvokeAI PowerAutomate.DesktopFlows.ProvisionCUAServicePrincipal PowerPages.Websites.Read PowerPages.Websites.Write PowerVirtualAgents.Channels.ReadWrite PowerVirtualAgents.Components.ReadWrite PowerVirtualAgents.Conversations.Read PowerVirtualAgents.Copilots.Create PowerVirtualAgents.FirstPartyBots.Invoke PowerVirtualAgents.Tokens.Read Support.Settings.Read Support.Tickets.Create Support.Tickets.Read Support.Tickets.Update",
+      "appid": "96ff4394-9197-43aa-b393-6a41652e21f8"
+    }
+  },
+  {
+    "method": "GET",
+    "url": "https://2690e5fa0f5cea5cb2a46dc0e13c11.1d.environment.api.powerplatform.com/copilotgovernance/settings/PowerPlatform_Anthropic?api-version=2022-03-01-preview",
+    "host": "2690e5fa0f5cea5cb2a46dc0e13c11.1d.environment.api.powerplatform.com",
+    "path": "/copilotgovernance/settings/PowerPlatform_Anthropic",
+    "hot": false,
+    "token": {
+      "aud": "https://api.powerplatform.com",
+      "scp": "AiFlows.Ai.Execute AiFlows.Ai.Write AiFlows.Runs.Execute AiFlows.Runs.Read AiFlows.Runs.Write AiTools.Prompt.Invoke AiTools.Prompt.Read AiTools.Prompt.Write AppManagement.ApplicationPackages.Install AppManagement.ApplicationPackages.Read Connectivity.ConnectionPermissions.Read Connectivity.ConnectionPermissions.Write Connectivity.Connections.Read Connectivity.Connections.Write Connectivity.Connectors.Read Connectivity.Connectors.Write Connectivity.Gateways.Read CopilotFlows.ChatAssistant.Execute CopilotFlows.CloudFlows.ChatAssistant CopilotGovernance.Features.Execute CopilotGovernance.Features.Read CopilotGovernance.Settings.Read CopilotGovernance.Settings.Write CopilotStudio.AgentNodes.Invoke CopilotStudio.MakerOperations.Delete CopilotStudio.MakerOperations.Read CopilotStudio.MakerOperations.ReadWrite CopilotStudio.MinimalBot.Read CopilotStudio.MinimalBot.ReadWrite Dors.MRUSync.Execute DynamicsCustomerService.Copilot.Invoke EnvironmentManagement.Settings.Read EnvironmentManagement.Settings.ReadWrite PowerApps.Environments.Create PowerApps.Environments.GenerateResourceStorage PowerApps.Environments.Read PowerApps.UserSettings.Read PowerApps.UserSettings.Write PowerAutomate.DesktopFlows.Aggregation PowerAutomate.DesktopFlows.InvokeAI PowerAutomate.DesktopFlows.ProvisionCUAServicePrincipal PowerPages.Websites.Read PowerPages.Websites.Write PowerVirtualAgents.Channels.ReadWrite PowerVirtualAgents.Components.ReadWrite PowerVirtualAgents.Conversations.Read PowerVirtualAgents.Copilots.Create PowerVirtualAgents.FirstPartyBots.Invoke PowerVirtualAgents.Tokens.Read Support.Settings.Read Support.Tickets.Create Support.Tickets.Read Support.Tickets.Update",
+      "appid": "96ff4394-9197-43aa-b393-6a41652e21f8"
+    }
+  },
+  {
+    "method": "GET",
+    "url": "https://content.powerapps.com/resource/makerx/static/js/module/GptAnalytics~Overview~cc6fa4bf.4e697896.chunk.js",
+    "host": "content.powerapps.com",
+    "path": "/resource/makerx/static/js/module/GptAnalytics~Overview~cc6fa4bf.4e697896.chunk.js",
+    "hot": false,
+    "token": null
+  },
+  {
+    "method": "GET",
+    "url": "https://powervamg.us-il109.gateway.prod.island.powerapps.com/api/botmanagement/v1/analytics/bots/3f39222a-2071-f111-ab0e-0022480bb903/protection/summary?utcStartTime=2026-06-20T00:00:00.000Z&utcEndTime=2026-06-27T00:00:00.000Z&botCreateDate=2026-06-26T05:30:39.000Z",
+    "host": "powervamg.us-il109.gateway.prod.island.powerapps.com",
+    "path": "/api/botmanagement/v1/analytics/bots/3f39222a-2071-f111-ab0e-0022480bb903/protection/summary",
+    "hot": true,
+    "token": {
+      "aud": "96ff4394-9197-43aa-b393-6a41652e21f8",
+      "scp": "AppCatalog.ReadWrite.All Application.Read.All Calendars.Read Channel.ReadBasic.All ChannelMessage.Send Chat.ReadBasic ChatMessage.Send ExternalItem.Read.All Files.Read.All Files.ReadWrite.All FileStorageContainer.Selected Group.Read.All InformationProtectionPolicy.Read MailboxSettings.Read Organization.Read.All People.Read SensitivityLabel.Read Sites.Read.All Sites.ReadWrite.All Team.ReadBasic.All TeamsAppInstallation.ReadForTeam TeamsAppInstallation.ReadWriteForTeam User.Read.All",
+      "appid": "96ff4394-9197-43aa-b393-6a41652e21f8"
+    }
+  },
+  {
+    "method": "GET",
+    "url": "blob:https://copilotstudio.microsoft.com/8f647117-a1f9-4f76-b7cf-efa801a2d880",
+    "host": "",
+    "path": "https://copilotstudio.microsoft.com/8f647117-a1f9-4f76-b7cf-efa801a2d880",
+    "hot": false,
+    "token": null
+  },
+  {
+    "method": "GET",
+    "url": "blob:https://copilotstudio.microsoft.com/296b6372-b7ad-4141-a81a-0f9391ef871c",
+    "host": "",
+    "path": "https://copilotstudio.microsoft.com/296b6372-b7ad-4141-a81a-0f9391ef871c",
+    "hot": false,
+    "token": null
+  },
+  {
+    "method": "POST",
+    "url": "https://pvaruntime.us-il109.gateway.prod.island.powerapps.com/environments/2690e5fa-0f5c-ea5c-b2a4-6dc0e13c111d/bots/3f39222a-2071-f111-ab0e-0022480bb903/test/conversations",
+    "host": "pvaruntime.us-il109.gateway.prod.island.powerapps.com",
+    "path": "/environments/2690e5fa-0f5c-ea5c-b2a4-6dc0e13c111d/bots/3f39222a-2071-f111-ab0e-0022480bb903/test/conversations",
+    "hot": true,
+    "token": {
+      "aud": "96ff4394-9197-43aa-b393-6a41652e21f8",
+      "scp": "AppCatalog.ReadWrite.All Application.Read.All Calendars.Read Channel.ReadBasic.All ChannelMessage.Send Chat.ReadBasic ChatMessage.Send ExternalItem.Read.All Files.Read.All Files.ReadWrite.All FileStorageContainer.Selected Group.Read.All InformationProtectionPolicy.Read MailboxSettings.Read Organization.Read.All People.Read SensitivityLabel.Read Sites.Read.All Sites.ReadWrite.All Team.ReadBasic.All TeamsAppInstallation.ReadForTeam TeamsAppInstallation.ReadWriteForTeam User.Read.All",
+      "appid": "96ff4394-9197-43aa-b393-6a41652e21f8"
+    }
+  },
+  {
+    "method": "POST",
+    "url": "https://powervamg.us-il109.gateway.prod.island.powerapps.com/api/botmanagement/v1/environments/2690e5fa-0f5c-ea5c-b2a4-6dc0e13c111d/dlp/blockedConnectors",
+    "host": "powervamg.us-il109.gateway.prod.island.powerapps.com",
+    "path": "/api/botmanagement/v1/environments/2690e5fa-0f5c-ea5c-b2a4-6dc0e13c111d/dlp/blockedConnectors",
+    "hot": true,
+    "token": {
+      "aud": "96ff4394-9197-43aa-b393-6a41652e21f8",
+      "scp": "AppCatalog.ReadWrite.All Application.Read.All Calendars.Read Channel.ReadBasic.All ChannelMessage.Send Chat.ReadBasic ChatMessage.Send ExternalItem.Read.All Files.Read.All Files.ReadWrite.All FileStorageContainer.Selected Group.Read.All InformationProtectionPolicy.Read MailboxSettings.Read Organization.Read.All People.Read SensitivityLabel.Read Sites.Read.All Sites.ReadWrite.All Team.ReadBasic.All TeamsAppInstallation.ReadForTeam TeamsAppInstallation.ReadWriteForTeam User.Read.All",
+      "appid": "96ff4394-9197-43aa-b393-6a41652e21f8"
+    }
+  },
+  {
+    "method": "GET",
+    "url": "blob:https://copilotstudio.microsoft.com/694e71f9-d09c-4e82-a57a-be7baf02fcfe",
+    "host": "",
+    "path": "https://copilotstudio.microsoft.com/694e71f9-d09c-4e82-a57a-be7baf02fcfe",
+    "hot": false,
+    "token": null
+  },
+  {
+    "method": "GET",
+    "url": "https://powervamg.us-il109.gateway.prod.island.powerapps.com/api/botmanagement/v1/environments/2690e5fa-0f5c-ea5c-b2a4-6dc0e13c111d/bots/3f39222a-2071-f111-ab0e-0022480bb903/dlpstatus",
+    "host": "powervamg.us-il109.gateway.prod.island.powerapps.com",
+    "path": "/api/botmanagement/v1/environments/2690e5fa-0f5c-ea5c-b2a4-6dc0e13c111d/bots/3f39222a-2071-f111-ab0e-0022480bb903/dlpstatus",
+    "hot": true,
+    "token": {
+      "aud": "96ff4394-9197-43aa-b393-6a41652e21f8",
+      "scp": "AppCatalog.ReadWrite.All Application.Read.All Calendars.Read Channel.ReadBasic.All ChannelMessage.Send Chat.ReadBasic ChatMessage.Send ExternalItem.Read.All Files.Read.All Files.ReadWrite.All FileStorageContainer.Selected Group.Read.All InformationProtectionPolicy.Read MailboxSettings.Read Organization.Read.All People.Read SensitivityLabel.Read Sites.Read.All Sites.ReadWrite.All Team.ReadBasic.All TeamsAppInstallation.ReadForTeam TeamsAppInstallation.ReadWriteForTeam User.Read.All",
+      "appid": "96ff4394-9197-43aa-b393-6a41652e21f8"
+    }
+  },
+  {
+    "method": "GET",
+    "url": "https://powervamg.us-il109.gateway.prod.island.powerapps.com/api/botmanagement/v1/environments/2690e5fa-0f5c-ea5c-b2a4-6dc0e13c111d/bots/3f39222a-2071-f111-ab0e-0022480bb903/dlpstatus/channels",
+    "host": "powervamg.us-il109.gateway.prod.island.powerapps.com",
+    "path": "/api/botmanagement/v1/environments/2690e5fa-0f5c-ea5c-b2a4-6dc0e13c111d/bots/3f39222a-2071-f111-ab0e-0022480bb903/dlpstatus/channels",
+    "hot": true,
+    "token": {
+      "aud": "96ff4394-9197-43aa-b393-6a41652e21f8",
+      "scp": "AppCatalog.ReadWrite.All Application.Read.All Calendars.Read Channel.ReadBasic.All ChannelMessage.Send Chat.ReadBasic ChatMessage.Send ExternalItem.Read.All Files.Read.All Files.ReadWrite.All FileStorageContainer.Selected Group.Read.All InformationProtectionPolicy.Read MailboxSettings.Read Organization.Read.All People.Read SensitivityLabel.Read Sites.Read.All Sites.ReadWrite.All Team.ReadBasic.All TeamsAppInstallation.ReadForTeam TeamsAppInstallation.ReadWriteForTeam User.Read.All",
+      "appid": "96ff4394-9197-43aa-b393-6a41652e21f8"
+    }
+  },
+  {
+    "method": "POST",
+    "url": "https://pvaruntime.us-il109.gateway.prod.island.powerapps.com/environments/2690e5fa-0f5c-ea5c-b2a4-6dc0e13c111d/bots/3f39222a-2071-f111-ab0e-0022480bb903/test/conversations/962e8c8c-24a5-4617-9d16-6dd296486e7d",
+    "host": "pvaruntime.us-il109.gateway.prod.island.powerapps.com",
+    "path": "/environments/2690e5fa-0f5c-ea5c-b2a4-6dc0e13c111d/bots/3f39222a-2071-f111-ab0e-0022480bb903/test/conversations/962e8c8c-24a5-4617-9d16-6dd296486e7d",
+    "hot": true,
+    "token": {
+      "aud": "96ff4394-9197-43aa-b393-6a41652e21f8",
+      "scp": "AppCatalog.ReadWrite.All Application.Read.All Calendars.Read Channel.ReadBasic.All ChannelMessage.Send Chat.ReadBasic ChatMessage.Send ExternalItem.Read.All Files.Read.All Files.ReadWrite.All FileStorageContainer.Selected Group.Read.All InformationProtectionPolicy.Read MailboxSettings.Read Organization.Read.All People.Read SensitivityLabel.Read Sites.Read.All Sites.ReadWrite.All Team.ReadBasic.All TeamsAppInstallation.ReadForTeam TeamsAppInstallation.ReadWriteForTeam User.Read.All",
+      "appid": "96ff4394-9197-43aa-b393-6a41652e21f8"
+    }
+  },
+  {
+    "method": "GET",
+    "url": "https://powervamg.us-il109.gateway.prod.island.powerapps.com/api/botauthoring/v1/environments/2690e5fa-0f5c-ea5c-b2a4-6dc0e13c111d/bots/3f39222a-2071-f111-ab0e-0022480bb903/authorstate",
+    "host": "powervamg.us-il109.gateway.prod.island.powerapps.com",
+    "path": "/api/botauthoring/v1/environments/2690e5fa-0f5c-ea5c-b2a4-6dc0e13c111d/bots/3f39222a-2071-f111-ab0e-0022480bb903/authorstate",
+    "hot": true,
+    "token": {
+      "aud": "96ff4394-9197-43aa-b393-6a41652e21f8",
+      "scp": "AppCatalog.ReadWrite.All Application.Read.All Calendars.Read Channel.ReadBasic.All ChannelMessage.Send Chat.ReadBasic ChatMessage.Send ExternalItem.Read.All Files.Read.All Files.ReadWrite.All FileStorageContainer.Selected Group.Read.All InformationProtectionPolicy.Read MailboxSettings.Read Organization.Read.All People.Read SensitivityLabel.Read Sites.Read.All Sites.ReadWrite.All Team.ReadBasic.All TeamsAppInstallation.ReadForTeam TeamsAppInstallation.ReadWriteForTeam User.Read.All",
+      "appid": "96ff4394-9197-43aa-b393-6a41652e21f8"
+    }
+  },
+  {
+    "method": "POST",
+    "url": "https://powervamg.us-il109.gateway.prod.island.powerapps.com/api/botauthoring/v1/environments/2690e5fa-0f5c-ea5c-b2a4-6dc0e13c111d/bots/3f39222a-2071-f111-ab0e-0022480bb903/content/flows",
+    "host": "powervamg.us-il109.gateway.prod.island.powerapps.com",
+    "path": "/api/botauthoring/v1/environments/2690e5fa-0f5c-ea5c-b2a4-6dc0e13c111d/bots/3f39222a-2071-f111-ab0e-0022480bb903/content/flows",
+    "hot": true,
+    "token": {
+      "aud": "96ff4394-9197-43aa-b393-6a41652e21f8",
+      "scp": "AppCatalog.ReadWrite.All Application.Read.All Calendars.Read Channel.ReadBasic.All ChannelMessage.Send Chat.ReadBasic ChatMessage.Send ExternalItem.Read.All Files.Read.All Files.ReadWrite.All FileStorageContainer.Selected Group.Read.All InformationProtectionPolicy.Read MailboxSettings.Read Organization.Read.All People.Read SensitivityLabel.Read Sites.Read.All Sites.ReadWrite.All Team.ReadBasic.All TeamsAppInstallation.ReadForTeam TeamsAppInstallation.ReadWriteForTeam User.Read.All",
+      "appid": "96ff4394-9197-43aa-b393-6a41652e21f8"
+    }
+  },
+  {
+    "method": "GET",
+    "url": "https://2690e5fa0f5cea5cb2a46dc0e13c11.1d.environment.api.powerplatform.com/copilotgovernance/settings/CopilotStudio_ConnectedAgents?api-version=2022-03-01-preview",
+    "host": "2690e5fa0f5cea5cb2a46dc0e13c11.1d.environment.api.powerplatform.com",
+    "path": "/copilotgovernance/settings/CopilotStudio_ConnectedAgents",
+    "hot": false,
+    "token": {
+      "aud": "https://api.powerplatform.com",
+      "scp": "AiFlows.Ai.Execute AiFlows.Ai.Write AiFlows.Runs.Execute AiFlows.Runs.Read AiFlows.Runs.Write AiTools.Prompt.Invoke AiTools.Prompt.Read AiTools.Prompt.Write AppManagement.ApplicationPackages.Install AppManagement.ApplicationPackages.Read Connectivity.ConnectionPermissions.Read Connectivity.ConnectionPermissions.Write Connectivity.Connections.Read Connectivity.Connections.Write Connectivity.Connectors.Read Connectivity.Connectors.Write Connectivity.Gateways.Read CopilotFlows.ChatAssistant.Execute CopilotFlows.CloudFlows.ChatAssistant CopilotGovernance.Features.Execute CopilotGovernance.Features.Read CopilotGovernance.Settings.Read CopilotGovernance.Settings.Write CopilotStudio.AgentNodes.Invoke CopilotStudio.MakerOperations.Delete CopilotStudio.MakerOperations.Read CopilotStudio.MakerOperations.ReadWrite CopilotStudio.MinimalBot.Read CopilotStudio.MinimalBot.ReadWrite Dors.MRUSync.Execute DynamicsCustomerService.Copilot.Invoke EnvironmentManagement.Settings.Read EnvironmentManagement.Settings.ReadWrite PowerApps.Environments.Create PowerApps.Environments.GenerateResourceStorage PowerApps.Environments.Read PowerApps.UserSettings.Read PowerApps.UserSettings.Write PowerAutomate.DesktopFlows.Aggregation PowerAutomate.DesktopFlows.InvokeAI PowerAutomate.DesktopFlows.ProvisionCUAServicePrincipal PowerPages.Websites.Read PowerPages.Websites.Write PowerVirtualAgents.Channels.ReadWrite PowerVirtualAgents.Components.ReadWrite PowerVirtualAgents.Conversations.Read PowerVirtualAgents.Copilots.Create PowerVirtualAgents.FirstPartyBots.Invoke PowerVirtualAgents.Tokens.Read Support.Settings.Read Support.Tickets.Create Support.Tickets.Read Support.Tickets.Update",
+      "appid": "96ff4394-9197-43aa-b393-6a41652e21f8"
+    }
+  },
+  {
+    "method": "POST",
+    "url": "https://us.api.flow.microsoft.com/providers/Microsoft.ProcessSimple/environments/2690e5fa-0f5c-ea5c-b2a4-6dc0e13c111d/operations?api-version=2016-11-01-beta&%24top=60",
+    "host": "us.api.flow.microsoft.com",
+    "path": "/providers/Microsoft.ProcessSimple/environments/2690e5fa-0f5c-ea5c-b2a4-6dc0e13c111d/operations",
+    "hot": false,
+    "token": {
+      "aud": "https://service.flow.microsoft.com/",
+      "scp": "Flows.Manage.All Flows.Read.All",
+      "appid": "96ff4394-9197-43aa-b393-6a41652e21f8"
+    }
+  },
+  {
+    "method": "POST",
+    "url": "https://us.api.flow.microsoft.com/providers/Microsoft.ProcessSimple/environments/2690e5fa-0f5c-ea5c-b2a4-6dc0e13c111d/operationGroups?api-version=2016-11-01-beta",
+    "host": "us.api.flow.microsoft.com",
+    "path": "/providers/Microsoft.ProcessSimple/environments/2690e5fa-0f5c-ea5c-b2a4-6dc0e13c111d/operationGroups",
+    "hot": false,
+    "token": {
+      "aud": "https://service.flow.microsoft.com/",
+      "scp": "Flows.Manage.All Flows.Read.All",
+      "appid": "96ff4394-9197-43aa-b393-6a41652e21f8"
+    }
+  }
+]

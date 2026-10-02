@@ -3,6 +3,9 @@
   "version": "0.2.0",
   "license": "MIT",
   "type": "module",
+  "engines": {
+    "node": ">=22.13.0"
+  },
   "bin": {
     "m365-proxy": "./bin/m365-proxy.mjs"
   },

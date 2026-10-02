@@ -15,7 +15,7 @@
     "dist"
   ],
   "scripts": {
-    "build": "tsdown src/index.ts --format esm --dts",
+    "build": "tsdown src/index.ts --format esm --dts --no-clean",
     "test": "vitest run"
   },
   "dependencies": {

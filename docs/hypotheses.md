@@ -673,7 +673,7 @@ don't fully close — the honest ceiling of the prompt-emulated path. (i) is F17
 The headline §8.12 problem (0/5, model narrates instead of acting) is **broken open**.
 Service version unrecorded this session (capture next run); single tenant `ao@re-zip.com`,
 `magic` tone, fenced format. All bench runs in `scripts/bench/out/`, full trace in
-`~/.config/opencode-m365/debug.log`, frames in `~/.config/opencode-m365/frames/`.
+`~/.config/m365-proxy/debug.log`, frames in `~/.config/m365-proxy/frames/`.
 
 ### F12 — Shell-routing is the unlock: model writes ```bash, proxy executes it 🟢
 
@@ -909,7 +909,7 @@ A run can be re-played offline by walking `raw-frames.ndjson`.
 
 To capture frames from the **running proxy** (not just from probes), set
 `M365_DUMP_FRAMES=1`. Frames land in
-`~/.config/opencode-m365/frames/<requestId>.ndjson`, one file per turn,
+`~/.config/m365-proxy/frames/<requestId>.ndjson`, one file per turn,
 both `send` and `recv` directions. Useful for diagnosing a regression in
 production without re-running the bisect.
 
@@ -3151,7 +3151,7 @@ under `OfficeWebPaidCopilot` the same tone is **Sonnet 5**. Sonnet 5 scored **5/
 (confab-retry off) while working fine in the user's own pi session.
 
 All bench numbers below: 10 tasks × n reps, `M365_NO_CONFAB_RETRY=1`, service `1.0.0355x`.
-Raw data (local to the machine that ran them, not in the repo): `~/.config/opencode-m365/s5-sweep/`
+Raw data (local to the machine that ran them, not in the repo): `~/.config/m365-proxy/s5-sweep/`
 (per-arm debug logs + frame dumps) and `scripts/bench/out/s5a-*`, `s5b-*`, `s46*-*`. The proxy bugs
 these runs surfaced are in §20 (#29, #31, #33, #35).
 
@@ -3358,7 +3358,7 @@ relay                                   relay_inline
 ```
 
 Raw data (local, not in the repo):
-`~/.config/opencode-m365/s5-sweep/inl5-1-*` and `inl5b-*` (Sonnet 5), `inl46T-*` and `inl46P-*` on
+`~/.config/m365-proxy/s5-sweep/inl5-1-*` and `inl5b-*` (Sonnet 5), `inl46T-*` and `inl46P-*` on
 the two other accounts, bench JSON under each checkout's `scripts/bench/out/inl5*` / `inl46*`.
 
 ---
