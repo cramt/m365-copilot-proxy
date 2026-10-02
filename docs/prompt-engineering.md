@@ -165,8 +165,20 @@ COOLDOWN=45 BLOCK_COOLDOWN=60 bash scripts/bench/sweep2.sh
 node scripts/bench/analyze-sweep.mjs s2
 ```
 
-For the full 10-task bench per arm (and to archive each arm's debug log + frame dumps for
-forensics — read the `ChainOfThoughtSummary` frames, they say *why* a framing was refused):
+For the full 10-task bench per arm, with a fresh proxy per phase (so a phase can also change
+the proxy's env: agent off, code interpreter off) and real-pi arms, use `phase-sweep.sh`, then
+read the archive back with `analyze-arms.mjs`. It reports per arm which path served each task,
+sandbox and Disengaged turns, and drops tasks lost to the network or a throttle
+(scripts/bench/README.md):
+
+```sh
+MODEL=gpt-6-sol TAG=mysweep PHASES='A:baseline,relay,demo_only|B@M365_FORCE_AGENT=0:relay,pi=fix-bug' \
+  nix develop --command bash scripts/bench/phase-sweep.sh
+nix develop --command node scripts/bench/analyze-arms.mjs ~/.config/opencode-m365/sweeps/mysweep --compare relay demo_only
+```
+
+The older single-proxy route also archives each arm's debug log + frame dumps for
+forensics — read the `ChainOfThoughtSummary` frames, they say *why* a framing was refused:
 
 ```sh
 M365_FRAMING_FILE=/tmp/m365-framing M365_DUMP_FRAMES=1 M365_DEBUG=1 M365_NO_CONFAB_RETRY=1 \

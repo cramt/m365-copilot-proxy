@@ -104,8 +104,10 @@ hypothesis that teaches us something.
   real agentic coding tasks objectively, executing every tool call in a
   `--network none` Docker sandbox. To compare *any* lever (tool format, model/tone,
   prompt, optionsSets) run it with a `--label` and diff the scorecards in
-  `scripts/bench/out/`. "Best" is a pass-rate number, not an opinion. See
-  `scripts/bench/README.md`.
+  `scripts/bench/out/`. "Best" is a pass-rate number, not an opinion. For a framing or
+  proxy-env sweep use `scripts/bench/phase-sweep.sh`, and read it back with
+  `scripts/bench/analyze-arms.mjs`, which also says what happened on the wire (agent path,
+  sandbox, Disengaged) and drops tasks lost to the network. See `scripts/bench/README.md`.
 - Prefer empirical evidence — what the real first-party client sends/receives
   (capture it with Playwright), what the bench scores — over schema guesses.
 
@@ -138,7 +140,8 @@ pnpm test:live      # M365_LIVE=1; live tests that hit real M365 (uses quota)
 ## Running against real M365 (important)
 
 - **Run inside the Nix dev shell**: `nix develop --command bash -c '...'`. It provides
-  `CHROMIUM_PATH` (a system Chromium); Playwright's bundled one is broken on NixOS.
+  `CHROMIUM_PATH` (a system Chromium; Playwright's bundled one is broken on NixOS), pi, python3
+  and curl. Run the bench scripts in it too: `nix develop --command bash scripts/bench/phase-sweep.sh`.
 - Auth uses `~/.config/opencode-m365/secrets.json` (email/password/mfaSecret) +
   `msal-cache.json`. **This data dir keeps the legacy `opencode-m365` name** — do not
   rename it or you orphan working credentials.

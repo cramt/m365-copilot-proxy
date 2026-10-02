@@ -3633,3 +3633,10 @@ fallback per proxy process (5 processes, 5 fallbacks), every later request agent
   in F51.
 - **Real pi: 21/21** — premium (agent) fix-bug 5/5, multi 5/5; non-premium (agent-less, via the
   fallback) fix-bug 5/5, multi 6/6. 39–153 s per run.
+
+**Re-derived with `scripts/bench/analyze-arms.mjs`** over the three archives (it maps each task to
+its conversation and drops tasks lost to the network): agent 30/30 vs `demo_only` 21/26 (p =
+0.017) and the per-arm sandbox counts of F50 reproduce exactly, as does every exclusion above. One
+difference: it counts the premium `demo_only` arm's post-F52 tail (4 tasks, 1 solved) under
+agent-less, since that is the path that served them, so agent-less `demo_only` is 10/24 and the
+comparison p = 6×10⁻¹⁰ (relay 60/60 either way).

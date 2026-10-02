@@ -202,6 +202,8 @@ All run with `scripts/_probe-chat.mjs` overrides; no license needed.
 - **Run:** proxy with `M365_FRAMING_FILE`, then
   `ARMS="<a> default <b> <a>" TAG=s5c bash scripts/bench/sonnet5-sweep.sh`, alternating so each
   variant has a concurrent relay control.
+  (`scripts/bench/phase-sweep.sh` now does the proxy and archiving too, and
+  `scripts/bench/analyze-arms.mjs` reads the result back; see scripts/bench/README.md.)
   **Read:** SOLVED per arm, then `ChainOfThoughtSummary` frames in the archived
   `~/.config/opencode-m365/s5-sweep/<tag>-<n>-<arm>-frames` for *why* each miss refused.
   **Cost:** ~12 fresh threads per arm; ~190 threads in one day tripped `PerUserThrottled` (F40),
