@@ -211,12 +211,23 @@ pnpm test:live      # M365_LIVE=1; live tests that hit real M365 (uses quota)
   in `<user>` tags either: tags are just text to it, and the variant that did (`relay_inline`,
   removed) scored 1/20 (§21 F43).
   **Read its `ChainOfThoughtSummary` frames** (`M365_DUMP_FRAMES=1`) — they say why it refused.
-- **Not every tone serves with the tool agent — `toneUsesToolAgent()` decides, per exact tone.**
+- **Not every tone serves with the tool agent — `toneUsesToolAgent()` decides, per exact tone**
+  (`M365_FORCE_AGENT=1`/`0` overrides it either way).
   Claude tones and `Gpt_6_Reasoning` go agent-less even with tools. With the agent attached GPT-6 is
   a dead route on every account (`result: InternalError`; the proxy used to 502 on it, #41), and
   Claude is dead on non-premium accounts. Add a tone to `AGENTLESS_TOOL_TONES` only after
   `scripts/agent-tone-probe.mjs` says so. Agent-less also means M365's code interpreter is on, and under `baseline` GPT-6
   worked there instead of acting (0/30); its default is `relay` (30/30; 5/5 in real pi). See docs/hypotheses.md §22.
+- **Some tones take the agent only on a premium account — and nothing on the token says which
+  account this is.** `Gpt_6_Sol_Reasoning` (`gpt-6-sol`) serves with the agent on a premium account
+  and is the dead route (`InternalError`) on a non-premium one. It is in `PREMIUM_ONLY_AGENT_TONES`:
+  the first tool request carries the agent, and the handler turns a no-content `InternalError` into
+  "this account isn't premium" (`noteAgentRouteDead`, process-lifetime) and re-sends agent-less —
+  unless the agent already answered for that tone (`noteAgentRouteAlive`): premium accounts emit the
+  same `InternalError` as a rare transient (§23 F52). Run
+  `agent-tone-probe.mjs` on **both** kinds of account before classifying a new tone. Agent-less, GPT-6
+  Sol has its own sandbox that `M365_NO_CODE_INTERPRETER` does not remove; only `relay` keeps it out
+  (60/60 vs ≤6/10), relay wins with the agent too (30/30), and real pi went 21/21. See docs/hypotheses.md §23.
 - **A turn can hold several bot messages; assemble text per message.** Each new message's head
   arrives only as a snapshot with a `cursor`; folding everything into one string drops it (it ate
   a fence's backticks). `TurnTextComposer` in `session.ts` — don't "simplify" it away. #29.

@@ -38,6 +38,11 @@ than "we eyeballed one run." See §M (Methods) for the experimental rig.
 - §21 — Claude Sonnet 5 (paid scenario): its own sandbox, a `<system>`-tag injection defense,
   the `relay` framing (5/30 → 27/30; 5/5 in real pi); Sonnet 4.6 moved to relay as well (F42);
   moving the note into a `<user>` block (`relay_inline`, since removed) is falsified (F43)
+- §22 — which tones the tool agent honours (`agent-tone-probe.mjs`): account-dependent for Claude,
+  never for GPT-6 (agent-less + `relay`, #41); the paid scenario's `InvalidCopilotLicense` refusal
+- §23 — GPT-6 Sol (#23): ungated, takes the agent only on a premium account (learned at runtime),
+  has its own sandbox agent-less that no optionsSet removes, and `relay` wins on both paths
+  (30/30 agent, 60/60 agent-less, 21/21 in real pi); a premium transient that mimics the dead route (F52)
 
 ---
 
@@ -3493,4 +3498,138 @@ turn used `relay`, and there were no Throttled, Disengaged or remote-artifact tu
 run came from the code interpreter or the jailbreak classifier.
 
 **Open.** Would `M365_NO_CODE_INTERPRETER=1` alone rescue baseline? Untested; relay already scores
-30/30.
+30/30. (Untested for GPT-6 itself; for GPT-6 Sol the answer is no — its sandbox runs without the
+code-interpreter optionsSets, 0/20, §23 F50.)
+
+## 23. Oct 2 2026 — GPT-6 Sol (`Gpt_6_Sol_Reasoning`, #23): ungated, the agent only on premium, a sandbox of its own, and `relay`
+
+**Question.** #23 reports a new tone, `Gpt_6_Sol_Reasoning` ("GPT 6.0 Sol" in the web client, which
+doesn't call it Think Deeper). Is it real, which accounts and scenarios serve it, does it take the
+tool agent, and which framing makes it drive a coding loop? Shipped as `gpt-6-sol`.
+
+**Raw data** (local, not in the repo): the user's probe runs in `scripts/tone-out/` and
+`scripts/agent-tone-out/` (2026-10-02T10-36…10-44Z) in the premium account's checkout and one
+non-premium account's checkout, re-read from disk against the pasted logs before use (they match,
+including the raw `result` items in the frames). Sweeps: `~/.config/opencode-m365/g6sol-sweep/` in
+each of the three checkouts (bench text, debug log and frames per arm). Service `1.0.03560.56027`.
+
+### F48 — live on the included scenario on every account; `Gpt_6_Sol_Chat` is the GPT-5 chat model 🟢
+`tone-probe` (agent-less): `Gpt_6_Sol_Reasoning` → `DeepLeo`, "M365 Copilot (GPT-6 reasoning model)",
+premium 4/4 (2 runs × included/paid), non-premium 2/2 (included). So unlike `Gpt_6_Reasoning` (F31)
+it is **not** entitlement-gated and stays out of `PAID_SCENARIO_TONES`.
+`Gpt_6_Sol_Chat` is accepted and live too, but self-IDs as "GPT-5 chat" / "GPT-5.5" / "GPT-5" in
+6/6 agent-less and 6/6 agent-attached turns across both accounts. Same shape as `Claude_Fable`
+(accepted, answers as something else), so it is not mapped; `tone-probe.mjs` keeps a cell for it.
+**Uninterpreted:** the self-reported knowledge cutoff splits by path: premium agent-less "2025-12"
+(4/4); premium with the agent and non-premium agent-less "2024-06" (4/4, 2/2). A self-reported cutoff
+is weak evidence (a different system prompt would do it), but it is consistent within each cell.
+Probe idea: ask about a dated 2025 event with web grounding off, per cell.
+
+### F49 — with the agent: premium serves it, non-premium gets the dead route 🟢
+`agent-tone-probe`: premium `SUPPORTED` 4/4 (both scenarios, `3PDeclarativeAgent`, self-ID GPT-6);
+non-premium `REGISTERED_BUT_DEAD` 2/2 (BotConnection apology, final `result: InternalError`,
+~2.85 s). A third pattern next to F44/F45: GPT-6 is dead with the agent everywhere, Claude Sonnet
+and GPT-6 Sol split by account.
+**Nothing on the token tells the accounts apart.** The substrate access tokens of the two accounts
+carry the same claim set (scopes, `acrs`, `xms_*`), no licence or SKU claim. So the proxy finds out
+by trying (`PREMIUM_ONLY_AGENT_TONES`, handler fallback): the first tool request on the tone carries
+the agent; an `InternalError` with no content marks the route dead for the process and the whole
+request is re-sent agent-less in a fresh conversation. Live: non-premium `proxy-verify --agent
+--tools`: dead route detected in 2.9 s, re-sent agent-less. Over the sweeps the fallback fired once
+per proxy process on the non-premium accounts (4 processes, 4 fallbacks, every later request went
+agent-less from the start) and never on the premium one (agent on all 132 turns of its 6 agent arms).
+`M365_FORCE_AGENT=0` (new) skips the probe turn; `=1` disables the fallback.
+
+### F50 — agent-less, GPT-6 Sol has a sandbox of its own, and `M365_NO_CODE_INTERPRETER` doesn't remove it 🟢
+Agent-less turns show `Progress` frames "Coding and executing" whose `hiddenText` is the command:
+`bash -lc find /mnt/data /home/oai -name check.py -o -name calc.py …`, `bash -lc pwd; ls -la; cat
+calc.py …`. Files it creates come back as Teams `asyncgw` links ("Created [fizzbuzz.py](…) and ran
+it with `python3`"), which the proxy's remote-artifact guard fails closed (the bench's `ERROR`s).
+
+| arm | sandbox turns / turns |
+|---|---|
+| agent attached (premium), all 6 framings | **0 / 132** |
+| agent-less, every non-relay framing (10 arms, 2 accounts) | 10–11 per 10-task arm (of 11–19 turns) |
+| agent-less, `baseline` + `M365_NO_CODE_INTERPRETER=1` (2 arms) | 10 / 14, 10 / 14 |
+| agent-less, `relay` (3 arms, incl. premium with `M365_FORCE_AGENT=0`) | 0 / 32, 4 / 31, 2 / 33 |
+
+The `@noci` arms had no `cwc_code_interpreter*` optionsSets on the wire, and the sandbox ran anyway,
+so it isn't the code interpreter the proxy enables (F47's reading for GPT-6), or at least not only
+it. Forensics note: most of these turns carry **no** `contentOrigin: CodeGenerator`; counting that
+origin finds ~1 per arm. Count `"Coding and executing"` Progress frames instead.
+
+### F51 — framing sweep: `relay` wins on both paths 🟢
+`M365_NO_CONFAB_RETRY=1`, 10 tasks per arm, 60 s between arms, one account per column, run in
+parallel across accounts (sequential within each), 11:43–13:05Z. No `Throttled` turns.
+
+| framing | premium, agent | non-premium A, agent-less | non-premium B, agent-less |
+|---|---|---|---|
+| `relay` | **10/10** | **10/10** | **10/10** |
+| `demo_only` | 9/10 | 3/10 | 6/10 |
+| `minimal` | 7/10 | 0/10 | 0/10 |
+| `session_facts` | 6/10 | 0/10 | 0/10 |
+| `baseline` | 3/10 | 0/10 | 0/10 |
+| `react` | 3/10 | 0/10 | 0/10 |
+| `baseline` + no code interpreter | — | 0/10 | 0/10 |
+| `relay`, premium, `M365_FORCE_AGENT=0` | 10/10 | | |
+
+B ran the arms in the reverse order of A. Agent-less: relay 30/30 vs the best other arm (demo_only)
+9/20, Fisher p = 4.5×10⁻⁶; vs everything else 9/120, p = 7×10⁻²⁴. With the agent: relay 10/10 vs
+the rest pooled 28/50, p = 0.0095, but vs demo_only alone p = 1.0 at n = 10 — hence the
+confirmation below.
+**How the others fail.** With the agent there is no sandbox; every non-relay failure is the old
+confabulation, "I can't access the working directory from this chat", 3 of them *after* a
+successful `cat` ("I can see `config.json` has `"port": 3000`, but I can't edit the working
+directory"), plus 1–4 JailBreak-Classifier Disengages per arm (0 under relay). Agent-less the
+failures are the sandbox (F50): "`config.json` isn't available in the working directory. Please
+upload the file", or a Teams link to a file it made there. relay sidesteps both: the user runs the
+commands, so the model needs no belief about its own access, and the note names "your own sandbox
+tools" as the wrong machine.
+**Agent or not, on premium?** Both 10/10 under relay, so the agent isn't a measured win at the
+default. It stays on for premium because it removes the sandbox entirely (0 vs 2 of 33 turns), and
+because every other framing degrades far less with it (3–9/10 vs 0–6/10), which matters to anyone
+who overrides the framing.
+**Shipped:** `defaultFramingForTone("Gpt_6_Sol_Reasoning") = "relay"`, one default for both paths.
+
+### F52 — the premium account produces the dead route's exact wire state too, as a one-off 🟢 (fixed)
+In the confirmation round (`g6s-paid2`, premium, agent attached, `demo_only` arm 2, 13:32Z) one
+mid-conversation turn (turn 1, after the agent had answered turn 0 with a tool call) came back as
+BotConnection "Sorry, I wasn't able to respond to that", `result: InternalError`, no content —
+byte-for-byte the non-premium dead route (F49). The F49 fallback read it as "not premium", switched
+the process agent-less, and the rest of that arm ran agent-less into the sandbox (2 remote-artifact
+ERRORs). One in ~250 premium agent turns that day; never seen in the user's probes or the first sweep
+(0 in 132 agent turns).
+**Fix:** `noteAgentRouteAlive` — the first answered agent turn on a tone marks its route alive for
+the process, and from then on an `InternalError` is a transient and goes through the ordinary
+empty-reply retry, like on any other agent tone. A non-premium account never sees an answered agent
+turn for this tone, so its fallback is unchanged. Remaining exposure: a transient on a premium
+account's *first* agent turn still flips that process agent-less; it then runs `relay` agent-less,
+which scored 10/10 on the premium account (F51), so it degrades to the other working path rather
+than failing.
+
+### Confirmation round + real pi (13:13–14:25Z, 3 accounts in parallel, sequential within each)
+The machine lost connectivity from ~13:34 to ~13:42Z. Everything in that window is excluded
+(`WS error: connection failed` on every attempt, nothing reached M365): a whole premium `default`
+arm (0/10, all ERROR), premium pi fix-bug run 1, and non-premium pi multi runs 2–5. Those cells were
+re-run at 14:10–14:25Z on a build with the F52 fix (the "re-run" column).
+
+| | premium, agent | premium, agent (re-run) | non-premium A | non-premium A (re-run) | non-premium B |
+|---|---|---|---|---|---|
+| `default` (= `relay`) bench | 10/10 | 10/10 | 10/10 | | 10/10, 10/10 |
+| `demo_only` bench | 8/10; 4/6 before F52 cut in | | | | |
+| real pi, fix-bug | 4/4 | 1/1 | 5/5 | | |
+| real pi, multi (2-file bug) | 5/5 | | 1/1 | 5/5 | |
+
+On the wire: premium `default` 60 agent turns over the two arms, 0 agent-less, 0 sandbox, 0
+Disengaged, 0 `InternalError`; premium pi 59 turns, all with the agent. Non-premium: one dead-route
+fallback per proxy process (5 processes, 5 fallbacks), every later request agent-less from the start;
+1 sandbox turn in 94 bench turns under relay, 0 in pi; 0 Disengaged. No `Throttled` turn anywhere.
+
+**Totals for the shipped default (`relay`), both rounds:**
+- Agent-less bench: 50/50 on the non-premium accounts, plus 10/10 on the premium account with
+  `M365_FORCE_AGENT=0` — 60/60 vs `demo_only` 9/20, p = 1.6×10⁻⁸ (and 0/10 for everything else).
+- Agent (premium) bench: 30/30 vs `demo_only` 21/26 (the clean 6 of the cut arm counted), p = 0.017.
+  demo_only's failures are the same "I can't edit the working directory from here" confabulation as
+  in F51.
+- **Real pi: 21/21** — premium (agent) fix-bug 5/5, multi 5/5; non-premium (agent-less, via the
+  fallback) fix-bug 5/5, multi 6/6. 39–153 s per run.

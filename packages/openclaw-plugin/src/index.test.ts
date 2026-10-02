@@ -62,6 +62,8 @@ describe("generateOpenClawConfig", () => {
 
     const models = config.models.providers.m365.models;
     expect(models.find((m) => m.id === "gpt-6-think-deeper")?.reasoning).toBe(true);
+    // A reasoning tone even though its ID has no `-think-deeper` suffix (#23).
+    expect(models.find((m) => m.id === "gpt-6-sol")?.reasoning).toBe(true);
     expect(models.find((m) => m.id === "gpt-5.6-think-deeper")?.reasoning).toBe(true);
     // Gpt_5_6_Chat is a chat tone, not a reasoning one — it must not inherit
     // its sibling's `reasoning` flag just because the version number matches.
