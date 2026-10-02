@@ -283,6 +283,7 @@ without NixOS: `nix run github:cramt/m365-copilot-proxy -- 4141`.
 | Model ID | M365 Tone | Description |
 |---|---|---|
 | `gpt-6-think-deeper` | Gpt_6_Reasoning | GPT-6 reasoning. **Needs a paid/premium Copilot seat** (see below); 30/30 on the bench (agent-less, `relay` framing) |
+| `gpt-6-sol` | Gpt_6_Sol_Reasoning | GPT-6 Sol ("GPT 6.0 Sol" in the web UI). **Works on every account**, no paid seat needed; uses the tool agent only on a premium account (see below). With the `relay` framing: 30/30 on the bench with the agent, 60/60 without, 21/21 driving real pi |
 | `gpt-5.6-think-deeper` | Gpt_5_6_Reasoning | GPT-5.6 reasoning — 27/30 on the bench, tied with `gpt-5.5-think-deeper` |
 | `gpt-5.6` / `gpt-5.6-quick` | Gpt_5_6_Chat | GPT-5.6 fast ("GPT 5.6 Quick response" in the web UI). **Weak at tool calling** — 7/30 on the bench (see below) |
 | `gpt-5.5-think-deeper` | Gpt_5_5_Reasoning | **Recommended default for agents/tool-calling** — 26/30 on the bench |
@@ -362,6 +363,30 @@ so the proxy sends GPT-6 tool requests agent-less, as it does Claude's (#41). Ag
 defaults now; `M365_FORCE_AGENT=1` and `M365_FRAMING_VARIANT` still override them.
 `gpt-5.5-think-deeper` remains the recommended default and the no-model fallback, because it needs
 no entitlement: making GPT-6 the default would hand most seats a model they can't reach.
+
+### GPT-6 Sol (`gpt-6-sol`) — no entitlement, the agent only on premium
+
+The web client calls it **"GPT 6.0 Sol"**; the tone is `Gpt_6_Sol_Reasoning` and it identifies
+itself as the GPT-6 reasoning model. Unlike `gpt-6-think-deeper` it is **not** entitlement-gated: it
+serves on the default included scenario on premium and non-premium accounts alike, so the proxy
+sends nothing special for it.
+
+**The tool agent depends on the account.** With the Copilot Studio tool agent attached, GPT-6 Sol
+serves on a premium (paid Copilot) account and returns a canned apology on a non-premium one.
+Nothing in the login token tells the two apart, so the proxy tries: the first tool request carries
+the agent, and if it comes back as that dead route the proxy remembers it for the rest of the
+process and re-sends the request without the agent. Your client never sees the failure; a
+non-premium account spends one ~3 s turn per proxy start, which `M365_FORCE_AGENT=0` avoids. A
+premium account occasionally returns the same apology as a one-off; once the agent has answered,
+the proxy treats that as a transient and retries instead of dropping the agent.
+
+**Without the agent it has a sandbox of its own.** It runs `bash` in a remote machine (`/mnt/data`,
+`/home/oai`), finds none of your files there, and asks you to upload them, or hands back a Teams link
+to a file it made. Turning off M365's code interpreter (`M365_NO_CODE_INTERPRETER=1`) doesn't stop
+it. The `relay` framing does: on the bench it solved 60/60 agent-less, against 0–6/10 for every
+other framing, and 30/30 with the agent (the others 3–9/10). Through real pi it solved 21/21 runs
+across both kinds of account. `relay` is the default on both paths.
+Details: [hypotheses §23](docs/hypotheses.md).
 
 ### Sonnet 5 (`claude-sonnet-5`) — its own sandbox, and the `relay` framing
 
@@ -493,6 +518,7 @@ Three token scopes are acquired:
 | `M365_NO_INTERACTIVE` | Set to `1` to hard-disable any visible browser login, overriding the flag above. For systemd/CI hosts where a window must never open. |
 | `M365_INTERACTIVE_TIMEOUT_MS` | How long to wait for you to finish the interactive sign-in (default `600000`, i.e. 10 minutes). |
 | `M365_LOGIN_LOCALE` / `M365_LOGIN_TIMEZONE` | Browser locale and timezone presented during login (defaults `en-GB` / `Europe/Copenhagen`). These are part of the anti-bot-scoring fingerprint ([§11 F25](docs/hypotheses.md)) — set them to match your own machine if AAD starts treating your automated login as a bot. |
+| `M365_FORCE_AGENT` | Override which tool requests carry the Copilot Studio tool agent. `1` attaches it to every tool request (and turns off the `gpt-6-sol` fallback below); `0` never attaches it. Unset, the proxy decides per model: GPT-5.x and `m365-copilot` take it, Claude and `gpt-6-think-deeper` don't, and `gpt-6-sol` takes it only on a premium account, which the proxy learns from the first request. On a non-premium account `0` saves that one ~3 s probe turn per proxy start. |
 | `M365_SCENARIO` / `M365_LICENSE_TYPE` | Override the entitlement the WebSocket is opened under (defaults: `OfficeWebIncludedCopilot` / `Starter`, switching to `OfficeWebPaidCopilot` / `Premium` for the entitlement-gated models — `claude-opus`, `gpt-6-think-deeper` and `claude-sonnet-5`). `scenario` is what gates the model list (and picks Sonnet 4.6 vs 5 for the `Claude_Sonnet` tone); `licenseType` rides along and unlocks nothing by itself. |
 | `M365_CACHE_FILE` | Override MSAL token cache location |
 | `M365_SECRETS_FILE` | Override credentials file location |

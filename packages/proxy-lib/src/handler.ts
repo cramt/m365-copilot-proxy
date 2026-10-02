@@ -4,7 +4,11 @@ import {
   createLogger,
   trunc,
   getToneForModel,
-  toneUsesToolAgent,
+  toolRequestUsesAgent,
+  noteAgentRouteDead,
+  noteAgentRouteAlive,
+  isAgentRouteAlive,
+  PREMIUM_ONLY_AGENT_TONES,
   defaultFramingForModel,
   currentFramingVariant,
   transcriptStyleForVariant,
@@ -251,8 +255,10 @@ export async function handleChatCompletion(
   // tool-call agent-less (0/4), so it needs the agent. Claude tool-calls reliably
   // AGENT-LESS via shell-routing (F23), and on a non-premium account the agent
   // path doesn't serve Claude at all (§22 F44). `Gpt_6_Reasoning` doesn't serve
-  // with the agent on any account (§22 F45, #41). The rule lives in core
-  // (`toneUsesToolAgent`); force the agent with M365_FORCE_AGENT=1.
+  // with the agent on any account (§22 F45, #41), and `Gpt_6_Sol_Reasoning` only
+  // on a premium one (learned at runtime, see the dead-route fallback in
+  // runBuffered). The rule lives in core (`toolRequestUsesAgent`);
+  // M365_FORCE_AGENT=1 / =0 forces the agent on / off.
   // Derive it from the RESOLVED tone, not the raw model string: getToneForModel
   // routes any unmapped `claude-*` (e.g. the `claude-opus-5[1m]` a Claude Code
   // client sends) to a Claude tone, so this keeps that request on the working
@@ -267,7 +273,7 @@ export async function handleChatCompletion(
   // bench-tuned `baseline`. Keyed on the model, not the tone, because one tone
   // can serve two models. M365_FRAMING_* still wins.
   const framingVariant = currentFramingVariant(defaultFramingForModel(model));
-  const useToolAgent = !!hasTools && (process.env.M365_FORCE_AGENT === "1" || toneUsesToolAgent(tone));
+  let useToolAgent = !!hasTools && toolRequestUsesAgent(tone);
 
   // Format message: full prompt on first turn, delta on follow-ups.
   // M365 is stateful — it remembers everything from prior turns,
@@ -325,7 +331,8 @@ export async function handleChatCompletion(
   ): Promise<{ fullText: string } | { error: Response }> {
     let agentRefreshed = false;
     let disengageRetried = false;
-    const originalText = text;
+    let agentFallbackDone = false;
+    let originalText = text;
     // Self-imposed pacing while the account is degraded (thread-rate throttle). A
     // no-op when healthy; during backoff it sleeps a jittered delay so we stop
     // starting fresh turns into the throttle and let it self-heal (H-R1). This
@@ -389,8 +396,39 @@ export async function handleChatCompletion(
         return { error: throttledResponse(copilotStream.result) };
       }
 
+      // A tone whose agent route serves only on a premium account came back as
+      // the dead route (`InternalError`, no content): this account isn't
+      // premium. Remember that for the process, and re-send the WHOLE request
+      // agent-less in a fresh conversation — the dead turn processed nothing, and
+      // a delta would have no context. Free retry, at most once per request; the
+      // next request on this tone goes agent-less from the start. Never under
+      // M365_FORCE_AGENT=1, which asked for the agent regardless.
+      // A premium account produces the identical wire state as a one-off
+      // transient (§23), so once the agent has answered for this tone the
+      // InternalError falls through to the ordinary empty-reply handling below
+      // instead (isAgentRouteAlive).
+      if (
+        useToolAgent && !agentFallbackDone &&
+        PREMIUM_ONLY_AGENT_TONES.has(tone) &&
+        !isAgentRouteAlive(tone) &&
+        process.env.M365_FORCE_AGENT !== "1" &&
+        copilotStream.result?.value === "InternalError" &&
+        !copilotStream.hasContent && fullText.length === 0
+      ) {
+        agentFallbackDone = true;
+        noteAgentRouteDead(tone);
+        useToolAgent = false;
+        session.newConversation();
+        text = formatMessages(body.messages, body.tools, body.tool_choice, session.conversationId, framingVariant);
+        originalText = text;
+        log.info(`Agent route dead for ${tone} (InternalError) — this account isn't premium; re-sending agent-less with '${framingVariant}' framing in a fresh conversation`);
+        attempt--;
+        continue;
+      }
+
       if (copilotStream.hasContent || fullText.length > 0) {
         noteRequestOutcome(false, convId); // clean response → degradation has lifted
+        if (useToolAgent) noteAgentRouteAlive(tone); // the agent route answered on this account
         // The Opus priority-access cap arrives as a SUCCESSFUL turn whose text is
         // a refusal ("You've used your available priority access…"), so nothing
         // above catches it and the client would receive a refusal dressed as an

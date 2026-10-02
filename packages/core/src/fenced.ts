@@ -296,11 +296,20 @@ export function currentFramingVariant(toneDefault?: string): string {
  *  turns tripped the JailBreak Classifier: 0/30 solved, vs relay 30/30 (bench,
  *  2026-10-01, confab-retry off; docs §22 F47).
  *
+ *  `Gpt_6_Sol_Reasoning` (gpt-6-sol) defaults to `relay` on BOTH of its paths
+ *  (#23, docs §23). Agent-less (any non-premium account) it has a sandbox of its
+ *  own (`bash -lc …` in /mnt/data, /home/oai) that M365_NO_CODE_INTERPRETER
+ *  doesn't remove; every other framing sent it there on ~every first turn and
+ *  scored 0–6/10, relay 60/60. With the agent (premium) there's no sandbox, but
+ *  the other framings confabulate "I can't access your working directory" or
+ *  trip the JailBreak Classifier: 3–9/10, relay 30/30. Real pi: 21/21.
+ *
  *  Every other tone keeps the bench-tuned `baseline` byte-for-byte. */
 export function defaultFramingForTone(tone?: string): string | undefined {
   if (tone === "Claude_Opus") return "minimal";
   if (tone === "Claude_Sonnet") return "relay";
   if (tone === "Gpt_6_Reasoning") return "relay";
+  if (tone === "Gpt_6_Sol_Reasoning") return "relay";
   return undefined;
 }
 

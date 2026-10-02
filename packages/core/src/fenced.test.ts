@@ -307,6 +307,14 @@ describe("defaultFramingForTone", () => {
     expect(defaultFramingForModel("gpt-6-think-deeper")).toBe("relay");
   });
 
+  it("gives GPT-6 Sol relay on both of its paths, agent and agent-less (#23)", () => {
+    // One default for both: agent-less (non-premium) it has its own sandbox and
+    // only relay kept it out (60/60 vs ≤6/10); with the agent (premium) relay
+    // 30/30 vs 3–9/10 for the rest (docs §23).
+    expect(defaultFramingForTone("Gpt_6_Sol_Reasoning")).toBe("relay");
+    expect(defaultFramingForModel("gpt-6-sol")).toBe("relay");
+  });
+
   it("is materially shorter than baseline for the same toolset", () => {
     const lean = formatFencedToolDefinitions([bash, readFile], "minimal");
     const baseline = formatFencedToolDefinitions([bash, readFile], "baseline");

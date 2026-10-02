@@ -6,7 +6,14 @@ import {
   getScenarioForTone,
   getToneForModel,
   isSonnet5Model,
+  isAgentRouteAlive,
+  noteAgentRouteAlive,
+  noteAgentRouteDead,
+  PAID_SCENARIO_TONES,
+  PREMIUM_ONLY_AGENT_TONES,
+  resetAgentRoutes,
   toneUsesToolAgent,
+  toolRequestUsesAgent,
 } from "./copilot.js";
 
 const INCLUDED = { scenario: "OfficeWebIncludedCopilot", licenseType: "Starter" };
@@ -129,6 +136,60 @@ describe("which tool requests carry the tool agent", () => {
     for (const id of ["m365-copilot", "quick", "think-deeper", "gpt-5.2", "gpt-5.4", "gpt-5.5", "gpt-5.5-think-deeper", "gpt-5.6", "gpt-5.6-think-deeper"]) {
       expect(usesAgent(id)).toBe(true);
     }
+  });
+});
+
+describe("GPT-6 Sol routing (#23)", () => {
+  afterEach(() => {
+    resetAgentRoutes();
+    delete process.env.M365_FORCE_AGENT;
+  });
+
+  it("maps gpt-6-sol to Gpt_6_Sol_Reasoning on the INCLUDED scenario — it isn't gated", () => {
+    expect(getToneForModel("gpt-6-sol")).toBe("Gpt_6_Sol_Reasoning");
+    expect(getAvailableModels()).toContain("gpt-6-sol");
+    expect(PAID_SCENARIO_TONES.has("Gpt_6_Sol_Reasoning")).toBe(false);
+    expect(getScenarioForModel("gpt-6-sol")).toEqual(INCLUDED);
+  });
+
+  it("doesn't advertise Gpt_6_Sol_Chat — it serves the GPT-5 chat model", () => {
+    expect(getAvailableModels().map(getToneForModel)).not.toContain("Gpt_6_Sol_Chat");
+  });
+
+  it("tries the agent first: it serves with it on a premium account", () => {
+    expect(PREMIUM_ONLY_AGENT_TONES.has("Gpt_6_Sol_Reasoning")).toBe(true);
+    expect(toneUsesToolAgent("Gpt_6_Sol_Reasoning")).toBe(true);
+  });
+
+  it("goes agent-less once the account's agent route proved dead, and only for that tone", () => {
+    noteAgentRouteDead("Gpt_6_Sol_Reasoning");
+    expect(toneUsesToolAgent("Gpt_6_Sol_Reasoning")).toBe(false);
+    expect(toneUsesToolAgent("Gpt_5_5_Reasoning")).toBe(true);
+    resetAgentRoutes();
+    expect(toneUsesToolAgent("Gpt_6_Sol_Reasoning")).toBe(true);
+  });
+
+  it("won't mark a route dead once it has answered — a later InternalError is a transient", () => {
+    // A premium account produced the dead route's exact wire state mid-conversation (§23).
+    noteAgentRouteAlive("Gpt_6_Sol_Reasoning");
+    expect(isAgentRouteAlive("Gpt_6_Sol_Reasoning")).toBe(true);
+    expect(noteAgentRouteDead("Gpt_6_Sol_Reasoning")).toBe(false);
+    expect(toneUsesToolAgent("Gpt_6_Sol_Reasoning")).toBe(true);
+    resetAgentRoutes();
+    expect(isAgentRouteAlive("Gpt_6_Sol_Reasoning")).toBe(false);
+    expect(noteAgentRouteDead("Gpt_6_Sol_Reasoning")).toBe(true);
+  });
+
+  it("lets M365_FORCE_AGENT=1 / =0 override the rule either way", () => {
+    noteAgentRouteDead("Gpt_6_Sol_Reasoning");
+    process.env.M365_FORCE_AGENT = "1";
+    expect(toolRequestUsesAgent("Gpt_6_Sol_Reasoning")).toBe(true);
+    expect(toolRequestUsesAgent("Claude_Sonnet")).toBe(true);
+    process.env.M365_FORCE_AGENT = "0";
+    expect(toolRequestUsesAgent("Gpt_5_5_Reasoning")).toBe(false);
+    delete process.env.M365_FORCE_AGENT;
+    expect(toolRequestUsesAgent("Gpt_5_5_Reasoning")).toBe(true);
+    expect(toolRequestUsesAgent("Gpt_6_Sol_Reasoning")).toBe(false);
   });
 });
 
