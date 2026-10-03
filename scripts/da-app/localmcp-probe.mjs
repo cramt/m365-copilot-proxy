@@ -186,7 +186,9 @@ function runTurn(turnIndex, isFirst) {
     const send = (o) => {
       try {
         ws.send(JSON.stringify(o) + RS);
-      } catch {}
+      } catch {
+        // Ignore sends that race with socket closure.
+      }
     };
     function done(err) {
       if (settled) return;
@@ -194,7 +196,9 @@ function runTurn(turnIndex, isFirst) {
       clearTimeout(timer);
       try {
         ws.close();
-      } catch {}
+      } catch {
+        // Cleanup must not prevent the completed turn from resolving.
+      }
       const full = snapshotText.length >= deltaText.length ? snapshotText : deltaText;
       resolve({ sawDescribe, sawInvoke, disengaged, full, err });
     }
@@ -205,6 +209,7 @@ function runTurn(turnIndex, isFirst) {
         try {
           p = JSON.parse(f);
         } catch {
+          // Ignore malformed frames and continue reading the stream.
           continue;
         }
         if (process.env.DUMP) {
@@ -273,7 +278,9 @@ function runTurn(turnIndex, isFirst) {
               /^mcp_/,
               "",
             );
-          } catch {}
+          } catch {
+            // Malformed payloads use the probe's default tool below.
+          }
           console.log(
             `[mcp]  << t${turnIndex} invoke_local_plugin endpoint=${req.invocation?.local_endpoint} method=${toolName}`,
           );

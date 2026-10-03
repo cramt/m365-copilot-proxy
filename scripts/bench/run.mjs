@@ -14,7 +14,7 @@
 //
 // Output: console scorecard + scripts/bench/out/<label>-<ts>.json
 
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync, existsSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { tmpdir } from "node:os";
 import { execSync, spawnSync } from "node:child_process";
@@ -58,7 +58,9 @@ function dexec(cid, cmd, timeoutMs = 30000) {
 function rmContainer(cid) {
   try {
     execSync(`docker rm -f ${cid}`, { stdio: "ignore" });
-  } catch {}
+  } catch {
+    // Container cleanup is best-effort; preserve the task result.
+  }
 }
 
 const TS = new Date().toISOString().replace(/[:.]/g, "-");
@@ -132,7 +134,7 @@ function execTool(name, a, sandbox, cid) {
   try {
     if (name === "bash") {
       const r = dexec(cid, a.command ?? "");
-      const out = `exit=${r.status ?? "timeout/null"}\n${r.stdout || ""}${r.stderr ? "\n[stderr]\n" + r.stderr : ""}`;
+      const out = `exit=${r.status ?? "timeout/null"}\n${r.stdout || ""}${r.stderr ? `\n[stderr]\n${r.stderr}` : ""}`;
       return out.slice(0, 4000);
     }
     const safe = (p) => {
@@ -194,7 +196,7 @@ function setupSandbox(task) {
   return dir;
 }
 
-function verify(task, sandbox, cid, finalAnswer) {
+function verify(task, cid, finalAnswer) {
   if (task.expectAnswer) return (finalAnswer || "").includes(task.expectAnswer);
   if (task.verifyCmd) {
     const r = dexec(cid, task.verifyCmd);
@@ -216,7 +218,7 @@ async function runTask(task) {
       toolTurns: 0,
       msgs: 0,
       elapsedMs: 0,
-      error: "container start failed: " + e.message,
+      error: `container start failed: ${e.message}`,
       finalAnswer: "",
     };
   }
@@ -238,21 +240,22 @@ async function runTask(task) {
         : "ls -laR";
     const seedOut = execTool("bash", { command: cmd }, sandbox, cid);
     const callId = `seed_${runId}`;
-    messages.push({
-      role: "assistant",
-      content: null,
-      tool_calls: [
-        {
-          id: callId,
-          type: "function",
-          function: { name: "bash", arguments: JSON.stringify({ command: cmd }) },
-        },
-      ],
-    });
-    messages.push({ role: "tool", tool_call_id: callId, content: seedOut });
+    messages.push(
+      {
+        role: "assistant",
+        content: null,
+        tool_calls: [
+          {
+            id: callId,
+            type: "function",
+            function: { name: "bash", arguments: JSON.stringify({ command: cmd }) },
+          },
+        ],
+      },
+      { role: "tool", tool_call_id: callId, content: seedOut },
+    );
   }
   let toolTurns = 0,
-    proseTurns = 0,
     msgs = 0,
     finalAnswer = null,
     endReason = "maxturns",
@@ -279,10 +282,12 @@ async function runTask(task) {
     if (m.tool_calls?.length) {
       messages.push({ role: "assistant", content: m.content ?? null, tool_calls: m.tool_calls });
       for (const tc of m.tool_calls) {
-        let a = {};
+        let a;
         try {
           a = JSON.parse(tc.function.arguments || "{}");
-        } catch {}
+        } catch {
+          a = {};
+        }
         const result = execTool(tc.function.name, a, sandbox, cid);
         messages.push({ role: "tool", tool_call_id: tc.id, content: result });
         toolTurns++;
@@ -295,11 +300,13 @@ async function runTask(task) {
     await new Promise((r) => setTimeout(r, 800)); // gentle pacing
   }
 
-  const solved = verify(task, sandbox, cid, finalAnswer);
+  const solved = verify(task, cid, finalAnswer);
   rmContainer(cid);
   try {
     rmSync(sandbox, { recursive: true, force: true });
-  } catch {}
+  } catch {
+    // Sandbox cleanup is best-effort and must not mask the task result.
+  }
   const outcome = solved
     ? "SOLVED"
     : error
@@ -330,7 +337,7 @@ for (let rep = 0; rep < REPEAT; rep++) {
     const r = await runTask(task);
     rows.push({ ...r, rep });
     console.log(
-      `  ${r.task.padEnd(14)} ${r.outcome.padEnd(14)} tools=${r.toolTurns} msgs=${r.msgs} ${Math.round(r.elapsedMs / 1000)}s ${r.error ? "(" + r.error.slice(0, 50) + ")" : ""} ${r.solved ? "" : "answer=" + JSON.stringify(r.finalAnswer)}`,
+      `  ${r.task.padEnd(14)} ${r.outcome.padEnd(14)} tools=${r.toolTurns} msgs=${r.msgs} ${Math.round(r.elapsedMs / 1000)}s ${r.error ? `(${r.error.slice(0, 50)})` : ""} ${r.solved ? "" : `answer=${JSON.stringify(r.finalAnswer)}`}`,
     );
     await new Promise((rr) => setTimeout(rr, THREAD_COOLDOWN_MS));
   }
@@ -338,7 +345,10 @@ for (let rep = 0; rep < REPEAT; rep++) {
 
 const solved = rows.filter((r) => r.solved).length;
 const pct = Math.round((solved / rows.length) * 100);
-const byOutcome = rows.reduce((m, r) => ((m[r.outcome] = (m[r.outcome] || 0) + 1), m), {});
+const byOutcome = rows.reduce((counts, row) => {
+  counts[row.outcome] = (counts[row.outcome] || 0) + 1;
+  return counts;
+}, {});
 const avgTools = (rows.reduce((s, r) => s + r.toolTurns, 0) / rows.length).toFixed(1);
 const totalMsgs = rows.reduce((s, r) => s + r.msgs, 0);
 

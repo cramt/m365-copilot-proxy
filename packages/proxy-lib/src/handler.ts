@@ -1,5 +1,6 @@
 import {
   ModelSession,
+  type CopilotStream,
   type ModelSessionOptions,
   createLogger,
   trunc,
@@ -26,7 +27,7 @@ import {
   getDegradationRetryAfterSeconds,
   awaitDegradationBackoff,
 } from "@m365-copilot/core";
-import { ChatCompletionRequest } from "./schemas.js";
+import type { ChatCompletionRequest } from "./schemas.js";
 import { estimatePromptTokens, estimateTokens, openAIError } from "./openai.js";
 import type { z } from "zod/v4";
 
@@ -54,11 +55,12 @@ const REMOTE_ARTIFACT_FORCE_PROMPT =
 // observed ceiling with finish_reason:"length" — the standard signal a harness
 // uses to ask for a continuation. Tune/disable via env (0 disables).
 const OUTPUT_CHAR_CEILING =
-  process.env.M365_OUTPUT_CHAR_CEILING !== undefined
-    ? Number(process.env.M365_OUTPUT_CHAR_CEILING)
+  getEnvironmentVariable("M365_OUTPUT_CHAR_CEILING") !== undefined
+    ? Number(getEnvironmentVariable("M365_OUTPUT_CHAR_CEILING"))
     : 12_000;
 
-const SYSTEM_EXACT_REPLY_GUARD_ENABLED = process.env.M365_SYSTEM_EXACT_REPLY_GUARD !== "0";
+const SYSTEM_EXACT_REPLY_GUARD_ENABLED =
+  getEnvironmentVariable("M365_SYSTEM_EXACT_REPLY_GUARD") !== "0";
 
 /** "length" when the answer is at/over the empirical output ceiling, else "stop". */
 function outputFinishReason(text: string): "stop" | "length" {
@@ -245,6 +247,28 @@ function simpleHash(str: string): string {
   return String(hash);
 }
 
+function getErrorMessage(error: unknown, fallback?: string): string {
+  if (typeof error === "object" && error !== null && "message" in error) {
+    const { message } = error;
+    if (typeof message === "string") return message;
+  }
+  if (typeof error === "string") return error;
+  return fallback ?? String(error);
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function getEnvironmentVariable(name: string): string | undefined {
+  const runtimeProcess: unknown = Reflect.get(globalThis, "process");
+  if (!isRecord(runtimeProcess)) return undefined;
+  const environment = runtimeProcess.env;
+  if (!isRecord(environment)) return undefined;
+  const value = environment[name];
+  return typeof value === "string" ? value : undefined;
+}
+
 // --- Delta message formatting ---
 
 function formatDeltaMessages(messages: ParsedMessage[], framingVariant: string): string {
@@ -254,7 +278,6 @@ function formatDeltaMessages(messages: ParsedMessage[], framingVariant: string):
     if (m.role === "assistant") {
       // Skip assistant messages — M365 already has them server-side.
       // Echoing them back as a user message confuses M365.
-      continue;
     } else if (m.role === "tool") {
       const name = m.name || "unknown";
       const callId = m.tool_call_id || "?";
@@ -357,8 +380,8 @@ export async function handleChatCompletion(
   // can serve two models. M365_FRAMING_* still wins.
   const wantsToolAgent =
     !!hasTools &&
-    process.env.M365_DISABLE_AGENT !== "1" &&
-    (process.env.M365_FORCE_AGENT === "1" || toneUsesToolAgent(tone));
+    getEnvironmentVariable("M365_DISABLE_AGENT") !== "1" &&
+    (getEnvironmentVariable("M365_FORCE_AGENT") === "1" || toneUsesToolAgent(tone));
   const agentId = wantsToolAgent ? await session.resolveAgent() : null;
   const useToolAgent = !!agentId;
   const framingVariant = currentFramingVariant(
@@ -456,16 +479,16 @@ export async function handleChatCompletion(
     // detection profile. A single long pi thread never trips the trigger.
     await awaitDegradationBackoff();
     for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
-      let copilotStream;
+      let copilotStream: CopilotStream;
       try {
         // Only attach the tool-calling agent when the request actually has tools.
         // The agent overrides `tone` (forces GPT-5), so tool-less requests must
         // skip it to reach the model the tone selects (e.g. Claude). See
         // ModelSession.run / docs H8.6.
         copilotStream = await session.run(text, model, opts.signal, useToolAgent);
-      } catch (err: any) {
+      } catch (err: unknown) {
         return finish({
-          error: openAIError(502, { message: err.message, type: "upstream_error" }),
+          error: openAIError(502, { message: getErrorMessage(err), type: "upstream_error" }),
         });
       }
 
@@ -478,9 +501,9 @@ export async function handleChatCompletion(
         if (copilotStream.fullText && copilotStream.fullText.length > fullText.length) {
           fullText = copilotStream.fullText;
         }
-      } catch (err: any) {
+      } catch (err: unknown) {
         return finish({
-          error: openAIError(502, { message: err.message, type: "upstream_error" }),
+          error: openAIError(502, { message: getErrorMessage(err), type: "upstream_error" }),
         });
       }
 
@@ -533,7 +556,11 @@ export async function handleChatCompletion(
         // `softened` framing in a FRESH conversation (a Disengaged conversation stays
         // Disengaged). Drops the worst-case disengage ~100%→~4%. Off via
         // M365_NO_DISENGAGE_RETRY.
-        if (hasTools && !disengageRetried && !process.env.M365_NO_DISENGAGE_RETRY) {
+        if (
+          hasTools &&
+          !disengageRetried &&
+          !getEnvironmentVariable("M365_NO_DISENGAGE_RETRY")
+        ) {
           disengageRetried = true;
           session.newConversation();
           // `softened` is the low-override twin of the `<system>`-tagged framings.
@@ -685,9 +712,9 @@ export async function handleChatCompletion(
       // them, WITHOUT calling a tool — even though the environment is real (the bench +
       // pi both reproduce this). Re-prompt forcefully in the SAME conversation (one
       // thread, cheap). Disable with M365_NO_CONFAB_RETRY; tune count with M365_CONFAB_RETRIES.
-      const maxConfabRetries = process.env.M365_NO_CONFAB_RETRY
+      const maxConfabRetries = getEnvironmentVariable("M365_NO_CONFAB_RETRY")
         ? 0
-        : Number(process.env.M365_CONFAB_RETRIES ?? 1);
+        : Number(getEnvironmentVariable("M365_CONFAB_RETRIES") ?? 1);
       // The model never actually acted if no assistant turn in the history carried a
       // tool call. Used to gate the hallucinated-completion retry (a model that did
       // real work called at least one tool), keeping false positives near zero.
@@ -780,8 +807,12 @@ export async function handleChatCompletion(
         if (replyCall && realToolCalls.length === 0) {
           let replyText: string;
           try {
-            const args = JSON.parse(replyCall.function.arguments);
-            replyText = args.text || args.message || args.content || fullText;
+            const parsedArgs: unknown = JSON.parse(replyCall.function.arguments);
+            const args = isRecord(parsedArgs) ? parsedArgs : {};
+            const text = typeof args.text === "string" ? args.text : undefined;
+            const message = typeof args.message === "string" ? args.message : undefined;
+            const content = typeof args.content === "string" ? args.content : undefined;
+            replyText = text || message || content || fullText;
           } catch {
             replyText = fullText;
           }
@@ -799,7 +830,7 @@ export async function handleChatCompletion(
         // premature success claim ride along at the end. Keeping only the first
         // call forces a real step-by-step loop where each call reacts to the
         // previous tool_response. Set M365_ALLOW_MULTI_TOOL to restore batching.
-        if (!process.env.M365_ALLOW_MULTI_TOOL && parsed.toolCalls.length > 1) {
+        if (!getEnvironmentVariable("M365_ALLOW_MULTI_TOOL") && parsed.toolCalls.length > 1) {
           log.info(
             `One-call-per-turn: keeping ${parsed.toolCalls[0].function.name}, dropping ${parsed.toolCalls.length - 1} batched call(s)`,
           );
@@ -853,13 +884,13 @@ export async function handleChatCompletion(
     if (p.kind === "tools") {
       const message = legacy
         ? {
-            role: "assistant",
-            content: null,
-            function_call: {
-              name: p.toolCalls[0].function.name,
-              arguments: p.toolCalls[0].function.arguments,
-            },
-          }
+          role: "assistant",
+          content: null,
+          function_call: {
+            name: p.toolCalls[0].function.name,
+            arguments: p.toolCalls[0].function.arguments,
+          },
+        }
         : { role: "assistant", content: null, tool_calls: p.toolCalls };
       return withProxyHeaders(
         jsonResponse(200, {
@@ -916,7 +947,7 @@ export async function handleChatCompletion(
           const hb = setInterval(() => {
             try {
               controller.enqueue(enc.encode(": keepalive\n\n"));
-            } catch {}
+            } catch { }
           }, 15000);
 
           // Live token passthrough (non-tool only). Track exactly what we've sent so the
@@ -935,30 +966,30 @@ export async function handleChatCompletion(
             hasTools || forcedExactReply
               ? undefined
               : (delta: string) => {
-                  if (!delta) return;
-                  if (gated) {
-                    head += delta;
-                    if (couldBePriorityAccessPrefix(head)) return; // still undecided — keep buffering
-                    gated = false;
-                    delta = head; // release everything held so far, in order
-                  }
-                  sent += delta;
-                  try {
-                    send({
-                      ...base,
-                      choices: [{ index: 0, delta: { content: delta }, finish_reason: null }],
-                    });
-                  } catch {}
-                };
+                if (!delta) return;
+                if (gated) {
+                  head += delta;
+                  if (couldBePriorityAccessPrefix(head)) return; // still undecided — keep buffering
+                  gated = false;
+                  delta = head; // release everything held so far, in order
+                }
+                sent += delta;
+                try {
+                  send({
+                    ...base,
+                    choices: [{ index: 0, delta: { content: delta }, finish_reason: null }],
+                  });
+                } catch { }
+              };
 
           let p: Produced;
           try {
             p = await produce(liveDelta);
-          } catch (err: any) {
+          } catch (err: unknown) {
             p = {
               kind: "error",
               resp: openAIError(502, {
-                message: err?.message ?? "stream error",
+                message: getErrorMessage(err, "stream error"),
                 type: "upstream_error",
               }),
             };
@@ -978,12 +1009,18 @@ export async function handleChatCompletion(
               // reset) from a transient upstream failure (retry now), and the status
               // code it would have read is gone once HTTP 200 is committed.
               try {
-                const parsed = JSON.parse(await p.resp.text())?.error;
-                if (parsed?.message) message = parsed.message;
-                if (parsed?.type) type = parsed.type;
-                if (parsed?.code) code = parsed.code;
-                if (typeof parsed?.param === "string") param = parsed.param;
-              } catch {}
+                const responseBody: unknown = JSON.parse(await p.resp.text());
+                const parsedError = isRecord(responseBody) ? responseBody.error : undefined;
+                if (isRecord(parsedError)) {
+                  if (typeof parsedError.message === "string" && parsedError.message)
+                    message = parsedError.message;
+                  if (typeof parsedError.type === "string" && parsedError.type)
+                    type = parsedError.type;
+                  if (typeof parsedError.code === "string" && parsedError.code)
+                    code = parsedError.code;
+                  if (typeof parsedError.param === "string") param = parsedError.param;
+                }
+              } catch { }
               streamError = { message, type };
               const retryAfter = p.resp.headers.get("Retry-After");
               // HTTP 200 is already committed, so surface the failure as an in-stream error chunk.
@@ -1074,13 +1111,13 @@ export async function handleChatCompletion(
             withProxyHeaders(streamingResponse, finishReason);
             try {
               opts.onComplete?.(streamingResponse, streamError);
-            } catch (err: any) {
-              log.info(`Completion observer failed: ${err?.message ?? err}`);
+            } catch (err: unknown) {
+              log.info(`Completion observer failed: ${getErrorMessage(err)}`);
             }
             try {
               controller.enqueue(enc.encode("data: [DONE]\n\n"));
               controller.close();
-            } catch {}
+            } catch { }
           }
         },
       }),
@@ -1232,7 +1269,7 @@ function rateLimitResponse(throttle: { current: number; max: number } | null): R
 
 function throttledResponse(result: { errorCode?: string; message?: string }): Response {
   const scope = result.errorCode ? ` (${result.errorCode})` : "";
-  const configuredDelay = Number(process.env.M365_THROTTLE_RETRY_AFTER_S);
+  const configuredDelay = Number(getEnvironmentVariable("M365_THROTTLE_RETRY_AFTER_S"));
   const retryAfter = Math.max(
     getDegradationRetryAfterSeconds(),
     Number.isFinite(configuredDelay) && configuredDelay > 0 ? Math.ceil(configuredDelay) : 0,

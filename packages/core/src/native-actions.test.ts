@@ -1,3 +1,4 @@
+import assert from "node:assert/strict";
 import { describe, it, expect } from "vitest";
 import {
   parseActionConfirmation,
@@ -36,11 +37,11 @@ const triggerMsg = {
 describe("parseActionConfirmation", () => {
   it("detects a confirmation trigger and extracts action fields", () => {
     const c = parseActionConfirmation(triggerMsg);
-    expect(c).not.toBeNull();
-    expect(c!.actionId).toBe("act_123");
-    expect(c!.sourceRequestId).toBe("req_abc");
-    expect(c!.isConsequential).toBe(false);
-    expect(c!.confirmationOption).toBe("confirm"); // affirmative, not "decline"
+    assert(c !== null, "Expected a confirmation trigger");
+    expect(c.actionId).toBe("act_123");
+    expect(c.sourceRequestId).toBe("req_abc");
+    expect(c.isConsequential).toBe(false);
+    expect(c.confirmationOption).toBe("confirm"); // affirmative, not "decline"
   });
 
   it("ignores ordinary bot chat messages", () => {
@@ -91,13 +92,15 @@ describe("parseActionConfirmation", () => {
 
   it("picks affirmative even when it is listed after the negative", () => {
     const c = parseActionConfirmation(triggerMsg);
-    expect(c!.confirmationOption).toBe("confirm");
+    assert(c !== null, "Expected a confirmation trigger");
+    expect(c.confirmationOption).toBe("confirm");
   });
 });
 
 describe("buildResumeInvokeAction", () => {
   it("builds a ResumeInvokeAction message echoing the trigger (decompile-exact)", () => {
-    const c = parseActionConfirmation(triggerMsg)!;
+    const c = parseActionConfirmation(triggerMsg);
+    assert(c !== null, "Expected a confirmation trigger");
     const msg = buildResumeInvokeAction(c);
     expect(msg.messageType).toBe("ResumeInvokeAction");
     expect(msg.actionId).toBe("act_123");
@@ -116,7 +119,8 @@ describe("buildResumeInvokeAction", () => {
       messageType: "ConfirmationCard",
       actionId: "a",
       adaptiveCards: [],
-    })!;
+    });
+    assert(c !== null, "Expected a confirmation");
     const msg = buildResumeInvokeAction(c);
     expect(msg.text).toBe("confirmation response");
     expect("confirmationOption" in msg).toBe(false);
@@ -125,7 +129,8 @@ describe("buildResumeInvokeAction", () => {
 
 describe("shouldAutoConfirm", () => {
   it("auto-confirms non-consequential (read-only) actions", () => {
-    const c = parseActionConfirmation(triggerMsg)!; // isConsequential: false
+    const c = parseActionConfirmation(triggerMsg); // isConsequential: false
+    assert(c !== null, "Expected a confirmation trigger");
     expect(shouldAutoConfirm(c)).toBe(true);
   });
 
@@ -135,7 +140,8 @@ describe("shouldAutoConfirm", () => {
       actionId: "a",
       isConsequential: true,
       adaptiveCards: [],
-    })!;
+    });
+    assert(c !== null, "Expected a confirmation");
     expect(shouldAutoConfirm(c)).toBe(false);
     expect(shouldAutoConfirm(c, { autoConfirmAll: true })).toBe(true);
   });

@@ -8,7 +8,7 @@
 //
 // Usage: CHROMIUM_PATH=$(which chromium) M365_DUMP_FRAMES=1 \
 //   node scripts/da-app/native-action-ws-probe.mjs
-import { readFileSync, readdirSync, statSync } from "node:fs";
+import { readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import { homedir } from "node:os";
 import {

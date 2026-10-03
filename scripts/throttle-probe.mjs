@@ -74,7 +74,10 @@ for (let i = 0; i < MAX; i++) {
 }
 const results = (await Promise.all(jobs)).sort((a, b) => a.i - b.i);
 
-const counts = results.reduce((m, r) => ((m[r.cls] = (m[r.cls] || 0) + 1), m), {});
+const counts = results.reduce((m, r) => {
+  m[r.cls] = (m[r.cls] || 0) + 1;
+  return m;
+}, {});
 const onset = results.find((r) => r.cls !== "ok");
 const okRate = Math.round(((counts.ok || 0) / results.length) * 100);
 

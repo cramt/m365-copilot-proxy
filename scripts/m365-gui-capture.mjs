@@ -98,10 +98,14 @@ async function login() {
     await fill('input[name="otc"]', new TOTP({ secret: creds.mfaSecret }).generate());
     await submit();
     await page.waitForTimeout(2500);
-  } catch {}
+  } catch (error) {
+    void error;
+  }
   try {
     await page.locator("#idSIButton9:visible").click({ timeout: 8000 });
-  } catch {}
+  } catch (error) {
+    void error;
+  }
 }
 
 try {
@@ -117,7 +121,7 @@ try {
   }
   await page.waitForTimeout(6000);
   console.log("[gui] url:", page.url());
-  await page.screenshot({ path: join(OUT, "after-login.png"), fullPage: false }).catch(() => {});
+  await page.screenshot({ path: join(OUT, "after-login.png"), fullPage: false }).catch(() => { });
 
   // Find the chat composer — try common shapes.
   const sels = [
@@ -135,7 +139,7 @@ try {
     }
   }
   if (box) {
-    await box.click().catch(() => {});
+    await box.click().catch(() => { });
     await page.keyboard.type(TASK, { delay: 8 });
     await page.waitForTimeout(600);
     await page.keyboard.press("Enter");
@@ -146,7 +150,7 @@ try {
     const txt = await page.evaluate(() => document.body.innerText.slice(0, 800)).catch(() => "");
     console.log(txt);
   }
-  await page.screenshot({ path: join(OUT, "after-send.png"), fullPage: false }).catch(() => {});
+  await page.screenshot({ path: join(OUT, "after-send.png"), fullPage: false }).catch(() => { });
 } catch (e) {
   console.log("[gui] ERR", e.message);
 }
@@ -173,7 +177,9 @@ if (chathubUrl) {
     const q = new URL(chathubUrl.replace(/^wss/, "https")).searchParams;
     console.log("[gui] WS query keys:", [...q.keys()].join(","));
     console.log("[gui] variants:", q.get("variants"));
-  } catch {}
+  } catch (error) {
+    void error;
+  }
 }
 if (firstChatPayload) {
   const a = firstChatPayload.arguments?.[0] ?? {};

@@ -1,4 +1,5 @@
 import WebSocket from "ws";
+import { z } from "zod/v4";
 import { appendFileSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { homedir } from "node:os";
@@ -9,6 +10,8 @@ import {
   ThrottlingUpdate,
   CompletionFrame,
   CloseFrame,
+  BotMessage,
+  ThrottlingInfo,
 } from "./schemas.js";
 import { decodeJwt, getScenarioForModel, getToneForModel, type CopilotStream } from "./copilot.js";
 import {
@@ -16,11 +19,78 @@ import {
   buildResumeInvokeAction,
   shouldAutoConfirm,
   ACTION_ALLOWED_MESSAGE_TYPES,
+  type MaybeTriggerMessage,
 } from "./native-actions.js";
 import { createLogger, trunc } from "./log.js";
 
 const RS = "\x1E";
 const log = createLogger("session");
+
+const NativeActionActionSchema = z
+  .object({
+    type: z.string().optional(),
+    title: z.string().optional(),
+    data: z
+      .object({
+        message: z
+          .object({
+            actionId: z.string().optional(),
+            confirmationOption: z.string().optional(),
+          })
+          .catchall(z.unknown())
+          .optional(),
+      })
+      .catchall(z.unknown())
+      .optional(),
+  })
+  .catchall(z.unknown());
+
+const NativeActionCardSchema = z
+  .object({
+    actions: z.array(NativeActionActionSchema).optional(),
+    body: z
+      .array(
+        z.object({ actions: z.array(NativeActionActionSchema).optional() }).catchall(z.unknown()),
+      )
+      .optional(),
+  })
+  .catchall(z.unknown());
+
+const NativeActionTriggerMessageSchema = z
+  .object({
+    messageType: z.string().optional(),
+    layout: z.string().optional(),
+    copilotMessageType: z.string().optional(),
+    actionId: z.string().optional(),
+    sourceRequestId: z.string().optional(),
+    requestId: z.string().optional(),
+    messageId: z.string().optional(),
+    isConsequential: z.boolean().optional(),
+    confirmationMetadata: z.unknown().optional(),
+    adaptiveCards: z.array(NativeActionCardSchema).optional(),
+  })
+  .catchall(z.unknown());
+
+const StreamItemMessageSchema = BotMessage.partial().extend({ author: z.string() });
+const StreamItemResultSchema = z.object({
+  value: z.unknown().optional(),
+  errorCode: z.unknown().optional(),
+  message: z.unknown().optional(),
+});
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function isUnknownArray(value: unknown): value is unknown[] {
+  return Array.isArray(value);
+}
+
+function rawDataToString(data: WebSocket.RawData): string {
+  if (Buffer.isBuffer(data)) return data.toString("utf8");
+  if (Array.isArray(data)) return Buffer.concat(data).toString("utf8");
+  return Buffer.from(data).toString("utf8");
+}
 
 // The exact frame the real m365.cloud.microsoft "Stop generating" button sends
 // (captured June 2026, scripts/cancel-frame-capture.mjs). It's a normal type:1
@@ -56,7 +126,7 @@ function dumpFrame(requestId: string, parsed: unknown, direction: "recv" | "send
     mkdirSync(DUMP_DIR, { recursive: true });
     appendFileSync(
       join(DUMP_DIR, `${requestId}.ndjson`),
-      JSON.stringify({ t: Date.now(), dir: direction, frame: parsed }) + "\n",
+      `${JSON.stringify({ t: Date.now(), dir: direction, frame: parsed })}\n`,
     );
   } catch {
     // best effort
@@ -369,7 +439,7 @@ export class CopilotSession {
         if (waiting) {
           const w = waiting;
           waiting = null;
-          w.resolve({ value: undefined as any, done: true });
+          w.resolve({ value: undefined, done: true });
         }
       };
       const onError = (err: Error) => {
@@ -434,11 +504,12 @@ export class CopilotSession {
               // Drain buffered deltas BEFORE surfacing done/error, so a fast turn
               // that finished before iteration began still yields all its text.
               if (queue.length > 0) {
-                return Promise.resolve({ value: queue.shift()!, done: false });
+                const value = queue.shift();
+                if (value !== undefined) return Promise.resolve({ value, done: false });
               }
               if (streamError) return Promise.reject(streamError);
               if (streamDone) {
-                return Promise.resolve({ value: undefined as any, done: true });
+                return Promise.resolve({ value: undefined, done: true });
               }
               return new Promise((res, rej) => {
                 waiting = { resolve: res, reject: rej };
@@ -502,7 +573,7 @@ export class CopilotSession {
       });
 
       ws.on("message", (data: WebSocket.RawData) => {
-        const raw = data.toString();
+        const raw = rawDataToString(data);
         log.debug("WS recv:", trunc(raw, 500));
         const frames = raw.split(RS).filter((f) => f.length > 0);
 
@@ -619,7 +690,7 @@ export class CopilotSession {
             locale: "en-gb",
             messageType: "Chat",
             experienceType: "Default",
-            adaptiveCards: [] as any[],
+            adaptiveCards: [],
             clientPreferences: {},
           },
           ...(agentId
@@ -709,7 +780,9 @@ export class CopilotSession {
       // open for the result). No-op unless native actions are enabled.
       const maybeResumeAction = (m: unknown): boolean => {
         if (!nativeActions || actionResumed || !baseArgs) return false;
-        const conf = parseActionConfirmation(m as any);
+        const trigger = NativeActionTriggerMessageSchema.safeParse(m);
+        if (!trigger.success) return false;
+        const conf = parseActionConfirmation(trigger.data satisfies MaybeTriggerMessage);
         if (!conf) return false;
         sawAction = true;
         if (!shouldAutoConfirm(conf, { autoConfirmAll: nativeActions.autoConfirmAll })) {
@@ -732,7 +805,8 @@ export class CopilotSession {
       };
 
       function handleMsg(raw: unknown) {
-        const base = raw as { type?: number; target?: string; arguments?: unknown[] };
+        const base = isRecord(raw) ? raw : null;
+        if (!base) return;
 
         if (base.type === 6) {
           ws.send(JSON.stringify({ type: 6 }) + RS);
@@ -760,41 +834,40 @@ export class CopilotSession {
         if (base.type === 2) {
           // Stream item — the FINAL state of the conversation, with authoritative
           // throttle/turnCount/scores. Mine it before closing.
-          const item = (
-            raw as {
-              item?: {
-                messages?: any[];
-                throttling?: any;
-                turnState?: string;
-                result?: { value?: unknown; errorCode?: unknown; message?: unknown };
-              };
-            }
-          ).item;
+          const item = isRecord(raw) && isRecord(raw.item) ? raw.item : null;
           if (item) {
-            if (typeof item.result?.value === "string") {
+            const result = StreamItemResultSchema.safeParse(item.result);
+            if (result.success && typeof result.data.value === "string") {
               serverResult = {
-                value: item.result.value,
-                ...(typeof item.result.errorCode === "string"
-                  ? { errorCode: item.result.errorCode }
+                value: result.data.value,
+                ...(typeof result.data.errorCode === "string"
+                  ? { errorCode: result.data.errorCode }
                   : {}),
-                ...(typeof item.result.message === "string"
-                  ? { message: item.result.message }
+                ...(typeof result.data.message === "string"
+                  ? { message: result.data.message }
                   : {}),
               };
-              if (item.result.value !== "Success")
+              if (result.data.value !== "Success")
                 log.info(
-                  `Turn result: ${item.result.value}${serverResult.errorCode ? ` (${serverResult.errorCode})` : ""}`,
+                  `Turn result: ${result.data.value}${serverResult.errorCode ? ` (${serverResult.errorCode})` : ""}`,
                 );
             }
-            if (item.turnState) turnState = item.turnState;
-            if (item.throttling) {
+            if (typeof item.turnState === "string" && item.turnState) {
+              turnState = item.turnState;
+            }
+            const throttling = ThrottlingInfo.safeParse(item.throttling);
+            if (throttling.success) {
               throttleInfo = {
-                current: item.throttling.numUserMessagesInConversation,
-                max: item.throttling.maxNumUserMessagesInConversation,
+                current: throttling.data.numUserMessagesInConversation,
+                max: throttling.data.maxNumUserMessagesInConversation,
               };
             }
             let resumedHere = false;
-            for (const m of item.messages ?? []) {
+            const messages = isUnknownArray(item.messages) ? item.messages : [];
+            for (const message of messages) {
+              const parsedMessage = StreamItemMessageSchema.safeParse(message);
+              if (!parsedMessage.success) continue;
+              const m = parsedMessage.data;
               if (m.author !== "bot") continue;
               if (m.contentOrigin) contentOrigin = m.contentOrigin;
               if (m.messageType) messageType = m.messageType;
@@ -808,7 +881,7 @@ export class CopilotSession {
                   }
                 }
               }
-              if (maybeResumeAction(m)) resumedHere = true;
+              if (maybeResumeAction(message)) resumedHere = true;
             }
             // If the model just triggered a custom action, this "final" item isn't
             // final — we sent a ResumeInvokeAction and must keep the socket open to
@@ -819,7 +892,7 @@ export class CopilotSession {
           return;
         }
 
-        if (base.type === 1 && base.target === "update" && Array.isArray(base.arguments)) {
+        if (base.type === 1 && base.target === "update" && isUnknownArray(base.arguments)) {
           for (const arg of base.arguments) {
             const delta = DeltaUpdate.safeParse(arg);
             if (delta.success) {

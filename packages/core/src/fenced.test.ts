@@ -64,6 +64,18 @@ const editFile: ToolDef = {
 const ALL = [bash, readFile, writeFile, editFile];
 const specs = buildSpecMap(ALL);
 
+function isJsonObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function parseJsonObject(json: string): Record<string, unknown> {
+  const value: unknown = JSON.parse(json);
+  if (!isJsonObject(value)) {
+    throw new TypeError("Expected tool arguments to be a JSON object");
+  }
+  return value;
+}
+
 describe("deriveFencedSpec", () => {
   it("maps a single-param tool's param to the body", () => {
     const s = deriveFencedSpec(readFile);
@@ -110,7 +122,9 @@ describe("renderFencedCall", () => {
 describe("parseFencedToolCalls", () => {
   function argsOf(text: string, n = 0) {
     const { calls } = parseFencedToolCalls(text, specs);
-    return { calls, args: calls[n] ? JSON.parse(calls[n].function.arguments) : null };
+    const call = calls[n];
+    if (!call) throw new Error(`Expected tool call at index ${n}`);
+    return { calls, args: parseJsonObject(call.function.arguments) };
   }
 
   it("parses a body-only bash call", () => {
@@ -210,7 +224,7 @@ describe("shell routing (Tier 1)", () => {
     expect(findShellTool([readFile, terminal])).toBe(terminal);
     const calls = parseFencedToolCalls("```bash\nls -la\n```", buildSpecMap([terminal])).calls;
     expect(calls[0].function.name).toBe("run_in_terminal");
-    expect(JSON.parse(calls[0].function.arguments)).toEqual({ command: "ls -la" });
+    expect(parseJsonObject(calls[0].function.arguments)).toEqual({ command: "ls -la" });
   });
 
   it("routes a ```bash block to a differently-named shell tool", () => {
@@ -218,7 +232,9 @@ describe("shell routing (Tier 1)", () => {
     const { calls } = parseFencedToolCalls("```bash\nsed -i 's/a/b/' f.py\n```", specs);
     expect(calls).toHaveLength(1);
     expect(calls[0].function.name).toBe("run_command");
-    expect(JSON.parse(calls[0].function.arguments)).toEqual({ command: "sed -i 's/a/b/' f.py" });
+    expect(parseJsonObject(calls[0].function.arguments)).toEqual({
+      command: "sed -i 's/a/b/' f.py",
+    });
   });
 
   it("routes ```sh and ```shell aliases too", () => {
@@ -236,7 +252,7 @@ describe("shell routing (Tier 1)", () => {
     const { calls } = parseFencedToolCalls("```container.exec\nls -la\n```", specs);
     expect(calls).toHaveLength(1);
     expect(calls[0].function.name).toBe("run_command");
-    expect(JSON.parse(calls[0].function.arguments)).toEqual({ command: "ls -la" });
+    expect(parseJsonObject(calls[0].function.arguments)).toEqual({ command: "ls -la" });
   });
 
   it("leaves a dotted/hyphenated info-string that is not a tool in prose", () => {
@@ -264,10 +280,10 @@ describe("shell routing (Tier 1)", () => {
   it("routes Windows shell fences to the harness shell tool", () => {
     const specs = buildSpecMap([runCommand]);
     for (const lang of ["powershell", "pwsh", "ps1", "cmd", "bat", "batch"]) {
-      const { calls } = parseFencedToolCalls("```" + lang + "\nGet-ChildItem\n```", specs);
+      const { calls } = parseFencedToolCalls(`\`\`\`${lang}\nGet-ChildItem\n\`\`\``, specs);
       expect(calls, `${lang} should route`).toHaveLength(1);
       expect(calls[0].function.name).toBe("run_command");
-      expect(JSON.parse(calls[0].function.arguments)).toEqual({ command: "Get-ChildItem" });
+      expect(parseJsonObject(calls[0].function.arguments)).toEqual({ command: "Get-ChildItem" });
     }
   });
 });
@@ -445,7 +461,7 @@ describe("tone-aware sandbox framing", () => {
 
   it.each(["relay", "honest", "dual_env", "dual_env_sys", "dual_env_protocol"])(
     "describes GPT's sandbox in %s",
-    (variant) => {
+    (variant: string | undefined) => {
       const prompt = formatFencedToolDefinitions(ALL, variant, { tone: "Gpt_5_5_Reasoning" });
       expect(prompt).toContain("Python code interpreter");
       expect(prompt).toContain("/mnt/data");
@@ -457,7 +473,7 @@ describe("tone-aware sandbox framing", () => {
 
   it.each(["relay", "honest", "dual_env", "dual_env_sys", "dual_env_protocol"])(
     "describes Claude's sandbox in %s",
-    (variant) => {
+    (variant: string | undefined) => {
       const prompt = formatFencedToolDefinitions(ALL, variant, { tone: "Claude_Sonnet_Reasoning" });
       expect(prompt).toContain("bash_tool");
       expect(prompt).toContain("/home/claude");
@@ -467,7 +483,7 @@ describe("tone-aware sandbox framing", () => {
 
   it.each(["dual_env", "dual_env_sys", "dual_env_protocol"])(
     "allows scratch work but keeps project work local in %s",
-    (variant) => {
+    (variant: string | undefined) => {
       const prompt = formatFencedToolDefinitions(ALL, variant, { tone: "Gpt_5_5_Reasoning" });
       expect(prompt).toMatch(/scratch/i);
       expect(prompt).toContain("B");
@@ -523,8 +539,8 @@ describe("header value coercion (strict-harness schema conformance)", () => {
   };
   const specs = buildSpecMap([typed]);
   const parse = (inner: string) => {
-    const r = parseFencedToolCalls("```read_file\n" + inner + "\n```", specs);
-    return JSON.parse(r.calls[0].function.arguments);
+    const r = parseFencedToolCalls(`\`\`\`read_file\n${inner}\n\`\`\``, specs);
+    return parseJsonObject(r.calls[0].function.arguments);
   };
 
   it("coerces well-formed values to their declared types", () => {

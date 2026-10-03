@@ -28,14 +28,14 @@ const UA =
   "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36";
 
 const shot = async (page, name) => {
-  await page.screenshot({ path: join(OUT, name + ".png") }).catch(() => {});
+  await page.screenshot({ path: join(OUT, `${name}.png`) }).catch(() => { });
   console.log(`[shot] ${name}`);
 };
 const dump = async (page, name) => {
   const t = await page
     .evaluate(() => document.body?.innerText?.slice(0, 1800) || "")
     .catch(() => "");
-  writeFileSync(join(OUT, name + ".txt"), `URL: ${page.url()}\n\n${t}`);
+  writeFileSync(join(OUT, `${name}.txt`), `URL: ${page.url()}\n\n${t}`);
   return t;
 };
 
@@ -63,20 +63,28 @@ async function login() {
     await fill('input[name="loginfmt"]', creds.email);
     await submit();
     await page.waitForTimeout(2500);
-  } catch {}
+  } catch (error) {
+    void error;
+  }
   try {
     await fill('input[name="passwd"]', creds.password);
     await submit();
     await page.waitForTimeout(2500);
-  } catch {}
+  } catch (error) {
+    void error;
+  }
   try {
     await fill('input[name="otc"]', new TOTP({ secret: creds.mfaSecret }).generate());
     await submit();
     await page.waitForTimeout(2500);
-  } catch {}
+  } catch (error) {
+    void error;
+  }
   try {
     await page.locator("#idSIButton9:visible").click({ timeout: 8000 });
-  } catch {}
+  } catch (error) {
+    void error;
+  }
 }
 
 async function clickByText(re, timeout = 6000) {
@@ -85,7 +93,9 @@ async function clickByText(re, timeout = 6000) {
     await loc.waitFor({ state: "visible", timeout });
     await loc.click();
     return true;
-  } catch {}
+  } catch (error) {
+    void error;
+  }
   const t = page.getByText(re).first();
   try {
     await t.waitFor({ state: "visible", timeout: 3000 });
@@ -113,7 +123,7 @@ try {
   await page
     .context()
     .storageState({ path: STATE })
-    .catch(() => {});
+    .catch(() => { });
   console.log("[dp] url:", page.url(), "status:", resp?.status());
   await shot(page, "dp-01-apps");
   const t1 = await dump(page, "dp-01-apps");

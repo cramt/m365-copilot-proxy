@@ -18,7 +18,7 @@ function json(status: number, body: unknown): Response {
 function parseJsonOrNull(input: string | null): Record<string, unknown> | null {
   if (!input) return null;
   try {
-    const parsed = JSON.parse(input);
+    const parsed: unknown = JSON.parse(input);
     return parsed && typeof parsed === "object" ? (parsed as Record<string, unknown>) : null;
   } catch {
     return null;

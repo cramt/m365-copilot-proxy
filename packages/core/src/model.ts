@@ -6,6 +6,13 @@ import type { CopilotStream } from "./copilot.js";
 
 const log = createLogger("model");
 
+function getErrorMessage(error: unknown): unknown {
+  if ((typeof error === "object" && error !== null) || typeof error === "function") {
+    return "message" in error ? error.message : undefined;
+  }
+  return undefined;
+}
+
 export interface ModelSessionOptions {
   /** Pre-resolved auth token. If not provided, getToken() is called. */
   getToken?: () => Promise<string>;
@@ -127,9 +134,9 @@ export class ModelSession {
 
     try {
       return await this.copilotSession.chat(token, text, model, signal);
-    } catch (err: any) {
+    } catch (err: unknown) {
       // Session might be stale — reconnect with same IDs
-      log.info("Session error, reconnecting:", err.message);
+      log.info("Session error, reconnecting:", getErrorMessage(err));
       this.copilotSession = this.createCopilotSession(agentForTurn);
       this.currentAgentId = agentForTurn;
       return await this.copilotSession.chat(token, text, model, signal);
@@ -158,8 +165,8 @@ export class ModelSession {
         this.currentAgentId = undefined;
         return true;
       }
-    } catch (err: any) {
-      log.info(`Agent refresh failed: ${err.message}`);
+    } catch (err: unknown) {
+      log.info(`Agent refresh failed: ${String(getErrorMessage(err))}`);
     }
     return false;
   }

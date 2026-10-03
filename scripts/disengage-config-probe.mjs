@@ -60,7 +60,7 @@ for (const v of VARIANTS) {
       err: r.error,
     });
     console.log(
-      `  ${v.key.padEnd(18)} #${i + 1}  disengaged=${r.disengaged}  dea=${dea ?? "?"}  origin=${r.contentOrigin ?? "?"}  ${r.error ? "ERR:" + r.error : ""}`,
+      `  ${v.key.padEnd(18)} #${i + 1}  disengaged=${r.disengaged}  dea=${dea ?? "?"}  origin=${r.contentOrigin ?? "?"}  ${r.error ? `ERR:${r.error}` : ""}`,
     );
     await sleep(COOLDOWN_MS);
   }

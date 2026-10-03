@@ -27,7 +27,7 @@ function jwt(auth) {
     const t = auth.replace(/^Bearer\s+/i, "");
     const p = JSON.parse(
       Buffer.from(
-        t.split(".")[1].replace(/-/g, "+").replace(/_/g, "/") + "==",
+        `${t.split(".")[1].replace(/-/g, "+").replace(/_/g, "/")}==`,
         "base64",
       ).toString(),
     );
@@ -53,9 +53,9 @@ function flush() {
 function record(req) {
   const u = req.url();
   if (!INTERESTING.test(u)) return;
-  const key = req.method() + " " + u.split("?")[0];
+  const key = `${req.method()} ${u.split("?")[0]}`;
   if (calls.has(key)) return;
-  const auth = req.headers()["authorization"];
+  const auth = req.headers().authorization;
   let host = "";
   let path = "";
   try {
@@ -76,7 +76,7 @@ function record(req) {
   calls.set(key, rec);
   flush();
   console.log(
-    `${rec.hot ? "[*]" : "[ ]"} ${req.method()} ${host}${path}${rec.token ? "  aud=" + rec.token.aud : ""}`,
+    `${rec.hot ? "[*]" : "[ ]"} ${req.method()} ${host}${path}${rec.token ? `  aud=${rec.token.aud}` : ""}`,
   );
 }
 
@@ -110,7 +110,7 @@ const save = () => {
 
 process.on("SIGINT", async () => {
   save();
-  await browser.close().catch(() => {});
+  await browser.close().catch(() => { });
   process.exit(0);
 });
 ctx.on("close", () => {
@@ -125,4 +125,4 @@ await page
 // Keep alive up to 15 minutes for the manual flow; calls.json is saved live regardless.
 await new Promise((r) => setTimeout(r, 15 * 60 * 1000));
 save();
-await browser.close().catch(() => {});
+await browser.close().catch(() => { });

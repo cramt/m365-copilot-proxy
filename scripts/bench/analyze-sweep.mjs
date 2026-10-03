@@ -9,7 +9,7 @@ import { join } from "node:path";
 const PREFIX = process.argv[2] || "s2";
 const MODEL = process.argv[3];
 const OUT = join(process.cwd(), "scripts", "bench", "out");
-const files = readdirSync(OUT).filter((f) => f.startsWith(PREFIX + "-") && f.endsWith(".json"));
+const files = readdirSync(OUT).filter((f) => f.startsWith(`${PREFIX}-`) && f.endsWith(".json"));
 
 // Labels are <prefix>-<task>-<strategy> with an optional -rN round suffix.
 const TASKS = ["fix-bug", "find-needle", "edit-config", "fizzbuzz", "count-lines"];
@@ -50,7 +50,7 @@ for (const f of files.sort()) {
 for (const j of latest.values()) {
   const label = j.label || "";
   const rest = label.slice(PREFIX.length + 1); // "<task>-<strategy>"
-  const task = TASKS.find((t) => rest.startsWith(t + "-"));
+  const task = TASKS.find((t) => rest.startsWith(`${t}-`));
   if (!task) continue;
   const strat = rest.slice(task.length + 1).replace(/-r\d+$/, "");
   if (!STRATS.includes(strat)) continue;
@@ -71,8 +71,8 @@ const pad = (s, n) => String(s).padEnd(n);
 console.log(`\n=== Strategy × Task (prefix ${PREFIX}, ${files.length} files) ===\n`);
 console.log(
   pad("model / strategy", strategyWidth) +
-    usedTasks.map((t) => pad(t, 14)).join("") +
-    "  | solved  tools  diseng  max DEA",
+  usedTasks.map((t) => pad(t, 14)).join("") +
+  "  | solved  tools  diseng  max DEA",
 );
 console.log("-".repeat(strategyWidth + usedTasks.length * 14 + 26));
 const board = [];
@@ -109,8 +109,8 @@ for (const s of usedStrategies) {
   board.push({ s, solved, cells, tools, diseng });
   console.log(
     pad(s, strategyWidth) +
-      cols.join("") +
-      `  | ${solved}/${cells}     ${tools}      ${diseng}      ${maxDeaScore ?? "n/a"}`,
+    cols.join("") +
+    `  | ${solved}/${cells}     ${tools}      ${diseng}      ${maxDeaScore ?? "n/a"}`,
   );
 }
 

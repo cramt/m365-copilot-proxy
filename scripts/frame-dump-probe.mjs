@@ -102,23 +102,23 @@ const SOME_TOOLS = [
 ];
 const TOOL_BLOCK = MANY_TOOLS
   ? `<tools>\n${SOME_TOOLS.concat([
-      ["edit", "Edit a file", { path: "string", oldString: "string", newString: "string" }],
-      ["write", "Write a file", { path: "string", content: "string" }],
-      ["glob", "Glob files", { pattern: "string" }],
-      ["grep", "Grep contents", { pattern: "string" }],
-      ["list", "List a dir", { path: "string" }],
-    ])
-      .map(([n, d, p]) =>
-        JSON.stringify({
-          name: n,
-          description: d,
-          parameters: {
-            type: "object",
-            properties: Object.fromEntries(Object.entries(p).map(([k, t]) => [k, { type: t }])),
-          },
-        }),
-      )
-      .join("\n")}\n</tools>\n`
+    ["edit", "Edit a file", { path: "string", oldString: "string", newString: "string" }],
+    ["write", "Write a file", { path: "string", content: "string" }],
+    ["glob", "Glob files", { pattern: "string" }],
+    ["grep", "Grep contents", { pattern: "string" }],
+    ["list", "List a dir", { path: "string" }],
+  ])
+    .map(([n, d, p]) =>
+      JSON.stringify({
+        name: n,
+        description: d,
+        parameters: {
+          type: "object",
+          properties: Object.fromEntries(Object.entries(p).map(([k, t]) => [k, { type: t }])),
+        },
+      }),
+    )
+    .join("\n")}\n</tools>\n`
   : "";
 
 const sessionId = crypto.randomUUID();
@@ -177,7 +177,7 @@ const chatMsg = {
       message: {
         author: "user",
         inputMethod: "Keyboard",
-        text: TOOL_BLOCK + `<user>\n${PROMPT}\n</user>`,
+        text: `${TOOL_BLOCK}<user>\n${PROMPT}\n</user>`,
         entityAnnotationTypes: ["People", "File", "Event", "Email", "TeamsMessage"],
         requestId,
         locationInfo: { timeZoneOffset: 1, timeZone: "Europe/Copenhagen" },
@@ -189,18 +189,18 @@ const chatMsg = {
       },
       ...(agentId
         ? {
-            gpts: [
-              {
-                id: agentId,
-                source: "MOS3",
-                version: "1.0.0",
-                clientOverrides: {
-                  capabilities: [],
-                  "deepResearchModels@odata.type": "Collection(String)",
-                },
+          gpts: [
+            {
+              id: agentId,
+              source: "MOS3",
+              version: "1.0.0",
+              clientOverrides: {
+                capabilities: [],
+                "deepResearchModels@odata.type": "Collection(String)",
               },
-            ],
-          }
+            },
+          ],
+        }
         : { plugins: [{ Id: "BingWebSearch", Source: "BuiltIn" }] }),
       isSbsSupported: true,
       tone: "magic",
@@ -230,7 +230,7 @@ const metrics = {
 writeFileSync(
   join(OUT, "sent.json"),
   JSON.stringify(
-    { wsUrl: wsUrl.split("?")[0] + "?...", chatMsg, metrics, allowedMessageTypes: ALLOWED },
+    { wsUrl: `${wsUrl.split("?")[0]}?...`, chatMsg, metrics, allowedMessageTypes: ALLOWED },
     null,
     2,
   ),
@@ -248,7 +248,9 @@ function walk(obj, path = "") {
   if (obj === null || obj === undefined) return;
   if (typeof obj !== "object") return;
   if (Array.isArray(obj)) {
-    obj.forEach((item, i) => walk(item, `${path}[${i}]`));
+    obj.forEach((item, i) => {
+      walk(item, `${path}[${i}]`);
+    });
     return;
   }
   for (const [k, v] of Object.entries(obj)) {
@@ -258,7 +260,9 @@ function walk(obj, path = "") {
     if (slot.samples.length < 3) {
       try {
         slot.samples.push(JSON.stringify(v).slice(0, 200));
-      } catch {}
+      } catch (error) {
+        void error;
+      }
     }
     keyFreq.set(p, slot);
 
@@ -307,14 +311,15 @@ ws.on("message", (data) => {
     let parsed;
     try {
       parsed = JSON.parse(f);
-    } catch {
+    } catch (error) {
+      void error;
       parsed = { _raw_unparsable: f };
     }
 
     // Record raw + dt
     appendFileSync(
       rawNdjsonPath,
-      JSON.stringify({ i: frameIdx++, dt_ms: Date.now() - t0, frame: parsed }) + "\n",
+      `${JSON.stringify({ i: frameIdx++, dt_ms: Date.now() - t0, frame: parsed })}\n`,
     );
 
     // First frame: SignalR handshake response (usually {}). Send chat next.

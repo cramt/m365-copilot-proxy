@@ -145,18 +145,18 @@ export function oneTurn(o) {
         },
         ...(agentId
           ? {
-              gpts: [
-                {
-                  id: agentId,
-                  source: "MOS3",
-                  version: "1.0.0",
-                  clientOverrides: {
-                    capabilities: [],
-                    "deepResearchModels@odata.type": "Collection(String)",
-                  },
+            gpts: [
+              {
+                id: agentId,
+                source: "MOS3",
+                version: "1.0.0",
+                clientOverrides: {
+                  capabilities: [],
+                  "deepResearchModels@odata.type": "Collection(String)",
                 },
-              ],
-            }
+              },
+            ],
+          }
           : { plugins: plugins ?? [{ Id: "BingWebSearch", Source: "BuiltIn" }] }),
         isSbsSupported: true,
         tone,
@@ -199,7 +199,7 @@ export function oneTurn(o) {
     let disengaged = false;
     const messageTypes = new Set();
     let contentOrigin = null;
-    let scores = {};
+    const scores = {};
     let throttle = null;
     let serviceVersion = null;
     let turnCount = null;
@@ -215,7 +215,9 @@ export function oneTurn(o) {
       clearTimeout(timer);
       try {
         ws.close();
-      } catch {}
+      } catch {
+        // Closing is best-effort; preserve the result already being settled.
+      }
       const fullText = snapshotText.length >= deltaText.length ? snapshotText : deltaText;
       resolve({
         fullText,
@@ -253,7 +255,7 @@ export function oneTurn(o) {
     }
 
     ws.on("open", () => {
-      ws.send(JSON.stringify({ protocol: "json", version: 1 }) + RS);
+      ws.send(`${JSON.stringify({ protocol: "json", version: 1 })}${RS}`);
     });
 
     ws.on("message", (data) => {
@@ -272,12 +274,14 @@ export function oneTurn(o) {
         if (onFrame) {
           try {
             onFrame(parsed);
-          } catch {}
+          } catch {
+            // Frame observers are optional and must not interrupt protocol handling.
+          }
         }
 
         if (!handshakeDone) {
           handshakeDone = true;
-          ws.send(JSON.stringify(chatMsg) + RS + JSON.stringify(metrics) + RS);
+          ws.send(`${JSON.stringify(chatMsg)}${RS}${JSON.stringify(metrics)}${RS}`);
           continue;
         }
 
@@ -317,7 +321,7 @@ export function oneTurn(o) {
           }
         }
 
-        if (parsed.type === 6) ws.send(JSON.stringify({ type: 6 }) + RS);
+        if (parsed.type === 6) ws.send(`${JSON.stringify({ type: 6 })}${RS}`);
         if (parsed.type === 2 || parsed.type === 3 || parsed.type === 7)
           finish(parsed.error ?? null);
       }

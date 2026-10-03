@@ -6,7 +6,8 @@ vi.mock("node:fs", () => ({
   readFileSync: vi.fn(),
   writeFileSync: vi.fn(),
 }));
-vi.mock("./auth.js", () => ({ getTokenForScope: vi.fn(async () => "token") }));
+vi.mock("./auth.js", () => ({ getTokenForScope: vi.fn(() => Promise.resolve("token")) }));
+vi.mock("./auth.js", () => ({ getTokenForScope: vi.fn(() => Promise.resolve("token")) }));
 
 describe("environmentUrlFromName", () => {
   it("splits the last two env-ID chars into their own DNS label", () => {
@@ -39,14 +40,22 @@ describe("getOrCreateAgent", () => {
   });
 
   function mockPublish(statusCode: number, message: string) {
-    const fetchMock = vi.fn(async (url: string, options?: RequestInit) => {
+    const fetchMock = vi.fn((url: string, options?: RequestInit) => {
       if (url.includes("environments/~default")) {
-        return Response.json({ name: "Default-fa7f56d8-49c4-4327-b816-9a0eeaa273df" });
+        return Promise.resolve(
+          Response.json({ name: "Default-fa7f56d8-49c4-4327-b816-9a0eeaa273df" }),
+        );
       }
-      if (options?.method === "HEAD" || options?.method === "DELETE") return new Response();
-      if (url.includes("/publish?")) return new Response(message, { status: statusCode });
-      if (options?.method === "POST") return Response.json({ bot: { schemaName: "bot-id" } });
-      return Response.json([]);
+      if (options?.method === "HEAD" || options?.method === "DELETE") {
+        return Promise.resolve(new Response());
+      }
+      if (url.includes("/publish?")) {
+        return Promise.resolve(new Response(message, { status: statusCode }));
+      }
+      if (options?.method === "POST") {
+        return Promise.resolve(Response.json({ bot: { schemaName: "bot-id" } }));
+      }
+      return Promise.resolve(Response.json([]));
     });
     vi.stubGlobal("fetch", fetchMock);
     return fetchMock;

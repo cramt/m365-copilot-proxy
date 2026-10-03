@@ -6,9 +6,11 @@ function setup(overrides: Record<string, unknown> = {}) {
   const slept: number[] = [];
   const controller = createBackoffController({
     now: () => t,
-    sleep: async (ms: number) => {
-      slept.push(ms);
-    },
+    sleep: (ms: number) =>
+      new Promise<void>((resolve) => {
+        slept.push(ms);
+        resolve();
+      }),
     rng: () => 0, // deterministic: jitter lands at jitterMinMs
     windowMs: 1000,
     threshold: 3,
@@ -76,7 +78,7 @@ describe("createBackoffController", () => {
     expect(slept).toEqual([100]);
   });
 
-  it("does NOT count repeated empties in the SAME conversation", async () => {
+  it("does NOT count repeated empties in the SAME conversation", () => {
     const { controller } = setup();
     controller.note(true, "c1");
     controller.note(true, "c1");
@@ -106,7 +108,7 @@ describe("createBackoffController", () => {
     expect(slept).toEqual([]);
   });
 
-  it("escalates the cooldown on repeated triggers", async () => {
+  it("escalates the cooldown on repeated triggers", () => {
     const { controller, advance } = setup();
     controller.note(true, "a1");
     controller.note(true, "a2");
@@ -122,7 +124,7 @@ describe("createBackoffController", () => {
     expect(controller.isBackingOff()).toBe(false);
   });
 
-  it("does not re-arm/stack the window while already backing off", async () => {
+  it("does not re-arm/stack the window while already backing off", () => {
     const { controller, advance } = setup();
     controller.note(true, "a1");
     controller.note(true, "a2");
@@ -135,7 +137,7 @@ describe("createBackoffController", () => {
     expect(controller.isBackingOff()).toBe(false);
   });
 
-  it("drops empties that fall outside the window", async () => {
+  it("drops empties that fall outside the window", () => {
     const { controller } = setup();
     controller.note(true, "c1");
     // advance beyond windowMs via a fresh controller clock

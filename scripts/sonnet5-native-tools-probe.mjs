@@ -197,7 +197,7 @@ for (const name of pick) {
   results.push(row);
   writeFileSync(join(OUT, `${name}.frames.json`), JSON.stringify(frames, null, 1));
   console.log(
-    `\n[probe] ${name}  scenario=${cell.scenario} optionsSets=${cell.optionsSets.length} origin=${r.contentOrigin} ${r.elapsedMs}ms${r.error ? " error=" + r.error : ""}`,
+    `\n[probe] ${name}  scenario=${cell.scenario} optionsSets=${cell.optionsSets.length} origin=${r.contentOrigin} ${r.elapsedMs}ms${r.error ? ` error=${r.error}` : ""}`,
   );
   console.log(
     `  native tool calls: ${native.length}${native.map((m) => `\n    - ${m.contentOrigin || m.contentType}: ${JSON.stringify((m.hiddenText ?? m.text ?? "").slice(0, 160))}`).join("")}`,

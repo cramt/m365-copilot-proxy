@@ -7,7 +7,7 @@
 //
 // Usage: M365_NO_INTERACTIVE=1 node scripts/frame-dump-disengage.mjs
 
-import { mkdirSync, writeFileSync, appendFileSync } from "node:fs";
+import { mkdirSync, appendFileSync } from "node:fs";
 import { join } from "node:path";
 import { getToken, getOrCreateAgent, decodeJwt } from "../packages/core/dist/index.mjs";
 
@@ -17,7 +17,7 @@ const WebSocket = wsMod.default ?? wsMod.WebSocket;
 
 const RS = "\x1E";
 const TS = new Date().toISOString().replace(/[:.]/g, "-");
-const OUT = join(process.cwd(), "scripts", "frame-dump-out", TS + "-disengage");
+const OUT = join(process.cwd(), "scripts", "frame-dump-out", `${TS}-disengage`);
 mkdirSync(OUT, { recursive: true });
 
 const token = await getToken();
@@ -190,7 +190,7 @@ ws.on("message", (data) => {
     }
     appendFileSync(
       path,
-      JSON.stringify({ i: frameIdx++, dt_ms: Date.now() - t0, frame: p }) + "\n",
+      `${JSON.stringify({ i: frameIdx++, dt_ms: Date.now() - t0, frame: p })}\n`,
     );
     if (!handshakeDone) {
       handshakeDone = true;

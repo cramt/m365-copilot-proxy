@@ -151,7 +151,7 @@ for (const cell of TONES) {
   };
   results.push(row);
   console.log(
-    `[tone] ${cell.tone.padEnd(32)} ${scenario.padEnd(25)} ${row.verdict.padEnd(20)} origin=${String(r.contentOrigin)} ${r.elapsedMs}ms ${r.error ? "ERR=" + r.error : ""} reply=${JSON.stringify(row.reply)}`,
+    `[tone] ${cell.tone.padEnd(32)} ${scenario.padEnd(25)} ${row.verdict.padEnd(20)} origin=${String(r.contentOrigin)} ${r.elapsedMs}ms ${r.error ? `ERR=${r.error}` : ""} reply=${JSON.stringify(row.reply)}`,
   );
   await new Promise((res) => setTimeout(res, 1500)); // gentle spacing
 }

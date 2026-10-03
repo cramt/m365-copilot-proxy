@@ -1,22 +1,139 @@
 import { describe, it, expect } from "vitest";
 import { getAvailableModels } from "@m365-copilot/core";
 import { buildModelsPayload, createApp } from "./index.js";
+import { z } from "zod";
+
+type JsonObject = Record<string, unknown>;
+
+const modelListSchema = z.array(z.object({ id: z.string() }));
+const bashArgumentsSchema = z.object({ command: z.string() });
+const fileArgumentsSchema = z.object({ path: z.string() });
+const chatCompletionSchema = z.object({
+  choices: z.array(
+    z.object({
+      finish_reason: z.unknown().optional(),
+      message: z.object({
+        role: z.string(),
+        content: z.string().nullable().optional(),
+        tool_calls: z
+          .array(
+            z.object({
+              id: z.string(),
+              function: z.object({
+                name: z.string(),
+                arguments: z.string(),
+              }),
+            }),
+          )
+          .optional(),
+      }),
+    }),
+  ),
+});
+
+type ChatCompletion = z.infer<typeof chatCompletionSchema>;
+type ChatChoice = ChatCompletion["choices"][number];
+
+function isJsonObject(value: unknown): value is JsonObject {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function requireJsonObject(value: unknown): JsonObject {
+  if (!isJsonObject(value)) {
+    throw new TypeError("Expected a JSON object");
+  }
+
+  return value;
+}
+
+async function readJson(response: Response): Promise<unknown> {
+  const value: unknown = await response.json();
+  return value;
+}
+
+async function readJsonObject(response: Response): Promise<JsonObject> {
+  return requireJsonObject(await readJson(response));
+}
+
+function jsonObjectField(value: JsonObject, key: string): JsonObject {
+  return requireJsonObject(value[key]);
+}
+
+function requiredString(value: unknown, field: string): string {
+  if (typeof value !== "string") {
+    throw new TypeError(`Expected ${field} to be a string`);
+  }
+
+  return value;
+}
+
+function modelIds(value: unknown): string[] {
+  return modelListSchema.parse(value).map((model) => model.id);
+}
+
+function parseChatCompletion(value: unknown): ChatCompletion {
+  return chatCompletionSchema.parse(value);
+}
+
+function firstChoice(completion: ChatCompletion): ChatChoice {
+  const choice = completion.choices[0];
+  if (!choice) {
+    throw new TypeError("Expected at least one chat completion choice");
+  }
+
+  return choice;
+}
+
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
+function commandErrorMessage(error: unknown): string {
+  if (error instanceof Error && "stderr" in error) {
+    const stderr = error.stderr;
+    if (typeof stderr === "string" && stderr) {
+      return stderr;
+    }
+    if (stderr instanceof Uint8Array && stderr.byteLength > 0) {
+      return new TextDecoder().decode(stderr);
+    }
+  }
+
+  return errorMessage(error);
+}
+
+function currentWorkingDirectory(): string {
+  const currentProcess = requireJsonObject(Reflect.get(globalThis, "process"));
+  const getWorkingDirectory = currentProcess.cwd;
+  if (typeof getWorkingDirectory !== "function") {
+    throw new TypeError("Expected process.cwd to be a function");
+  }
+
+  const directory: unknown = Reflect.apply(getWorkingDirectory, currentProcess, []);
+  return requiredString(directory, "current working directory");
+}
+
+function liveTestsEnabled(): boolean {
+  const currentProcess = requireJsonObject(Reflect.get(globalThis, "process"));
+  const environment = requireJsonObject(currentProcess.env);
+  return environment.M365_LIVE === "1";
+}
 
 describe("proxy model catalog (offline)", () => {
   it("exposes only the selected included models through the shared payload and endpoint", async () => {
     const app = createApp();
     const response = await app.fetch(new Request("http://localhost/v1/models"));
     expect(response.status).toBe(200);
-    const body = await response.json();
+    const body = await readJsonObject(response);
     expect(body.object).toBe("list");
-    const models = body.data.map((model: { id: string }) => model.id);
+    const models = modelIds(body.data);
     expect(models).toEqual(getAvailableModels());
     expect(models).toHaveLength(20);
     expect(models.filter((model: string) => model.startsWith("claude"))).toEqual([
       "claude-sonnet-think-deeper",
     ]);
     expect(models).not.toContain("gpt-6-think-deeper");
-    expect(buildModelsPayload().data.map((model) => model.id)).toEqual(models);
+    expect(modelIds(buildModelsPayload().data)).toEqual(models);
   });
 });
 
@@ -29,11 +146,15 @@ describe("OpenAI-compatible routing and errors (offline)", () => {
     const id = getAvailableModels()[0];
     const found = await call(`/v1/models/${encodeURIComponent(id)}`);
     expect(found.status).toBe(200);
-    expect(await found.json()).toMatchObject({ id, object: "model", owned_by: "microsoft" });
+    expect(await readJsonObject(found)).toMatchObject({
+      id,
+      object: "model",
+      owned_by: "microsoft",
+    });
 
     const missing = await call("/v1/models/no-such-model");
     expect(missing.status).toBe(404);
-    expect((await missing.json()).error).toEqual({
+    expect(jsonObjectField(await readJsonObject(missing), "error")).toEqual({
       message: "The model 'no-such-model' does not exist",
       type: "invalid_request_error",
       param: "model",
@@ -48,7 +169,10 @@ describe("OpenAI-compatible routing and errors (offline)", () => {
 
     const unknown = await call("/v1/foo", { method: "POST" });
     expect(unknown.status).toBe(404);
-    expect((await unknown.json()).error).toMatchObject({ code: "unknown_url", param: null });
+    expect(jsonObjectField(await readJsonObject(unknown), "error")).toMatchObject({
+      code: "unknown_url",
+      param: null,
+    });
   });
 
   it("rejects malformed JSON and invalid fields with an OpenAI 400", async () => {
@@ -61,18 +185,22 @@ describe("OpenAI-compatible routing and errors (offline)", () => {
 
     const malformed = await post("{not json");
     expect(malformed.status).toBe(400);
-    expect((await malformed.json()).error.type).toBe("invalid_request_error");
+    expect(jsonObjectField(await readJsonObject(malformed), "error").type).toBe(
+      "invalid_request_error",
+    );
 
     const n2 = await post(JSON.stringify({ n: 2, messages: [{ role: "user", content: "hi" }] }));
     expect(n2.status).toBe(400);
-    expect((await n2.json()).error).toMatchObject({
+    expect(jsonObjectField(await readJsonObject(n2), "error")).toMatchObject({
       type: "invalid_request_error",
       param: "n",
       code: null,
     });
 
     const badRole = await post(JSON.stringify({ messages: [{ role: "wizard", content: "hi" }] }));
-    expect((await badRole.json()).error.param).toBe("messages.0.role");
+    expect(jsonObjectField(await readJsonObject(badRole), "error").param).toBe(
+      "messages.0.role",
+    );
   });
 
   it("enforces the API key on /v1/* only when one is configured", async () => {
@@ -87,7 +215,7 @@ describe("OpenAI-compatible routing and errors (offline)", () => {
 
     const missing = await get("/v1/models");
     expect(missing.status).toBe(401);
-    expect((await missing.json()).error.code).toBe("invalid_api_key");
+    expect(jsonObjectField(await readJsonObject(missing), "error").code).toBe("invalid_api_key");
     expect((await get("/v1/models", "Bearer wrong")).status).toBe(401);
     expect((await get("/v1/models", "Bearer sk-test")).status).toBe(200);
     expect((await get("/health")).status).toBe(200);
@@ -102,7 +230,7 @@ describe("OpenAI-compatible routing and errors (offline)", () => {
 // interactive login that no automated runner can provide. Matches the
 // convention in tools.test.ts (none of those tests need M365_LIVE because
 // they're pure).
-const LIVE = process.env.M365_LIVE === "1";
+const LIVE = liveTestsEnabled();
 
 const tools = [
   {
@@ -170,35 +298,55 @@ describe.skipIf(!LIVE)("proxy-lib e2e with tools (live)", () => {
     );
 
     expect(res.status).toBe(200);
-    const body = await res.json();
+    const body = parseChatCompletion(await readJson(res));
     console.log("Turn 1:", JSON.stringify(body, null, 2));
 
-    const choice = body.choices[0];
+    const choice = firstChoice(body);
     expect(choice.message.role).toBe("assistant");
 
     // M365 Copilot may or may not follow our tool-calling protocol.
     // If it does produce a tool call, do a follow-up turn.
-    if (choice.finish_reason === "tool_calls" && choice.message.tool_calls?.length > 0) {
-      const toolCall = choice.message.tool_calls[0];
+    const toolCalls = choice.message.tool_calls ?? [];
+    const toolCall = toolCalls[0];
+    let finalStatus = res.status;
+    let finalContent = choice.message.content;
+    if (choice.finish_reason === "tool_calls" && toolCall) {
       console.log(`Tool call: ${toolCall.function.name}(${toolCall.function.arguments})`);
 
       // Simulate tool execution
       let toolResult: string;
       if (toolCall.function.name === "bash") {
-        const args = JSON.parse(toolCall.function.arguments);
-        const { execSync } = await import("node:child_process");
+        const { command } = bashArgumentsSchema.parse(JSON.parse(toolCall.function.arguments));
         try {
-          toolResult = execSync(args.command, { cwd: process.cwd(), encoding: "utf-8" }).trim();
-        } catch (e: any) {
-          toolResult = e.stderr || e.message;
+          const childProcess: unknown = await import("node:child_process");
+          const childProcessExports = requireJsonObject(childProcess);
+          const execute = childProcessExports.execSync;
+          if (typeof execute !== "function") {
+            throw new TypeError("Expected child_process.execSync to be a function");
+          }
+
+          const output: unknown = Reflect.apply(execute, undefined, [
+            command,
+            { cwd: currentWorkingDirectory(), encoding: "utf-8" },
+          ]);
+          toolResult = requiredString(output, "bash output").trim();
+        } catch (error: unknown) {
+          toolResult = commandErrorMessage(error);
         }
       } else if (toolCall.function.name === "read_file") {
-        const args = JSON.parse(toolCall.function.arguments);
-        const { readFileSync } = await import("node:fs");
+        const { path } = fileArgumentsSchema.parse(JSON.parse(toolCall.function.arguments));
         try {
-          toolResult = readFileSync(args.path, "utf-8");
-        } catch (e: any) {
-          toolResult = e.message;
+          const fileSystem: unknown = await import("node:fs");
+          const fileSystemExports = requireJsonObject(fileSystem);
+          const readFile = fileSystemExports.readFileSync;
+          if (typeof readFile !== "function") {
+            throw new TypeError("Expected fs.readFileSync to be a function");
+          }
+
+          const contents: unknown = Reflect.apply(readFile, undefined, [path, "utf-8"]);
+          toolResult = requiredString(contents, "file contents");
+        } catch (error: unknown) {
+          toolResult = errorMessage(error);
         }
       } else {
         toolResult = `Unknown tool: ${toolCall.function.name}`;
@@ -215,8 +363,8 @@ describe.skipIf(!LIVE)("proxy-lib e2e with tools (live)", () => {
           },
           {
             role: "assistant",
-            content: choice.message.content,
-            tool_calls: choice.message.tool_calls,
+            ...(choice.message.content === undefined ? {} : { content: choice.message.content }),
+            tool_calls: toolCalls,
           },
           {
             role: "tool",
@@ -227,34 +375,35 @@ describe.skipIf(!LIVE)("proxy-lib e2e with tools (live)", () => {
         ]),
       );
 
-      expect(res2.status).toBe(200);
-      const body2 = await res2.json();
+      const body2 = parseChatCompletion(await readJson(res2));
       console.log("Turn 2:", JSON.stringify(body2, null, 2));
 
-      const choice2 = body2.choices[0];
-      expect(choice2.message.content).toBeTruthy();
+      const choice2 = firstChoice(body2);
+      finalStatus = res2.status;
+      finalContent = choice2.message.content;
     } else {
       // Model responded with plain text — still a valid response
       console.log(
         "Model responded without tool calls (M365 Copilot overrode tool-calling protocol)",
       );
-      expect(choice.message.content).toBeTruthy();
     }
+    expect(finalStatus === 200 && finalContent).toBeTruthy();
   }, 120_000);
 
   it("should return models list", async () => {
     const res = await app.fetch(new Request("http://localhost/v1/models"));
     expect(res.status).toBe(200);
-    const body = await res.json();
+    const body = await readJsonObject(res);
     expect(body.object).toBe("list");
-    expect(body.data.length).toBeGreaterThan(0);
-    expect(body.data[0].id).toBeTruthy();
+    const models = modelIds(body.data);
+    expect(models.length).toBeGreaterThan(0);
+    expect(models[0]).toBeTruthy();
   });
 
   it("should return health check", async () => {
     const res = await app.fetch(new Request("http://localhost/health"));
     expect(res.status).toBe(200);
-    const body = await res.json();
+    const body = await readJsonObject(res);
     expect(body.status).toBe("ok");
   });
 });

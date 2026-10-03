@@ -288,7 +288,7 @@ export function getAvailableModels(): string[] {
 export function decodeJwt(token: string) {
   const payload = token.split(".")[1];
   const padded = payload + "=".repeat((4 - (payload.length % 4)) % 4);
-  const raw = JSON.parse(Buffer.from(padded, "base64").toString());
+  const raw: unknown = JSON.parse(Buffer.from(padded, "base64").toString());
   return JwtClaims.parse(raw);
 }
 

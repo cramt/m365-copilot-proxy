@@ -71,7 +71,7 @@ const r = await oneTurn({
   extraAllowed: CONTROL ? [] : CODE_INTERP_ALLOWED,
   timeoutMs: 180000,
   onFrame: (f) => {
-    appendFileSync(framesPath, JSON.stringify(f) + "\n");
+    appendFileSync(framesPath, `${JSON.stringify(f)}\n`);
     // surface any message types / targets we see
     if (f?.target) seenTypes.add(`target:${f.target}`);
     const args = Array.isArray(f?.arguments) ? f.arguments : [];
@@ -124,7 +124,7 @@ console.log(
   `[ci] CORRECT sha256 in reply: ${correct}  ${correct ? "✅ REAL EXECUTION" : "❌ (hallucinated or refused)"}`,
 );
 console.log(
-  `[ci] disengaged=${r.disengaged} origin=${r.contentOrigin} throttle=${JSON.stringify(r.throttle)} ${r.elapsedMs}ms ${r.error ? "ERR=" + r.error : ""}`,
+  `[ci] disengaged=${r.disengaged} origin=${r.contentOrigin} throttle=${JSON.stringify(r.throttle)} ${r.elapsedMs}ms ${r.error ? `ERR=${r.error}` : ""}`,
 );
 console.log(`[ci] --- reply (first 600 chars) ---\n${out.slice(0, 600)}`);
 console.log(`[ci] full frames: ${framesPath}`);

@@ -70,6 +70,12 @@ interface AdaptiveCardAction {
   [k: string]: unknown;
 }
 
+type ActionWithMessage = AdaptiveCardAction & {
+  data: {
+    message: NonNullable<NonNullable<AdaptiveCardAction["data"]>["message"]>;
+  };
+};
+
 interface AdaptiveCard {
   actions?: AdaptiveCardAction[];
   body?: Array<{ actions?: AdaptiveCardAction[]; [k: string]: unknown }>;
@@ -122,7 +128,9 @@ const AFFIRMATIVE = /allow|confirm|continue|proceed|yes|approve|run|send|ok/i;
 function pickAffirmative(
   actions: AdaptiveCardAction[],
 ): { message: { actionId?: string; confirmationOption?: string }; title?: string } | null {
-  const submits = actions.filter((a) => (a.type ?? "").includes("Submit") && a.data?.message);
+  const submits = actions.filter(
+    (a): a is ActionWithMessage => (a.type ?? "").includes("Submit") && !!a.data?.message,
+  );
   if (!submits.length) return null;
   // Prefer an explicit affirmative title; else the first non-negative; else the first.
   const affirmative = submits.find(
@@ -130,7 +138,7 @@ function pickAffirmative(
   );
   const nonNegative = submits.find((a) => !NEGATIVE.test(a.title ?? ""));
   const chosen = affirmative ?? nonNegative ?? submits[0];
-  return { message: chosen.data!.message ?? {}, title: chosen.title };
+  return { message: chosen.data.message ?? {}, title: chosen.title };
 }
 
 /**

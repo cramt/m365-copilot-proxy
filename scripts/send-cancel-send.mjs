@@ -161,7 +161,9 @@ function runTurn({ text, isStart, cancelAfterMs }) {
       if (stopTimer) clearTimeout(stopTimer);
       try {
         ws.close();
-      } catch {}
+      } catch (error) {
+        void error;
+      }
       const fullText = snapshotText.length >= deltaText.length ? snapshotText : deltaText;
       resolve({
         fullText,
@@ -189,9 +191,9 @@ function runTurn({ text, isStart, cancelAfterMs }) {
           handshakeDone = true;
           ws.send(
             JSON.stringify(buildChat({ text, requestId, isStart })) +
-              RS +
-              JSON.stringify(metrics()) +
-              RS,
+            RS +
+            JSON.stringify(metrics()) +
+            RS,
           );
           if (cancelAfterMs != null) {
             stopTimer = setTimeout(() => {
@@ -200,7 +202,9 @@ function runTurn({ text, isStart, cancelAfterMs }) {
               console.log(`   [turn] sending STOP frame at +${Date.now() - t0}ms`);
               try {
                 ws.send(JSON.stringify(STOP_FRAME) + RS);
-              } catch {}
+              } catch (error) {
+                void error;
+              }
               // Give the server a moment to ack/close, then end the turn.
               setTimeout(() => finish("stopped"), 4000);
             }, cancelAfterMs);
@@ -259,7 +263,7 @@ function runTurn({ text, isStart, cancelAfterMs }) {
         }
       }
     });
-    ws.on("error", (e) => finish("error:" + e.message));
+    ws.on("error", (e) => finish(`error:${e.message}`));
     ws.on("close", () => finish("ws-close"));
   });
 }
@@ -305,7 +309,7 @@ console.log(
   `[scs] Q2 context survives cancel: ${recalled ? "YES — secret recalled after cancel" : "NO — secret lost"}`,
 );
 console.log(
-  `[scs] Q3 stop frame ack: turn1 ${t1.sentStop ? "sent stop" : "no stop"}, server ${t1.stopAck ? "acked " + JSON.stringify(t1.stopAck) : "no explicit ack (closed)"}`,
+  `[scs] Q3 stop frame ack: turn1 ${t1.sentStop ? "sent stop" : "no stop"}, server ${t1.stopAck ? `acked ${JSON.stringify(t1.stopAck)}` : "no explicit ack (closed)"}`,
 );
 
 writeFileSync(

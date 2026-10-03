@@ -32,7 +32,7 @@ const claims = decodeJwt(token);
 
 const prompt =
   `Use your Python code interpreter to make a real outbound HTTP GET request to this exact URL: ${URL}\n` +
-  `${HINT ? HINT + "\n" : ""}` +
+  `${HINT ? `${HINT}\n` : ""}` +
   `Use urllib.request (or requests). Actually execute the code in the sandbox, then print the EXACT raw response body you received. ` +
   `If the request fails, print the full exception text verbatim so I can see the error.`;
 

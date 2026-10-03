@@ -102,8 +102,11 @@ describe("parseToolCalls", () => {
     expect(result.toolCalls).toHaveLength(1);
     expect(result.toolCalls[0].function.name).toBe("read_file");
     // textContent should be non-null — the handler must strip this
-    expect(result.textContent).not.toBeNull();
-    expect(result.textContent!.length).toBeGreaterThan(0);
+    const textContent = result.textContent;
+    if (textContent === null) {
+      throw new Error("Expected mixed output to include text");
+    }
+    expect(textContent.length).toBeGreaterThan(0);
   });
 
   it("should detect mixed output with trailing text", () => {
@@ -717,9 +720,15 @@ describe("truncateAtFabricatedToolResponse (a self-written <tool_response> is a 
     expect(cut).toBe("\n```bash\nls -la && cat check.py && cat calc.py\n```");
     const parsed = parseToolCalls(cut, [bash]);
     expect(parsed.toolCalls).toHaveLength(1);
-    expect(JSON.parse(parsed.toolCalls[0].function.arguments).command).toBe(
-      "ls -la && cat check.py && cat calc.py",
-    );
+    const parsedArguments: unknown = JSON.parse(parsed.toolCalls[0].function.arguments);
+    if (
+      typeof parsedArguments !== "object" ||
+      parsedArguments === null ||
+      !("command" in parsedArguments)
+    ) {
+      throw new Error("Expected parsed tool arguments to include a command");
+    }
+    expect(parsedArguments.command).toBe("ls -la && cat check.py && cat calc.py");
     expect(isProseDocument(parsed)).toBe(false);
   });
 
@@ -816,7 +825,7 @@ describe("isProseDocument with the reply text: a reply that OPENS with a tool ca
   });
 
   it("falls through to the old rule when the preamble is a long intro", () => {
-    const intro = "A".repeat(210) + "\n\n```bash\nls\n```\n\n## Next\n```bash\ncat a\n```";
+    const intro = `${"A".repeat(210)}\n\n\`\`\`bash\nls\n\`\`\`\n\n## Next\n\`\`\`bash\ncat a\n\`\`\``;
     expect(isProseDocument(parseToolCalls(intro, tools), intro, tools)).toBe(true);
   });
 
