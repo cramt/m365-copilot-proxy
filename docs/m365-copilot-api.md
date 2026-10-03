@@ -283,6 +283,28 @@ The proxy enables this on the **agent-less path** (so plain chat can compute; th
 
 > The `optionsSets` array was previously sent **empty**. Live reference implementations (`kuchris/m365-copilot-openai-proxy`, Microsoft's own `PyRIT`) populate it richly — code interpreter, memory, custom-instructions, image input. See `docs/hypotheses.md` §8 for the full catalogue of flags still on the table.
 
+### Image generation
+
+Core exposes `generateImage()` and `fetchImageBytes()`. Image turns run agent-less
+with the GUI's ten image-generation optionsSets and `GenerateGraphicArt` declared
+in `allowedMessageTypes`. `CopilotSession.chat(..., {generateImages: true})`
+collects GraphicArt payloads from Progress updates and the final type-2 item into
+`stream.images`, deduplicated by file token with the highest observed readiness.
+`ModelSession` enables this on agent-less turns unless `M365_NO_IMAGE_GEN` is set.
+
+Artifact downloads use `getImageArtifactToken()` for
+`https://designerappservice.officeapps.live.com/.default`, not the Sydney chat
+token. `urlsOnly` skips downloads; style and orientation are prompt directives.
+Image-quota refusals throw `ImageGenerationError` with reason `quota_exceeded`.
+The OpenAI `/v1/images/generations` endpoint is still a follow-up, not implemented.
+Live evidence is in hypotheses §14; the Oct 3 restoration was verified offline.
+
+Tenant policy can block generation even on a premium account. Confirmed Oct 3:
+the final type-2 result was `ForbiddenRequest` with
+`errorCode: ImageGenerationAdminPolicyBlocked` and an administrator-policy
+message, without image payloads or answer text. This is distinct from image
+quota exhaustion; inspect the final result metadata when no image arrives.
+
 ---
 
 ## 6. Receiving a response

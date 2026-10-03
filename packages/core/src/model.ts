@@ -131,15 +131,16 @@ export class ModelSession {
     log.info(
       `run: model=${model}, agent=${agentForTurn ?? "none"}, turn=${this.copilotSession.turnCount}, sid=${this.sessionId}, cid=${this.conversationId}, text=${JSON.stringify(trunc(text, 200))}`,
     );
+    const turnOpts = { generateImages: !agentForTurn && !process.env.M365_NO_IMAGE_GEN };
 
     try {
-      return await this.copilotSession.chat(token, text, model, signal);
+      return await this.copilotSession.chat(token, text, model, signal, turnOpts);
     } catch (err: unknown) {
       // Session might be stale — reconnect with same IDs
       log.info("Session error, reconnecting:", getErrorMessage(err));
       this.copilotSession = this.createCopilotSession(agentForTurn);
       this.currentAgentId = agentForTurn;
-      return await this.copilotSession.chat(token, text, model, signal);
+      return await this.copilotSession.chat(token, text, model, signal, turnOpts);
     }
   }
 

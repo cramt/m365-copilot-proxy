@@ -75,6 +75,28 @@ afterAll(() => {
 });
 
 describe("persisted account-throttle status", () => {
+  it.each(["rate_limit_error", "upstream_error"])(
+    "counts an HTTP 200 SSE %s as a failure, not a success",
+    (errorType) => {
+      metricsStore.addRequestMetric(metric({ stream: true, errorType }));
+      const snapshot = metricsStore.getDashboardSnapshot();
+      expect(snapshot.totals).toMatchObject({ requests: 1, successRequests: 0, errorRequests: 1 });
+      expect(snapshot.byModel).toMatchObject([
+        { requests: 1, successRequests: 0, errorRequests: 1 },
+      ]);
+    },
+  );
+
+  it("still counts successful streams and ordinary HTTP failures", () => {
+    metricsStore.addRequestMetric(metric({ stream: true }));
+    metricsStore.addRequestMetric(metric({ statusCode: 502 }));
+    const snapshot = metricsStore.getDashboardSnapshot();
+    expect(snapshot.totals).toMatchObject({ requests: 2, successRequests: 1, errorRequests: 1 });
+    expect(snapshot.byModel).toMatchObject([
+      { requests: 2, successRequests: 1, errorRequests: 1 },
+    ]);
+  });
+
   it("does not infer an upstream throttle when none has been recorded", () => {
     expect(metricsStore.getDashboardSnapshot().accountThrottle).toEqual({
       status: "unknown",

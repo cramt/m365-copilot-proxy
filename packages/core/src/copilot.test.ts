@@ -32,6 +32,7 @@ describe("advertised model catalog", () => {
       "gpt-5.6",
       "gpt-5.6-quick",
       "gpt-5.6-think-deeper",
+      "gpt-6-sol",
       "gpt-5.4",
       "gpt-5.4-think-deeper",
       "gpt-5.4-quick",
@@ -70,7 +71,7 @@ describe("advertised model catalog", () => {
   it("returns a copy so callers cannot mutate the catalog", () => {
     const models = getAvailableModels();
     models.length = 0;
-    expect(getAvailableModels()).toHaveLength(20);
+    expect(getAvailableModels()).toHaveLength(21);
   });
 });
 

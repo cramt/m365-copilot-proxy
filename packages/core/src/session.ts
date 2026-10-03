@@ -13,7 +13,13 @@ import {
   BotMessage,
   ThrottlingInfo,
 } from "./schemas.js";
-import { decodeJwt, getScenarioForModel, getToneForModel, type CopilotStream } from "./copilot.js";
+import {
+  decodeJwt,
+  getScenarioForModel,
+  getToneForModel,
+  type CapturedImage,
+  type CopilotStream,
+} from "./copilot.js";
 import {
   parseActionConfirmation,
   buildResumeInvokeAction,
@@ -114,6 +120,19 @@ const CODE_INTERPRETER_OPTIONS_SETS = [
   "code_interpreter_matplotlib_patching",
 ];
 
+const IMAGE_GEN_OPTIONS_SETS = [
+  "cwc_flux_image",
+  "cwc_flux_v3",
+  "enable_gg_gpt",
+  "flux_v3_progress_messages",
+  "flux_v3_image_gen_enable_dimensions",
+  "flux_v3_image_gen_enable_icon_dimensions",
+  "flux_v3_image_gen_enable_story",
+  "flux_v3_image_gen_enable_designer_dimensions_meta_prompting_in_system_prompts",
+  "flux_v3_image_gen_enable_system_text_with_params",
+  "flux_v3_image_gen_enable_non_watermarked_storage",
+];
+
 // --- Optional per-request frame dumping for reverse engineering ---
 // Enabled by M365_DUMP_FRAMES=1. Every SignalR frame received is appended to a
 // per-request NDJSON file under ~/.config/m365-proxy/frames/. Cheap to run
@@ -160,6 +179,8 @@ const VARIANTS = [
   "feature.cwcallowedos",
   "feature.disabledisallowedmsgs",
   "feature.enableCitationsForSynthesisData",
+  "feature.enableGenerateGraphicArtOptionsSet",
+  "cdximagen",
   "feature.EnableUpdatedUXForConfirmationDialog",
   "feature.EnableClientFileURLSupportForOfficeWebPaidCopilot",
   "feature.EnableDesignEditorImageGrounding",
@@ -271,6 +292,10 @@ export interface NativeActionConfig {
   autoConfirmAll?: boolean;
 }
 
+export interface ChatTurnOptions {
+  generateImages?: boolean;
+}
+
 export interface CopilotSessionOptions {
   agentId?: string;
   /** Reuse an existing session ID across reconnections. */
@@ -338,9 +363,11 @@ export class CopilotSession {
     text: string,
     model: string = "m365-copilot",
     signal?: AbortSignal,
+    opts?: ChatTurnOptions,
   ): Promise<CopilotStream> {
     const isFirst = this._turnCount === 0;
     this._turnCount++;
+    const wantImages = opts?.generateImages ?? false;
 
     log.info(
       `Chat turn ${this._turnCount - 1}: model=${model}, isFirst=${isFirst}, text=${JSON.stringify(trunc(text, 200))}`,
@@ -404,6 +431,7 @@ export class CopilotSession {
       // account is rate-limited: the turn then carries NO content frames, only a
       // BotConnection apology inside that item (#35).
       let serverResult: { value: string; errorCode?: string; message?: string } | null = null;
+      const imagesByToken = new Map<string, CapturedImage>();
       // Native-action round-trip state (H-NATIVE-6). `baseArgs` is the sent chat
       // envelope's arguments[0], reused verbatim (minus `message`) to resume an
       // action. `sawAction` records that the model triggered a custom action this
@@ -452,6 +480,26 @@ export class CopilotSession {
         }
       };
 
+      const captureImages = (
+        message: Pick<z.infer<typeof BotMessage>, "contentGenerationProgressList">,
+      ) => {
+        for (const entry of message.contentGenerationProgressList ?? []) {
+          const urls = entry.ImageReferenceUrls;
+          if (!urls?.length) continue;
+          const key = entry.fileToken ?? urls[0];
+          const previous = imagesByToken.get(key);
+          if (previous && (previous.status ?? 0) >= (entry.status ?? 0)) continue;
+          imagesByToken.set(key, {
+            referenceUrls: urls,
+            fileToken: entry.fileToken,
+            pollUrl: entry.pollUrl,
+            size: entry.size,
+            orientation: entry.orientation,
+            status: entry.status,
+          });
+        }
+      };
+
       // Fold a token delta OR a full-text snapshot into `answer` and stream the
       // newly-appended suffix (see foldStreamText for the prefix-safe rules).
       const advance = (next: string) => {
@@ -493,6 +541,9 @@ export class CopilotSession {
         },
         get result() {
           return serverResult;
+        },
+        get images() {
+          return [...imagesByToken.values()];
         },
         get sawAction() {
           return sawAction;
@@ -637,6 +688,7 @@ export class CopilotSession {
             ...(!agentId && !process.env.M365_NO_CODE_INTERPRETER
               ? CODE_INTERPRETER_OPTIONS_SETS
               : []),
+            ...(wantImages ? IMAGE_GEN_OPTIONS_SETS : []),
             ...(process.env.M365_EXTRA_OPTIONSSETS
               ? process.env.M365_EXTRA_OPTIONSSETS.split(",")
                   .map((s) => s.trim())
@@ -663,6 +715,7 @@ export class CopilotSession {
             "EndOfRequest",
             "ReferencesListComplete",
             "GeneratedCode", // code-interpreter execution frames
+            ...(wantImages ? ["GenerateGraphicArt"] : []),
             // Native custom-action vocabulary (H-NATIVE-6): the server only
             // SENDS these trigger frames if the client says it can handle them.
             ...(nativeActions ? ACTION_ALLOWED_MESSAGE_TYPES : []),
@@ -869,6 +922,7 @@ export class CopilotSession {
               if (!parsedMessage.success) continue;
               const m = parsedMessage.data;
               if (m.author !== "bot") continue;
+              captureImages(m);
               if (m.contentOrigin) contentOrigin = m.contentOrigin;
               if (m.messageType) messageType = m.messageType;
               if (m.messageId) messageId = m.messageId;
@@ -911,6 +965,7 @@ export class CopilotSession {
                 // control-typed ones — so callers can tell apart `DeepLeo` from
                 // `3PDeclarativeAgent` and surface `Disengaged` cleanly.
                 if (m.author === "bot") {
+                  captureImages(m);
                   if (m.contentOrigin) contentOrigin = m.contentOrigin;
                   if (m.messageType) messageType = m.messageType;
                   if (m.messageId) messageId = m.messageId;

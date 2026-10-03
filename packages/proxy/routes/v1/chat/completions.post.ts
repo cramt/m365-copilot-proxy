@@ -6,11 +6,15 @@ import {
 import { pool } from "../../../server-pool";
 import { logCompletionStatus, recordCompletionMetric, syncActiveSessions } from "../../../metrics";
 
+function isJsonObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
 function parseJsonOrNull(input: string | null): Record<string, unknown> | null {
   if (!input) return null;
   try {
     const parsed: unknown = JSON.parse(input);
-    return parsed && typeof parsed === "object" ? parsed : null;
+    return isJsonObject(parsed) ? parsed : null;
   } catch {
     return null;
   }

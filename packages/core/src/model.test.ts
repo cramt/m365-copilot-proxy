@@ -18,6 +18,7 @@ describe("ModelSession agent resolution", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     vi.stubEnv("M365_DISABLE_AGENT", "");
+    vi.stubEnv("M365_NO_IMAGE_GEN", "");
     vi.mocked(getOrCreateAgent).mockResolvedValue("agent-id");
   });
 
@@ -71,6 +72,34 @@ describe("ModelSession agent resolution", () => {
     const session = new ModelSession();
     await session.run("hello", "claude-sonnet", undefined, false);
     expect(getOrCreateAgent).not.toHaveBeenCalled();
+  });
+
+  it.each([false, true])("enables images only on agent-less turns (agent=%s)", async (useAgent) => {
+    const session = new ModelSession();
+    await session.run("draw a bicycle", "m365-copilot", undefined, useAgent);
+    const copilot = vi.mocked(CopilotSession).mock.instances.at(-1);
+    if (!copilot) throw new Error("Expected a CopilotSession instance");
+    expect(vi.mocked(copilot).chat.mock.calls).toContainEqual([
+      "token",
+      "draw a bicycle",
+      "m365-copilot",
+      undefined,
+      { generateImages: !useAgent },
+    ]);
+  });
+
+  it("keeps the image-generation opt-out on agent-less turns", async () => {
+    vi.stubEnv("M365_NO_IMAGE_GEN", "1");
+    await new ModelSession({ useAgent: false }).run("hello");
+    const copilot = vi.mocked(CopilotSession).mock.instances.at(-1);
+    if (!copilot) throw new Error("Expected a CopilotSession instance");
+    expect(vi.mocked(copilot).chat.mock.calls).toContainEqual([
+      "token",
+      "hello",
+      "m365-copilot",
+      undefined,
+      { generateImages: false },
+    ]);
   });
 
   it("re-resolves after reset", async () => {

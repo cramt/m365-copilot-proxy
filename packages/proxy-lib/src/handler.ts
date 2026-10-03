@@ -546,20 +546,30 @@ export async function handleChatCompletion(
       // InternalError falls through to the ordinary empty-reply handling below
       // instead (isAgentRouteAlive).
       if (
-        useToolAgent && !agentFallbackDone &&
+        useToolAgent &&
+        !agentFallbackDone &&
         PREMIUM_ONLY_AGENT_TONES.has(tone) &&
         !isAgentRouteAlive(tone) &&
-        process.env.M365_FORCE_AGENT !== "1" &&
+        getEnvironmentVariable("M365_FORCE_AGENT") !== "1" &&
         copilotStream.result?.value === "InternalError" &&
-        !copilotStream.hasContent && fullText.length === 0
+        !copilotStream.hasContent &&
+        fullText.length === 0
       ) {
         agentFallbackDone = true;
         noteAgentRouteDead(tone);
         useToolAgent = false;
         session.newConversation();
-        text = formatMessages(body.messages, body.tools, body.tool_choice, session.conversationId, framingVariant);
+        text = formatMessages(
+          body.messages,
+          body.tools,
+          body.tool_choice,
+          session.conversationId,
+          framingVariant,
+        );
         originalText = text;
-        log.info(`Agent route dead for ${tone} (InternalError) — this account isn't premium; re-sending agent-less with '${framingVariant}' framing in a fresh conversation`);
+        log.info(
+          `Agent route dead for ${tone} (InternalError) — this account isn't premium; re-sending agent-less with '${framingVariant}' framing in a fresh conversation`,
+        );
         attempt--;
         continue;
       }

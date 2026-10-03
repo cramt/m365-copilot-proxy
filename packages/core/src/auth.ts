@@ -13,6 +13,12 @@ const SCOPES = [
   "https://substrate.office.com/sydney/sydney.readwrite",
 ];
 
+const IMAGE_ARTIFACT_SCOPES = ["https://designerappservice.officeapps.live.com/.default"];
+
+export function getImageArtifactToken(): Promise<string | null> {
+  return getTokenForScope(IMAGE_ARTIFACT_SCOPES);
+}
+
 import { createLogger } from "./log.js";
 const log = createLogger("auth");
 

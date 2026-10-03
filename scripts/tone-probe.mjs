@@ -88,7 +88,11 @@ const TONES = [
   // included cell is the regression detector if Microsoft gates it. The chat
   // sibling is accepted too but self-IDs as the GPT-5 chat model, so it isn't
   // mapped; keep it here to notice if that changes.
-  { tone: "Gpt_6_Sol_Reasoning", note: "gpt-6-sol — included scenario: expect DeepLeo on every account", ...INCLUDED },
+  {
+    tone: "Gpt_6_Sol_Reasoning",
+    note: "gpt-6-sol — included scenario: expect DeepLeo on every account",
+    ...INCLUDED,
+  },
   { tone: "Gpt_6_Sol_Chat", note: "unmapped: self-IDs as the GPT-5 chat model", ...INCLUDED },
 
   // Claude_Fable: present in the real web client's tone list (§12.6 decompile)
