@@ -22,9 +22,7 @@ function timestamp(): string {
 
 function write(level: string, component: string, ...args: unknown[]) {
   if (!enabled) return;
-  const msg = args
-    .map((a) => (typeof a === "string" ? a : JSON.stringify(a, null, 2)))
-    .join(" ");
+  const msg = args.map((a) => (typeof a === "string" ? a : JSON.stringify(a, null, 2))).join(" ");
   const line = `[${timestamp()}] [${level}] [${component}] ${msg}\n`;
   if (stdoutEnabled) process.stdout.write(line);
   try {

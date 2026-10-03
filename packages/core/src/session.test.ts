@@ -1,5 +1,10 @@
 import { describe, it, expect } from "vitest";
-import { buildCopilotWebSocketUrl, cursorMessageId, foldStreamText, TurnTextComposer } from "./session.js";
+import {
+  buildCopilotWebSocketUrl,
+  cursorMessageId,
+  foldStreamText,
+  TurnTextComposer,
+} from "./session.js";
 
 /** Replay a sequence of raw M365 frames (deltas as {d}, snapshots as {s}) through
  *  foldStreamText and collect what would be streamed + the final buffered answer. */
@@ -24,11 +29,7 @@ describe("foldStreamText", () => {
 
   it("recovers the head token when it arrives only as a snapshot (the live bug)", () => {
     // M365 delivered "alpha" as a full-text snapshot, then token deltas for the rest.
-    const r = replay([
-      { s: "alpha" },
-      { d: "\nbeta" },
-      { d: "\ngamma" },
-    ]);
+    const r = replay([{ s: "alpha" }, { d: "\nbeta" }, { d: "\ngamma" }]);
     expect(r.streamed).toBe("alpha\nbeta\ngamma");
     expect(r.answer).toBe("alpha\nbeta\ngamma");
   });
@@ -111,11 +112,22 @@ describe("TurnTextComposer (multi-message turns)", () => {
     // the second message's head snapshot "```" and produced "…SECRET_CODE.bash\ngrep".
     const r = compose([
       { cursor: cur("m1"), s: "Let", id: "m1" },
-      { d: " me look" }, { d: " through" }, { d: " the files" }, { d: " in the notes/" },
-      { d: " directory to find the SECRET_CODE" }, { d: "." },
-      { s: "Let me look through the files in the notes/ directory to find the SECRET_CODE.", id: "m1" },
+      { d: " me look" },
+      { d: " through" },
+      { d: " the files" },
+      { d: " in the notes/" },
+      { d: " directory to find the SECRET_CODE" },
+      { d: "." },
+      {
+        s: "Let me look through the files in the notes/ directory to find the SECRET_CODE.",
+        id: "m1",
+      },
       { cursor: cur("m2"), s: "```", id: "m2" },
-      { d: "bash\ngrep -r" }, { d: ' "^' }, { d: 'SECRET_CODE=" notes' }, { d: "/" }, { d: "\n```" },
+      { d: "bash\ngrep -r" },
+      { d: ' "^' },
+      { d: 'SECRET_CODE=" notes' },
+      { d: "/" },
+      { d: "\n```" },
       { s: '```bash\ngrep -r "^SECRET_CODE=" notes/\n```', id: "m2" },
     ]);
     expect(r.text).toBe(
@@ -126,7 +138,11 @@ describe("TurnTextComposer (multi-message turns)", () => {
   });
 
   it("is byte-identical to the old fold for a single-message turn", () => {
-    const frames: F[] = [{ cursor: cur("a"), s: "alpha", id: "a" }, { d: "\nbeta" }, { s: "alpha\nbeta", id: "a" }];
+    const frames: F[] = [
+      { cursor: cur("a"), s: "alpha", id: "a" },
+      { d: "\nbeta" },
+      { s: "alpha\nbeta", id: "a" },
+    ];
     expect(compose(frames).text).toBe("alpha\nbeta");
     expect(compose(frames).streamed).toBe("alpha\nbeta");
   });
@@ -149,7 +165,9 @@ describe("TurnTextComposer (multi-message turns)", () => {
   });
 
   it("parses the message id out of a cursor path", () => {
-    expect(cursorMessageId("$['1051ab91-f905'].adaptiveCards[0].body[0].text")).toBe("1051ab91-f905");
+    expect(cursorMessageId("$['1051ab91-f905'].adaptiveCards[0].body[0].text")).toBe(
+      "1051ab91-f905",
+    );
     expect(cursorMessageId(undefined)).toBeNull();
     expect(cursorMessageId("garbage")).toBeNull();
   });

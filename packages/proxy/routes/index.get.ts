@@ -1,3 +1,4 @@
+import { getDegradationRetryAfterSeconds } from "@m365-copilot/core";
 import { buildModelsPayload } from "@m365-copilot/proxy-lib";
 import { getActiveSessionsSnapshot, getDashboardSnapshot } from "../metrics";
 
@@ -12,12 +13,19 @@ function esc(value: unknown): string {
 
 function fmtNum(value: number | null | undefined): string {
   if (typeof value !== "number" || !Number.isFinite(value)) return "-";
-  return new Intl.NumberFormat("en-US").format(value);
+  return new Intl.NumberFormat("en-US", {
+    notation: "compact",
+    compactDisplay: "short",
+    maximumFractionDigits: 2,
+  }).format(value);
 }
 
-function fmtMs(value: number | null | undefined): string {
+function fmtSeconds(value: number | null | undefined): string {
   if (typeof value !== "number" || !Number.isFinite(value)) return "-";
-  return `${Math.round(value)} ms`;
+  return `${new Intl.NumberFormat("en-US", {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  }).format(value / 1000)} s`;
 }
 
 function fmtAgo(ts: number | null | undefined): string {
@@ -39,20 +47,21 @@ function renderModelRows() {
     return '<tr><td colspan="11" class="muted">No model data available.</td></tr>';
   }
 
-  return models.map((model) => {
-    const row = metricMap.get(model);
-    const health = healthMap.get(model);
-    const reachable = health?.ok === true;
-    const unreachable = health?.ok === false;
-    const statusIcon = reachable
-      ? '<span class="badge ok" title="Reachable">✅</span>'
-      : unreachable
-        ? '<span class="badge err" title="Unreachable">❌</span>'
-        : '<span class="badge unknown" title="Not checked">•</span>';
-    const statusText = reachable ? "Reachable" : unreachable ? "Not Reachable" : "Unknown";
-    const metricOrDash = (value: string) => (unreachable ? "-" : value);
+  return models
+    .map((model) => {
+      const row = metricMap.get(model);
+      const health = healthMap.get(model);
+      const reachable = health?.ok === true;
+      const unreachable = health?.ok === false;
+      const statusIcon = reachable
+        ? '<span class="badge ok" title="Reachable">✅</span>'
+        : unreachable
+          ? '<span class="badge err" title="Unreachable">❌</span>'
+          : '<span class="badge unknown" title="Not checked">•</span>';
+      const statusText = reachable ? "Reachable" : unreachable ? "Not Reachable" : "Unknown";
+      const metricOrDash = (value: string) => (unreachable ? "-" : value);
 
-    return `<tr>
+      return `<tr>
       <td>
         <div class="model-cell">${statusIcon}<span>${esc(model)}</span></div>
       </td>
@@ -63,11 +72,12 @@ function renderModelRows() {
       <td>${metricOrDash(fmtNum(row?.promptTokens ?? null))}</td>
       <td>${metricOrDash(fmtNum(row?.completionTokens ?? null))}</td>
       <td>${metricOrDash(fmtNum(row?.totalTokens ?? null))}</td>
-      <td>${metricOrDash(fmtMs(row?.avgLatencyMs ?? null))}</td>
-      <td>${metricOrDash(fmtMs(unreachable ? null : (health?.latencyMs ?? row?.avgModelLatencyMs ?? null)))}</td>
+      <td>${metricOrDash(fmtSeconds(row?.avgLatencyMs ?? null))}</td>
+      <td>${metricOrDash(fmtSeconds(unreachable ? null : (health?.latencyMs ?? row?.avgModelLatencyMs ?? null)))}</td>
       <td>${metricOrDash(fmtAgo(row?.lastSeenAt ?? null))}</td>
     </tr>`;
-  }).join("\n");
+    })
+    .join("\n");
 }
 
 function renderActiveRows() {
@@ -76,11 +86,13 @@ function renderActiveRows() {
     return '<tr><td colspan="11" class="muted">No active sessions in memory.</td></tr>';
   }
 
-  return sessions.map((s) => {
-    const convQuota = s.conversationMessages !== null && s.conversationMax !== null
-      ? `${s.conversationMessages}/${s.conversationMax}`
-      : "n/a";
-    return `<tr>
+  return sessions
+    .map((s) => {
+      const convQuota =
+        s.conversationMessages !== null && s.conversationMax !== null
+          ? `${s.conversationMessages}/${s.conversationMax}`
+          : "n/a";
+      return `<tr>
       <td>${esc(s.model)}</td>
       <td>${esc(s.sessionId)}</td>
       <td>${esc(s.conversationId)}</td>
@@ -90,10 +102,11 @@ function renderActiveRows() {
       <td>${fmtNum(s.completionTokens)}</td>
       <td>${fmtNum(s.totalTokens)}</td>
       <td>${esc(convQuota)}</td>
-      <td>${fmtMs(s.modelLatencyMs)}</td>
+      <td>${fmtSeconds(s.modelLatencyMs)}</td>
       <td>${fmtAgo(s.lastAccessedAt)}</td>
     </tr>`;
-  }).join("\n");
+    })
+    .join("\n");
 }
 
 function renderModelOptions() {
@@ -101,13 +114,19 @@ function renderModelOptions() {
   if (models.length === 0) {
     return '<option value="m365-copilot">m365-copilot</option>';
   }
-  return models
-    .map((model) => `<option value="${esc(model)}">${esc(model)}</option>`)
-    .join("\n");
+  return models.map((model) => `<option value="${esc(model)}">${esc(model)}</option>`).join("\n");
 }
 
 export default defineEventHandler(() => {
   const snapshot = getDashboardSnapshot();
+  const retryAfterSeconds = getDegradationRetryAfterSeconds();
+  const accountThrottle = snapshot.accountThrottle;
+  const accountStatus =
+    accountThrottle.status === "throttled"
+      ? "Throttled (last observed)"
+      : accountThrottle.status === "recovered"
+        ? "Recovery observed"
+        : "Unknown";
   const healthyModels = snapshot.modelHealth.filter((m) => m.ok === true).length;
   const unhealthyModels = snapshot.modelHealth.filter((m) => m.ok === false).length;
   const html = `<!doctype html>
@@ -335,6 +354,27 @@ export default defineEventHandler(() => {
       <div class="health-strip">
         <span class="pill ok">✅ Reachable: ${fmtNum(healthyModels)}</span>
         <span class="pill err">❌ Unreachable: ${fmtNum(unhealthyModels)}</span>
+        <span class="pill${accountThrottle.status === "throttled" ? " err" : ""}" title="${esc(accountThrottle.message ?? "No account-throttle response recorded")}">
+          M365: <strong>${accountStatus}</strong>
+        </span>
+        ${
+          accountThrottle.since !== null
+            ? `<span class="pill">
+          First observed: <time data-throttle-observed-at="${accountThrottle.since}" datetime="${new Date(accountThrottle.since).toISOString()}" title="${new Date(accountThrottle.since).toISOString()}">${fmtAgo(accountThrottle.since)}</time>
+        </span>`
+            : ""
+        }
+        ${
+          accountThrottle.lastObservedAt !== null
+            ? `<span class="pill">
+          Last throttle: <time data-throttle-observed-at="${accountThrottle.lastObservedAt}" datetime="${new Date(accountThrottle.lastObservedAt).toISOString()}" title="${new Date(accountThrottle.lastObservedAt).toISOString()}">${fmtAgo(accountThrottle.lastObservedAt)}</time>
+        </span>`
+            : ""
+        }
+        <span id="backoffStatus" class="pill${retryAfterSeconds > 0 ? " err" : ""}" title="Proxy-imposed wait recommendation">
+          Local backoff: <strong id="backoffTime" data-retry-after="${retryAfterSeconds}">${retryAfterSeconds > 0 ? `${retryAfterSeconds}s` : "Inactive"}</strong>
+        </span>
+        <span class="pill">M365 reset: Unknown</span>
       </div>
     </section>
 
@@ -344,7 +384,7 @@ export default defineEventHandler(() => {
       <article class="card"><div class="k">Success / Error</div><div class="v">${fmtNum(snapshot.totals.successRequests)} / ${fmtNum(snapshot.totals.errorRequests)}</div></article>
       <article class="card"><div class="k">Prompt / Completion</div><div class="v">${fmtNum(snapshot.totals.promptTokens)} / ${fmtNum(snapshot.totals.completionTokens)}</div></article>
       <article class="card"><div class="k">Total Tokens</div><div class="v">${fmtNum(snapshot.totals.totalTokens)}</div></article>
-      <article class="card"><div class="k">Avg Req / Model Latency</div><div class="v">${fmtMs(snapshot.totals.avgLatencyMs)} / ${fmtMs(snapshot.totals.avgModelLatencyMs)}</div></article>
+      <article class="card"><div class="k">Avg Req / Model Latency</div><div class="v">${fmtSeconds(snapshot.totals.avgLatencyMs)} / ${fmtSeconds(snapshot.totals.avgModelLatencyMs)}</div></article>
     </section>
 
     <section class="panel">
@@ -420,6 +460,31 @@ export default defineEventHandler(() => {
       const pingBtn = document.getElementById("pingBtn");
       const healthBtn = document.getElementById("healthBtn");
       const modelSelect = document.getElementById("modelSelect");
+      const backoffStatus = document.getElementById("backoffStatus");
+      const backoffTime = document.getElementById("backoffTime");
+      const backoffUntil = performance.now() + Number(backoffTime.dataset.retryAfter) * 1000;
+
+      const updateBackoff = () => {
+        const remaining = Math.max(0, Math.ceil((backoffUntil - performance.now()) / 1000));
+        backoffTime.textContent = remaining > 0 ? remaining + "s" : "Inactive";
+        backoffStatus.classList.toggle("err", remaining > 0);
+      };
+      updateBackoff();
+      setInterval(updateBackoff, 1000);
+
+      const observationTimes = document.querySelectorAll("[data-throttle-observed-at]");
+      const updateThrottleAges = () => {
+        for (const element of observationTimes) {
+          const elapsed = Math.max(0, Math.floor((Date.now() - Number(element.dataset.throttleObservedAt)) / 1000));
+          const age = elapsed < 60 ? elapsed + "s"
+            : elapsed < 3600 ? Math.floor(elapsed / 60) + "m"
+            : elapsed < 86400 ? Math.floor(elapsed / 3600) + "h"
+            : Math.floor(elapsed / 86400) + "d";
+          element.textContent = age + " ago";
+        }
+      };
+      updateThrottleAges();
+      setInterval(updateThrottleAges, 1000);
 
       const setStatus = (message, kind) => {
         statusEl.textContent = message;
@@ -444,7 +509,7 @@ export default defineEventHandler(() => {
           if (!res.ok) {
             setStatus("Ping failed: " + (data.error?.message || "unknown error"), "err");
           } else {
-            setStatus("Ping " + data.model + ": " + data.status + " (" + data.latencyMs + " ms)", "ok");
+            setStatus("Ping " + data.model + ": " + data.status + " (" + (data.latencyMs / 1000).toFixed(2) + " s)", "ok");
           }
         } catch (err) {
           setStatus("Ping failed: " + (err.message || String(err)), "err");

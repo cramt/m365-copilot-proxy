@@ -32,29 +32,69 @@ const pause = (ms) => new Promise((r) => setTimeout(r, ms));
 
 if (process.argv.includes("--sidebar")) {
   const creds = loadSecrets();
-  if (!creds) { console.log("no secrets — cannot drive the GUI"); process.exit(1); }
+  if (!creds) {
+    console.log("no secrets — cannot drive the GUI");
+    process.exit(1);
+  }
   mkdirSync(OUT, { recursive: true });
   const ROOT = process.cwd();
-  const pwMod = await import(`${ROOT}/node_modules/.pnpm/playwright@1.58.2/node_modules/playwright/index.js`);
+  const pwMod = await import(
+    `${ROOT}/node_modules/.pnpm/playwright@1.58.2/node_modules/playwright/index.js`
+  );
   const chromium = pwMod.chromium ?? pwMod.default?.chromium;
-  const { TOTP } = await import(`${ROOT}/node_modules/.pnpm/otpauth@9.5.0/node_modules/otpauth/dist/otpauth.esm.js`);
+  const { TOTP } = await import(
+    `${ROOT}/node_modules/.pnpm/otpauth@9.5.0/node_modules/otpauth/dist/otpauth.esm.js`
+  );
 
-  const browser = await chromium.launch({ headless: true, executablePath: process.env.CHROMIUM_PATH, args: ["--no-sandbox", "--disable-dev-shm-usage"] });
+  const browser = await chromium.launch({
+    headless: true,
+    executablePath: process.env.CHROMIUM_PATH,
+    args: ["--no-sandbox", "--disable-dev-shm-usage"],
+  });
   const page = await browser.newPage();
-  const fill = async (sel, val) => { const l = page.locator(`${sel}:visible`).first(); await l.waitFor({ state: "visible", timeout: 30000 }); await l.fill(val); };
-  const submit = () => page.locator('input[type="submit"]:visible, button[type="submit"]:visible').first().click();
+  const fill = async (sel, val) => {
+    const l = page.locator(`${sel}:visible`).first();
+    await l.waitFor({ state: "visible", timeout: 30000 });
+    await l.fill(val);
+  };
+  const submit = () =>
+    page.locator('input[type="submit"]:visible, button[type="submit"]:visible').first().click();
   try {
-    await page.goto("https://m365.cloud.microsoft/chat/", { waitUntil: "domcontentloaded", timeout: 60000 });
+    await page.goto("https://m365.cloud.microsoft/chat/", {
+      waitUntil: "domcontentloaded",
+      timeout: 60000,
+    });
     await page.waitForTimeout(3000);
     if (/login\.microsoftonline|oauth2|signin|\/login/i.test(page.url())) {
-      await fill('input[name="loginfmt"]', creds.email); await submit(); await page.waitForTimeout(2500);
-      await fill('input[name="passwd"]', creds.password); await submit(); await page.waitForTimeout(2500);
-      try { await fill('input[name="otc"]', new TOTP({ secret: creds.mfaSecret }).generate()); await submit(); await page.waitForTimeout(2500); } catch {}
-      try { await page.locator("#idSIButton9:visible").click({ timeout: 8000 }); } catch {}
+      await fill('input[name="loginfmt"]', creds.email);
+      await submit();
+      await page.waitForTimeout(2500);
+      await fill('input[name="passwd"]', creds.password);
+      await submit();
+      await page.waitForTimeout(2500);
+      try {
+        await fill('input[name="otc"]', new TOTP({ secret: creds.mfaSecret }).generate());
+        await submit();
+        await page.waitForTimeout(2500);
+      } catch {}
+      try {
+        await page.locator("#idSIButton9:visible").click({ timeout: 8000 });
+      } catch {}
     }
     await page.waitForTimeout(8000);
-    for (const sel of ['button[aria-label*="hat history" i]', 'button[aria-label*="istory" i]', 'button[aria-label*="ecent" i]']) {
-      try { const l = page.locator(sel).first(); if (await l.count()) { await l.click({ timeout: 4000 }); await page.waitForTimeout(3500); break; } } catch {}
+    for (const sel of [
+      'button[aria-label*="hat history" i]',
+      'button[aria-label*="istory" i]',
+      'button[aria-label*="ecent" i]',
+    ]) {
+      try {
+        const l = page.locator(sel).first();
+        if (await l.count()) {
+          await l.click({ timeout: 4000 });
+          await page.waitForTimeout(3500);
+          break;
+        }
+      } catch {}
     }
     await page.waitForTimeout(2000);
     const text = await page.evaluate(() => document.body.innerText).catch(() => "");
@@ -64,17 +104,31 @@ if (process.argv.includes("--sidebar")) {
     const hasSaved = new RegExp(SAVED_MARKER, "i").test(text);
     console.log(`  temporary chat ("${TEMP_MARKER}") listed: ${hasTemp}`);
     console.log(`  saved chat     ("${SAVED_MARKER}") listed: ${hasSaved}`);
-    console.log(`  VERDICT: ${!hasTemp && hasSaved ? "CONFIRMED — disableMemory keeps it out of history"
-      : hasTemp && hasSaved ? "REFUTED — the temporary chat is listed too"
-      : "INCONCLUSIVE — sidebar not captured, or not yet indexed"}`);
-  } catch (e) { console.log("ERR", e.message); }
+    console.log(
+      `  VERDICT: ${
+        !hasTemp && hasSaved
+          ? "CONFIRMED — disableMemory keeps it out of history"
+          : hasTemp && hasSaved
+            ? "REFUTED — the temporary chat is listed too"
+            : "INCONCLUSIVE — sidebar not captured, or not yet indexed"
+      }`,
+    );
+  } catch (e) {
+    console.log("ERR", e.message);
+  }
   await browser.close();
 } else {
   // Half 1 — context must survive across turns of one temporary conversation.
   const s = new ModelSession({ useAgent: false, temporaryChat: true });
-  console.log(await say(s, `Remember this codeword exactly: ${MAGIC}. Reply with just "ok".`) && `turn1 cid=${s.conversationId}`);
+  console.log(
+    (await say(s, `Remember this codeword exactly: ${MAGIC}. Reply with just "ok".`)) &&
+      `turn1 cid=${s.conversationId}`,
+  );
   await pause(3000);
-  const recall = await say(s, "What was the codeword I just gave you? Reply with only the codeword.");
+  const recall = await say(
+    s,
+    "What was the codeword I just gave you? Reply with only the codeword.",
+  );
   const retained = recall.toLowerCase().includes(MAGIC);
   console.log(`turn2 <- ${recall.slice(0, 120)}`);
   console.log(`  context across turns: ${retained ? "RETAINED" : "LOST"}`);

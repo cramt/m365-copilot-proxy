@@ -11,6 +11,8 @@ import {
   defaultFramingForTone,
   defaultFramingForModel,
   transcriptStyleForVariant,
+  FRAMING_VARIANT_NAMES,
+  sandboxDescription,
 } from "./fenced.js";
 import type { ToolDef } from "./tools.js";
 
@@ -19,7 +21,11 @@ const bash: ToolDef = {
   function: {
     name: "bash",
     description: "Run a shell command.",
-    parameters: { type: "object", properties: { command: { type: "string" } }, required: ["command"] },
+    parameters: {
+      type: "object",
+      properties: { command: { type: "string" } },
+      required: ["command"],
+    },
   },
 };
 const readFile: ToolDef = {
@@ -86,13 +92,18 @@ describe("renderFencedCall", () => {
   });
 
   it("renders header + body separated by a blank line", () => {
-    const out = renderFencedCall(deriveFencedSpec(writeFile), { path: "a.py", content: "print(1)" });
+    const out = renderFencedCall(deriveFencedSpec(writeFile), {
+      path: "a.py",
+      content: "print(1)",
+    });
     expect(out).toBe("```write_file\npath: a.py\n\nprint(1)\n```");
   });
 
   it("renders an edit as SEARCH/REPLACE", () => {
     const out = renderFencedCall(deriveFencedSpec(editFile), { path: "a.py", old: "x", new: "y" });
-    expect(out).toBe("```edit_file\npath: a.py\n<<<<<<< SEARCH\nx\n=======\ny\n>>>>>>> REPLACE\n```");
+    expect(out).toBe(
+      "```edit_file\npath: a.py\n<<<<<<< SEARCH\nx\n=======\ny\n>>>>>>> REPLACE\n```",
+    );
   });
 });
 
@@ -168,7 +179,11 @@ describe("shell routing (Tier 1)", () => {
     function: {
       name: "run_command",
       description: "Run a shell command.",
-      parameters: { type: "object", properties: { command: { type: "string" } }, required: ["command"] },
+      parameters: {
+        type: "object",
+        properties: { command: { type: "string" } },
+        required: ["command"],
+      },
     },
   };
 
@@ -176,6 +191,26 @@ describe("shell routing (Tier 1)", () => {
     expect(findShellTool([bash])?.function.name).toBe("bash");
     expect(findShellTool([runCommand])?.function.name).toBe("run_command");
     expect(findShellTool([readFile, writeFile])).toBeUndefined();
+  });
+
+  it("routes shell fences to VS Code's multi-parameter run_in_terminal tool", () => {
+    const terminal: ToolDef = {
+      type: "function",
+      function: {
+        name: "run_in_terminal",
+        parameters: {
+          properties: {
+            command: { type: "string" },
+            explanation: { type: "string" },
+            isBackground: { type: "boolean" },
+          },
+        },
+      },
+    };
+    expect(findShellTool([readFile, terminal])).toBe(terminal);
+    const calls = parseFencedToolCalls("```bash\nls -la\n```", buildSpecMap([terminal])).calls;
+    expect(calls[0].function.name).toBe("run_in_terminal");
+    expect(JSON.parse(calls[0].function.arguments)).toEqual({ command: "ls -la" });
   });
 
   it("routes a ```bash block to a differently-named shell tool", () => {
@@ -188,8 +223,12 @@ describe("shell routing (Tier 1)", () => {
 
   it("routes ```sh and ```shell aliases too", () => {
     const specs = buildSpecMap([runCommand]);
-    expect(parseFencedToolCalls("```sh\nls\n```", specs).calls[0]?.function.name).toBe("run_command");
-    expect(parseFencedToolCalls("```shell\nls\n```", specs).calls[0]?.function.name).toBe("run_command");
+    expect(parseFencedToolCalls("```sh\nls\n```", specs).calls[0]?.function.name).toBe(
+      "run_command",
+    );
+    expect(parseFencedToolCalls("```shell\nls\n```", specs).calls[0]?.function.name).toBe(
+      "run_command",
+    );
   });
 
   it("routes leaked container.* runtime aliases to the harness shell tool", () => {
@@ -215,7 +254,9 @@ describe("shell routing (Tier 1)", () => {
 
   it("injects shell-first framing only when a shell tool is present", () => {
     expect(formatFencedToolDefinitions([bash, readFile])).toContain("WRITING A SHELL SCRIPT");
-    expect(formatFencedToolDefinitions([readFile, writeFile])).not.toContain("WRITING A SHELL SCRIPT");
+    expect(formatFencedToolDefinitions([readFile, writeFile])).not.toContain(
+      "WRITING A SHELL SCRIPT",
+    );
   });
 
   // #7: these were silently demoted to prose, so a model correctly told to use
@@ -263,7 +304,11 @@ describe("hostPlatformNote", () => {
       function: {
         name: "run_terminal_cmd",
         description: "Run a command.",
-        parameters: { type: "object", properties: { command: { type: "string" } }, required: ["command"] },
+        parameters: {
+          type: "object",
+          properties: { command: { type: "string" } },
+          required: ["command"],
+        },
       },
     };
     expect(hostPlatformNote(shell, "win32")).toContain("`run_terminal_cmd`");
@@ -284,6 +329,16 @@ describe("formatFencedToolDefinitions", () => {
 });
 
 describe("defaultFramingForTone", () => {
+  it("uses provisional relay for agent-less GPT while preserving agent-backed defaults", () => {
+    for (const tone of ["magic", "Gpt_5_5_Chat", "Gpt_5_5_Reasoning"]) {
+      expect(defaultFramingForTone(tone, { agentLess: true })).toBe("relay");
+      expect(defaultFramingForTone(tone, { agentLess: false })).toBeUndefined();
+    }
+    expect(defaultFramingForTone("Claude_Opus", { agentLess: true })).toBe("minimal");
+    expect(defaultFramingForTone("Claude_Sonnet_Reasoning", { agentLess: true })).toBeUndefined();
+    expect(defaultFramingForModel("gpt-5.5-think-deeper", { agentLess: true })).toBe("relay");
+  });
+
   it("gives Opus the lean framing (it doesn't need the anti-narration cage, and its budget is small)", () => {
     expect(defaultFramingForTone("Claude_Opus")).toBe("minimal");
   });
@@ -327,7 +382,13 @@ describe("defaultFramingForModel", () => {
   });
 
   it("gives Sonnet 4.6 relay too — and every unmapped claude-* string that lands on its tone", () => {
-    for (const id of ["claude-sonnet", "claude-sonnet-4.6", "claude-sonnet-4.5", "claude", "claude-haiku-9"]) {
+    for (const id of [
+      "claude-sonnet",
+      "claude-sonnet-4.6",
+      "claude-sonnet-4.5",
+      "claude",
+      "claude-haiku-9",
+    ]) {
       expect(defaultFramingForModel(id)).toBe("relay");
     }
   });
@@ -342,15 +403,81 @@ describe("defaultFramingForModel", () => {
 
 describe("transcriptStyleForVariant", () => {
   it("keeps the historical <system> tags for every pre-existing variant", () => {
-    for (const v of ["baseline", "minimal", "softened", "recency", "fewshot", "session_facts", "nonexistent"]) {
+    for (const v of [
+      "baseline",
+      "minimal",
+      "softened",
+      "recency",
+      "fewshot",
+      "session_facts",
+      "nonexistent",
+    ]) {
       expect(transcriptStyleForVariant(v)).toEqual({ framingTag: "system", systemTag: "system" });
     }
   });
 
   it("drops the framing wrapper for user-voice variants and relabels harness prompts", () => {
-    for (const v of ["relay", "honest", "terse_user"]) {
-      expect(transcriptStyleForVariant(v)).toEqual({ framingTag: null, systemTag: "harness_system_prompt" });
+    for (const v of ["relay", "honest", "terse_user", "dual_env", "dual_env_protocol"]) {
+      expect(transcriptStyleForVariant(v)).toEqual({
+        framingTag: null,
+        systemTag: "harness_system_prompt",
+      });
     }
+  });
+
+  it("isolates the system wrapper in dual_env_sys", () => {
+    expect(transcriptStyleForVariant("dual_env_sys")).toEqual({
+      framingTag: "system",
+      systemTag: "system",
+    });
+    expect(formatFencedToolDefinitions(ALL, "dual_env_sys", { tone: "Gpt_5_5_Reasoning" })).toBe(
+      formatFencedToolDefinitions(ALL, "dual_env", { tone: "Gpt_5_5_Reasoning" }),
+    );
+  });
+});
+
+describe("tone-aware sandbox framing", () => {
+  it("registers every dual-environment candidate", () => {
+    expect(FRAMING_VARIANT_NAMES).toEqual(
+      expect.arrayContaining(["dual_env", "dual_env_sys", "dual_env_protocol"]),
+    );
+  });
+
+  it.each(["relay", "honest", "dual_env", "dual_env_sys", "dual_env_protocol"])(
+    "describes GPT's sandbox in %s",
+    (variant) => {
+      const prompt = formatFencedToolDefinitions(ALL, variant, { tone: "Gpt_5_5_Reasoning" });
+      expect(prompt).toContain("Python code interpreter");
+      expect(prompt).toContain("/mnt/data");
+      expect(prompt).toContain("web search");
+      expect(prompt).not.toContain("bash_tool");
+      expect(prompt).not.toContain("/home/claude");
+    },
+  );
+
+  it.each(["relay", "honest", "dual_env", "dual_env_sys", "dual_env_protocol"])(
+    "describes Claude's sandbox in %s",
+    (variant) => {
+      const prompt = formatFencedToolDefinitions(ALL, variant, { tone: "Claude_Sonnet_Reasoning" });
+      expect(prompt).toContain("bash_tool");
+      expect(prompt).toContain("/home/claude");
+      expect(prompt).not.toContain("Python code interpreter");
+    },
+  );
+
+  it.each(["dual_env", "dual_env_sys", "dual_env_protocol"])(
+    "allows scratch work but keeps project work local in %s",
+    (variant) => {
+      const prompt = formatFencedToolDefinitions(ALL, variant, { tone: "Gpt_5_5_Reasoning" });
+      expect(prompt).toMatch(/scratch/i);
+      expect(prompt).toContain("B");
+      expect(prompt).toContain("<tool_response");
+      expect(prompt).toContain("```bash");
+    },
+  );
+
+  it("defaults sandbox-only callers to the existing Claude description", () => {
+    expect(sandboxDescription()).toContain("/home/claude");
   });
 });
 
@@ -401,8 +528,14 @@ describe("header value coercion (strict-harness schema conformance)", () => {
   };
 
   it("coerces well-formed values to their declared types", () => {
-    expect(parse('path: /tmp/a.txt\noffset: 10\nratio: 0.5\nrecursive: true\nglobs: ["*.ts"]')).toEqual({
-      path: "/tmp/a.txt", offset: 10, ratio: 0.5, recursive: true, globs: ["*.ts"],
+    expect(
+      parse('path: /tmp/a.txt\noffset: 10\nratio: 0.5\nrecursive: true\nglobs: ["*.ts"]'),
+    ).toEqual({
+      path: "/tmp/a.txt",
+      offset: 10,
+      ratio: 0.5,
+      recursive: true,
+      globs: ["*.ts"],
     });
   });
 

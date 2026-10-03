@@ -7,7 +7,12 @@
 
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { getTokenForScope, getToken, decodeJwt, getEnvironmentUrl } from "../packages/core/dist/index.mjs";
+import {
+  getTokenForScope,
+  getToken,
+  decodeJwt,
+  getEnvironmentUrl,
+} from "../packages/core/dist/index.mjs";
 
 const TS = new Date().toISOString().replace(/[:.]/g, "-");
 const OUT = join(process.cwd(), "scripts", "usage-endpoint-out", TS);
@@ -65,9 +70,24 @@ if (pp && envUrl) {
 
 if (bap) {
   candidates.push(
-    ["bap", "GET", `https://api.bap.microsoft.com/providers/Microsoft.BusinessAppPlatform/listConsumption?api-version=2023-06-01`, "usage"],
-    ["bap", "GET", `https://api.bap.microsoft.com/providers/Microsoft.BusinessAppPlatform/me?api-version=2023-06-01`, "meta"],
-    ["bap", "GET", `https://api.bap.microsoft.com/providers/PowerPlatform.Governance/copilot/usage?api-version=2023-06-01`, "usage"],
+    [
+      "bap",
+      "GET",
+      `https://api.bap.microsoft.com/providers/Microsoft.BusinessAppPlatform/listConsumption?api-version=2023-06-01`,
+      "usage",
+    ],
+    [
+      "bap",
+      "GET",
+      `https://api.bap.microsoft.com/providers/Microsoft.BusinessAppPlatform/me?api-version=2023-06-01`,
+      "meta",
+    ],
+    [
+      "bap",
+      "GET",
+      `https://api.bap.microsoft.com/providers/PowerPlatform.Governance/copilot/usage?api-version=2023-06-01`,
+      "usage",
+    ],
   );
 }
 
@@ -81,13 +101,25 @@ for (const [tag, method, url, kind] of candidates) {
     continue;
   }
   try {
-    const r = await fetch(url, { method, headers: { Authorization: `Bearer ${tok}`, Accept: "application/json" } });
+    const r = await fetch(url, {
+      method,
+      headers: { Authorization: `Bearer ${tok}`, Accept: "application/json" },
+    });
     const ct = r.headers.get("content-type") ?? "";
     const body = await r.text().catch(() => "");
     const ok = r.status >= 200 && r.status < 300;
-    const interesting = ok || (r.status >= 400 && r.status !== 404 && r.status !== 401 && r.status !== 403);
+    const interesting =
+      ok || (r.status >= 400 && r.status !== 404 && r.status !== 401 && r.status !== 403);
     console.log(`[${tag}] ${method} ${r.status} ${url} ${interesting ? "  <- LOOK" : ""}`);
-    results.push({ tag, method, url, kind, status: r.status, contentType: ct, body: body.slice(0, 800) });
+    results.push({
+      tag,
+      method,
+      url,
+      kind,
+      status: r.status,
+      contentType: ct,
+      body: body.slice(0, 800),
+    });
   } catch (e) {
     console.log(`[${tag}] ${method} ERR  ${url} (${e.message})`);
     results.push({ tag, method, url, kind, error: e.message });

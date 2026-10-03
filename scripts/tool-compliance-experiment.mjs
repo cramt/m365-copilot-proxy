@@ -18,7 +18,11 @@
 
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { ModelSession, parseToolCalls, formatToolDefinitions } from "../packages/core/dist/index.mjs";
+import {
+  ModelSession,
+  parseToolCalls,
+  formatToolDefinitions,
+} from "../packages/core/dist/index.mjs";
 
 const args = process.argv.slice(2);
 const arg = (k, def = null) => {
@@ -37,12 +41,49 @@ const OUT = join(process.cwd(), "scripts", "tool-compliance-out", TS);
 mkdirSync(OUT, { recursive: true });
 
 const TOOLS = [
-  { type: "function", function: { name: "read_file", description: "Read a file from disk", parameters: { type: "object", properties: { path: { type: "string", description: "Absolute path" } }, required: ["path"] } } },
-  { type: "function", function: { name: "bash", description: "Run a shell command", parameters: { type: "object", properties: { command: { type: "string" } }, required: ["command"] } } },
-  { type: "function", function: { name: "list", description: "List a directory", parameters: { type: "object", properties: { path: { type: "string" } }, required: ["path"] } } },
+  {
+    type: "function",
+    function: {
+      name: "read_file",
+      description: "Read a file from disk",
+      parameters: {
+        type: "object",
+        properties: { path: { type: "string", description: "Absolute path" } },
+        required: ["path"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "bash",
+      description: "Run a shell command",
+      parameters: {
+        type: "object",
+        properties: { command: { type: "string" } },
+        required: ["command"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "list",
+      description: "List a directory",
+      parameters: { type: "object", properties: { path: { type: "string" } }, required: ["path"] },
+    },
+  },
 ];
 
-const REPLY_TOOL = { type: "function", function: { name: "reply", description: "Send a plain text answer to the user. Use this whenever you would otherwise answer in prose.", parameters: { type: "object", properties: { text: { type: "string" } }, required: ["text"] } } };
+const REPLY_TOOL = {
+  type: "function",
+  function: {
+    name: "reply",
+    description:
+      "Send a plain text answer to the user. Use this whenever you would otherwise answer in prose.",
+    parameters: { type: "object", properties: { text: { type: "string" } }, required: ["text"] },
+  },
+};
 
 const PROMPTS = [
   { q: "Read the file /etc/hostname and tell me the hostname.", expect: "read_file" },
@@ -63,7 +104,17 @@ function formatVariant(variant, messages) {
 
   if (variant === "no_caps") {
     // Soft-toned variant of the standard prompt
-    const defs = TOOLS.map((t) => JSON.stringify({ name: t.function.name, description: t.function.description, parameters: t.function.parameters }, null, 2)).join("\n\n");
+    const defs = TOOLS.map((t) =>
+      JSON.stringify(
+        {
+          name: t.function.name,
+          description: t.function.description,
+          parameters: t.function.parameters,
+        },
+        null,
+        2,
+      ),
+    ).join("\n\n");
     return `You are an agent driving real tools. Each tool runs against a real system. When a tool can do the job, call it. Otherwise answer in prose.
 
 To call a tool, output only this JSON:
@@ -90,30 +141,55 @@ ${userMsg}
   if (variant === "with_reply") {
     const tools = [REPLY_TOOL, ...TOOLS];
     const body = formatToolDefinitions(tools);
-    return body + `
+    return (
+      body +
+      `
 
 EVERY turn MUST be a tool call. If your answer would otherwise be plain prose, call reply(text="...") with the prose as the text argument. Never emit bare text.
 
 <user>
 ${userMsg}
-</user>`;
+</user>`
+    );
   }
 
   if (variant === "minimal") {
     // Trust the agent to enforce the format; per-request prompt is just tools + user msg.
-    const defs = TOOLS.map((t) => JSON.stringify({ name: t.function.name, description: t.function.description, parameters: t.function.parameters }, null, 2)).join("\n\n");
+    const defs = TOOLS.map((t) =>
+      JSON.stringify(
+        {
+          name: t.function.name,
+          description: t.function.description,
+          parameters: t.function.parameters,
+        },
+        null,
+        2,
+      ),
+    ).join("\n\n");
     return `<tools>\n${defs}\n</tools>\n\n<user>\n${userMsg}\n</user>`;
   }
 
   if (variant === "tool_choice_req") {
-    return formatToolDefinitions(TOOLS) + `\nYou MUST call at least one tool.\n\n<user>\n${userMsg}\n</user>`;
+    return (
+      formatToolDefinitions(TOOLS) +
+      `\nYou MUST call at least one tool.\n\n<user>\n${userMsg}\n</user>`
+    );
   }
 
   throw new Error(`unknown variant: ${variant}`);
 }
 
-const VARIANT_NAMES = ["baseline", "no_caps", "no_fewshot", "with_reply", "minimal", "tool_choice_req"];
-const VARIANTS = VARIANTS_FILTER.length ? VARIANT_NAMES.filter((v) => VARIANTS_FILTER.includes(v)) : VARIANT_NAMES;
+const VARIANT_NAMES = [
+  "baseline",
+  "no_caps",
+  "no_fewshot",
+  "with_reply",
+  "minimal",
+  "tool_choice_req",
+];
+const VARIANTS = VARIANTS_FILTER.length
+  ? VARIANT_NAMES.filter((v) => VARIANTS_FILTER.includes(v))
+  : VARIANT_NAMES;
 
 function classify(raw, expect) {
   const parsed = parseToolCalls(raw);
@@ -148,7 +224,10 @@ for (const variant of VARIANTS) {
       let contentOrigin = null;
       const t0 = Date.now();
       try {
-        const stream = await session.run(formatVariant(variant, [{ role: "user", content: p.q }]), "m365-copilot");
+        const stream = await session.run(
+          formatVariant(variant, [{ role: "user", content: p.q }]),
+          "m365-copilot",
+        );
         for await (const d of stream) raw += d;
         if (stream.fullText.length > raw.length) raw = stream.fullText;
         throttle = stream.throttle;
@@ -160,18 +239,40 @@ for (const variant of VARIANTS) {
       const verdict = classify(raw, p.expect);
       if (verdict === "DISENGAGED") disengaged++;
       const elapsed = Date.now() - t0;
-      const summary = { q: p.q, expect: p.expect, rep, verdict, elapsed_ms: elapsed, throttle, scores, contentOrigin, len: raw.length, raw: raw.slice(0, 240).replace(/\n/g, "\\n") };
+      const summary = {
+        q: p.q,
+        expect: p.expect,
+        rep,
+        verdict,
+        elapsed_ms: elapsed,
+        throttle,
+        scores,
+        contentOrigin,
+        len: raw.length,
+        raw: raw.slice(0, 240).replace(/\n/g, "\\n"),
+      };
       results[variant].push(summary);
       const dea = scores?.dea_violation;
       const deaStr = typeof dea === "number" ? ` dea=${dea.toExponential(2)}` : "";
-      console.log(`[${variant.padEnd(16)}] rep${rep} ${verdict.padEnd(20)} ${elapsed}ms${deaStr} «${p.q.slice(0, 50)}»`);
+      console.log(
+        `[${variant.padEnd(16)}] rep${rep} ${verdict.padEnd(20)} ${elapsed}ms${deaStr} «${p.q.slice(0, 50)}»`,
+      );
       await new Promise((r) => setTimeout(r, 1500)); // gentle pacing
     }
   }
 }
 
-function median(xs) { if (!xs.length) return null; const s = [...xs].sort((a, b) => a - b); const m = Math.floor(s.length / 2); return s.length % 2 ? s[m] : (s[m - 1] + s[m]) / 2; }
-function p95(xs) { if (!xs.length) return null; const s = [...xs].sort((a, b) => a - b); return s[Math.min(s.length - 1, Math.floor(s.length * 0.95))]; }
+function median(xs) {
+  if (!xs.length) return null;
+  const s = [...xs].sort((a, b) => a - b);
+  const m = Math.floor(s.length / 2);
+  return s.length % 2 ? s[m] : (s[m - 1] + s[m]) / 2;
+}
+function p95(xs) {
+  if (!xs.length) return null;
+  const s = [...xs].sort((a, b) => a - b);
+  return s[Math.min(s.length - 1, Math.floor(s.length * 0.95))];
+}
 
 const scoreboard = {};
 for (const variant of VARIANTS) {
@@ -183,27 +284,56 @@ for (const variant of VARIANTS) {
     n: v.length,
     score: `${good}/${v.length}`,
     pct: Math.round((good / v.length) * 100),
-    latency_ms: { median: median(latencies), p95: p95(latencies), min: Math.min(...latencies), max: Math.max(...latencies) },
-    dea_violation: deas.length ? { median: median(deas), p95: p95(deas), min: Math.min(...deas), max: Math.max(...deas), n: deas.length } : null,
+    latency_ms: {
+      median: median(latencies),
+      p95: p95(latencies),
+      min: Math.min(...latencies),
+      max: Math.max(...latencies),
+    },
+    dea_violation: deas.length
+      ? {
+          median: median(deas),
+          p95: p95(deas),
+          min: Math.min(...deas),
+          max: Math.max(...deas),
+          n: deas.length,
+        }
+      : null,
     verdicts: v.map((r) => r.verdict),
   };
 }
 
-writeFileSync(join(OUT, "results.json"), JSON.stringify({
-  meta: {
-    useAgent, prompts: PROMPTS.length, variants: VARIANTS,
-    repeat: REPEAT, cells_per_variant: PROMPTS.length * REPEAT,
-    total, disengaged, elapsed_ms: Date.now() - start,
-    timestamp: new Date().toISOString(),
-  },
-  scoreboard,
-  details: results,
-}, null, 2));
+writeFileSync(
+  join(OUT, "results.json"),
+  JSON.stringify(
+    {
+      meta: {
+        useAgent,
+        prompts: PROMPTS.length,
+        variants: VARIANTS,
+        repeat: REPEAT,
+        cells_per_variant: PROMPTS.length * REPEAT,
+        total,
+        disengaged,
+        elapsed_ms: Date.now() - start,
+        timestamp: new Date().toISOString(),
+      },
+      scoreboard,
+      details: results,
+    },
+    null,
+    2,
+  ),
+);
 
 console.log("\n===== SCOREBOARD =====");
 console.log(`(n=${REPEAT} per cell, ${PROMPTS.length} cells × ${VARIANTS.length} variants)`);
 for (const [variant, s] of Object.entries(scoreboard)) {
   const dea = s.dea_violation ? ` dea_med=${s.dea_violation.median.toExponential(2)}` : "";
-  console.log(`${variant.padEnd(16)} ${s.score}  med=${s.latency_ms.median}ms p95=${s.latency_ms.p95}ms${dea}`);
+  console.log(
+    `${variant.padEnd(16)} ${s.score}  med=${s.latency_ms.median}ms p95=${s.latency_ms.p95}ms${dea}`,
+  );
 }
-console.log(`\n[done] disengaged: ${disengaged}/${total}, elapsed: ${Math.round((Date.now() - start) / 1000)}s, output: ${OUT}`);
+console.log(
+  `\n[done] disengaged: ${disengaged}/${total}, elapsed: ${Math.round((Date.now() - start) / 1000)}s, output: ${OUT}`,
+);

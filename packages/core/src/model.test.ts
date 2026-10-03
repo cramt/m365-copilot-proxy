@@ -1,0 +1,83 @@
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { ModelSession } from "./model.js";
+import { CopilotSession } from "./session.js";
+import { getOrCreateAgent } from "./agent.js";
+
+vi.mock("./auth.js", () => ({ getToken: vi.fn(async () => "token") }));
+vi.mock("./agent.js", () => ({ getOrCreateAgent: vi.fn() }));
+vi.mock("./session.js", () => ({
+  CopilotSession: vi.fn(
+    class {
+      turnCount = 0;
+      chat = vi.fn(async () => ({}));
+    },
+  ),
+}));
+
+describe("ModelSession agent resolution", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.stubEnv("M365_DISABLE_AGENT", "");
+    vi.mocked(getOrCreateAgent).mockResolvedValue("agent-id");
+  });
+
+  afterEach(() => vi.unstubAllEnvs());
+
+  it("resolves lazily and reuses the result when running", async () => {
+    const session = new ModelSession();
+    expect(getOrCreateAgent).not.toHaveBeenCalled();
+    expect(await session.resolveAgent()).toBe("agent-id");
+    expect(await session.resolveAgent()).toBe("agent-id");
+    await session.run("hello");
+    expect(getOrCreateAgent).toHaveBeenCalledTimes(1);
+    expect(CopilotSession).toHaveBeenCalledWith(expect.objectContaining({ agentId: "agent-id" }));
+  });
+
+  it("caches unavailable agents", async () => {
+    vi.mocked(getOrCreateAgent).mockResolvedValue(null);
+    const session = new ModelSession();
+    expect(await session.resolveAgent()).toBeNull();
+    await session.run("hello");
+    expect(getOrCreateAgent).toHaveBeenCalledTimes(1);
+    expect(CopilotSession).toHaveBeenCalledWith(expect.objectContaining({ agentId: undefined }));
+  });
+
+  it("treats resolution errors as an unavailable agent", async () => {
+    vi.mocked(getOrCreateAgent).mockRejectedValue(new Error("unavailable"));
+    const session = new ModelSession();
+    expect(await session.resolveAgent()).toBeNull();
+    expect(await session.resolveAgent()).toBeNull();
+    expect(getOrCreateAgent).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not provision when the session disables agents", async () => {
+    const session = new ModelSession({ useAgent: false });
+    expect(await session.resolveAgent()).toBeNull();
+    await session.run("hello");
+    expect(getOrCreateAgent).not.toHaveBeenCalled();
+  });
+
+  it("does not provision or attach an agent when disabled by environment", async () => {
+    const session = new ModelSession();
+    await session.resolveAgent();
+    vi.stubEnv("M365_DISABLE_AGENT", "1");
+    expect(await session.resolveAgent()).toBeNull();
+    await session.run("hello");
+    expect(CopilotSession).toHaveBeenCalledWith(expect.objectContaining({ agentId: undefined }));
+    expect(getOrCreateAgent).toHaveBeenCalledTimes(1);
+  });
+
+  it("skips resolution for agent-less turns", async () => {
+    const session = new ModelSession();
+    await session.run("hello", "claude-sonnet", undefined, false);
+    expect(getOrCreateAgent).not.toHaveBeenCalled();
+  });
+
+  it("re-resolves after reset", async () => {
+    const session = new ModelSession();
+    await session.resolveAgent();
+    session.reset();
+    await session.resolveAgent();
+    expect(getOrCreateAgent).toHaveBeenCalledTimes(2);
+  });
+});

@@ -34,8 +34,12 @@ Available actions:
 {{ACTIONS}}`;
 
 /** Fill NATIVE_ACTION_INSTRUCTIONS with a concrete action list. */
-export function buildNativeActionPrompt(actions: Array<{ name: string; description?: string }>): string {
-  const list = actions.map((a) => `- ${a.name}${a.description ? ` — ${a.description}` : ""}`).join("\n");
+export function buildNativeActionPrompt(
+  actions: Array<{ name: string; description?: string }>,
+): string {
+  const list = actions
+    .map((a) => `- ${a.name}${a.description ? ` — ${a.description}` : ""}`)
+    .join("\n");
   return NATIVE_ACTION_INSTRUCTIONS.replace("{{ACTIONS}}", list || "- (none)");
 }
 
@@ -115,11 +119,15 @@ const AFFIRMATIVE = /allow|confirm|continue|proceed|yes|approve|run|send|ok/i;
 /** Pick the affirmative Action.Submit — its `data.message` (actionId + confirmationOption)
  *  AND its title. The decompiled client (bundle 5267fa4dfe8a `_`/`v`/`y`) uses the title
  *  as the resume message's `text`, matching the button by actionId+confirmationOption. */
-function pickAffirmative(actions: AdaptiveCardAction[]): { message: { actionId?: string; confirmationOption?: string }; title?: string } | null {
+function pickAffirmative(
+  actions: AdaptiveCardAction[],
+): { message: { actionId?: string; confirmationOption?: string }; title?: string } | null {
   const submits = actions.filter((a) => (a.type ?? "").includes("Submit") && a.data?.message);
   if (!submits.length) return null;
   // Prefer an explicit affirmative title; else the first non-negative; else the first.
-  const affirmative = submits.find((a) => AFFIRMATIVE.test(a.title ?? "") && !NEGATIVE.test(a.title ?? ""));
+  const affirmative = submits.find(
+    (a) => AFFIRMATIVE.test(a.title ?? "") && !NEGATIVE.test(a.title ?? ""),
+  );
   const nonNegative = submits.find((a) => !NEGATIVE.test(a.title ?? ""));
   const chosen = affirmative ?? nonNegative ?? submits[0];
   return { message: chosen.data!.message ?? {}, title: chosen.title };
@@ -130,7 +138,9 @@ function pickAffirmative(actions: AdaptiveCardAction[]): { message: { actionId?:
  * to resume it. Returns null for ordinary messages. Conservative: requires either an
  * action-confirm messageType/layout or an adaptive card carrying an actionId.
  */
-export function parseActionConfirmation(m: MaybeTriggerMessage | null | undefined): ActionConfirmation | null {
+export function parseActionConfirmation(
+  m: MaybeTriggerMessage | null | undefined,
+): ActionConfirmation | null {
   if (!m || typeof m !== "object") return null;
   const isConfirmType =
     (m.messageType && ACTION_CONFIRM_MESSAGE_TYPES.has(m.messageType)) ||
@@ -164,7 +174,10 @@ export interface ResumeInvokeOptions {
  * session.ts wraps this in the type-4 `chat` invocation envelope (same shape as a
  * normal turn, with this object as `message`).
  */
-export function buildResumeInvokeAction(conf: ActionConfirmation, opts: ResumeInvokeOptions = {}): Record<string, unknown> {
+export function buildResumeInvokeAction(
+  conf: ActionConfirmation,
+  opts: ResumeInvokeOptions = {},
+): Record<string, unknown> {
   // Exact shape of the decompiled client's `y()` (bundle 5267fa4dfe8a:28195): the
   // `text` is the affirmative button's TITLE (fallbacks: confirmationOption string,
   // then "confirmation response"), and confirmationOption is NOT a top-level field —
@@ -185,7 +198,10 @@ export function buildResumeInvokeAction(conf: ActionConfirmation, opts: ResumeIn
  * auto-approve those, and gate consequential ones behind M365_AUTO_CONFIRM_ACTIONS
  * so a mutating action never fires unattended unless explicitly opted in.
  */
-export function shouldAutoConfirm(conf: ActionConfirmation, env: { autoConfirmAll?: boolean } = {}): boolean {
+export function shouldAutoConfirm(
+  conf: ActionConfirmation,
+  env: { autoConfirmAll?: boolean } = {},
+): boolean {
   if (env.autoConfirmAll) return true;
   return !conf.isConsequential;
 }

@@ -1,4 +1,8 @@
-import { ChatCompletionRequest, handleChatCompletion } from "@m365-copilot/proxy-lib";
+import {
+  ChatCompletionRequest,
+  handleChatCompletion,
+  invalidRequestError,
+} from "@m365-copilot/proxy-lib";
 import { pool } from "../../../server-pool";
 import { logCompletionStatus, recordCompletionMetric, syncActiveSessions } from "../../../metrics";
 
@@ -6,7 +10,7 @@ function parseJsonOrNull(input: string | null): Record<string, unknown> | null {
   if (!input) return null;
   try {
     const parsed = JSON.parse(input);
-    return parsed && typeof parsed === "object" ? parsed as Record<string, unknown> : null;
+    return parsed && typeof parsed === "object" ? (parsed as Record<string, unknown>) : null;
   } catch {
     return null;
   }
@@ -30,15 +34,16 @@ export default defineEventHandler(async (event) => {
   const startedAt = Date.now();
   const requestId = crypto.randomUUID();
   let body: ReturnType<typeof ChatCompletionRequest.parse>;
-  const rawBody = await readBody(event);
-  const requestBodyBytes = Buffer.byteLength(typeof rawBody === "string" ? rawBody : JSON.stringify(rawBody ?? {}), "utf8");
+  let requestBodyBytes = 0;
   try {
+    const rawBody = await readBody(event);
+    requestBodyBytes = Buffer.byteLength(
+      typeof rawBody === "string" ? rawBody : JSON.stringify(rawBody ?? {}),
+      "utf8",
+    );
     body = ChatCompletionRequest.parse(rawBody);
   } catch (err: any) {
-    const response = new Response(
-      JSON.stringify({ error: { message: err.message, type: "invalid_request_error" } }),
-      { status: 400, headers: { "Content-Type": "application/json" } },
-    );
+    const response = invalidRequestError(err);
     const endedAt = Date.now();
     const latencyMs = endedAt - startedAt;
     const responseBytes = Buffer.byteLength(await response.clone().text(), "utf8");
@@ -87,8 +92,12 @@ export default defineEventHandler(async (event) => {
   const res = event.node?.res;
   if (req && res) {
     let finished = false;
-    res.once("finish", () => { finished = true; });
-    const maybeAbort = () => { if (!finished && !res.writableEnded) ac.abort(); };
+    res.once("finish", () => {
+      finished = true;
+    });
+    const maybeAbort = () => {
+      if (!finished && !res.writableEnded) ac.abort();
+    };
     req.once("close", maybeAbort);
     res.once("close", maybeAbort);
   }
@@ -98,7 +107,9 @@ export default defineEventHandler(async (event) => {
   let streamError: { type: string; message: string } | undefined;
   const response = await handleChatCompletion(body, pool, {
     signal: ac.signal,
-    onComplete: (_response, error) => { streamError = error; },
+    onComplete: (_response, error) => {
+      streamError = error;
+    },
   });
   async function recordResponse(responseBytesOverride?: number): Promise<void> {
     const endedAt = Date.now();
@@ -112,9 +123,13 @@ export default defineEventHandler(async (event) => {
     const streamHeader = parseBoolean(response.headers.get("x-proxy-stream"));
     let usedUsage = usage;
     let finish = finishReason;
-    let messageTypeFinal = messageType
-      || (usedUsage && typeof usedUsage.x_m365_message_type === "string" ? usedUsage.x_m365_message_type : null);
-    let responseBytes = responseBytesOverride ?? parseIntOrNull(response.headers.get("content-length"));
+    let messageTypeFinal =
+      messageType ||
+      (usedUsage && typeof usedUsage.x_m365_message_type === "string"
+        ? usedUsage.x_m365_message_type
+        : null);
+    let responseBytes =
+      responseBytesOverride ?? parseIntOrNull(response.headers.get("content-length"));
     let errorType: string | null = streamError?.type ?? null;
     let errorMessage: string | null = streamError?.message ?? null;
     let modelFinal = modelHeader;
@@ -123,14 +138,21 @@ export default defineEventHandler(async (event) => {
       const responseText = await response.clone().text();
       responseBytes = responseBytes ?? Buffer.byteLength(responseText, "utf8");
       const parsedBody = parseJsonOrNull(responseText);
-      const errorObj = parsedBody?.error && typeof parsedBody.error === "object"
-        ? parsedBody.error as Record<string, unknown>
-        : null;
-      const parsedUsage = parsedBody?.usage && typeof parsedBody.usage === "object"
-        ? parsedBody.usage as Record<string, unknown>
-        : null;
+      const errorObj =
+        parsedBody?.error && typeof parsedBody.error === "object"
+          ? (parsedBody.error as Record<string, unknown>)
+          : null;
+      const parsedUsage =
+        parsedBody?.usage && typeof parsedBody.usage === "object"
+          ? (parsedBody.usage as Record<string, unknown>)
+          : null;
       if (!usedUsage) usedUsage = parsedUsage;
-      if (!finish && parsedBody?.choices && Array.isArray(parsedBody.choices) && parsedBody.choices.length > 0) {
+      if (
+        !finish &&
+        parsedBody?.choices &&
+        Array.isArray(parsedBody.choices) &&
+        parsedBody.choices.length > 0
+      ) {
         const parsedFinish = parseJsonOrNull(JSON.stringify(parsedBody.choices[0]));
         if (parsedFinish && typeof parsedFinish.finish_reason === "string") {
           finish = parsedFinish.finish_reason;
@@ -142,56 +164,64 @@ export default defineEventHandler(async (event) => {
       errorType = errorObj && typeof errorObj.type === "string" ? errorObj.type : null;
       errorMessage = errorObj && typeof errorObj.message === "string" ? errorObj.message : null;
       modelFinal = coerceModel(parsedBody?.model, modelFinal);
+    }
+
+    if (responseBytes === null) {
+      responseBytes = 0;
+    }
+
+    logCompletionStatus({
+      requestId,
+      model: modelFinal,
+      stream: streamHeader,
+      statusCode: response.status,
+      latencyMs,
+      sessionId,
+      conversationId,
+      usage: usedUsage,
+      finishReason: finish,
+      messageType: messageTypeFinal,
+      errorType,
+      errorMessage,
+    });
+    recordCompletionMetric({
+      requestId,
+      startedAt,
+      endedAt,
+      latencyMs,
+      statusCode: response.status,
+      model: modelFinal,
+      stream: streamHeader,
+      sessionId,
+      conversationId,
+      usage: usedUsage,
+      finishReason: finish,
+      messageType: messageTypeFinal,
+      requestBodyBytes,
+      responseBytes,
+      errorType,
+      errorMessage,
+    });
+    syncActiveSessions(pool.getActiveConversations());
   }
 
-  if (responseBytes === null) {
-    responseBytes = 0;
-  }
-
-  logCompletionStatus({
-    requestId,
-    model: modelFinal,
-    stream: streamHeader,
-    statusCode: response.status,
-    latencyMs,
-    sessionId,
-    conversationId,
-    usage: usedUsage,
-    finishReason: finish,
-    messageType: messageTypeFinal,
-    errorType,
-    errorMessage,
-  });
-  recordCompletionMetric({
-    requestId,
-    startedAt,
-    endedAt,
-    latencyMs,
-    statusCode: response.status,
-    model: modelFinal,
-    stream: streamHeader,
-    sessionId,
-    conversationId,
-    usage: usedUsage,
-    finishReason: finish,
-    messageType: messageTypeFinal,
-    requestBodyBytes,
-    responseBytes,
-    errorType,
-    errorMessage,
-  });
-  syncActiveSessions(pool.getActiveConversations());
-  }
-
-  if (body.stream && response.body && response.headers.get("content-type")?.includes("text/event-stream")) {
+  if (
+    body.stream &&
+    response.body &&
+    response.headers.get("content-type")?.includes("text/event-stream")
+  ) {
     let responseBytes = 0;
-    const measuredStream = response.body.pipeThrough(new TransformStream<Uint8Array, Uint8Array>({
-      transform(chunk, controller) {
-        responseBytes += chunk.byteLength;
-        controller.enqueue(chunk);
-      },
-      async flush() { await recordResponse(responseBytes); },
-    }));
+    const measuredStream = response.body.pipeThrough(
+      new TransformStream<Uint8Array, Uint8Array>({
+        transform(chunk, controller) {
+          responseBytes += chunk.byteLength;
+          controller.enqueue(chunk);
+        },
+        async flush() {
+          await recordResponse(responseBytes);
+        },
+      }),
+    );
     return new Response(measuredStream, { status: response.status, headers: response.headers });
   }
 

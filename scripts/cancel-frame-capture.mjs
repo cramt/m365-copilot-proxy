@@ -31,12 +31,19 @@ mkdirSync(OUT, { recursive: true });
 const framesPath = join(OUT, "ws-frames.ndjson");
 
 const creds = loadSecrets();
-if (!creds) { console.log("no secrets"); process.exit(1); }
+if (!creds) {
+  console.log("no secrets");
+  process.exit(1);
+}
 
 const ROOT = process.cwd();
-const pwMod = await import(`${ROOT}/node_modules/.pnpm/playwright@1.58.2/node_modules/playwright/index.js`);
+const pwMod = await import(
+  `${ROOT}/node_modules/.pnpm/playwright@1.58.2/node_modules/playwright/index.js`
+);
 const chromium = pwMod.chromium ?? pwMod.default?.chromium;
-const { TOTP } = await import(`${ROOT}/node_modules/.pnpm/otpauth@9.5.0/node_modules/otpauth/dist/otpauth.esm.js`);
+const { TOTP } = await import(
+  `${ROOT}/node_modules/.pnpm/otpauth@9.5.0/node_modules/otpauth/dist/otpauth.esm.js`
+);
 
 const browser = await chromium.launch({
   headless: true,
@@ -55,17 +62,41 @@ let stopClickedAt = null;
 function recordFrame(direction, payload) {
   const t = Date.now();
   const isChatHub = true; // we only attach to the chathub ws below
-  const chunks = String(payload).split(RS).filter((c) => c.length);
+  const chunks = String(payload)
+    .split(RS)
+    .filter((c) => c.length);
   for (const c of chunks) {
-    let parsed = null, type = null, target = null;
-    try { parsed = JSON.parse(c); type = parsed.type; target = parsed.target; } catch {}
-    const rec = { i: frameIdx++, dir: direction, t, type, target, len: c.length, raw: c.slice(0, 4000) };
+    let parsed = null,
+      type = null,
+      target = null;
+    try {
+      parsed = JSON.parse(c);
+      type = parsed.type;
+      target = parsed.target;
+    } catch {}
+    const rec = {
+      i: frameIdx++,
+      dir: direction,
+      t,
+      type,
+      target,
+      len: c.length,
+      raw: c.slice(0, 4000),
+    };
     appendFileSync(framesPath, JSON.stringify(rec) + "\n");
     // Anything the client SENDS after we click Stop is a cancel candidate.
     if (direction === "send" && stopClickedAt && t >= stopClickedAt) {
-      sentAfterStopClick.push({ dt_after_stop_ms: t - stopClickedAt, type, target, raw: c.slice(0, 2000) });
+      sentAfterStopClick.push({
+        dt_after_stop_ms: t - stopClickedAt,
+        type,
+        target,
+        raw: c.slice(0, 2000),
+      });
     }
-    if (direction === "send") console.log(`[cap] →SEND type=${type} target=${target} len=${c.length}${stopClickedAt && t >= stopClickedAt ? "  <-- AFTER STOP" : ""}`);
+    if (direction === "send")
+      console.log(
+        `[cap] →SEND type=${type} target=${target} len=${c.length}${stopClickedAt && t >= stopClickedAt ? "  <-- AFTER STOP" : ""}`,
+      );
     else console.log(`[cap] ←recv type=${type} target=${target} len=${c.length}`);
   }
 }
@@ -81,7 +112,12 @@ ctx.on("websocket", (ws) => {
   ws.on("close", () => console.log("[cap] CHATHUB WS CLOSED"));
 });
 
-const shot = async (n) => { try { await ctx.screenshot({ path: join(OUT, `${n}.png`), fullPage: false }); writeFileSync(join(OUT, `${n}.url.txt`), ctx.url()); } catch {} };
+const shot = async (n) => {
+  try {
+    await ctx.screenshot({ path: join(OUT, `${n}.png`), fullPage: false });
+    writeFileSync(join(OUT, `${n}.url.txt`), ctx.url());
+  } catch {}
+};
 
 async function login() {
   const fill = async (sel, val) => {
@@ -89,15 +125,21 @@ async function login() {
     await loc.waitFor({ state: "visible", timeout: 30000 });
     await loc.fill(val);
   };
-  const submit = () => ctx.locator('input[type="submit"]:visible, button[type="submit"]:visible').first().click();
-  await fill('input[name="loginfmt"]', creds.email); await submit();
+  const submit = () =>
+    ctx.locator('input[type="submit"]:visible, button[type="submit"]:visible').first().click();
+  await fill('input[name="loginfmt"]', creds.email);
+  await submit();
   await ctx.waitForTimeout(2500);
-  await fill('input[name="passwd"]', creds.password); await submit();
+  await fill('input[name="passwd"]', creds.password);
+  await submit();
   await ctx.waitForTimeout(2500);
   const otp = new TOTP({ secret: creds.mfaSecret }).generate();
-  await fill('input[name="otc"]', otp); await submit();
+  await fill('input[name="otc"]', otp);
+  await submit();
   await ctx.waitForTimeout(2500);
-  try { await ctx.locator("#idSIButton9:visible").click({ timeout: 8000 }); } catch {}
+  try {
+    await ctx.locator("#idSIButton9:visible").click({ timeout: 8000 });
+  } catch {}
 }
 
 // Try hard to find the chat composer across the various BizChat surfaces.
@@ -107,13 +149,17 @@ async function findComposer() {
     'textarea[placeholder*="Message" i]',
     'textarea[placeholder*="Ask" i]',
     'div[contenteditable="true"]',
-    'textarea',
+    "textarea",
     '[role="textbox"]',
   ];
   for (const sel of cands) {
     const loc = ctx.locator(`${sel}:visible`).first();
     if (await loc.count().catch(() => 0)) {
-      try { await loc.waitFor({ state: "visible", timeout: 4000 }); console.log(`[cap] composer: ${sel}`); return loc; } catch {}
+      try {
+        await loc.waitFor({ state: "visible", timeout: 4000 });
+        console.log(`[cap] composer: ${sel}`);
+        return loc;
+      } catch {}
     }
   }
   return null;
@@ -130,16 +176,25 @@ async function findStop() {
   ];
   for (const sel of cands) {
     const loc = ctx.locator(`${sel}:visible`).first();
-    if (await loc.count().catch(() => 0)) { console.log(`[cap] stop btn: ${sel}`); return loc; }
+    if (await loc.count().catch(() => 0)) {
+      console.log(`[cap] stop btn: ${sel}`);
+      return loc;
+    }
   }
   return null;
 }
 
 try {
   // The Copilot chat surface. Try the dedicated chat host first.
-  for (const target of ["https://m365.cloud.microsoft/chat", "https://m365.cloud.microsoft/", "https://www.office.com/chat"]) {
+  for (const target of [
+    "https://m365.cloud.microsoft/chat",
+    "https://m365.cloud.microsoft/",
+    "https://www.office.com/chat",
+  ]) {
     console.log(`[cap] goto ${target}`);
-    await ctx.goto(target, { waitUntil: "domcontentloaded", timeout: 60000 }).catch((e) => console.log("  goto err", e.message));
+    await ctx
+      .goto(target, { waitUntil: "domcontentloaded", timeout: 60000 })
+      .catch((e) => console.log("  goto err", e.message));
     await ctx.waitForTimeout(3000);
     if (/login\.microsoftonline|\/oauth2|signin/i.test(ctx.url())) {
       console.log("[cap] AAD login...");
@@ -148,17 +203,27 @@ try {
     }
     await ctx.waitForTimeout(4000);
     const composer = await findComposer();
-    if (composer) { await shot("01-chat-ready"); var THE_COMPOSER = composer; break; }
+    if (composer) {
+      await shot("01-chat-ready");
+      var THE_COMPOSER = composer;
+      break;
+    }
     await shot(`00-no-composer-${target.replace(/\W+/g, "_")}`);
   }
 
-  if (!THE_COMPOSER) { console.log("[cap] no composer found on any surface — see screenshots"); throw new Error("no composer"); }
+  if (!THE_COMPOSER) {
+    console.log("[cap] no composer found on any surface — see screenshots");
+    throw new Error("no composer");
+  }
 
   // Send a prompt that generates for a while, so we have time to hit Stop.
-  const PROMPT = "Write an extremely detailed, very long essay (at least 3000 words) about the complete history of cathedral construction in medieval Europe. Use long continuous prose with many paragraphs.";
+  const PROMPT =
+    "Write an extremely detailed, very long essay (at least 3000 words) about the complete history of cathedral construction in medieval Europe. Use long continuous prose with many paragraphs.";
   console.log("[cap] typing prompt...");
   await THE_COMPOSER.click();
-  await THE_COMPOSER.fill(PROMPT).catch(async () => { await THE_COMPOSER.type(PROMPT); });
+  await THE_COMPOSER.fill(PROMPT).catch(async () => {
+    await THE_COMPOSER.type(PROMPT);
+  });
   await ctx.waitForTimeout(500);
   await ctx.keyboard.press("Enter");
   console.log("[cap] submitted; waiting for generation to start...");
@@ -179,9 +244,19 @@ try {
     console.log("[cap] !! no Stop button found — capturing screenshot for selector discovery");
     await shot("03-no-stop-button");
     // Dump the visible button landscape to help find the selector next time.
-    const btns = await ctx.locator("button:visible").evaluateAll(
-      (els) => els.map((e) => ({ aria: e.getAttribute("aria-label"), title: e.getAttribute("title"), txt: (e.textContent || "").trim().slice(0, 30), testid: e.getAttribute("data-testid") })).filter((b) => b.aria || b.title || b.txt || b.testid)
-    ).catch(() => []);
+    const btns = await ctx
+      .locator("button:visible")
+      .evaluateAll((els) =>
+        els
+          .map((e) => ({
+            aria: e.getAttribute("aria-label"),
+            title: e.getAttribute("title"),
+            txt: (e.textContent || "").trim().slice(0, 30),
+            testid: e.getAttribute("data-testid"),
+          }))
+          .filter((b) => b.aria || b.title || b.txt || b.testid),
+      )
+      .catch(() => []);
     writeFileSync(join(OUT, "visible-buttons.json"), JSON.stringify(btns, null, 2));
     console.log(`[cap] dumped ${btns.length} visible buttons → visible-buttons.json`);
   }
@@ -189,15 +264,25 @@ try {
   console.log("[cap] error:", e.message);
   await shot("99-error");
 } finally {
-  writeFileSync(join(OUT, "cancel-candidates.json"), JSON.stringify({
-    chatHubSeen,
-    stopClicked: stopClickedAt != null,
-    framesAfterStop: sentAfterStopClick,
-  }, null, 2));
+  writeFileSync(
+    join(OUT, "cancel-candidates.json"),
+    JSON.stringify(
+      {
+        chatHubSeen,
+        stopClicked: stopClickedAt != null,
+        framesAfterStop: sentAfterStopClick,
+      },
+      null,
+      2,
+    ),
+  );
   console.log(`\n[cap] === SUMMARY ===`);
   console.log(`[cap] chathub ws seen: ${chatHubSeen}`);
   console.log(`[cap] frames sent AFTER stop click: ${sentAfterStopClick.length}`);
-  for (const f of sentAfterStopClick) console.log(`   +${f.dt_after_stop_ms}ms type=${f.type} target=${f.target}: ${f.raw.slice(0, 200)}`);
+  for (const f of sentAfterStopClick)
+    console.log(
+      `   +${f.dt_after_stop_ms}ms type=${f.type} target=${f.target}: ${f.raw.slice(0, 200)}`,
+    );
   console.log(`[cap] full capture: ${OUT}`);
   await browser.close();
 }

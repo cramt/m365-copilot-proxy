@@ -6,7 +6,9 @@ function setup(overrides: Record<string, unknown> = {}) {
   const slept: number[] = [];
   const controller = createBackoffController({
     now: () => t,
-    sleep: async (ms: number) => { slept.push(ms); },
+    sleep: async (ms: number) => {
+      slept.push(ms);
+    },
     rng: () => 0, // deterministic: jitter lands at jitterMinMs
     windowMs: 1000,
     threshold: 3,
@@ -16,10 +18,44 @@ function setup(overrides: Record<string, unknown> = {}) {
     jitterMaxMs: 100,
     ...overrides,
   });
-  return { controller, slept, advance: (ms: number) => { t += ms; } };
+  return {
+    controller,
+    slept,
+    advance: (ms: number) => {
+      t += ms;
+    },
+  };
 }
 
 describe("createBackoffController", () => {
+  it("starts backoff on the first explicit throttle and exposes a decreasing retry delay", () => {
+    const { controller, advance } = setup();
+    expect(controller.retryAfterSeconds()).toBe(0);
+    controller.noteThrottle();
+    expect(controller.isBackingOff()).toBe(true);
+    expect(controller.retryAfterSeconds()).toBe(5);
+    advance(1001);
+    expect(controller.retryAfterSeconds()).toBe(4);
+    controller.noteThrottle();
+    expect(controller.retryAfterSeconds()).toBe(4);
+    advance(3999);
+    expect(controller.retryAfterSeconds()).toBe(0);
+    controller.noteThrottle();
+    expect(controller.retryAfterSeconds()).toBe(10);
+    controller.note(false, "recovered");
+    expect(controller.retryAfterSeconds()).toBe(0);
+  });
+
+  it("caps repeated explicit throttle backoff windows", () => {
+    const { controller, advance } = setup({ maxCooldownMs: 10000 });
+    controller.noteThrottle();
+    advance(5000);
+    controller.noteThrottle();
+    advance(10000);
+    controller.noteThrottle();
+    expect(controller.retryAfterSeconds()).toBe(10);
+  });
+
   it("does not back off below the distinct-conversation threshold", async () => {
     const { controller, slept } = setup();
     controller.note(true, "c1");
