@@ -59,7 +59,7 @@ for (const model of models) {
       const c = all.find(
         (x) => x.model === model && x.promptSize === prompt && x.toolPreset === preset,
       );
-      line += (c ? fmt(cellStat(c)) : "    –     ") + " ";
+      line += `${c ? fmt(cellStat(c)) : "    –     "} `;
     }
     console.log(line);
   }

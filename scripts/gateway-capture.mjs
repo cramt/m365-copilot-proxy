@@ -30,7 +30,7 @@ function jwtAud(auth) {
     const t = auth.replace(/^Bearer\s+/i, "");
     const p = JSON.parse(
       Buffer.from(
-        t.split(".")[1].replace(/-/g, "+").replace(/_/g, "/") + "==",
+        `${t.split(".")[1].replace(/-/g, "+").replace(/_/g, "/")}==`,
         "base64",
       ).toString(),
     );
@@ -53,8 +53,8 @@ const interesting = /island\.powerapps\.com|powervamg|botmanagement|gateway\.pro
 page.on("request", (req) => {
   const u = req.url();
   if (!interesting.test(u)) return;
-  const auth = req.headers()["authorization"];
-  const key = req.method() + " " + u.split("?")[0];
+  const auth = req.headers().authorization;
+  const key = `${req.method()} ${u.split("?")[0]}`;
   if (!gatewayCalls.has(key)) {
     gatewayCalls.set(key, {
       method: req.method(),
@@ -87,7 +87,9 @@ async function login() {
   await page.waitForTimeout(2500);
   try {
     await page.locator("#idSIButton9:visible").click({ timeout: 8000 });
-  } catch {}
+  } catch (error) {
+    void error;
+  }
 }
 
 try {
@@ -101,16 +103,22 @@ try {
     console.log("[gw] login...");
     await login();
   }
-  await page.waitForLoadState("networkidle", { timeout: 60000 }).catch(() => {});
+  await page.waitForLoadState("networkidle", { timeout: 60000 }).catch((error) => {
+    void error;
+  });
   await page.waitForTimeout(6000);
   // Click into "Agents" to trigger more gateway calls
   for (const sel of ["text=/agents/i", "text=/create/i"]) {
     try {
       await page.locator(sel).first().click({ timeout: 5000 });
       await page.waitForTimeout(5000);
-    } catch {}
+    } catch (error) {
+      void error;
+    }
   }
-  await page.waitForLoadState("networkidle", { timeout: 30000 }).catch(() => {});
+  await page.waitForLoadState("networkidle", { timeout: 30000 }).catch((error) => {
+    void error;
+  });
   await page.waitForTimeout(4000);
 } catch (e) {
   console.log("[gw] err", e.message);

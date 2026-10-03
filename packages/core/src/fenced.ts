@@ -135,7 +135,7 @@ export function deriveFencedSpec(tool: ToolDef): FencedToolSpec {
   const props = Object.keys(propsSchema);
 
   const parameterTypes = Object.fromEntries(
-    Object.entries(propsSchema).map(([k, v]: any) => [k, v?.type ?? "string"]),
+    Object.entries(propsSchema).map(([key, value]) => [key, value.type ?? "string"]),
   );
 
   const search = props.find((p) => SEARCH_KEYS.includes(p));
@@ -171,9 +171,11 @@ export function buildSpecMap(tools: ToolDef[]): Map<string, FencedToolSpec> {
   // harness still receives a structured tool_call under its own tool's name.
   const shell = findShellTool(tools);
   if (shell) {
-    const shellSpec = m.get(shell.function.name)!;
-    for (const lang of SHELL_LANGS) {
-      if (!m.has(lang)) m.set(lang, shellSpec);
+    const shellSpec = m.get(shell.function.name);
+    if (shellSpec) {
+      for (const lang of SHELL_LANGS) {
+        if (!m.has(lang)) m.set(lang, shellSpec);
+      }
     }
   }
   return m;
@@ -193,17 +195,19 @@ export function renderFencedCall(spec: FencedToolSpec, args: Record<string, unkn
   }
 
   if (spec.editPair) {
-    lines.push("<<<<<<< SEARCH");
-    lines.push(scalarToString(args[spec.editPair.search]));
-    lines.push("=======");
-    lines.push(scalarToString(args[spec.editPair.replace]));
-    lines.push(">>>>>>> REPLACE");
+    lines.push(
+      "<<<<<<< SEARCH",
+      scalarToString(args[spec.editPair.search]),
+      "=======",
+      scalarToString(args[spec.editPair.replace]),
+      ">>>>>>> REPLACE",
+    );
   } else if (spec.bodyParam !== undefined) {
     if (lines.length) lines.push(""); // blank line separates header from body
     lines.push(scalarToString(args[spec.bodyParam]));
   }
 
-  return "```" + spec.name + "\n" + lines.join("\n") + "\n```";
+  return `\`\`\`${spec.name}\n${lines.join("\n")}\n\`\`\``;
 }
 
 /** A self-documenting template shown in the per-request <tools> block. */
@@ -211,11 +215,13 @@ function renderFencedTemplate(spec: FencedToolSpec): string {
   const lines: string[] = [];
   for (const h of spec.headerParams) lines.push(`${h}: <${h}>`);
   if (spec.editPair) {
-    lines.push("<<<<<<< SEARCH");
-    lines.push(`<${spec.editPair.search}>`);
-    lines.push("=======");
-    lines.push(`<${spec.editPair.replace}>`);
-    lines.push(">>>>>>> REPLACE");
+    lines.push(
+      "<<<<<<< SEARCH",
+      `<${spec.editPair.search}>`,
+      "=======",
+      `<${spec.editPair.replace}>`,
+      ">>>>>>> REPLACE",
+    );
   } else if (spec.bodyParam !== undefined) {
     if (lines.length) lines.push("");
     lines.push(`<${spec.bodyParam}>`);
@@ -855,7 +861,7 @@ function coerceHeaderValue(value: string, declaredType: string | undefined): unk
     case "array": {
       if (value === "") return [];
       try {
-        const parsed = JSON.parse(value);
+        const parsed: unknown = JSON.parse(value);
         // JSON.parse("5") succeeds and yields a number — which would ship a
         // non-array for an array-typed param, the exact class of bug this
         // function exists to prevent.
@@ -926,9 +932,7 @@ export function parseFencedToolCalls(
   const calls: ParsedToolCall[] = [];
   let leftover = text;
 
-  const re = new RegExp(FENCE_REGEX.source, "g");
-  let match: RegExpExecArray | null;
-  while ((match = re.exec(text)) !== null) {
+  for (const match of text.matchAll(new RegExp(FENCE_REGEX.source, "g"))) {
     const spec = specs.get(match[1]);
     if (!spec) continue; // ```python illustration etc. — not a tool, leave in prose
     const args = parseFencedInner(spec, match[2]);
@@ -946,9 +950,7 @@ export function findFirstToolFence(
   text: string,
   specs: Map<string, FencedToolSpec>,
 ): { start: number; end: number } | null {
-  const re = new RegExp(FENCE_REGEX.source, "g");
-  let match: RegExpExecArray | null;
-  while ((match = re.exec(text)) !== null) {
+  for (const match of text.matchAll(new RegExp(FENCE_REGEX.source, "g"))) {
     const spec = specs.get(match[1]);
     if (spec && parseFencedInner(spec, match[2]))
       return { start: match.index, end: match.index + match[0].length };

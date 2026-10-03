@@ -103,14 +103,20 @@ const FENCED_TOOL_CALL_REGEX = /```tool_call\s*\n(\{[\s\S]*?\})\s*\n\s*```/g;
 const CONFIDENCE_REGEX = /\{\s*"confidence"\s*:\s*-?[0-9.]+\s*\}/g;
 const FINAL_OBJECT_REGEX = /\{\s*"final"\s*:\s*"(?:[^"\\]|\\.)*"\s*\}/g;
 
+function isJsonObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
 /** Strip invented confidence/final objects from a no-tool-call response and
  *  unwrap a lone {"final": "..."} answer into bare text. Returns null if empty. */
 function cleanLooseText(text: string): string | null {
   let out = text;
   for (const m of out.match(FINAL_OBJECT_REGEX) ?? []) {
     try {
-      const value = JSON.parse(m).final;
-      if (typeof value === "string") out = out.replace(m, value);
+      const parsed: unknown = JSON.parse(m);
+      if (isJsonObject(parsed) && typeof parsed.final === "string") {
+        out = out.replace(m, parsed.final);
+      }
     } catch {
       // leave the literal text in place if it isn't valid JSON
     }
@@ -150,7 +156,8 @@ export function getMessageContent(msg: Message): string {
 function toolCallSummary(rawArgs: string): string {
   let args: Record<string, unknown> = {};
   try {
-    args = typeof rawArgs === "string" ? JSON.parse(rawArgs || "{}") : (rawArgs ?? {});
+    const parsed: unknown = JSON.parse(rawArgs || "{}");
+    if (isJsonObject(parsed)) args = parsed;
   } catch {
     return "";
   }
@@ -253,7 +260,8 @@ export function formatMessages(
           const rawArgs = tc.function.arguments;
           let argsObj: Record<string, unknown> = {};
           try {
-            argsObj = typeof rawArgs === "string" ? JSON.parse(rawArgs || "{}") : (rawArgs ?? {});
+            const parsed: unknown = JSON.parse(rawArgs || "{}");
+            if (isJsonObject(parsed)) argsObj = parsed;
           } catch {
             // fall through with empty args; better than crashing the transcript
           }
@@ -276,7 +284,7 @@ export function formatMessages(
         })
         .join("\n");
       const content = getMessageContent(m);
-      parts.push(`<assistant>${content ? "\n" + content : ""}\n${calls}\n</assistant>`);
+      parts.push(`<assistant>${content ? `\n${content}` : ""}\n${calls}\n</assistant>`);
     } else if (m.role === "tool") {
       const meta = m.tool_call_id ? callMeta.get(m.tool_call_id) : undefined;
       const name = m.name || meta?.name || "tool";
@@ -547,22 +555,24 @@ export function parseToolCalls(text: string, tools?: ToolDef[]): ParseResult {
 
   // Tolerance fallback: a stray JSON tool call {"tool": "...", "arguments": {...}}
   const jsonRegex = new RegExp(TOOL_CALL_REGEX.source, "g");
-  let match: RegExpExecArray | null;
-
-  while ((match = jsonRegex.exec(text)) !== null) {
+  while (true) {
+    const match = jsonRegex.exec(text);
+    if (match === null) break;
     try {
-      const parsed = JSON.parse(match[0]);
+      const parsed: unknown = JSON.parse(match[0]);
+      if (!isJsonObject(parsed)) continue;
       const name = resolveName(parsed.tool);
       if (name) {
+        const parsedArguments = parsed.arguments;
         toolCalls.push({
           id: `call_${crypto.randomUUID().replace(/-/g, "").slice(0, 24)}`,
           type: "function",
           function: {
             name,
             arguments:
-              typeof parsed.arguments === "string"
-                ? parsed.arguments
-                : JSON.stringify(parsed.arguments ?? {}),
+              typeof parsedArguments === "string"
+                ? parsedArguments
+                : JSON.stringify(parsedArguments ?? {}),
           },
         });
       }
@@ -574,20 +584,24 @@ export function parseToolCalls(text: string, tools?: ToolDef[]): ParseResult {
   // Fallback: try legacy fenced format
   if (toolCalls.length === 0) {
     const fencedRegex = new RegExp(FENCED_TOOL_CALL_REGEX.source, "g");
-    while ((match = fencedRegex.exec(text)) !== null) {
+    while (true) {
+      const match = fencedRegex.exec(text);
+      if (match === null) break;
       try {
-        const parsed = JSON.parse(match[1]);
+        const parsed: unknown = JSON.parse(match[1]);
+        if (!isJsonObject(parsed)) continue;
         const name = resolveName(parsed.tool || parsed.name);
         if (name) {
+          const parsedArguments = parsed.arguments;
           toolCalls.push({
             id: `call_${crypto.randomUUID().replace(/-/g, "").slice(0, 24)}`,
             type: "function",
             function: {
               name,
               arguments:
-                typeof parsed.arguments === "string"
-                  ? parsed.arguments
-                  : JSON.stringify(parsed.arguments ?? {}),
+                typeof parsedArguments === "string"
+                  ? parsedArguments
+                  : JSON.stringify(parsedArguments ?? {}),
             },
           });
         }
@@ -607,7 +621,7 @@ export function parseToolCalls(text: string, tools?: ToolDef[]): ParseResult {
   // behind so they aren't mistaken for real assistant prose. Also drop the
   // invented confidence/final objects so a premature "✅ SUCCESS" never reaches
   // the client and a junk-only leftover isn't flagged as mixed output.
-  let remaining = text
+  const remaining = text
     .replace(jsonRegex, "")
     .replace(new RegExp(FENCED_TOOL_CALL_REGEX.source, "g"), "")
     .replace(CONFIDENCE_REGEX, "")

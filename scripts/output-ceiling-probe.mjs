@@ -99,10 +99,11 @@ async function run(target, mode) {
     error: r.error,
   };
   results.push(row);
+  const errorPrefix = "ERR=";
   console.log(
     `[out-probe] target=${target} mode=${mode} → contiguousTo=${a.contiguousTo} (${row.reached_pct}%) ` +
-      `chars=${a.chars} maxInt=${a.maxIntSeen} disengaged=${r.disengaged} ` +
-      `${r.error ? "ERR=" + r.error : ""} ${r.elapsedMs}ms`,
+    `chars=${a.chars} maxInt=${a.maxIntSeen} disengaged=${r.disengaged} ` +
+    `${r.error ? errorPrefix + r.error : ""} ${r.elapsedMs}ms`,
   );
   if (a.contiguousTo < target)
     console.log(`           tail: …${a.tailSample.replace(/\n/g, "\\n").slice(-100)}`);

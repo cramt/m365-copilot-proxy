@@ -23,7 +23,9 @@ function log(line) {
   process.stdout.write(s);
   try {
     appendFileSync(LOG, s);
-  } catch {}
+  } catch (error) {
+    void error;
+  }
 }
 
 // PUBLIC_URL is injected by the launcher once the tunnel is up.
@@ -84,7 +86,9 @@ const server = createServer((req, res) => {
       let msg = {};
       try {
         msg = JSON.parse(body);
-      } catch {}
+      } catch (error) {
+        void error;
+      }
       const reply = (result) => {
         res.writeHead(200, { "Content-Type": "application/json" });
         res.end(JSON.stringify({ jsonrpc: "2.0", id: msg.id ?? null, result }));

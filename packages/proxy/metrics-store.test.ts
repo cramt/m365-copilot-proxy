@@ -9,6 +9,12 @@ vi.mock("node:sqlite", async (importOriginal) => {
   return {
     ...actual,
     DatabaseSync: vi.fn(function () {
+      if (new.target === undefined) {
+        throw new Error("DatabaseSync must be constructed");
+      }
+      if (sqlite.database === null) {
+        throw new Error("In-memory SQLite database is not initialized");
+      }
       return sqlite.database;
     }),
   };
@@ -59,7 +65,10 @@ function throttle(endedAt: number, statusCode = 429): RequestMetricInput {
 }
 
 beforeEach(() => {
-  sqlite.database!.exec("DELETE FROM request_metrics");
+  if (sqlite.database === null) {
+    throw new Error("In-memory SQLite database is not initialized");
+  }
+  sqlite.database.exec("DELETE FROM request_metrics");
 });
 afterAll(() => {
   sqlite.database?.close();

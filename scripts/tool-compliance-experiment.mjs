@@ -99,7 +99,7 @@ function formatVariant(variant, messages) {
 
   if (variant === "baseline") {
     const tools = TOOLS;
-    return formatToolDefinitions(tools) + `\n\n<user>\n${userMsg}\n</user>`;
+    return `${formatToolDefinitions(tools)}\n\n<user>\n${userMsg}\n</user>`;
   }
 
   if (variant === "no_caps") {
@@ -135,7 +135,7 @@ ${userMsg}
     // formatToolDefinitions doesn't include a few-shot directly — but our
     // production proxy adds one via tools.ts's formatMessages. This variant
     // uses ONLY the definitions, no example.
-    return formatToolDefinitions(TOOLS) + `\n\n<user>\n${userMsg}\n</user>`;
+    return `${formatToolDefinitions(TOOLS)}\n\n<user>\n${userMsg}\n</user>`;
   }
 
   if (variant === "with_reply") {
@@ -292,12 +292,12 @@ for (const variant of VARIANTS) {
     },
     dea_violation: deas.length
       ? {
-          median: median(deas),
-          p95: p95(deas),
-          min: Math.min(...deas),
-          max: Math.max(...deas),
-          n: deas.length,
-        }
+        median: median(deas),
+        p95: p95(deas),
+        min: Math.min(...deas),
+        max: Math.max(...deas),
+        n: deas.length,
+      }
       : null,
     verdicts: v.map((r) => r.verdict),
   };

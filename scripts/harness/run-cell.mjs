@@ -107,7 +107,9 @@ const dexec = (cid, cmd, ms = 30000) =>
 const rmContainer = (cid) => {
   try {
     execSync(`docker rm -f ${cid}`, { stdio: "ignore" });
-  } catch {}
+  } catch (error) {
+    void error;
+  }
 };
 
 const OUT = join(process.cwd(), "scripts", "harness", "out");
@@ -118,7 +120,7 @@ function execTool(name, a, sandbox, cid) {
   try {
     if (name === "bash") {
       const r = dexec(cid, a.command ?? "");
-      return `exit=${r.status ?? "null"}\n${r.stdout || ""}${r.stderr ? "\n[stderr]\n" + r.stderr : ""}`.slice(
+      return `exit=${r.status ?? "null"}\n${r.stdout || ""}${r.stderr ? `\n[stderr]\n${r.stderr}` : ""}`.slice(
         0,
         4000,
       );
@@ -178,7 +180,9 @@ async function chat(messages) {
     let j = null;
     try {
       j = JSON.parse(text);
-    } catch {}
+    } catch (error) {
+      void error;
+    }
     // Disengaged = the M365 safety filter refused. The proxy surfaces it as a 502 with
     // type "disengaged" (or the message mentions it). This is the big-prompt death mode.
     const disengaged = res.status === 502 && /disengag/i.test(text);
@@ -264,7 +268,9 @@ async function runTask(task, rep) {
         let a = {};
         try {
           a = JSON.parse(tc.function.arguments || "{}");
-        } catch {}
+        } catch (error) {
+          void error;
+        }
         messages.push({
           role: "tool",
           tool_call_id: tc.id,
@@ -283,7 +289,9 @@ async function runTask(task, rep) {
   rmContainer(cid);
   try {
     rmSync(sandbox, { recursive: true, force: true });
-  } catch {}
+  } catch (error) {
+    void error;
+  }
   const outcome = disengaged
     ? "DISENGAGED"
     : solved
@@ -319,7 +327,7 @@ for (let rep = 0; rep < REPEAT; rep++)
     const r = await runTask(task, rep);
     rows.push(r);
     console.log(
-      `  ${r.task.padEnd(13)} ${r.outcome.padEnd(14)} t1=${r.compliedTurn1 ? "Y" : "·"} tools=${r.toolTurns} ${Math.round(r.elapsedMs / 1000)}s ${r.error ? "(" + r.error.slice(0, 60) + ")" : ""}`,
+      `  ${r.task.padEnd(13)} ${r.outcome.padEnd(14)} t1=${r.compliedTurn1 ? "Y" : "·"} tools=${r.toolTurns} ${Math.round(r.elapsedMs / 1000)}s ${r.error ? `(${r.error.slice(0, 60)})` : ""}`,
     );
     await new Promise((r) => setTimeout(r, 1200));
   }

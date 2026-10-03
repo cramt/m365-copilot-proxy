@@ -22,6 +22,14 @@ export const ToolDefinition = z.object({
   }),
 });
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === "object";
+}
+
+function isUnknownArray(value: unknown): value is unknown[] {
+  return Array.isArray(value);
+}
+
 export const ChatMessage = z.object({
   // `developer` is OpenAI's reasoning-model role — it replaces `system` for o1/
   // gpt-5-class reasoning models, and clients like Hermes emit it when pointed at
@@ -53,18 +61,16 @@ export const ChatMessage = z.object({
  * derived from message position so the same history always maps the same way.
  */
 function normalizeLegacyFunctions(input: unknown): unknown {
-  if (!input || typeof input !== "object" || Array.isArray(input)) return input;
-  const raw = input as Record<string, unknown>;
+  if (!isRecord(input) || Array.isArray(input)) return input;
+  const raw = input;
   const usesLegacy =
     raw.functions !== undefined ||
     raw.function_call !== undefined ||
-    (Array.isArray(raw.messages) &&
+    (isUnknownArray(raw.messages) &&
       raw.messages.some(
         (m) =>
-          m &&
-          typeof m === "object" &&
-          ((m as Record<string, unknown>).role === "function" ||
-            (m as Record<string, unknown>).function_call !== undefined),
+          isRecord(m) &&
+          (m.role === "function" || m.function_call !== undefined),
       ));
   if (!usesLegacy) return input;
 
@@ -72,22 +78,22 @@ function normalizeLegacyFunctions(input: unknown): unknown {
   delete out.functions;
   delete out.function_call;
   if (raw.functions !== undefined && raw.tools === undefined) {
-    out.tools = Array.isArray(raw.functions)
+    out.tools = isUnknownArray(raw.functions)
       ? raw.functions.map((fn) => ({ type: "function", function: fn }))
       : raw.functions;
   }
   if (raw.function_call !== undefined && raw.tool_choice === undefined) {
     const fc = raw.function_call;
     out.tool_choice =
-      fc && typeof fc === "object" && "name" in fc
-        ? { type: "function", function: { name: (fc as { name: unknown }).name } }
+      isRecord(fc) && "name" in fc
+        ? { type: "function", function: { name: fc.name } }
         : fc;
   }
-  if (Array.isArray(raw.messages)) {
+  if (isUnknownArray(raw.messages)) {
     let lastCallId: string | undefined;
     out.messages = raw.messages.map((m, i) => {
-      if (!m || typeof m !== "object") return m;
-      const msg = m as Record<string, unknown>;
+      if (!isRecord(m)) return m;
+      const msg = m;
       if (msg.role === "assistant" && msg.function_call && !msg.tool_calls) {
         const { function_call, ...rest } = msg;
         lastCallId = `call_legacy_${i}`;

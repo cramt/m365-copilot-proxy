@@ -3,7 +3,7 @@ import { readFileSync, writeFileSync, mkdirSync } from "node:fs";
 import { getToken, decodeJwt } from "../packages/core/dist/index.mjs";
 import { oneTurn } from "./_probe-chat.mjs";
 
-const SENTINEL = readFileSync("scripts/sentinel-value.txt", "utf8").trim();
+void readFileSync("scripts/sentinel-value.txt", "utf8").trim();
 const CODE_INTERP = [
   "cwc_code_interpreter",
   "cwc_code_interpreter_amsfix",

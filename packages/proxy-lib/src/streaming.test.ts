@@ -24,18 +24,18 @@ vi.mock("@m365-copilot/core", async (importActual) => {
     turnCount = 0;
     sessionId = "session-test";
     conversationId = "conv-test";
-    reset() {}
+    reset() { }
     newConversation() {
       this.conversationId = "conv-test-2";
     }
-    async refreshAgent() {
-      return false;
+    refreshAgent() {
+      return Promise.resolve(false);
     }
-    async resolveAgent() {
+    resolveAgent() {
       scripted.resolutions++;
-      return scripted.agentId === undefined ? "agent-test" : scripted.agentId;
+      return Promise.resolve(scripted.agentId === undefined ? "agent-test" : scripted.agentId);
     }
-    async run(text: string, _model?: string, _signal?: AbortSignal, useAgent?: boolean) {
+    run(text: string, _model?: string, _signal?: AbortSignal, useAgent?: boolean) {
       this.turnCount++; // like the real session: later requests go down the delta path
       scripted.runs++;
       scripted.texts.push(text);
@@ -50,7 +50,7 @@ vi.mock("@m365-copilot/core", async (importActual) => {
         images: [],
         throttle: { current: 1, max: 600 },
         contentOrigin: "Claude",
-        messageType: (next?.messageType ?? null) as string | null,
+        messageType: next?.messageType ?? null,
         messageId: "m1",
         scores: null,
         turnCount: 1,
@@ -62,18 +62,86 @@ vi.mock("@m365-copilot/core", async (importActual) => {
           }
         },
       };
-      return stream;
+      return Promise.resolve(stream);
     }
   }
   return {
     ...actual,
     ModelSession: FakeModelSession,
-    awaitDegradationBackoff: vi.fn(async () => {}),
+    awaitDegradationBackoff: vi.fn(() => Promise.resolve()),
   };
 });
 
 const { handleChatCompletion, SessionPool, ChatCompletionRequest } = await import("./index.js");
 const { noteRequestOutcome } = await import("@m365-copilot/core");
+type JsonObject = Record<string, unknown>;
+type RequestMessage = ReturnType<typeof ChatCompletionRequest.parse>["messages"][number];
+type ToolCall = {
+  id: string;
+  type: "function";
+  function: { name: string; arguments: string };
+};
+
+function parseJson(text: string): unknown {
+  return JSON.parse(text) as unknown;
+}
+
+function isJsonObject(value: unknown): value is JsonObject {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+function asObject(value: unknown): JsonObject {
+  if (!isJsonObject(value)) throw new TypeError("Expected a JSON object");
+  return value;
+}
+
+function asNumber(value: unknown): number {
+  if (typeof value !== "number") throw new TypeError("Expected a number");
+  return value;
+}
+
+function headerValue(response: Response, name: string): string {
+  const value = response.headers.get(name);
+  if (value === null) throw new Error(`Missing response header: ${name}`);
+  return value;
+}
+
+function asArray(value: unknown): unknown[] {
+  if (!Array.isArray(value)) throw new TypeError("Expected a JSON array");
+  return value;
+}
+
+function asString(value: unknown): string {
+  if (typeof value !== "string") throw new TypeError("Expected a string");
+  return value;
+}
+
+function objectAt(value: unknown, key: string): JsonObject {
+  return asObject(asObject(value)[key]);
+}
+
+async function responseJson(response: Response): Promise<unknown> {
+  return parseJson(await response.text());
+}
+
+function asToolCall(value: unknown): ToolCall {
+  const call = asObject(value);
+  const type = call.type;
+  if (type !== "function") throw new TypeError("Expected a function tool call");
+  const functionCall = asObject(call.function);
+  return {
+    id: asString(call.id),
+    type,
+    function: {
+      name: asString(functionCall.name),
+      arguments: asString(functionCall.arguments),
+    },
+  };
+}
+
+function asToolCalls(value: unknown): ToolCall[] {
+  return asArray(value).map(asToolCall);
+}
 
 describe("model-aware conversation snapshots", () => {
   it("reuses a conversation only for the same model and first user message", () => {
@@ -108,7 +176,9 @@ describe("model-aware conversation snapshots", () => {
     expect(response.headers.get("x-proxy-model")).toBe("claude-sonnet");
     expect(response.headers.get("x-proxy-finish-reason")).toBe("stop");
     expect(
-      JSON.parse(response.headers.get("x-proxy-usage")!).x_proxy_model_latency_ms,
+      asNumber(
+        asObject(parseJson(headerValue(response, "x-proxy-usage"))).x_proxy_model_latency_ms,
+      ),
     ).toBeGreaterThanOrEqual(0);
     expect(pool.getActiveConversations()[0].usage).toMatchObject({
       model: "claude-sonnet",
@@ -120,7 +190,7 @@ describe("model-aware conversation snapshots", () => {
     scripted.result = null;
     scripted.fullText = "Hello";
     scripted.deltas = ["Hello"];
-    const onComplete = vi.fn();
+    const onComplete = vi.fn((_response: Response) => undefined);
     const pool = new SessionPool();
     const response = await handleChatCompletion(
       ChatCompletionRequest.parse({
@@ -135,9 +205,11 @@ describe("model-aware conversation snapshots", () => {
     const text = await response.text();
     expect(text).toContain("x_proxy_model_latency_ms");
     expect(onComplete).toHaveBeenCalledOnce();
-    const completedResponse = onComplete.mock.calls[0][0] as Response;
+    const completedResponse = onComplete.mock.calls[0][0];
     expect(
-      JSON.parse(completedResponse.headers.get("x-proxy-usage")!).x_m365_conversation_remaining,
+      asNumber(
+        asObject(parseJson(headerValue(completedResponse, "x-proxy-usage"))).x_m365_conversation_remaining,
+      ),
     ).toBe(599);
     expect(pool.getActiveConversations()[0].usage?.modelLatencyMs).toBeGreaterThanOrEqual(0);
   });
@@ -201,8 +273,12 @@ async function streamContents(deltas: string[], fullText?: string): Promise<stri
     if (!line.startsWith("data: ")) continue;
     const payload = line.slice(6);
     if (payload === "[DONE]") continue;
-    const chunk = JSON.parse(payload);
-    const c = chunk.choices?.[0]?.delta?.content;
+    const chunk = asObject(parseJson(payload));
+    const choices = chunk.choices;
+    const firstChoice = choices === undefined ? undefined : asArray(choices)[0];
+    const deltaValue = firstChoice === undefined ? undefined : asObject(firstChoice).delta;
+    const delta = deltaValue === undefined ? undefined : asObject(deltaValue);
+    const c = delta?.content;
     if (typeof c === "string" && c.length > 0) contents.push(c);
   }
   return contents;
@@ -231,7 +307,7 @@ describe("incremental streaming (non-tool path)", () => {
 async function streamRaw(
   deltas: string[],
   fullText?: string,
-): Promise<{ contents: string[]; errors: any[] }> {
+): Promise<{ contents: string[]; errors: JsonObject[] }> {
   scripted.deltas = deltas;
   scripted.fullText = fullText;
   const body = ChatCompletionRequest.parse({
@@ -243,15 +319,19 @@ async function streamRaw(
   const text = await res.text();
 
   const contents: string[] = [];
-  const errors: any[] = [];
+  const errors: JsonObject[] = [];
   for (const line of text.split("\n")) {
     if (!line.startsWith("data: ")) continue;
     const payload = line.slice(6);
     if (payload === "[DONE]") continue;
-    const chunk = JSON.parse(payload);
-    const c = chunk.choices?.[0]?.delta?.content;
+    const chunk = asObject(parseJson(payload));
+    const choices = chunk.choices;
+    const firstChoice = choices === undefined ? undefined : asArray(choices)[0];
+    const deltaValue = firstChoice === undefined ? undefined : asObject(firstChoice).delta;
+    const delta = deltaValue === undefined ? undefined : asObject(deltaValue);
+    const c = delta?.content;
     if (typeof c === "string" && c.length > 0) contents.push(c);
-    if (chunk.error) errors.push(chunk.error);
+    if (chunk.error !== undefined) errors.push(asObject(chunk.error));
   }
   return { contents, errors };
 }
@@ -260,23 +340,28 @@ describe("priority-access exhaustion on the streaming path", () => {
   const REFUSAL =
     "You've used your available priority access to the Opus model for today. " +
     "You can choose another available model or wait until tomorrow to use the Opus model again.";
+  function refusalDeltas(): string[] {
+    const deltas = REFUSAL.match(/.{1,12}/g);
+    if (deltas === null) throw new Error("Expected the refusal text to produce chunks");
+    return deltas;
+  }
 
   it("never leaks the refusal to the client as content", async () => {
     // Chunked the way M365 actually streams it — the gate must hold the head.
-    const deltas = REFUSAL.match(/.{1,12}/g)!;
-    const { contents } = await streamRaw(deltas);
+    const { contents } = await streamRaw(refusalDeltas());
     expect(contents.join("")).not.toContain("priority access");
     expect(contents.join("")).toBe("");
   });
 
   it("emits a machine-readable error chunk, not just prose", async () => {
-    const { errors } = await streamRaw(REFUSAL.match(/.{1,12}/g)!);
+    const { errors } = await streamRaw(refusalDeltas());
     expect(errors).toHaveLength(1);
     // A streaming client must be able to tell a quota wall from a transient
     // upstream blip without string-matching the message.
-    expect(errors[0].code).toBe("priority_access_exhausted");
-    expect(errors[0].type).toBe("rate_limit_error");
-    expect(errors[0].retry_after).toBeGreaterThan(0);
+    const error = asObject(errors[0]);
+    expect(error.code).toBe("priority_access_exhausted");
+    expect(error.type).toBe("rate_limit_error");
+    expect(asNumber(error.retry_after)).toBeGreaterThan(0);
   });
 
   it('still streams an ordinary answer that merely starts with "You"', async () => {
@@ -304,7 +389,7 @@ describe("the only-the-first-call-ran note", () => {
     scripted.texts = [];
     scripted.queue = replies.map((fullText) => ({ fullText }));
     const pool = new SessionPool();
-    const messages: any[] = [
+    const messages: RequestMessage[] = [
       { role: "system", content: "sys" },
       { role: "user", content: `fix it ${Math.random()}` },
     ];
@@ -313,12 +398,16 @@ describe("the only-the-first-call-ran note", () => {
         ChatCompletionRequest.parse({ model: "claude-sonnet", stream: false, tools, messages }),
         pool,
       );
-      const msg = (await res.json()).choices[0].message;
-      if (!msg.tool_calls) break;
-      messages.push({ role: "assistant", content: null, tool_calls: msg.tool_calls });
-      messages.push({
+      const body = asObject(await responseJson(res));
+      const message = objectAt(asArray(body.choices)[0], "message");
+      const rawToolCalls = message.tool_calls;
+      if (rawToolCalls === undefined) break;
+      const toolCalls = asToolCalls(rawToolCalls);
+      const firstToolCall = toolCalls[0];
+      if (firstToolCall === undefined) throw new Error("Expected at least one tool call");
+      messages.push({ role: "assistant", content: null, tool_calls: toolCalls }, {
         role: "tool",
-        tool_call_id: msg.tool_calls[0].id,
+        tool_call_id: firstToolCall.id,
         content: `real output ${i}`,
       });
     }
@@ -372,22 +461,24 @@ describe("a reply that opens with a tool call and then writes an essay", () => {
       { fullText: "Done." },
     ];
     const pool = new SessionPool();
-    const messages: any[] = [{ role: "user", content: `essay ${Math.random()}` }];
-    const r1 = await (
-      await handleChatCompletion(
-        ChatCompletionRequest.parse({ model: "claude-sonnet", stream: false, tools, messages }),
-        pool,
-      )
-    ).json();
-    const call = r1.choices[0].message.tool_calls?.[0];
+    const messages: RequestMessage[] = [{ role: "user", content: `essay ${Math.random()}` }];
+    const firstResponse = await handleChatCompletion(
+      ChatCompletionRequest.parse({ model: "claude-sonnet", stream: false, tools, messages }),
+      pool,
+    );
+    const r1 = asObject(await responseJson(firstResponse));
+    const firstMessage = objectAt(asArray(r1.choices)[0], "message");
+    const rawToolCalls = firstMessage.tool_calls;
+    const callValue = rawToolCalls === undefined ? undefined : asArray(rawToolCalls)[0];
+    expect(callValue).toBeDefined();
+    const call = asToolCall(callValue);
     expect(call).toBeDefined(); // the old guard returned the essay as text
-    expect(JSON.parse(call.function.arguments).command).toBe("cat config.json");
+    expect(asObject(parseJson(call.function.arguments)).command).toBe("cat config.json");
     messages.push({
       role: "assistant",
       content: null,
-      tool_calls: r1.choices[0].message.tool_calls,
-    });
-    messages.push({ role: "tool", tool_call_id: call.id, content: '{"port": 3000}' });
+      tool_calls: asToolCalls(rawToolCalls),
+    }, { role: "tool", tool_call_id: call.id, content: '{"port": 3000}' });
     await handleChatCompletion(
       ChatCompletionRequest.parse({ model: "claude-sonnet", stream: false, tools, messages }),
       pool,
@@ -432,13 +523,13 @@ describe("an explicitly Throttled turn (result.value = Throttled)", () => {
     });
     const res = await handleChatCompletion(body, new SessionPool());
     expect(res.status).toBe(429);
-    const err = (await res.json()).error;
+    const err = objectAt(await responseJson(res), "error");
     expect(err.type).toBe("rate_limit_error");
     expect(err.code).toBe("m365_throttled");
     expect(err.param).toBe("PerUserThrottled");
     expect(Number(res.headers.get("Retry-After"))).toBeGreaterThan(0);
-    expect(err.retry_after).toBe(Number(res.headers.get("Retry-After")));
-    expect(err.message).toContain("M365 provides no reset time");
+    expect(asNumber(err.retry_after)).toBe(Number(res.headers.get("Retry-After")));
+    expect(asString(err.message)).toContain("M365 provides no reset time");
     expect(scripted.runs).toBe(1); // the old path spent 3 attempts here
     scripted.result = null;
   });
@@ -447,7 +538,7 @@ describe("an explicitly Throttled turn (result.value = Throttled)", () => {
     scripted.deltas = [];
     scripted.fullText = "";
     scripted.result = THROTTLED;
-    process.env.M365_THROTTLE_RETRY_AFTER_S = "1800.2";
+    vi.stubEnv("M365_THROTTLE_RETRY_AFTER_S", "1800.2");
     try {
       const res = await handleChatCompletion(
         ChatCompletionRequest.parse({
@@ -458,9 +549,8 @@ describe("an explicitly Throttled turn (result.value = Throttled)", () => {
       );
       expect(res.status).toBe(429);
       expect(res.headers.get("Retry-After")).toBe("1801");
-      expect((await res.json()).error.retry_after).toBe(1801);
+      expect(asNumber(objectAt(await responseJson(res), "error").retry_after)).toBe(1801);
     } finally {
-      delete process.env.M365_THROTTLE_RETRY_AFTER_S;
       scripted.result = null;
     }
   });
@@ -483,7 +573,7 @@ describe("an explicitly Throttled turn (result.value = Throttled)", () => {
       const delay = Number(response.headers.get("Retry-After"));
       expect(Number.isFinite(delay)).toBe(true);
       expect(delay).toBeGreaterThan(1);
-      expect((await response.json()).error.retry_after).toBe(delay);
+      expect(asNumber(objectAt(await responseJson(response), "error").retry_after)).toBe(delay);
     },
   );
 
@@ -493,10 +583,11 @@ describe("an explicitly Throttled turn (result.value = Throttled)", () => {
     const { contents, errors } = await streamRaw([], "");
     expect(contents).toHaveLength(0);
     expect(errors).toHaveLength(1);
-    expect(errors[0].code).toBe("m365_throttled");
-    expect(errors[0].type).toBe("rate_limit_error");
-    expect(errors[0].param).toBe("PerUserThrottled");
-    expect(errors[0].retry_after).toBeGreaterThan(0);
+    const error = asObject(errors[0]);
+    expect(error.code).toBe("m365_throttled");
+    expect(error.type).toBe("rate_limit_error");
+    expect(error.param).toBe("PerUserThrottled");
+    expect(asNumber(error.retry_after)).toBeGreaterThan(0);
     expect(scripted.runs).toBe(1);
     scripted.result = null;
   });
@@ -580,7 +671,7 @@ describe("which requests carry the tool agent (#41)", () => {
   }
 
   afterEach(() => {
-    delete process.env.M365_FORCE_AGENT;
+    vi.unstubAllEnvs();
   });
 
   it("sends gpt-6-think-deeper tool requests without the agent", async () => {
@@ -602,7 +693,7 @@ describe("which requests carry the tool agent (#41)", () => {
   });
 
   it("lets M365_FORCE_AGENT=1 put it back", async () => {
-    process.env.M365_FORCE_AGENT = "1";
+    vi.stubEnv("M365_FORCE_AGENT", "1");
     expect(await agentFlagFor("gpt-6-think-deeper")).toBe(true);
   });
 });
@@ -644,7 +735,7 @@ describe("agent availability and prompt selection", () => {
       new SessionPool(),
     );
     expect(response.status).toBe(200);
-    return response.json();
+    return responseJson(response);
   }
 
   it("keeps the agent-backed baseline when resolution succeeds", async () => {
@@ -696,8 +787,10 @@ describe("agent availability and prompt selection", () => {
       }),
       new SessionPool(),
     );
-    const body = await response.json();
-    expect(body.choices[0].message.tool_calls[0].function.name).toBe("skill");
+    const body = asObject(await responseJson(response));
+    const message = objectAt(asArray(body.choices)[0], "message");
+    const toolCall = asToolCall(asArray(message.tool_calls)[0]);
+    expect(toolCall.function.name).toBe("skill");
     expect(scripted.texts[0]).not.toContain("```skill");
     expect(scripted.texts[0]).toContain("```bash");
   });
@@ -762,11 +855,11 @@ describe("OpenAI response shape", () => {
     parameters: { type: "object", properties: { command: { type: "string" } } },
   };
 
-  function chunksOf(sse: string): any[] {
+  function chunksOf(sse: string): JsonObject[] {
     return sse
       .split("\n")
       .filter((line) => line.startsWith("data: ") && line !== "data: [DONE]")
-      .map((line) => JSON.parse(line.slice(6)));
+      .map((line) => asObject(parseJson(line.slice(6))));
   }
 
   it("estimates token usage and carries system_fingerprint (non-stream)", async () => {
@@ -780,13 +873,16 @@ describe("OpenAI response shape", () => {
       }),
       new SessionPool(),
     );
-    const body = await res.json();
+    const body = asObject(await responseJson(res));
+    const usage = asObject(body.usage);
     expect(body).toHaveProperty("system_fingerprint", null);
-    expect(body.choices[0]).toHaveProperty("logprobs", null);
-    expect(body.usage.completion_tokens).toBe(10);
-    expect(body.usage.prompt_tokens).toBeGreaterThan(20);
-    expect(body.usage.total_tokens).toBe(body.usage.prompt_tokens + body.usage.completion_tokens);
-    expect(body.usage.x_proxy_tokens_estimated).toBe(true);
+    expect(asObject(asArray(body.choices)[0])).toHaveProperty("logprobs", null);
+    expect(asNumber(usage.completion_tokens)).toBe(10);
+    expect(asNumber(usage.prompt_tokens)).toBeGreaterThan(20);
+    expect(asNumber(usage.total_tokens)).toBe(
+      asNumber(usage.prompt_tokens) + asNumber(usage.completion_tokens),
+    );
+    expect(usage.x_proxy_tokens_estimated).toBe(true);
   });
 
   it("puts estimated usage in the final include_usage chunk", async () => {
@@ -803,10 +899,11 @@ describe("OpenAI response shape", () => {
       new SessionPool(),
     );
     const chunks = chunksOf(await res.text());
-    expect(chunks.every((c) => c.system_fingerprint === null)).toBe(true);
+    expect(chunks.every((chunk) => chunk.system_fingerprint === null)).toBe(true);
     const last = chunks[chunks.length - 1];
-    expect(last.usage.completion_tokens).toBe(3);
-    expect(last.usage.prompt_tokens).toBeGreaterThan(0);
+    const usage = asObject(asObject(last).usage);
+    expect(asNumber(usage.completion_tokens)).toBe(3);
+    expect(asNumber(usage.prompt_tokens)).toBeGreaterThan(0);
   });
 
   it.each([false, true])(
@@ -823,23 +920,47 @@ describe("OpenAI response shape", () => {
         }),
         new SessionPool(),
       );
+      let finishReason: unknown;
+      let toolCalls: unknown;
+      let functionCall: unknown;
+      let streamHasToolCalls = false;
       if (stream) {
         const chunks = chunksOf(await res.text());
         scripted.queue = [];
-        const call = chunks.find((c) => c.choices?.[0]?.delta?.function_call)?.choices[0].delta
-          .function_call;
-        expect(call.name).toBe("bash");
-        expect(JSON.parse(call.arguments).command).toBe("ls");
-        expect(chunks.some((c) => c.choices?.[0]?.delta?.tool_calls)).toBe(false);
-        expect(chunks[chunks.length - 1].choices[0].finish_reason).toBe("function_call");
+        const callChunk = chunks.find((chunk) => {
+          const choices = chunk.choices;
+          if (choices === undefined) return false;
+          const firstChoice = asArray(choices)[0];
+          if (firstChoice === undefined) return false;
+          return objectAt(firstChoice, "delta").function_call !== undefined;
+        });
+        if (callChunk === undefined) throw new Error("Missing function-call stream chunk");
+        const callDelta = objectAt(asArray(callChunk.choices)[0], "delta");
+        functionCall = callDelta.function_call;
+        streamHasToolCalls = chunks.some((chunk) => {
+          const choices = chunk.choices;
+          if (choices === undefined) return false;
+          const firstChoice = asArray(choices)[0];
+          if (firstChoice === undefined) return false;
+          return objectAt(firstChoice, "delta").tool_calls !== undefined;
+        });
+        const lastChunk = asObject(chunks[chunks.length - 1]);
+        finishReason = asObject(asArray(lastChunk.choices)[0]).finish_reason;
       } else {
-        const body = await res.json();
+        const body = asObject(await responseJson(res));
         scripted.queue = [];
-        expect(body.choices[0].finish_reason).toBe("function_call");
-        expect(body.choices[0].message.tool_calls).toBeUndefined();
-        expect(body.choices[0].message.function_call.name).toBe("bash");
-        expect(JSON.parse(body.choices[0].message.function_call.arguments).command).toBe("ls");
+        const choice = asObject(asArray(body.choices)[0]);
+        const message = asObject(choice.message);
+        finishReason = choice.finish_reason;
+        toolCalls = message.tool_calls;
+        functionCall = message.function_call;
       }
+      const call = asObject(functionCall);
+      expect(finishReason).toBe("function_call");
+      expect(toolCalls).toBeUndefined();
+      expect(call.name).toBe("bash");
+      expect(asObject(parseJson(asString(call.arguments))).command).toBe("ls");
+      expect(streamHasToolCalls).toBe(false);
     },
   );
 });

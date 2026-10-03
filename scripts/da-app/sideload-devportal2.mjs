@@ -9,27 +9,27 @@ const OUT = join(process.cwd(), "scripts", "da-app", "gui-out");
 mkdirSync(OUT, { recursive: true });
 const ZIP = join(process.cwd(), "scripts", "da-app", "sentinel-agent.zip");
 const STATE = join(process.cwd(), "scripts", "da-app", "state.json");
-const creds = loadSecrets();
+loadSecrets();
 const ROOT = process.cwd();
 const pwMod = await import(
   `${ROOT}/node_modules/.pnpm/playwright@1.58.2/node_modules/playwright/index.js`
 );
 const chromium = pwMod.chromium ?? pwMod.default?.chromium;
-const { TOTP } = await import(
+await import(
   `${ROOT}/node_modules/.pnpm/otpauth@9.5.0/node_modules/otpauth/dist/otpauth.esm.js`
 );
 const UA =
   "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36";
 
 const shot = async (page, n) => {
-  await page.screenshot({ path: join(OUT, n + ".png") }).catch(() => {});
+  await page.screenshot({ path: join(OUT, `${n}.png`) }).catch(() => { });
   console.log(`[shot] ${n}`);
 };
 const dump = async (page, n) => {
   const t = await page
     .evaluate(() => document.body?.innerText?.slice(0, 2000) || "")
     .catch(() => "");
-  writeFileSync(join(OUT, n + ".txt"), `URL: ${page.url()}\n\n${t}`);
+  writeFileSync(join(OUT, `${n}.txt`), `URL: ${page.url()}\n\n${t}`);
   return t;
 };
 const clickBtn = async (page, re, timeout = 6000) => {
@@ -39,7 +39,9 @@ const clickBtn = async (page, re, timeout = 6000) => {
       await loc.waitFor({ state: "visible", timeout });
       await loc.click();
       return true;
-    } catch {}
+    } catch (error) {
+      void error;
+    }
   }
   return false;
 };
@@ -96,12 +98,12 @@ try {
   // Handle a possible new tab (preview may open Copilot/Teams in a popup).
   const pages = ctx.pages();
   const active = pages[pages.length - 1];
-  await active.waitForTimeout(4000).catch(() => {});
+  await active.waitForTimeout(4000).catch(() => { });
   await shot(active, "c-05-preview");
   const t5 = await dump(active, "c-05-preview");
   // Accept any "Add"/"Open"/consent to finish install.
-  await clickBtn(active, /^Add$|^Open$|^Add for me$|Continue|Allow/i, 6000).catch(() => {});
-  await active.waitForTimeout(6000).catch(() => {});
+  await clickBtn(active, /^Add$|^Open$|^Add for me$|Continue|Allow/i, 6000).catch(() => { });
+  await active.waitForTimeout(6000).catch(() => { });
   await shot(active, "c-06-installed");
   await dump(active, "c-06-installed");
 

@@ -67,7 +67,7 @@ function rawClaims(token) {
 }
 function rec(obj) {
   const line = { t: stamp(), ...obj };
-  appendFileSync(OUT, JSON.stringify(line) + "\n");
+  appendFileSync(OUT, `${JSON.stringify(line)}\n`);
   return line;
 }
 
@@ -101,7 +101,7 @@ async function probe(label, token, claims) {
   });
   console.log(
     `  [${label}] ${clean ? "CLEAN" : empty ? "empty" : r.disengaged ? "DISENGAGED" : "other"}` +
-      ` reply=${JSON.stringify(line.reply)} throttle=${JSON.stringify(r.throttle)} ${r.elapsedMs}ms`,
+    ` reply=${JSON.stringify(line.reply)} throttle=${JSON.stringify(r.throttle)} ${r.elapsedMs}ms`,
   );
   return line;
 }
@@ -138,8 +138,8 @@ const confirm = await probe("confirm", tokenOld, claimsOld);
 if (confirm.clean) {
   console.log(
     "\n⚠️  Account is NOT degraded right now (OLD token returned a clean pong).\n" +
-      "    An A/B on a rested account is meaningless (everything recovers at round 0).\n" +
-      "    Rerun when the account is degraded, or pass --induce=N to force it (burns N threads).",
+    "    An A/B on a rested account is meaningless (everything recovers at round 0).\n" +
+    "    Rerun when the account is degraded, or pass --induce=N to force it (burns N threads).",
   );
   rec({ kind: "verdict", verdict: "NOT_DEGRADED", note: "aborted before A/B" });
   process.exit(0);
@@ -208,13 +208,13 @@ for (let round = 1; round <= ROUNDS; round++) {
 console.log("\n=== RESULT ===");
 console.log(
   `first CLEAN round — OLD: ${firstClean.OLD ?? "never"}` +
-    (tokenNew ? `  NEW: ${firstClean.NEW ?? "never"}` : ""),
+  (tokenNew ? `  NEW: ${firstClean.NEW ?? "never"}` : ""),
 );
 let verdict;
 if (!tokenNew) {
   verdict = "BASELINE_ONLY";
   console.log(
-    `OLD-token natural recovery at round ${firstClean.OLD ?? ">" + ROUNDS}. (No NEW token; run without --no-new to compare.)`,
+    `OLD-token natural recovery at round ${firstClean.OLD ?? `>${ROUNDS}`}. (No NEW token; run without --no-new to compare.)`,
   );
 } else if (firstClean.OLD === null && firstClean.NEW === null) {
   verdict = "INCONCLUSIVE_NEITHER_RECOVERED";

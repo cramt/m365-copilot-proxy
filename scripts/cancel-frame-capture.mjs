@@ -20,9 +20,8 @@
 // Usage: M365_NO_INTERACTIVE=1 CHROMIUM_PATH=$(which chromium) node scripts/cancel-frame-capture.mjs
 // Read-only-ish: sends ONE chat message to the user's real BizChat, then cancels it.
 
-import { mkdirSync, writeFileSync, appendFileSync, readFileSync } from "node:fs";
+import { mkdirSync, writeFileSync, appendFileSync } from "node:fs";
 import { join } from "node:path";
-import { homedir } from "node:os";
 import { loadSecrets } from "../packages/core/dist/index.mjs";
 
 const TS = new Date().toISOString().replace(/[:.]/g, "-");
@@ -55,25 +54,25 @@ const ctx = await browser.newPage();
 const RS = "\x1E";
 let frameIdx = 0;
 let chatHubSeen = false;
-let sentAfterStopClick = []; // frames sent in the window right after we click Stop
+const sentAfterStopClick = []; // frames sent in the window right after we click Stop
 let stopClickedAt = null;
 
 // Decode a SignalR ws payload (may hold several 0x1E-separated frames).
 function recordFrame(direction, payload) {
   const t = Date.now();
-  const isChatHub = true; // we only attach to the chathub ws below
   const chunks = String(payload)
     .split(RS)
     .filter((c) => c.length);
   for (const c of chunks) {
-    let parsed = null,
-      type = null,
-      target = null;
+    let type = null;
+    let target = null;
     try {
-      parsed = JSON.parse(c);
+      const parsed = JSON.parse(c);
       type = parsed.type;
       target = parsed.target;
-    } catch {}
+    } catch {
+      // Non-JSON frames are still recorded below as raw capture data.
+    }
     const rec = {
       i: frameIdx++,
       dir: direction,
@@ -83,7 +82,7 @@ function recordFrame(direction, payload) {
       len: c.length,
       raw: c.slice(0, 4000),
     };
-    appendFileSync(framesPath, JSON.stringify(rec) + "\n");
+    appendFileSync(framesPath, `${JSON.stringify(rec)}\n`);
     // Anything the client SENDS after we click Stop is a cancel candidate.
     if (direction === "send" && stopClickedAt && t >= stopClickedAt) {
       sentAfterStopClick.push({
@@ -106,7 +105,7 @@ ctx.on("websocket", (ws) => {
   if (!/m365Copilot\/Chathub|substrate\.office\.com/i.test(url)) return;
   chatHubSeen = true;
   console.log(`[cap] CHATHUB WS OPEN: ${url.split("?")[0]}`);
-  writeFileSync(join(OUT, "ws-url.txt"), url.split("?")[0] + "\n(query stripped)");
+  writeFileSync(join(OUT, "ws-url.txt"), `${url.split("?")[0]}\n(query stripped)`);
   ws.on("framesent", (f) => recordFrame("send", f.payload));
   ws.on("framereceived", (f) => recordFrame("recv", f.payload));
   ws.on("close", () => console.log("[cap] CHATHUB WS CLOSED"));
@@ -116,7 +115,9 @@ const shot = async (n) => {
   try {
     await ctx.screenshot({ path: join(OUT, `${n}.png`), fullPage: false });
     writeFileSync(join(OUT, `${n}.url.txt`), ctx.url());
-  } catch {}
+  } catch {
+    // Screenshots are best-effort and must not interrupt frame capture.
+  }
 };
 
 async function login() {
@@ -139,7 +140,9 @@ async function login() {
   await ctx.waitForTimeout(2500);
   try {
     await ctx.locator("#idSIButton9:visible").click({ timeout: 8000 });
-  } catch {}
+  } catch {
+    // The consent prompt is optional; continue if it is absent.
+  }
 }
 
 // Try hard to find the chat composer across the various BizChat surfaces.
@@ -159,7 +162,9 @@ async function findComposer() {
         await loc.waitFor({ state: "visible", timeout: 4000 });
         console.log(`[cap] composer: ${sel}`);
         return loc;
-      } catch {}
+      } catch {
+        // Try the next selector when this candidate is not usable.
+      }
     }
   }
   return null;
@@ -184,6 +189,9 @@ async function findStop() {
   return null;
 }
 
+/** @type {import("playwright").Locator | null} */
+let theComposer = null;
+
 try {
   // The Copilot chat surface. Try the dedicated chat host first.
   for (const target of [
@@ -199,19 +207,19 @@ try {
     if (/login\.microsoftonline|\/oauth2|signin/i.test(ctx.url())) {
       console.log("[cap] AAD login...");
       await login();
-      await ctx.waitForLoadState("networkidle", { timeout: 60000 }).catch(() => {});
+      await ctx.waitForLoadState("networkidle", { timeout: 60000 }).catch(() => { });
     }
     await ctx.waitForTimeout(4000);
     const composer = await findComposer();
     if (composer) {
       await shot("01-chat-ready");
-      var THE_COMPOSER = composer;
+      theComposer = composer;
       break;
     }
     await shot(`00-no-composer-${target.replace(/\W+/g, "_")}`);
   }
 
-  if (!THE_COMPOSER) {
+  if (!theComposer) {
     console.log("[cap] no composer found on any surface — see screenshots");
     throw new Error("no composer");
   }
@@ -220,9 +228,9 @@ try {
   const PROMPT =
     "Write an extremely detailed, very long essay (at least 3000 words) about the complete history of cathedral construction in medieval Europe. Use long continuous prose with many paragraphs.";
   console.log("[cap] typing prompt...");
-  await THE_COMPOSER.click();
-  await THE_COMPOSER.fill(PROMPT).catch(async () => {
-    await THE_COMPOSER.type(PROMPT);
+  await theComposer.click();
+  await theComposer.fill(PROMPT).catch(async () => {
+    await theComposer.type(PROMPT);
   });
   await ctx.waitForTimeout(500);
   await ctx.keyboard.press("Enter");

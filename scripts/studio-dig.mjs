@@ -3,10 +3,9 @@
 // agent definition and (b) whether an agent can be bound to a model. Read-only
 // — we only navigate and observe; we never save/publish anything.
 // Usage: CHROMIUM_PATH=... node scripts/studio-dig.mjs
-import { mkdirSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { homedir } from "node:os";
-import { readFileSync } from "node:fs";
 import { loadSecrets } from "../packages/core/dist/index.mjs";
 
 const OUT = join(process.cwd(), "scripts", "studio-dig-out");
@@ -65,7 +64,9 @@ page.on("response", async (res) => {
       if (frags.length)
         modelHits.push({ url: u.split("?")[0], frags: [...new Set(frags)].slice(0, 25) });
     }
-  } catch {}
+  } catch (error) {
+    void error;
+  }
 });
 
 async function login() {
@@ -88,14 +89,18 @@ async function login() {
   await page.waitForTimeout(2500);
   try {
     await page.locator("#idSIButton9:visible").click({ timeout: 8000 });
-  } catch {}
+  } catch (error) {
+    void error;
+  }
 }
 
 const shot = async (n) => {
   try {
     await page.screenshot({ path: join(OUT, `${n}.png`), fullPage: true });
     writeFileSync(join(OUT, `${n}.url.txt`), page.url());
-  } catch {}
+  } catch (error) {
+    void error;
+  }
 };
 
 try {
@@ -109,7 +114,7 @@ try {
     console.log("[dig] login form, driving AAD...");
     await login();
   }
-  await page.waitForLoadState("networkidle", { timeout: 60000 }).catch(() => {});
+  await page.waitForLoadState("networkidle", { timeout: 60000 }).catch(() => { });
   await page.waitForTimeout(5000);
   await shot("01-home");
   console.log("[dig] home url:", page.url());
@@ -128,8 +133,8 @@ try {
           waitUntil: "domcontentloaded",
           timeout: 60000,
         })
-        .catch(() => {});
-      await page.waitForLoadState("networkidle", { timeout: 40000 }).catch(() => {});
+        .catch(() => { });
+      await page.waitForLoadState("networkidle", { timeout: 40000 }).catch(() => { });
       await page.waitForTimeout(4000);
       await shot(`02-${path.split("/").pop()}`);
     }
@@ -152,7 +157,7 @@ try {
   console.log("[dig] model-ish fragments:");
   for (const h of modelHits.filter((m) => m.frags)) {
     console.log(`  --- ${h.url}`);
-    for (const f of h.frags) console.log("    " + f);
+    for (const f of h.frags) console.log(`    ${f}`);
   }
   await browser.close();
 }

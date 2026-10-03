@@ -105,6 +105,8 @@ for (const origin of hostCandidates) {
 }
 // token tenant id (for path-scoped routes)
 try {
-  const claims = JSON.parse(Buffer.from(ppToken.split(".")[1] + "==", "base64").toString());
+  const claims = JSON.parse(Buffer.from(`${ppToken.split(".")[1]}==`, "base64").toString());
   console.log("[full] token tid=", claims.tid, " aud=", claims.aud);
-} catch {}
+} catch (error) {
+  void error;
+}

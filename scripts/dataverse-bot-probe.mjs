@@ -32,7 +32,11 @@ async function get(label, url) {
   const res = await fetch(url, { headers: hdr });
   const body = res.ok ? await res.json() : await res.text();
   console.log(`\n===== ${label} -> ${res.status} =====`);
-  return res.ok ? body : (console.log(String(body).slice(0, 300)), null);
+  if (!res.ok) {
+    console.log(String(body).slice(0, 300));
+    return null;
+  }
+  return body;
 }
 
 // 1) List every Dataverse bot — find ours by name, and see if minimal agents
@@ -63,7 +67,7 @@ if (target) {
     console.log(`[dv] ${keys.length} columns. Model-ish columns:`);
     for (const k of keys)
       if (MODEL_RE.test(k)) console.log(`   ${k} = ${JSON.stringify(bot[k])?.slice(0, 200)}`);
-    console.log("[dv] all columns: " + keys.join(", "));
+    console.log(`[dv] all columns: ${keys.join(", ")}`);
     // components of this bot
     const comps = await get(
       "botcomponents",
@@ -82,7 +86,7 @@ if (target) {
               /"([^"]*(?:model|deployment|gpt|reasoning|tone|aimodel)[^"]*)"\s*:\s*("[^"]{0,80}"|[\w.-]{0,40})/gi,
             ),
           ].map((m) => `${m[1]}=${m[2]}`);
-          console.log("       " + [...new Set(frags)].slice(0, 20).join("\n       "));
+          console.log(`       ${[...new Set(frags)].slice(0, 20).join("\n       ")}`);
         }
       }
     }
@@ -100,8 +104,8 @@ if (models?.value) {
   if (models.value[0])
     console.log(
       "[dv] aimodel columns: " +
-        Object.keys(models.value[0])
-          .filter((k) => !k.startsWith("@"))
-          .join(", "),
+      Object.keys(models.value[0])
+        .filter((k) => !k.startsWith("@"))
+        .join(", "),
     );
 }

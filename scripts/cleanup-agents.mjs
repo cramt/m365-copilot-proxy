@@ -8,7 +8,7 @@
 // --all is passed (then it lists every bot but still only DELETES tool-agents).
 process.env.M365_DEBUG = process.env.M365_DEBUG ?? "1";
 
-import { existsSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, rmSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { getTokenForScope } from "../packages/core/dist/index.mjs";
@@ -85,7 +85,7 @@ for (const env of envs) {
     });
     const body = delRes.ok ? "" : ` ${(await delRes.text()).slice(0, 200)}`;
     console.log(
-      `      ${delRes.ok ? "DELETED" : "FAILED " + delRes.status} ${b.shortBotName}${body}`,
+      `      ${delRes.ok ? "DELETED" : `FAILED ${delRes.status}`} ${b.shortBotName}${body}`,
     );
     if (delRes.ok) deleted++;
   }

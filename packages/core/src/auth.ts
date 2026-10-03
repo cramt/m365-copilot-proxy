@@ -3,6 +3,7 @@ import { readFileSync, writeFileSync, existsSync, mkdirSync } from "node:fs";
 import { execSync } from "node:child_process";
 import { join } from "node:path";
 import { homedir } from "node:os";
+import type { Page } from "playwright";
 
 const CLIENT_ID = "c0ab8ce9-e9a0-42e7-b064-33d422df41f1";
 const AUTHORITY = "https://login.microsoftonline.com/common";
@@ -18,7 +19,8 @@ const log = createLogger("auth");
 const CONFIG_DIR = join(homedir(), ".config", "m365-proxy");
 
 function resolveFile(envVar: string, defaultName: string): string {
-  if (process.env[envVar]) return process.env[envVar]!;
+  const value = process.env[envVar];
+  if (value) return value;
   mkdirSync(CONFIG_DIR, { recursive: true });
   return join(CONFIG_DIR, defaultName);
 }
@@ -161,7 +163,7 @@ function isInteractiveLoginAllowed(): boolean {
   return process.env.M365_NO_INTERACTIVE !== "1";
 }
 
-async function capture(page: any, label: string): Promise<void> {
+async function capture(page: Page, label: string): Promise<void> {
   try {
     mkdirSync(LOGIN_DEBUG_DIR, { recursive: true });
     await page.screenshot({
@@ -172,8 +174,8 @@ async function capture(page: any, label: string): Promise<void> {
     // Write the URL unconditionally (independent of the debug-log flag).
     writeFileSync(join(LOGIN_DEBUG_DIR, `${label}.url.txt`), page.url());
     log.info(`Captured ${label} — url: ${page.url()}`);
-  } catch (e: any) {
-    log.error(`Failed to capture ${label}: ${e?.message}`);
+  } catch (error: unknown) {
+    log.error(`Failed to capture ${label}: ${getErrorMessage(error)}`);
   }
 }
 
@@ -183,7 +185,7 @@ async function capture(page: any, label: string): Promise<void> {
  * stale hidden node and leave the visible field empty. Refill via typing if so.
  */
 async function fillVerified(
-  page: any,
+  page: Page,
   selector: string,
   value: string,
   label: string,
@@ -205,12 +207,12 @@ async function fillVerified(
 }
 
 /** Click the visible primary submit button (Next / Sign in / Verify / Yes). */
-async function clickSubmit(page: any): Promise<void> {
+async function clickSubmit(page: Page): Promise<void> {
   await page.locator('input[type="submit"]:visible, button[type="submit"]:visible').first().click();
 }
 
 /** Drive the Azure AD interactive login form using stored credentials + TOTP. */
-async function driveAzureLogin(page: any, creds: Credentials): Promise<void> {
+async function driveAzureLogin(page: Page, creds: Credentials): Promise<void> {
   const { TOTP } = await import("otpauth");
 
   await capture(page, "step0-landing");
@@ -250,8 +252,22 @@ interface BrowserLoginOptions {
   interactive?: boolean;
 }
 
+function getErrorMessage(error: unknown): string {
+  if (error instanceof Error) return error.message;
+  if (
+    typeof error === "object" &&
+    error !== null &&
+    "message" in error &&
+    typeof error.message === "string"
+  ) {
+    return error.message;
+  }
+  if (typeof error === "string") return error;
+  return "Unknown error";
+}
+
 function isProfileLockError(err: unknown): boolean {
-  const message = err instanceof Error ? err.message : String(err ?? "");
+  const message = getErrorMessage(err);
   return /ProcessSingleton|SingletonLock|profile directory\s+is\s+already\s+in\s+use/i.test(
     message,
   );
@@ -272,7 +288,7 @@ async function runBrowserLogin(
   for (let attempt = 1; attempt <= attempts; attempt++) {
     const { authUrl, verifier } = await buildAuthUrlForScopes(app, scopes);
     const executablePath = resolveChromiumPath(interactive);
-    let page: any;
+    let page: Page;
     let closeTarget: { close: () => Promise<void> };
     if (usePersistentProfile) {
       mkdirSync(BROWSER_PROFILE_DIR, { recursive: true });
@@ -285,10 +301,10 @@ async function runBrowserLogin(
         page = await context.newPage();
         closeTarget = context;
         log.info(`Interactive login using persistent profile: ${BROWSER_PROFILE_DIR}`);
-      } catch (err: any) {
+      } catch (err: unknown) {
         if (!isProfileLockError(err)) throw err;
         log.info(
-          `Interactive profile is locked, falling back to a temporary browser profile: ${err.message}`,
+          `Interactive profile is locked, falling back to a temporary browser profile: ${getErrorMessage(err)}`,
         );
         const browser = await chromium.launch({
           headless: false,
@@ -316,7 +332,7 @@ async function runBrowserLogin(
     const codePromise = new Promise<string>((res) => {
       resolveCode = res;
     });
-    page.on("request", (req: any) => {
+    page.on("request", (req) => {
       const u = req.url();
       if (u.includes("/oauth2/nativeclient") && u.includes("code=")) {
         const c = new URL(u).searchParams.get("code");
@@ -356,9 +372,9 @@ async function runBrowserLogin(
       saveCache(app);
       log.info(`Browser login succeeded as ${result.account?.username}`);
       return result.accessToken;
-    } catch (err: any) {
+    } catch (err: unknown) {
       await capture(page, `attempt-${attempt}-fail`);
-      log.error(`Browser login attempt ${attempt}/${attempts} failed: ${err.message}`);
+      log.error(`Browser login attempt ${attempt}/${attempts} failed: ${getErrorMessage(err)}`);
       if (creds && attempt < attempts) {
         // Wait for a fresh TOTP window so the next code isn't a reused one.
         await new Promise((r) => setTimeout(r, 31_000));
@@ -395,8 +411,8 @@ export async function getTokenSilent(): Promise<string | null> {
     }
     saveCache(app);
     return result.accessToken;
-  } catch (err: any) {
-    log.info(`getTokenSilent: silent acquisition failed (${err.message})`);
+  } catch (err: unknown) {
+    log.info(`getTokenSilent: silent acquisition failed (${getErrorMessage(err)})`);
     return null;
   }
 }
@@ -418,8 +434,8 @@ async function getTokenFromRefreshToken(scopes: string[]): Promise<string | null
     saveCache(app);
     log.info("Token acquired from M365_REFRESH_TOKEN");
     return result.accessToken;
-  } catch (err: any) {
-    log.error(`M365_REFRESH_TOKEN token exchange failed: ${err.message}`);
+  } catch (err: unknown) {
+    log.error(`M365_REFRESH_TOKEN token exchange failed: ${getErrorMessage(err)}`);
     return null;
   }
 }
@@ -458,9 +474,11 @@ export async function loginInteractive(scopes: string[] = SCOPES): Promise<strin
 let inflightReauth: Promise<boolean> | null = null;
 
 export function forceReauth(): Promise<boolean> {
-  return (inflightReauth ??= doForceReauth().finally(() => {
+  if (inflightReauth) return inflightReauth;
+  inflightReauth = doForceReauth().finally(() => {
     inflightReauth = null;
-  }));
+  });
+  return inflightReauth;
 }
 
 async function doForceReauth(): Promise<boolean> {
@@ -479,10 +497,10 @@ async function doForceReauth(): Promise<boolean> {
     if (secrets) {
       try {
         await loginAutomated(secrets.email, secrets.password, secrets.mfaSecret);
-      } catch (err: any) {
+      } catch (err: unknown) {
         if (!isInteractiveLoginAllowed()) throw err;
         log.info(
-          `forceReauth: automated login failed (${err.message}), prompting interactive sign-in`,
+          `forceReauth: automated login failed (${getErrorMessage(err)}), prompting interactive sign-in`,
         );
         await loginInteractive();
       }
@@ -491,10 +509,26 @@ async function doForceReauth(): Promise<boolean> {
     }
     log.info("forceReauth: fresh login succeeded");
     return true;
-  } catch (err: any) {
-    log.error(`forceReauth failed: ${err.message}`);
+  } catch (err: unknown) {
+    log.error(`forceReauth failed: ${getErrorMessage(err)}`);
     return false;
   }
+}
+
+function isCredentials(value: unknown): value is Credentials {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    "email" in value &&
+    typeof value.email === "string" &&
+    value.email.length > 0 &&
+    "password" in value &&
+    typeof value.password === "string" &&
+    value.password.length > 0 &&
+    "mfaSecret" in value &&
+    typeof value.mfaSecret === "string" &&
+    value.mfaSecret.length > 0
+  );
 }
 
 export function loadSecrets(): {
@@ -504,8 +538,8 @@ export function loadSecrets(): {
 } | null {
   if (!existsSync(SECRETS_FILE)) return null;
   try {
-    const data = JSON.parse(readFileSync(SECRETS_FILE, "utf-8"));
-    if (data.email && data.password && data.mfaSecret) return data;
+    const data: unknown = JSON.parse(readFileSync(SECRETS_FILE, "utf-8"));
+    if (isCredentials(data)) return data;
   } catch {}
   return null;
 }
@@ -531,8 +565,8 @@ export async function getTokenForScope(scopes: string[]): Promise<string | null>
         saveCache(app);
         return result.accessToken;
       }
-    } catch (err: any) {
-      log.info(`getTokenForScope: silent failed (${err.message}), trying browser login`);
+    } catch (err: unknown) {
+      log.info(`getTokenForScope: silent failed (${getErrorMessage(err)}), trying browser login`);
     }
   }
 
@@ -562,9 +596,11 @@ export async function getTokenForScope(scopes: string[]): Promise<string | null>
 let inflightToken: Promise<string> | null = null;
 
 export function getToken(): Promise<string> {
-  return (inflightToken ??= doGetToken().finally(() => {
+  if (inflightToken) return inflightToken;
+  inflightToken = doGetToken().finally(() => {
     inflightToken = null;
-  }));
+  });
+  return inflightToken;
 }
 
 async function doGetToken(): Promise<string> {
@@ -581,9 +617,9 @@ async function doGetToken(): Promise<string> {
   if (secrets) {
     try {
       return await loginAutomated(secrets.email, secrets.password, secrets.mfaSecret);
-    } catch (err: any) {
+    } catch (err: unknown) {
       if (isInteractiveLoginAllowed()) {
-        log.info(`Automated login failed (${err.message}), prompting interactive sign-in`);
+        log.info(`Automated login failed (${getErrorMessage(err)}), prompting interactive sign-in`);
         return loginInteractive(SCOPES);
       }
       throw err;

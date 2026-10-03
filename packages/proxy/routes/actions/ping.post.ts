@@ -11,11 +11,15 @@ function json(status: number, body: unknown): Response {
   });
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
 function parseJsonOrNull(input: string | null): Record<string, unknown> | null {
   if (!input) return null;
   try {
-    const parsed = JSON.parse(input);
-    return parsed && typeof parsed === "object" ? (parsed as Record<string, unknown>) : null;
+    const parsed: unknown = JSON.parse(input);
+    return isRecord(parsed) ? parsed : null;
   } catch {
     return null;
   }
@@ -25,9 +29,11 @@ export default defineEventHandler(async (event) => {
   const requestId = `dash-ping-${crypto.randomUUID()}`;
   const startedAt = Date.now();
 
-  const bodyRaw = await readBody(event);
+  const bodyRaw: unknown = await readBody<unknown>(event);
   const model =
-    typeof bodyRaw?.model === "string" && bodyRaw.model.length > 0 ? bodyRaw.model : "m365-copilot";
+    isRecord(bodyRaw) && typeof bodyRaw.model === "string" && bodyRaw.model.length > 0
+      ? bodyRaw.model
+      : "m365-copilot";
 
   const payload = ChatCompletionRequest.parse({
     model,
@@ -35,7 +41,7 @@ export default defineEventHandler(async (event) => {
     messages: [{ role: "user", content: "ok" }],
   });
 
-  const response = await handleChatCompletion(payload, pool, {
+  const response: Response = await handleChatCompletion(payload, pool, {
     signal: AbortSignal.timeout(PING_TIMEOUT_MS),
   });
   const endedAt = Date.now();
@@ -51,8 +57,7 @@ export default defineEventHandler(async (event) => {
   const responseText = await response.clone().text();
   const responseBytes = Buffer.byteLength(responseText, "utf8");
   const body = parseJsonOrNull(responseText);
-  const errorObj =
-    body?.error && typeof body.error === "object" ? (body.error as Record<string, unknown>) : null;
+  const errorObj = body && isRecord(body.error) ? body.error : null;
   const errorType = errorObj && typeof errorObj.type === "string" ? errorObj.type : null;
   const errorMessage = errorObj && typeof errorObj.message === "string" ? errorObj.message : null;
 

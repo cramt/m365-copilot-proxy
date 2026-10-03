@@ -61,13 +61,15 @@ if (!tc) {
   process.exit(1);
 }
 
-msgs.push({ role: "assistant", content: null, tool_calls: r.choice.message.tool_calls });
-msgs.push({
-  role: "tool",
-  tool_call_id: tc.id,
-  name: tc.function.name,
-  content: "README.md\npackage.json\nsrc",
-});
+msgs.push(
+  { role: "assistant", content: null, tool_calls: r.choice.message.tool_calls },
+  {
+    role: "tool",
+    tool_call_id: tc.id,
+    name: tc.function.name,
+    content: "README.md\npackage.json\nsrc",
+  },
+);
 r = await chat(msgs);
 console.log(`[e2e] turn2 ${r.status} in ${r.elapsed}s finish=${r.choice?.finish_reason}`);
 console.log("[e2e] turn2 final:", JSON.stringify(r.choice?.message?.content)?.slice(0, 300));

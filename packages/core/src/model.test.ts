@@ -3,13 +3,13 @@ import { ModelSession } from "./model.js";
 import { CopilotSession } from "./session.js";
 import { getOrCreateAgent } from "./agent.js";
 
-vi.mock("./auth.js", () => ({ getToken: vi.fn(async () => "token") }));
+vi.mock("./auth.js", () => ({ getToken: vi.fn(() => Promise.resolve("token")) }));
 vi.mock("./agent.js", () => ({ getOrCreateAgent: vi.fn() }));
 vi.mock("./session.js", () => ({
   CopilotSession: vi.fn(
     class {
       turnCount = 0;
-      chat = vi.fn(async () => ({}));
+      chat = vi.fn(() => Promise.resolve({}));
     },
   ),
 }));

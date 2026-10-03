@@ -40,15 +40,17 @@ page.on("request", (req) => {
     let body = "";
     try {
       body = req.postData() || "";
-    } catch {}
+    } catch {
+      // A request body is optional for the captured requests.
+    }
     appendFileSync(
       gwLog,
-      JSON.stringify({
+      `${JSON.stringify({
         t: Date.now(),
         method: m,
         url: u.split("?")[0],
         body: body.slice(0, 4000),
-      }) + "\n",
+      })}\n`,
     );
   }
 });
@@ -60,15 +62,21 @@ page.on("response", async (res) => {
     const ids = [...t.matchAll(/"(?:cdsBotId|botId|id)"\s*:\s*"([0-9a-f-]{36})"/gi)].map(
       (x) => x[1],
     );
-    ids.forEach((i) => seenBotIds.add(i));
-  } catch {}
+    ids.forEach((id) => {
+      seenBotIds.add(id);
+    });
+  } catch {
+    // Some responses do not expose readable text.
+  }
 });
 
 const shot = async (n) => {
   try {
     await page.screenshot({ path: join(OUT, `${n}.png`) });
     writeFileSync(join(OUT, `${n}.url.txt`), page.url());
-  } catch {}
+  } catch {
+    // Capture failures should not interrupt the create flow.
+  }
 };
 
 async function login() {
@@ -90,7 +98,9 @@ async function login() {
   await page.waitForTimeout(2500);
   try {
     await page.locator("#idSIButton9:visible").click({ timeout: 8000 });
-  } catch {}
+  } catch {
+    // The confirmation prompt is optional.
+  }
 }
 
 async function tryClick(rx, label) {
@@ -106,7 +116,9 @@ async function tryClick(rx, label) {
         console.log(`[cf] clicked ${label}`);
         return true;
       }
-    } catch {}
+    } catch {
+      // Try the next locator strategy.
+    }
   }
   return false;
 }
@@ -122,7 +134,7 @@ try {
     console.log("[cf] login...");
     await login();
   }
-  await page.waitForLoadState("networkidle", { timeout: 60000 }).catch(() => {});
+  await page.waitForLoadState("networkidle", { timeout: 60000 }).catch(() => { });
   await page.waitForTimeout(6000);
   await shot("01-home");
   console.log("[cf] home:", page.url());
@@ -131,8 +143,8 @@ try {
   if (!(await tryClick(/new agent/i, "New agent"))) {
     if (!(await tryClick(/create/i, "Create"))) {
       await page
-        .goto(page.url().replace(/\/home.*/, "") + "/agents/new", { waitUntil: "domcontentloaded" })
-        .catch(() => {});
+        .goto(`${page.url().replace(/\/home.*/, "")}/agents/new`, { waitUntil: "domcontentloaded" })
+        .catch(() => { });
     }
   }
   await page.waitForTimeout(5000);
@@ -156,7 +168,9 @@ try {
         console.log(`[cf] filled name via ${sel}`);
         break;
       }
-    } catch {}
+    } catch {
+      // Try the next candidate name field.
+    }
   }
   await page.waitForTimeout(1500);
   await shot("04-named");

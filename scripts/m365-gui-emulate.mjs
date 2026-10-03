@@ -89,10 +89,14 @@ async function login() {
     await fill('input[name="otc"]', new TOTP({ secret: creds.mfaSecret }).generate());
     await submit();
     await page.waitForTimeout(2500);
-  } catch {}
+  } catch (error) {
+    void error;
+  }
   try {
     await page.locator("#idSIButton9:visible").click({ timeout: 8000 });
-  } catch {}
+  } catch (error) {
+    void error;
+  }
 }
 
 try {
@@ -106,7 +110,11 @@ try {
   }
   await page.waitForTimeout(6000);
   // Trigger a GUI turn so the GUI opens its WS and we capture token+params.
-  await page.screenshot({ path: join(OUT, "emu-after-login.png") }).catch(() => {});
+  await page
+    .screenshot({ path: join(OUT, "emu-after-login.png") })
+    .catch((error) => {
+      void error;
+    });
   let box = null;
   for (const s of [
     'div[contenteditable="true"]:visible',
@@ -127,7 +135,9 @@ try {
     );
     throw new Error("no composer");
   }
-  await box.click().catch(() => {});
+  await box.click().catch((error) => {
+    void error;
+  });
   await page.keyboard.type("List the files in the current directory.", { delay: 8 });
   await page.waitForTimeout(500);
   await page.keyboard.press("Enter");
@@ -141,7 +151,9 @@ try {
     if (chathubUrl) break;
     const b = page.locator(s).first();
     if (await b.count().catch(() => 0)) {
-      await b.click().catch(() => {});
+      await b.click().catch((error) => {
+        void error;
+      });
       console.log("[emu] clicked send:", s);
       await page.waitForTimeout(1500);
     }
@@ -149,7 +161,7 @@ try {
   console.log("[emu] GUI message sent; waiting for WS...");
   for (let i = 0; i < 20 && !chathubUrl; i++) await page.waitForTimeout(1000);
   if (!chathubUrl) {
-    await page.screenshot({ path: join(OUT, "emu-nows.png") }).catch(() => {});
+    await page.screenshot({ path: join(OUT, "emu-nows.png") }).catch(() => { });
     throw new Error("never captured GUI chathub URL");
   }
   await page.waitForTimeout(2000);
@@ -196,18 +208,18 @@ try {
     },
     ...(agentId
       ? {
-          gpts: [
-            {
-              id: agentId,
-              source: "MOS3",
-              version: "1.0.0",
-              clientOverrides: {
-                capabilities: [],
-                "deepResearchModels@odata.type": "Collection(String)",
-              },
+        gpts: [
+          {
+            id: agentId,
+            source: "MOS3",
+            version: "1.0.0",
+            clientOverrides: {
+              capabilities: [],
+              "deepResearchModels@odata.type": "Collection(String)",
             },
-          ],
-        }
+          },
+        ],
+      }
       : { plugins: [{ Id: "BingWebSearch", Source: "BuiltIn" }] }),
     isSbsSupported: true,
     tone: "magic",
@@ -237,7 +249,9 @@ try {
           settled = true;
           try {
             ws.close();
-          } catch {}
+          } catch (error) {
+            void error;
+          }
           resolve({
             frames: frames.slice(0, 50),
             disengaged,
@@ -248,7 +262,7 @@ try {
         };
         const t = setTimeout(() => done("timeout"), 35000);
         ws.onopen = () => ws.send(JSON.stringify({ protocol: "json", version: 1 }) + RS);
-        ws.onerror = (e) => done("wserror");
+        ws.onerror = () => done("wserror");
         ws.onmessage = (ev) => {
           for (const f of String(ev.data).split(RS)) {
             if (!f) continue;
@@ -267,9 +281,9 @@ try {
                   target: "chat",
                   type: 4,
                 }) +
-                  RS +
-                  JSON.stringify({ arguments: [{ Timestamps: {} }], target: "Metrics", type: 1 }) +
-                  RS,
+                RS +
+                JSON.stringify({ arguments: [{ Timestamps: {} }], target: "Metrics", type: 1 }) +
+                RS,
               );
               continue;
             }

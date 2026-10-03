@@ -1,3 +1,4 @@
+import process from "node:process";
 import { type ModelSessionOptions, getAvailableModels } from "@m365-copilot/core";
 import { ChatCompletionRequest } from "./schemas.js";
 import { SessionPool, handleChatCompletion } from "./handler.js";
@@ -53,8 +54,19 @@ export const HEALTH_PAYLOAD = { status: "ok" } as const;
 // cap generation far below what a coding turn needs. Advertise a roomy 1M window +
 // 1M output (in line with modern large-context models) so nothing client-side clips.
 // Override via env.
-const CONTEXT_WINDOW_TOKENS = Number(process.env.M365_CONTEXT_WINDOW) || 1_000_000;
-const MAX_OUTPUT_TOKENS = Number(process.env.M365_MAX_OUTPUT_TOKENS) || 1_000_000;
+function readEnvironmentVariable(name: string): string | undefined {
+  const runtimeProcess: unknown = process;
+  if (typeof runtimeProcess !== "object" || runtimeProcess === null) return undefined;
+
+  const runtimeEnvironment: unknown = Reflect.get(runtimeProcess, "env");
+  if (typeof runtimeEnvironment !== "object" || runtimeEnvironment === null) return undefined;
+
+  const value: unknown = Reflect.get(runtimeEnvironment, name);
+  return typeof value === "string" ? value : undefined;
+}
+
+const CONTEXT_WINDOW_TOKENS = Number(readEnvironmentVariable("M365_CONTEXT_WINDOW")) || 1_000_000;
+const MAX_OUTPUT_TOKENS = Number(readEnvironmentVariable("M365_MAX_OUTPUT_TOKENS")) || 1_000_000;
 
 /** Build the OpenAI-compatible `GET /v1/models` payload. */
 export function buildModelsPayload() {

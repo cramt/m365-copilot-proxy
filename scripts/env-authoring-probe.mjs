@@ -69,7 +69,7 @@ for (const env of envs) {
 
   // (b) Dataverse bots list (the production portal path).
   const dvOrigin = new URL(instanceApiUrl).origin;
-  const dvToken = await getTokenForScope([`${dvOrigin}/.default`]).catch((e) => null);
+  const dvToken = await getTokenForScope([`${dvOrigin}/.default`]).catch(() => null);
   if (!dvToken) {
     console.log(`    [b] Dataverse token for ${dvOrigin} -> (could not acquire)`);
     continue;

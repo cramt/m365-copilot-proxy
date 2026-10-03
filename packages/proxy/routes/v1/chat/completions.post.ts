@@ -9,8 +9,8 @@ import { logCompletionStatus, recordCompletionMetric, syncActiveSessions } from 
 function parseJsonOrNull(input: string | null): Record<string, unknown> | null {
   if (!input) return null;
   try {
-    const parsed = JSON.parse(input);
-    return parsed && typeof parsed === "object" ? (parsed as Record<string, unknown>) : null;
+    const parsed: unknown = JSON.parse(input);
+    return parsed && typeof parsed === "object" ? parsed : null;
   } catch {
     return null;
   }
@@ -30,20 +30,30 @@ function coerceModel(value: unknown, fallback: string): string {
   return typeof value === "string" && value.length > 0 ? value : fallback;
 }
 
+function getErrorMessage(error: unknown): string | null {
+  if (error instanceof Error) return error.message;
+  if (error && typeof error === "object" && "message" in error) {
+    const message: unknown = error.message;
+    return typeof message === "string" ? message : null;
+  }
+  return null;
+}
+
 export default defineEventHandler(async (event) => {
   const startedAt = Date.now();
   const requestId = crypto.randomUUID();
   let body: ReturnType<typeof ChatCompletionRequest.parse>;
   let requestBodyBytes = 0;
   try {
-    const rawBody = await readBody(event);
+    const rawBody: unknown = await readBody(event);
     requestBodyBytes = Buffer.byteLength(
       typeof rawBody === "string" ? rawBody : JSON.stringify(rawBody ?? {}),
       "utf8",
     );
     body = ChatCompletionRequest.parse(rawBody);
-  } catch (err: any) {
+  } catch (err: unknown) {
     const response = invalidRequestError(err);
+    const errorMessage = getErrorMessage(err);
     const endedAt = Date.now();
     const latencyMs = endedAt - startedAt;
     const responseBytes = Buffer.byteLength(await response.clone().text(), "utf8");
@@ -59,7 +69,7 @@ export default defineEventHandler(async (event) => {
       finishReason: null,
       messageType: null,
       errorType: "invalid_request_error",
-      errorMessage: err.message,
+      errorMessage,
     });
     recordCompletionMetric({
       requestId,
@@ -77,7 +87,7 @@ export default defineEventHandler(async (event) => {
       requestBodyBytes,
       responseBytes,
       errorType: "invalid_request_error",
-      errorMessage: err.message,
+      errorMessage,
     });
     syncActiveSessions(pool.getActiveConversations());
     return response;

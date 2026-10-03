@@ -30,14 +30,16 @@ const { TOTP } = await import(
 );
 
 const shot = async (page, name) => {
-  await page.screenshot({ path: join(OUT, name + ".png"), fullPage: false }).catch(() => {});
+  await page.screenshot({ path: join(OUT, `${name}.png`), fullPage: false }).catch((error) => {
+    void error;
+  });
   console.log(`[shot] ${name}`);
 };
 const dump = async (page, name) => {
   const t = await page
     .evaluate(() => document.body?.innerText?.slice(0, 1500) || "")
     .catch(() => "");
-  writeFileSync(join(OUT, name + ".txt"), `URL: ${page.url()}\n\n${t}`);
+  writeFileSync(join(OUT, `${name}.txt`), `URL: ${page.url()}\n\n${t}`);
   return t;
 };
 
@@ -67,10 +69,14 @@ async function login() {
     await fill('input[name="otc"]', new TOTP({ secret: creds.mfaSecret }).generate());
     await submit();
     await page.waitForTimeout(2500);
-  } catch {}
+  } catch (error) {
+    void error;
+  }
   try {
     await page.locator("#idSIButton9:visible").click({ timeout: 8000 });
-  } catch {}
+  } catch (error) {
+    void error;
+  }
 }
 
 async function clickByText(re, timeout = 6000) {
@@ -169,7 +175,9 @@ try {
   console.log("[da] uploaded:", uploaded);
 
   // If an "Add" / "Open" appears after upload, click it to install the agent.
-  await clickByText(/^Add$|^Open$|Add to a team|Add for me/i, 6000).catch(() => {});
+  await clickByText(/^Add$|^Open$|Add to a team|Add for me/i, 6000).catch((error) => {
+    void error;
+  });
   await page.waitForTimeout(4000);
   await shot(page, "06-final");
   await dump(page, "06-final");

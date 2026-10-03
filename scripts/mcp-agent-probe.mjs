@@ -153,7 +153,7 @@ const createBody = {
 console.log(
   `[mcp] creating agent ${NAME} with tool dialog:\n${toolDialogYaml()
     .split("\n")
-    .map((l) => "      " + l)
+    .map((l) => `      ${l}`)
     .join("\n")}`,
 );
 const createRes = await ppFetch(API, { method: "POST", body: JSON.stringify(createBody) });
@@ -180,7 +180,9 @@ if (!pubRes.ok) {
 let titleId = null;
 try {
   titleId = JSON.parse(pubText).TitleId;
-} catch {}
+} catch (error) {
+  void error;
+}
 console.log(`[mcp] titleId=${titleId}`);
 
 async function cleanup() {

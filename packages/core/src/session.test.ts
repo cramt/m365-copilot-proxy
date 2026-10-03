@@ -95,7 +95,10 @@ describe("TurnTextComposer (multi-message turns)", () => {
     let answer = "";
     let streamed = "";
     for (const f of frames) {
-      if (f.cursor) c.cursor(cursorMessageId(f.cursor)!); // as session.ts does
+      if (f.cursor) {
+        const messageId = cursorMessageId(f.cursor);
+        if (messageId !== null) c.cursor(messageId);
+      }
       if ("d" in f) c.delta(f.d);
       else c.snapshot(f.id, f.s);
       const r = foldStreamText(answer, c.text);

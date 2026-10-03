@@ -41,7 +41,7 @@ const tokenReady = new Promise((r) => (resolveToken = r));
 page.on("request", (req) => {
   if (gwToken) return;
   if (!/island\.powerapps\.com/i.test(req.url())) return;
-  const a = req.headers()["authorization"];
+  const a = req.headers().authorization;
   if (a) {
     gwToken = a.replace(/^Bearer\s+/i, "");
     resolveToken(gwToken);
@@ -67,7 +67,9 @@ async function login() {
   await page.waitForTimeout(2500);
   try {
     await page.locator("#idSIButton9:visible").click({ timeout: 8000 });
-  } catch {}
+  } catch (error) {
+    void error;
+  }
 }
 
 const H = () => ({
