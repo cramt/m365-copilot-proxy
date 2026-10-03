@@ -11,12 +11,22 @@ const scripted: {
   /** Text of every run() call, in order. */
   texts: string[];
   /** Per-call overrides, consumed front-first (e.g. a Disengaged turn, then an answer). */
-  queue: Array<{ fullText: string; messageType?: string | null }>;
+  queue: Array<{ fullText: string; messageType?: string | null; result?: { value: string; errorCode?: string } }>;
   /** The `useAgent` argument of every run() call, in order. */
   agentFlags: Array<boolean | undefined>;
   agentId?: string | null;
   resolutions: number;
-} = { deltas: [], runs: 0, texts: [], queue: [], agentFlags: [], resolutions: 0 };
+  /** How many times the handler rotated to a fresh conversation. */
+  newConversations: number;
+} = {
+  deltas: [],
+  runs: 0,
+  texts: [],
+  queue: [],
+  agentFlags: [],
+  resolutions: 0,
+  newConversations: 0,
+};
 
 vi.mock("@m365-copilot/core", async (importActual) => {
   const actual = await importActual<typeof import("@m365-copilot/core")>();
@@ -27,6 +37,8 @@ vi.mock("@m365-copilot/core", async (importActual) => {
     reset() {}
     newConversation() {
       this.conversationId = "conv-test-2";
+      this.turnCount = 0;
+      scripted.newConversations++;
     }
     refreshAgent() {
       return Promise.resolve(false);
@@ -46,7 +58,7 @@ vi.mock("@m365-copilot/core", async (importActual) => {
       const stream = {
         fullText: full,
         hasContent: full.length > 0,
-        result: scripted.result ?? { value: "Success" },
+        result: next?.result ?? scripted.result ?? { value: "Success" },
         images: [],
         throttle: { current: 1, max: 600 },
         contentOrigin: "Claude",
@@ -73,7 +85,7 @@ vi.mock("@m365-copilot/core", async (importActual) => {
 });
 
 const { handleChatCompletion, SessionPool, ChatCompletionRequest } = await import("./index.js");
-const { noteRequestOutcome } = await import("@m365-copilot/core");
+const { noteRequestOutcome, resetAgentRoutes } = await import("@m365-copilot/core");
 type JsonObject = Record<string, unknown>;
 type RequestMessage = ReturnType<typeof ChatCompletionRequest.parse>["messages"][number];
 type ToolCall = {
@@ -255,6 +267,7 @@ describe("exact-reply system guard", () => {
     expect(scripted.texts[1]).toContain("<system>\nUse concise prose.\n</system>");
   });
 });
+
 
 /** Drive one streaming request and collect the ordered content-delta strings. */
 async function streamContents(deltas: string[], fullText?: string): Promise<string[]> {
@@ -702,6 +715,95 @@ describe("which requests carry the tool agent (#41)", () => {
   it("lets M365_FORCE_AGENT=1 put it back", async () => {
     vi.stubEnv("M365_FORCE_AGENT", "1");
     expect(await agentFlagFor("gpt-6-think-deeper")).toBe(true);
+  });
+
+  it("lets M365_FORCE_AGENT=0 take it away", async () => {
+    process.env.M365_FORCE_AGENT = "0";
+    expect(await agentFlagFor("gpt-5.5-think-deeper")).toBe(false);
+  });
+});
+
+describe("GPT-6 Sol: agent on premium, learned fallback on non-premium (#23)", () => {
+  const tools = [{ type: "function", function: { name: "bash", parameters: { type: "object", properties: { command: { type: "string" } } } } }];
+  const DEAD = { fullText: "", result: { value: "InternalError" } };
+  const CALL = { fullText: "```bash\nls\n```" };
+
+  async function send(model = "gpt-6-sol") {
+    scripted.result = null;
+    scripted.texts = [];
+    scripted.agentFlags = [];
+    scripted.newConversations = 0;
+    const body = ChatCompletionRequest.parse({
+      model, stream: false, tools,
+      messages: [{ role: "system", content: "sys" }, { role: "user", content: `list files ${Math.random()}` }],
+    });
+    return handleChatCompletion(body, new SessionPool());
+  }
+
+  afterEach(() => {
+    resetAgentRoutes();
+    scripted.queue = [];
+    delete process.env.M365_FORCE_AGENT;
+  });
+
+  it("sends the agent first and keeps it when it serves (premium)", async () => {
+    scripted.queue = [CALL];
+    const res = await send();
+    expect(res.status).toBe(200);
+    expect(scripted.agentFlags).toEqual([true]);
+    expect(scripted.newConversations).toBe(0);
+  });
+
+  it("on the dead route, re-sends the full prompt agent-less in a fresh conversation", async () => {
+    scripted.queue = [DEAD, CALL];
+    const res = await send();
+    expect(res.status).toBe(200);
+    expect((await res.json()).choices[0].message.tool_calls).toHaveLength(1);
+    expect(scripted.agentFlags).toEqual([true, false]);
+    expect(scripted.newConversations).toBe(1);
+    // The retry is the whole request, not a "Please continue." into nothing.
+    expect(scripted.texts[1]).toContain("list files");
+    expect(scripted.texts[1]).toContain("```bash");
+  });
+
+  it("remembers it: the next request goes agent-less from the start", async () => {
+    scripted.queue = [DEAD, CALL];
+    await send();
+    scripted.queue = [CALL];
+    await send();
+    expect(scripted.agentFlags).toEqual([false]);
+    expect(scripted.newConversations).toBe(0);
+  });
+
+  it("treats InternalError as a transient once the agent has answered (premium, §23)", async () => {
+    scripted.queue = [CALL];
+    await send(); // the agent answered: this account is premium
+    scripted.queue = [DEAD, CALL];
+    const res = await send();
+    expect(res.status).toBe(200);
+    // No fresh conversation, no agent-less switch: the ordinary empty-reply retry.
+    expect(scripted.newConversations).toBe(0);
+    expect(scripted.agentFlags).toEqual([true, true]);
+    expect(scripted.texts[1]).toBe("Please continue.");
+    scripted.queue = [CALL];
+    await send();
+    expect(scripted.agentFlags).toEqual([true]);
+  });
+
+  it("doesn't touch tones outside PREMIUM_ONLY_AGENT_TONES", async () => {
+    scripted.queue = [DEAD, CALL];
+    const res = await send("gpt-5.5-think-deeper");
+    expect(res.status).toBe(200);
+    expect(scripted.newConversations).toBe(0);
+    expect(scripted.agentFlags[1]).toBe(true);
+  });
+
+  it("doesn't fall back under M365_FORCE_AGENT=1", async () => {
+    process.env.M365_FORCE_AGENT = "1";
+    scripted.queue = [DEAD, CALL];
+    await send();
+    expect(scripted.newConversations).toBe(0);
+    expect(scripted.agentFlags).toEqual([true, true]);
   });
 });
 

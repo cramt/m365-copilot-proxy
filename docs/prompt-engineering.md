@@ -73,6 +73,19 @@ but "on which machine" — and our framing decides that. Conclusive (hyp §21, p
   system-level automated agent prompt embedded in a user message" and then hedges. `relay` is its
   default too: 78/90 vs baseline's 47/76 (p = 3×10⁻⁴, hyp §21 F42).
 
+## GPT-6 / GPT-6 Sol: `relay` is not just a Claude fix
+
+The relay note was written for Sonnet 5, but the two GPT-6 tones need it more. Both run
+agent-less next to a sandbox of their own (GPT-6 always; GPT-6 Sol on non-premium accounts), and
+every framing that tells the model it *is* an agent with a real shell sends it to that sandbox,
+where the task's files don't exist: GPT-6 baseline 0/30 vs relay 30/30 (hyp §22 F47); GPT-6 Sol
+0–6/10 for baseline, minimal, session_facts, demo_only and react vs relay 60/60 (hyp §23 F51).
+Turning M365's code interpreter off doesn't help Sol (0/20). With the agent attached (Sol on a
+premium account) there's no sandbox, but the cage framings still lose to relay (3–9/10 vs 30/30):
+the model confabulates "I can't access your working directory from this chat", even after a
+successful `cat`. relay removes the question: the user runs the commands, so the model needs no
+belief about its own access. **Lesson:** for any new reasoning tone, put `relay` in the first sweep.
+
 ## What does NOT work (confirmed dead-ends — don't re-litigate)
 
 - **Wording-only per-request variants.** 8 behavioural-prompt rewrites (alone /
@@ -131,7 +144,7 @@ the transcript's **tags** (`transcriptStyleForVariant`): the Claude Sonnet set n
 the harness's own system prompt becomes `<harness_system_prompt>`.
 
 **The default is model-aware** (`defaultFramingForModel`, falling back to `defaultFramingForTone`).
-`Claude_Sonnet` — Sonnet 4.6 and Sonnet 5 — → `relay` (above). `baseline` is a cage built for
+`Claude_Sonnet` — Sonnet 4.6 and Sonnet 5 — `Gpt_6_Reasoning` and `Gpt_6_Sol_Reasoning` → `relay` (above). `baseline` is a cage built for
 M365's chat-tuned GPT path — most of its length goes on forcing a model that would rather
 narrate into acting. `Claude_Opus` doesn't need that and is metered by a small
 priority-access budget (docs/hypotheses.md §15), so it defaults to `minimal`: 684 chars vs
@@ -158,8 +171,20 @@ COOLDOWN=45 BLOCK_COOLDOWN=60 bash scripts/bench/sweep2.sh
 node scripts/bench/analyze-sweep.mjs s2
 ```
 
-For the full 10-task bench per arm (and to archive each arm's debug log + frame dumps for
-forensics — read the `ChainOfThoughtSummary` frames, they say *why* a framing was refused):
+For the full 10-task bench per arm, with a fresh proxy per phase (so a phase can also change
+the proxy's env: agent off, code interpreter off) and real-pi arms, use `phase-sweep.sh`, then
+read the archive back with `analyze-arms.mjs`. It reports per arm which path served each task,
+sandbox and Disengaged turns, and drops tasks lost to the network or a throttle
+(scripts/bench/README.md):
+
+```sh
+MODEL=gpt-6-sol TAG=mysweep PHASES='A:baseline,relay,demo_only|B@M365_FORCE_AGENT=0:relay,pi=fix-bug' \
+  nix develop --command bash scripts/bench/phase-sweep.sh
+nix develop --command node scripts/bench/analyze-arms.mjs ~/.config/opencode-m365/sweeps/mysweep --compare relay demo_only
+```
+
+The older single-proxy route also archives each arm's debug log + frame dumps for
+forensics — read the `ChainOfThoughtSummary` frames, they say *why* a framing was refused:
 
 ```sh
 M365_FRAMING_FILE=/tmp/m365-framing M365_DUMP_FRAMES=1 M365_DEBUG=1 M365_NO_CONFAB_RETRY=1 \
