@@ -11,7 +11,11 @@ const scripted: {
   /** Text of every run() call, in order. */
   texts: string[];
   /** Per-call overrides, consumed front-first (e.g. a Disengaged turn, then an answer). */
-  queue: Array<{ fullText: string; messageType?: string | null; result?: { value: string; errorCode?: string } }>;
+  queue: Array<{
+    fullText: string;
+    messageType?: string | null;
+    result?: { value: string; errorCode?: string };
+  }>;
   /** The `useAgent` argument of every run() call, in order. */
   agentFlags: Array<boolean | undefined>;
   agentId?: string | null;
@@ -267,7 +271,6 @@ describe("exact-reply system guard", () => {
     expect(scripted.texts[1]).toContain("<system>\nUse concise prose.\n</system>");
   });
 });
-
 
 /** Drive one streaming request and collect the ordered content-delta strings. */
 async function streamContents(deltas: string[], fullText?: string): Promise<string[]> {
@@ -718,13 +721,21 @@ describe("which requests carry the tool agent (#41)", () => {
   });
 
   it("lets M365_FORCE_AGENT=0 take it away", async () => {
-    process.env.M365_FORCE_AGENT = "0";
+    vi.stubEnv("M365_FORCE_AGENT", "0");
     expect(await agentFlagFor("gpt-5.5-think-deeper")).toBe(false);
   });
 });
 
 describe("GPT-6 Sol: agent on premium, learned fallback on non-premium (#23)", () => {
-  const tools = [{ type: "function", function: { name: "bash", parameters: { type: "object", properties: { command: { type: "string" } } } } }];
+  const tools = [
+    {
+      type: "function",
+      function: {
+        name: "bash",
+        parameters: { type: "object", properties: { command: { type: "string" } } },
+      },
+    },
+  ];
   const DEAD = { fullText: "", result: { value: "InternalError" } };
   const CALL = { fullText: "```bash\nls\n```" };
 
@@ -734,8 +745,13 @@ describe("GPT-6 Sol: agent on premium, learned fallback on non-premium (#23)", (
     scripted.agentFlags = [];
     scripted.newConversations = 0;
     const body = ChatCompletionRequest.parse({
-      model, stream: false, tools,
-      messages: [{ role: "system", content: "sys" }, { role: "user", content: `list files ${Math.random()}` }],
+      model,
+      stream: false,
+      tools,
+      messages: [
+        { role: "system", content: "sys" },
+        { role: "user", content: `list files ${Math.random()}` },
+      ],
     });
     return handleChatCompletion(body, new SessionPool());
   }
@@ -743,7 +759,7 @@ describe("GPT-6 Sol: agent on premium, learned fallback on non-premium (#23)", (
   afterEach(() => {
     resetAgentRoutes();
     scripted.queue = [];
-    delete process.env.M365_FORCE_AGENT;
+    vi.unstubAllEnvs();
   });
 
   it("sends the agent first and keeps it when it serves (premium)", async () => {
@@ -758,7 +774,9 @@ describe("GPT-6 Sol: agent on premium, learned fallback on non-premium (#23)", (
     scripted.queue = [DEAD, CALL];
     const res = await send();
     expect(res.status).toBe(200);
-    expect((await res.json()).choices[0].message.tool_calls).toHaveLength(1);
+    const body = asObject(await responseJson(res));
+    const choice = asArray(body.choices)[0];
+    expect(asToolCalls(objectAt(choice, "message").tool_calls)).toHaveLength(1);
     expect(scripted.agentFlags).toEqual([true, false]);
     expect(scripted.newConversations).toBe(1);
     // The retry is the whole request, not a "Please continue." into nothing.
@@ -799,7 +817,7 @@ describe("GPT-6 Sol: agent on premium, learned fallback on non-premium (#23)", (
   });
 
   it("doesn't fall back under M365_FORCE_AGENT=1", async () => {
-    process.env.M365_FORCE_AGENT = "1";
+    vi.stubEnv("M365_FORCE_AGENT", "1");
     scripted.queue = [DEAD, CALL];
     await send();
     expect(scripted.newConversations).toBe(0);

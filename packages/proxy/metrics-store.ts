@@ -76,11 +76,11 @@ export interface DashboardSnapshot {
   modelHealth: ModelHealthSnapshot[];
 }
 
-interface NumberRow {
+type NumberRow = {
   value: number | null;
-}
+};
 
-interface TotalsRow {
+type TotalsRow = {
   requests: number;
   success_requests: number;
   error_requests: number;
@@ -89,9 +89,9 @@ interface TotalsRow {
   total_tokens: number;
   avg_latency_ms: number | null;
   avg_model_latency_ms: number | null;
-}
+};
 
-interface ModelRow {
+type ModelRow = {
   model: string;
   requests: number;
   success_requests: number;
@@ -102,15 +102,15 @@ interface ModelRow {
   avg_latency_ms: number | null;
   avg_model_latency_ms: number | null;
   last_seen_at: number;
-}
+};
 
-interface HealthRow {
+type HealthRow = {
   model: string;
   ended_at: number;
   latency_ms: number | null;
   status_code: number;
   request_id: string;
-}
+};
 
 interface SessionUsageUpdate {
   updatedAt: number;
@@ -354,8 +354,8 @@ class MetricsStore {
       .prepare(`
       SELECT
         COUNT(*) AS requests,
-        SUM(CASE WHEN status_code >= 200 AND status_code < 400 THEN 1 ELSE 0 END) AS success_requests,
-        SUM(CASE WHEN status_code >= 400 THEN 1 ELSE 0 END) AS error_requests,
+        SUM(CASE WHEN status_code >= 200 AND status_code < 400 AND error_type IS NULL THEN 1 ELSE 0 END) AS success_requests,
+        SUM(CASE WHEN status_code >= 400 OR error_type IS NOT NULL THEN 1 ELSE 0 END) AS error_requests,
         SUM(prompt_tokens) AS prompt_tokens,
         SUM(completion_tokens) AS completion_tokens,
         SUM(total_tokens) AS total_tokens,
@@ -370,8 +370,8 @@ class MetricsStore {
       SELECT
         model,
         COUNT(*) AS requests,
-        SUM(CASE WHEN status_code >= 200 AND status_code < 400 THEN 1 ELSE 0 END) AS success_requests,
-        SUM(CASE WHEN status_code >= 400 THEN 1 ELSE 0 END) AS error_requests,
+        SUM(CASE WHEN status_code >= 200 AND status_code < 400 AND error_type IS NULL THEN 1 ELSE 0 END) AS success_requests,
+        SUM(CASE WHEN status_code >= 400 OR error_type IS NOT NULL THEN 1 ELSE 0 END) AS error_requests,
         SUM(prompt_tokens) AS prompt_tokens,
         SUM(completion_tokens) AS completion_tokens,
         SUM(total_tokens) AS total_tokens,
@@ -483,23 +483,23 @@ class MetricsStore {
       ORDER BY last_accessed_at DESC
     `)
       .all() as Array<{
-      fingerprint: string;
-      session_id: string;
-      conversation_id: string;
-      model: string;
-      turn_count: number;
-      sent_message_count: number;
-      last_accessed_at: number;
-      updated_at: number;
-      prompt_tokens: number;
-      completion_tokens: number;
-      total_tokens: number;
-      conversation_messages: number | null;
-      conversation_max: number | null;
-      conversation_remaining: number | null;
-      model_latency_ms: number | null;
-      message_type: string | null;
-    }>;
+        fingerprint: string;
+        session_id: string;
+        conversation_id: string;
+        model: string;
+        turn_count: number;
+        sent_message_count: number;
+        last_accessed_at: number;
+        updated_at: number;
+        prompt_tokens: number;
+        completion_tokens: number;
+        total_tokens: number;
+        conversation_messages: number | null;
+        conversation_max: number | null;
+        conversation_remaining: number | null;
+        model_latency_ms: number | null;
+        message_type: string | null;
+      }>;
 
     return rows.map((row) => ({
       fingerprint: row.fingerprint,

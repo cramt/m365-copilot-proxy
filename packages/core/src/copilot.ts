@@ -236,9 +236,7 @@ export const AGENTLESS_TOOL_TONES: ReadonlySet<string> = new Set(["Gpt_6_Reasoni
  * answered agent turn settles it the other way (`noteAgentRouteAlive`): from
  * then on an `InternalError` is a transient, handled like on any other tone.
  */
-export const PREMIUM_ONLY_AGENT_TONES: ReadonlySet<string> = new Set([
-  "Gpt_6_Sol_Reasoning",
-]);
+export const PREMIUM_ONLY_AGENT_TONES: ReadonlySet<string> = new Set(["Gpt_6_Sol_Reasoning"]);
 
 // What this process has learned about the agent route, per tone. The proxy
 // serves one account, so this is per-account knowledge; a restart re-learns it.
@@ -335,6 +333,7 @@ const EXPOSED_MODELS: readonly string[] = [
   "gpt-5.6",
   "gpt-5.6-quick",
   "gpt-5.6-think-deeper",
+  "gpt-6-sol",
   "gpt-5.4",
   "gpt-5.4-think-deeper",
   "gpt-5.4-quick",
@@ -375,6 +374,15 @@ export function decodeJwt(token: string) {
   return JwtClaims.parse(raw);
 }
 
+export interface CapturedImage {
+  referenceUrls: string[];
+  fileToken?: string;
+  pollUrl?: string;
+  size?: string;
+  orientation?: string;
+  status?: number;
+}
+
 /**
  * The streaming result of one M365 Copilot turn. Implemented by
  * `CopilotSession.chat` (session.ts); async-iterate it for delta text and read
@@ -383,6 +391,7 @@ export function decodeJwt(token: string) {
 export interface CopilotStream {
   [Symbol.asyncIterator](): AsyncIterator<string>;
   fullText: string;
+  images: CapturedImage[];
   /** True if the server returned content (deltas or full text) */
   hasContent: boolean;
   /** Throttle info if provided by M365 */

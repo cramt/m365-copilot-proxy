@@ -26,9 +26,21 @@ export const ClassifierScore = z.object({
   score: z.number(),
 });
 
+export const ContentGenerationProgress = z.object({
+  contentType: z.string().optional(),
+  size: z.string().optional(),
+  orientation: z.string().optional(),
+  ImageReferenceUrls: z.array(z.string()).optional(),
+  fileToken: z.string().optional(),
+  pollUrl: z.string().optional(),
+  status: z.number().optional(),
+});
+
 export const BotMessage = z.object({
   text: z.string(),
   author: z.literal("bot"),
+  contentType: z.string().optional(),
+  contentGenerationProgressList: z.array(ContentGenerationProgress).optional(),
   responseIdentifier: z.string().optional(),
   createdAt: z.string().optional(),
   timestamp: z.string().optional(),

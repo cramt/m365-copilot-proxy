@@ -2681,6 +2681,37 @@ directives (`buildImagePrompt`), not request params, because the model fills the
 args itself — same mechanism as the GUI's meta-prompting. All the GUI's image optionsSets are now
 sent on every agent-less turn, so any type the GUI can reach is reachable here.
 
+### Oct 3 2026 - restore the image pipeline after PR #45
+
+**Hypothesis:** the PR's deletions removed upstream image support; restoring the
+helper alone is insufficient without its auth scope, request capabilities,
+boundary schemas, collector and public types. Falsification: the restored build
+cannot expose the image API, or mocked turns lose image payloads, duplicate
+snapshots, downgrade ready images, or omit the declared generation capabilities.
+
+**Offline result: confirmed.** Core builds and 76 focused tests pass across
+`image.test.ts`, `session.test.ts`, `model.test.ts` and `copilot.test.ts`, including
+three mocked transport cases for flags, Progress/final-frame collection and
+readiness deduplication. A separate smoke check against the built core exports
+passed URL-only generation, artifact authorization, quota refusals, an empty
+result and a failed artifact download (five scenarios, mocked chat/fetch).
+Image opt-out and agent-path isolation are covered by the model tests. No new
+live requests were made; this restores the §14 implementation, not a new
+upstream model or quota finding. Protocol reference: m365-copilot-api.md,
+Image generation.
+
+**Live follow-up (Oct 3): blocked by tenant policy, not quota.** Two image
+requests on the premium account returned no images. The controlled retry used
+the original F14.1 bicycle/lighthouse prompt and captured the final type-2 item:
+`result.value: ForbiddenRequest`, `errorCode: ImageGenerationAdminPolicyBlocked`,
+`message: Your organisation has turned off image generation. Contact your IT
+Admin for more information.` Text was empty and no image was captured; the
+artifact-download step was therefore not reached. This does not establish a
+capture or Designer-auth regression. Evidence: frame capture
+`3c05863b-4fd2-41f3-8a40-384a93e23eeb` under the standard M365 frame-dump directory.
+`generateImage()` currently returns `[]` for this terminal policy refusal; a
+typed admin-policy error is a separate follow-up.
+
 ### Follow-ups now that the core API exists
 
 - **Proxy endpoint:** expose `generateImage()` as `POST /v1/images/generations` (OpenAI shape:
@@ -3759,6 +3790,17 @@ fallback per proxy process (5 processes, 5 fallbacks), every later request agent
   in F51.
 - **Real pi: 21/21** — premium (agent) fix-bug 5/5, multi 5/5; non-premium (agent-less, via the
   fallback) fix-bug 5/5, multi 6/6. 39–153 s per run.
+
+**Oct 3 local PR #45 verification:** `pnpm build` and the offline suite passed
+(338 tests, 3 live tests skipped). Enabling the existing proxy-lib live suite
+in one worker passed all 8 tests, including those 3 live checks. Real pi against
+the rebuilt standalone proxy with `MODEL=gpt-6-sol COOLDOWN=10` passed **5/5**:
+bash 18s, write 32s, read 18s, edit 31s, multistep 50s. This is one run per task,
+not a repeated reliability estimate, and is separate from the historical 21/21.
+The proxy recorded 16 successful streamed completions across the five pi
+conversations. Evidence: `scripts/pi-e2e.sh`, run marker
+`E2E_1791039407_55612`; each task's `.pi-out.txt` remains in its temporary task
+directory reported by the harness. No runtime source changes were needed.
 
 **Re-derived with `scripts/bench/analyze-arms.mjs`** over the three archives (it maps each task to
 its conversation and drops tasks lost to the network): agent 30/30 vs `demo_only` 21/26 (p =

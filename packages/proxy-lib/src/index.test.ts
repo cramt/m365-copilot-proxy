@@ -128,7 +128,8 @@ describe("proxy model catalog (offline)", () => {
     expect(body.object).toBe("list");
     const models = modelIds(body.data);
     expect(models).toEqual(getAvailableModels());
-    expect(models).toHaveLength(20);
+    expect(models).toHaveLength(21);
+    expect(models).toContain("gpt-6-sol");
     expect(models.filter((model: string) => model.startsWith("claude"))).toEqual([
       "claude-sonnet-think-deeper",
     ]);
@@ -264,7 +265,7 @@ const tools = [
 function chatRequest(
   messages: Array<{
     role: string;
-    content?: string;
+    content?: string | null;
     tool_calls?: unknown[];
     tool_call_id?: string;
     name?: string;

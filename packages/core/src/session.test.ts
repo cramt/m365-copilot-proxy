@@ -1,10 +1,26 @@
-import { describe, it, expect } from "vitest";
+import { beforeEach, describe, it, expect, vi } from "vitest";
+import WebSocket from "ws";
+import { z } from "zod/v4";
 import {
   buildCopilotWebSocketUrl,
+  CopilotSession,
   cursorMessageId,
   foldStreamText,
   TurnTextComposer,
 } from "./session.js";
+import { MessageUpdate } from "./schemas.js";
+
+vi.mock("ws", async () => {
+  const { EventEmitter } = await import("node:events");
+  return {
+    default: vi.fn(
+      class extends EventEmitter {
+        send = vi.fn();
+        close = vi.fn(() => this.emit("close"));
+      },
+    ),
+  };
+});
 
 /** Replay a sequence of raw M365 frames (deltas as {d}, snapshots as {s}) through
  *  foldStreamText and collect what would be streamed + the final buffered answer. */
@@ -62,6 +78,156 @@ describe("foldStreamText", () => {
     expect(r.streamed).toBe("xy");
     expect(r.answer).toBe("ZZZxy extra");
     expect(r.answer.startsWith(r.streamed)).toBe(false); // divergence recorded, not streamed
+  });
+});
+
+describe("GraphicArt image frame parsing", () => {
+  it("retains image payloads on Progress snapshots", () => {
+    const result = MessageUpdate.parse({
+      messages: [
+        {
+          text: "Loading image",
+          author: "bot",
+          messageType: "Progress",
+          contentType: "GraphicArt",
+          contentOrigin: "ImageGeneration",
+          contentGenerationProgressList: [
+            {
+              contentType: "image",
+              size: "Xlimage",
+              orientation: "Landscape",
+              pollUrl: "poll-id",
+              fileToken: "image-token",
+              ImageReferenceUrls: [
+                "https://designerapp.officeapps.live.com/DallEGeneratedImages/image.png",
+              ],
+              status: 2,
+            },
+          ],
+        },
+      ],
+    });
+    expect(result.messages[0].contentType).toBe("GraphicArt");
+    expect(result.messages[0].contentGenerationProgressList?.[0]).toMatchObject({
+      fileToken: "image-token",
+      status: 2,
+      ImageReferenceUrls: [
+        "https://designerapp.officeapps.live.com/DallEGeneratedImages/image.png",
+      ],
+    });
+  });
+
+  it("still parses ordinary text without image fields", () => {
+    const result = MessageUpdate.parse({ messages: [{ text: "just text", author: "bot" }] });
+    expect(result.messages[0].contentGenerationProgressList).toBeUndefined();
+  });
+});
+
+describe("image-generation transport", () => {
+  const imageUrl = "https://designerapp.officeapps.live.com/DallEGeneratedImages/image.png";
+  const token = `header.${Buffer.from(
+    JSON.stringify({
+      aud: "test",
+      iss: "test",
+      oid: "object-id",
+      tid: "tenant-id",
+      exp: 2_000_000_000,
+    }),
+  ).toString("base64url")}.signature`;
+
+  beforeEach(() => vi.clearAllMocks());
+
+  async function startTurn(generateImages: boolean) {
+    const pending = new CopilotSession().chat(token, "draw a bicycle", "m365-copilot", undefined, {
+      generateImages,
+    });
+    const socket = vi.mocked(WebSocket).mock.instances.at(-1);
+    if (!socket) throw new Error("Expected a WebSocket instance");
+    socket.emit("open");
+    socket.emit("message", Buffer.from("{}\x1e"));
+    const stream = await pending;
+    const payload = z.string().parse(vi.mocked(socket).send.mock.calls[1][0]).split("\x1e")[0];
+    const request = z
+      .object({
+        arguments: z.array(
+          z.object({
+            optionsSets: z.array(z.string()),
+            allowedMessageTypes: z.array(z.string()),
+          }),
+        ),
+      })
+      .parse(JSON.parse(payload));
+    return { socket, stream, request: request.arguments[0] };
+  }
+
+  it.each([false, true])(
+    "declares image capabilities only when requested (%s)",
+    async (enabled) => {
+      const { socket, stream, request } = await startTurn(enabled);
+      expect(request.optionsSets.includes("cwc_flux_image")).toBe(enabled);
+      expect(request.optionsSets.includes("flux_v3_image_gen_enable_non_watermarked_storage")).toBe(
+        enabled,
+      );
+      expect(request.allowedMessageTypes.includes("GenerateGraphicArt")).toBe(enabled);
+      expect(request.allowedMessageTypes).toContain("GeneratedCode");
+      const address = vi.mocked(WebSocket).mock.calls.at(-1)?.[0];
+      const variants = new URL(String(address)).searchParams.get("variants");
+      expect(variants).toContain("feature.enableGenerateGraphicArtOptionsSet");
+      expect(variants).toContain("cdximagen");
+      socket.close();
+      expect(stream.images).toEqual([]);
+      expect(await stream[Symbol.asyncIterator]().next()).toMatchObject({ done: true });
+    },
+  );
+
+  it("captures Progress and final images without duplicates or readiness regressions", async () => {
+    const { socket, stream } = await startTurn(true);
+    const imageMessage = (fileToken: string, status: number, url = imageUrl) => ({
+      author: "bot",
+      messageType: "Progress",
+      contentType: "GraphicArt",
+      contentGenerationProgressList: [
+        {
+          fileToken,
+          status,
+          ImageReferenceUrls: [url],
+          orientation: "Landscape",
+          size: "Xlimage",
+        },
+      ],
+    });
+    const update = (status: number, url: string) =>
+      socket.emit(
+        "message",
+        Buffer.from(
+          `${JSON.stringify({
+            type: 1,
+            target: "update",
+            arguments: [{ messages: [imageMessage("first", status, url)] }],
+          })}\x1e`,
+        ),
+      );
+    update(1, `${imageUrl}?preview=1`);
+    expect(stream.images).toMatchObject([{ status: 1 }]);
+    update(2, imageUrl);
+    update(1, `${imageUrl}?preview=1`);
+    expect(stream.images).toMatchObject([{ status: 2, referenceUrls: [imageUrl] }]);
+    socket.emit(
+      "message",
+      Buffer.from(
+        `${JSON.stringify({
+          type: 2,
+          item: {
+            result: { value: "Success" },
+            messages: [imageMessage("first", 2), imageMessage("second", 2, `${imageUrl}?second=1`)],
+          },
+        })}\x1e`,
+      ),
+    );
+    expect(await stream[Symbol.asyncIterator]().next()).toMatchObject({ done: true });
+    expect(stream.images).toHaveLength(2);
+    expect(stream.images[1]).toMatchObject({ fileToken: "second", status: 2 });
+    expect(stream.fullText).toBe("");
   });
 });
 

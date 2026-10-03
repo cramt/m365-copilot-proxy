@@ -197,8 +197,8 @@ Point [pi](https://pi.dev/) at it via `~/.pi/agent/models.json`:
 }
 ```
 
-> `apiKey` is a placeholder. The proxy binds to localhost and validates no
-> credential — the field exists only because the OpenAI client schema requires it.
+> `apiKey` is a placeholder unless `M365_PROXY_API_KEY` is set. If it is set,
+> use that same key here; otherwise the field only satisfies the OpenAI client schema.
 
 Then run pi (use `gpt-5.5-think-deeper` — the reliable tool-calling model — and keep the
 toolset lean; M365 "disengages" on very large tool payloads, see
@@ -245,6 +245,11 @@ request, 401 bad API key, 404 unknown URL or model, 405 wrong method (with `Allo
 limited (`m365_throttled`, `priority_access_exhausted`), 502 upstream failure (`disengaged`,
 `upstream_empty_response`, `upstream_error`). Set `M365_PROXY_API_KEY` to require
 `Authorization: Bearer <key>` on `/v1/*`.
+
+The dashboard (`/`) and `/actions/*` accept only loopback socket peers; remote
+requests get 403 `dashboard_local_only`, even with a valid API key. IPv4 and IPv6
+loopback are supported, and forwarded headers do not override the peer address.
+Do not forward these routes through a remote-facing reverse proxy.
 
 #### Temporary chats
 
@@ -293,8 +298,8 @@ without NixOS: `nix run github:cramt/m365-copilot-proxy -- 4141`.
 
 ## Available models
 
-The current `/v1/models` catalog exposes 20 included model IDs that responded in
-the saved 2026-10-02 sweep. Edit `EXPOSED_MODELS` in
+The current `/v1/models` catalog exposes 21 included model IDs: the 20 responders
+from the saved 2026-10-02 sweep, plus the upstream-verified `gpt-6-sol`. Edit `EXPOSED_MODELS` in
 [packages/core/src/copilot.ts](packages/core/src/copilot.ts) to change discovery:
 Claude chat entries that failed upstream, and paid entries refused
 by this account, are commented out there. Their routing remains intact for
@@ -545,7 +550,7 @@ Three token scopes are acquired:
 | `M365_SCENARIO` / `M365_LICENSE_TYPE` | Override the entitlement the WebSocket is opened under (defaults: `OfficeWebIncludedCopilot` / `Starter`, switching to `OfficeWebPaidCopilot` / `Premium` for the entitlement-gated models — `claude-opus`, `gpt-6-think-deeper` and `claude-sonnet-5`). `scenario` is what gates the model list (and picks Sonnet 4.6 vs 5 for the `Claude_Sonnet` tone); `licenseType` rides along and unlocks nothing by itself. |
 | `M365_CACHE_FILE` | Override MSAL token cache location |
 | `M365_SECRETS_FILE` | Override credentials file location |
-| `M365_PROXY_API_KEY` | When set, `/v1/*` requires `Authorization: Bearer <key>` (401 `invalid_api_key` otherwise). `/health`, the dashboard and `/actions/*` stay open, so keep the proxy on localhost. |
+| `M365_PROXY_API_KEY` | When set, `/v1/*` requires `Authorization: Bearer <key>` (401 `invalid_api_key` otherwise). `/health` stays open. The dashboard and `/actions/*` are always restricted to loopback socket peers, independently of the API key. |
 | `M365_THROTTLE_RETRY_AFTER_S` | Optional minimum retry delay in seconds for `m365_throttled`. By default, the proxy sends its remaining local backoff as `Retry-After` and `error.retry_after` (also in SSE errors). M365 provides no reset time; this is a proxy recommendation, not a guaranteed refill. |
 | `CHROMIUM_PATH` | Path to Chromium binary for automated login |
 

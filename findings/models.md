@@ -47,8 +47,13 @@ GPT-5.6 remains advertised despite its paid-scenario refusal, because it
 answered on the included scenario. GPT-5.3 reasoning remains advertised because
 its reported filesystem execution failure does not establish a dead model
 route. The earlier 28-row table below preserves the original observations;
-future catalog sweeps will enumerate the selected 20 IDs instead. Claude
+future catalog sweeps will enumerate the selected 21 IDs instead. Claude
 reasoning's local tool support remains unverified despite its HTTP 200 response.
+
+On 2026-10-03, `gpt-6-sol` was restored to discovery using the separate upstream
+evidence in hypotheses §23 F49, bringing the catalog to 21 IDs. It was not a cell
+in either sweep recorded here; its included scenario and premium-only tool-agent
+routing remain unchanged.
 
 ## Earlier observation: 28-model tool sweep
 
