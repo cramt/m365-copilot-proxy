@@ -357,18 +357,20 @@ export default defineEventHandler(() => {
         <span class="pill${accountThrottle.status === "throttled" ? " err" : ""}" title="${esc(accountThrottle.message ?? "No account-throttle response recorded")}">
           M365: <strong>${accountStatus}</strong>
         </span>
-        ${accountThrottle.since !== null
-      ? `<span class="pill">
+        ${
+          accountThrottle.since !== null
+            ? `<span class="pill">
           First observed: <time data-throttle-observed-at="${accountThrottle.since}" datetime="${new Date(accountThrottle.since).toISOString()}" title="${new Date(accountThrottle.since).toISOString()}">${fmtAgo(accountThrottle.since)}</time>
         </span>`
-      : ""
-    }
-        ${accountThrottle.lastObservedAt !== null
-      ? `<span class="pill">
+            : ""
+        }
+        ${
+          accountThrottle.lastObservedAt !== null
+            ? `<span class="pill">
           Last throttle: <time data-throttle-observed-at="${accountThrottle.lastObservedAt}" datetime="${new Date(accountThrottle.lastObservedAt).toISOString()}" title="${new Date(accountThrottle.lastObservedAt).toISOString()}">${fmtAgo(accountThrottle.lastObservedAt)}</time>
         </span>`
-      : ""
-    }
+            : ""
+        }
         <span id="backoffStatus" class="pill${retryAfterSeconds > 0 ? " err" : ""}" title="Proxy-imposed wait recommendation">
           Local backoff: <strong id="backoffTime" data-retry-after="${retryAfterSeconds}">${retryAfterSeconds > 0 ? `${retryAfterSeconds}s` : "Inactive"}</strong>
         </span>

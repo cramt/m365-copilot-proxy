@@ -134,16 +134,19 @@ if (process.argv.includes("--all-models")) {
     const toolCall = first.choice?.message?.tool_calls?.[0];
     let followup = null;
     if (first.status === 200 && toolCall) {
-      messages.push({
-        role: "assistant",
-        content: null,
-        tool_calls: first.choice.message.tool_calls,
-      }, {
-        role: "tool",
-        tool_call_id: toolCall.id,
-        name: toolCall.function.name,
-        content: "web-prod-01",
-      });
+      messages.push(
+        {
+          role: "assistant",
+          content: null,
+          tool_calls: first.choice.message.tool_calls,
+        },
+        {
+          role: "tool",
+          tool_call_id: toolCall.id,
+          name: toolCall.function.name,
+          content: "web-prod-01",
+        },
+      );
       followup = await chat(messages, model);
     }
     const outcome =
@@ -196,7 +199,10 @@ if (process.argv.includes("--multiturn")) {
   }
 
   // Execute the tool locally and feed the result back
-  msgs.push({ role: "assistant", content: null, tool_calls: res.choice.message.tool_calls }, { role: "tool", tool_call_id: tc.id, name: tc.function.name, content: "web-prod-01" });
+  msgs.push(
+    { role: "assistant", content: null, tool_calls: res.choice.message.tool_calls },
+    { role: "tool", tool_call_id: tc.id, name: tc.function.name, content: "web-prod-01" },
+  );
   console.log("[turn2] → sending tool result 'web-prod-01'");
   res = await chat(msgs);
   console.log(`[turn2] ${res.status} in ${res.elapsed}s finish=${res.choice?.finish_reason}`);

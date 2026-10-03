@@ -28,7 +28,7 @@ const UA =
   "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36";
 
 const shot = async (page, name) => {
-  await page.screenshot({ path: join(OUT, `${name}.png`) }).catch(() => { });
+  await page.screenshot({ path: join(OUT, `${name}.png`) }).catch(() => {});
   console.log(`[shot] ${name}`);
 };
 const dump = async (page, name) => {
@@ -123,7 +123,7 @@ try {
   await page
     .context()
     .storageState({ path: STATE })
-    .catch(() => { });
+    .catch(() => {});
   console.log("[dp] url:", page.url(), "status:", resp?.status());
   await shot(page, "dp-01-apps");
   const t1 = await dump(page, "dp-01-apps");

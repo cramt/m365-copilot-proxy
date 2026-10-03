@@ -104,8 +104,8 @@ if (models?.value) {
   if (models.value[0])
     console.log(
       "[dv] aimodel columns: " +
-      Object.keys(models.value[0])
-        .filter((k) => !k.startsWith("@"))
-        .join(", "),
+        Object.keys(models.value[0])
+          .filter((k) => !k.startsWith("@"))
+          .join(", "),
     );
 }

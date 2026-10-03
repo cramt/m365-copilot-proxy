@@ -24,7 +24,7 @@ vi.mock("@m365-copilot/core", async (importActual) => {
     turnCount = 0;
     sessionId = "session-test";
     conversationId = "conv-test";
-    reset() { }
+    reset() {}
     newConversation() {
       this.conversationId = "conv-test-2";
     }
@@ -208,7 +208,8 @@ describe("model-aware conversation snapshots", () => {
     const completedResponse = onComplete.mock.calls[0][0];
     expect(
       asNumber(
-        asObject(parseJson(headerValue(completedResponse, "x-proxy-usage"))).x_m365_conversation_remaining,
+        asObject(parseJson(headerValue(completedResponse, "x-proxy-usage")))
+          .x_m365_conversation_remaining,
       ),
     ).toBe(599);
     expect(pool.getActiveConversations()[0].usage?.modelLatencyMs).toBeGreaterThanOrEqual(0);
@@ -405,11 +406,14 @@ describe("the only-the-first-call-ran note", () => {
       const toolCalls = asToolCalls(rawToolCalls);
       const firstToolCall = toolCalls[0];
       if (firstToolCall === undefined) throw new Error("Expected at least one tool call");
-      messages.push({ role: "assistant", content: null, tool_calls: toolCalls }, {
-        role: "tool",
-        tool_call_id: firstToolCall.id,
-        content: `real output ${i}`,
-      });
+      messages.push(
+        { role: "assistant", content: null, tool_calls: toolCalls },
+        {
+          role: "tool",
+          tool_call_id: firstToolCall.id,
+          content: `real output ${i}`,
+        },
+      );
     }
     scripted.queue = [];
     return scripted.texts;
@@ -474,11 +478,14 @@ describe("a reply that opens with a tool call and then writes an essay", () => {
     const call = asToolCall(callValue);
     expect(call).toBeDefined(); // the old guard returned the essay as text
     expect(asObject(parseJson(call.function.arguments)).command).toBe("cat config.json");
-    messages.push({
-      role: "assistant",
-      content: null,
-      tool_calls: asToolCalls(rawToolCalls),
-    }, { role: "tool", tool_call_id: call.id, content: '{"port": 3000}' });
+    messages.push(
+      {
+        role: "assistant",
+        content: null,
+        tool_calls: asToolCalls(rawToolCalls),
+      },
+      { role: "tool", tool_call_id: call.id, content: '{"port": 3000}' },
+    );
     await handleChatCompletion(
       ChatCompletionRequest.parse({ model: "claude-sonnet", stream: false, tools, messages }),
       pool,

@@ -71,8 +71,8 @@ const pad = (s, n) => String(s).padEnd(n);
 console.log(`\n=== Strategy × Task (prefix ${PREFIX}, ${files.length} files) ===\n`);
 console.log(
   pad("model / strategy", strategyWidth) +
-  usedTasks.map((t) => pad(t, 14)).join("") +
-  "  | solved  tools  diseng  max DEA",
+    usedTasks.map((t) => pad(t, 14)).join("") +
+    "  | solved  tools  diseng  max DEA",
 );
 console.log("-".repeat(strategyWidth + usedTasks.length * 14 + 26));
 const board = [];
@@ -109,8 +109,8 @@ for (const s of usedStrategies) {
   board.push({ s, solved, cells, tools, diseng });
   console.log(
     pad(s, strategyWidth) +
-    cols.join("") +
-    `  | ${solved}/${cells}     ${tools}      ${diseng}      ${maxDeaScore ?? "n/a"}`,
+      cols.join("") +
+      `  | ${solved}/${cells}     ${tools}      ${diseng}      ${maxDeaScore ?? "n/a"}`,
   );
 }
 

@@ -3,6 +3,11 @@
 export default defineNitroConfig({
   compatibilityDate: "2025-01-01",
   preset: "node-server",
+  esbuild: {
+    options: {
+      target: "node26",
+    },
+  },
   errorHandler: "~/error",
   rollupConfig: {
     // Node 22 builtin. Mark as explicit external to avoid unresolved warnings

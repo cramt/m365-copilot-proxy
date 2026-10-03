@@ -108,9 +108,9 @@ async function run(chars) {
   results.push(row);
   console.log(
     `[in-probe] in=${text.length}c (~${row.approxTokens}t) → content=${row.gotContent} ` +
-    `head=${sawHead} tail=${sawTail} disengaged=${r.disengaged} ` +
-    `dea=${row.dea != null ? row.dea.toExponential(2) : "?"} ${r.elapsedMs}ms ` +
-    `${r.error ? `ERR=${r.error}` : ""}`,
+      `head=${sawHead} tail=${sawTail} disengaged=${r.disengaged} ` +
+      `dea=${row.dea != null ? row.dea.toExponential(2) : "?"} ${r.elapsedMs}ms ` +
+      `${r.error ? `ERR=${r.error}` : ""}`,
   );
   console.log(`           reply: ${JSON.stringify(out.slice(0, 100))}`);
   return row;

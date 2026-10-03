@@ -121,7 +121,7 @@ try {
   }
   await page.waitForTimeout(6000);
   console.log("[gui] url:", page.url());
-  await page.screenshot({ path: join(OUT, "after-login.png"), fullPage: false }).catch(() => { });
+  await page.screenshot({ path: join(OUT, "after-login.png"), fullPage: false }).catch(() => {});
 
   // Find the chat composer — try common shapes.
   const sels = [
@@ -139,7 +139,7 @@ try {
     }
   }
   if (box) {
-    await box.click().catch(() => { });
+    await box.click().catch(() => {});
     await page.keyboard.type(TASK, { delay: 8 });
     await page.waitForTimeout(600);
     await page.keyboard.press("Enter");
@@ -150,7 +150,7 @@ try {
     const txt = await page.evaluate(() => document.body.innerText.slice(0, 800)).catch(() => "");
     console.log(txt);
   }
-  await page.screenshot({ path: join(OUT, "after-send.png"), fullPage: false }).catch(() => { });
+  await page.screenshot({ path: join(OUT, "after-send.png"), fullPage: false }).catch(() => {});
 } catch (e) {
   console.log("[gui] ERR", e.message);
 }

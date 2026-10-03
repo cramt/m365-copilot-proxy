@@ -68,9 +68,7 @@ function normalizeLegacyFunctions(input: unknown): unknown {
     raw.function_call !== undefined ||
     (isUnknownArray(raw.messages) &&
       raw.messages.some(
-        (m) =>
-          isRecord(m) &&
-          (m.role === "function" || m.function_call !== undefined),
+        (m) => isRecord(m) && (m.role === "function" || m.function_call !== undefined),
       ));
   if (!usesLegacy) return input;
 
@@ -85,9 +83,7 @@ function normalizeLegacyFunctions(input: unknown): unknown {
   if (raw.function_call !== undefined && raw.tool_choice === undefined) {
     const fc = raw.function_call;
     out.tool_choice =
-      isRecord(fc) && "name" in fc
-        ? { type: "function", function: { name: fc.name } }
-        : fc;
+      isRecord(fc) && "name" in fc ? { type: "function", function: { name: fc.name } } : fc;
   }
   if (isUnknownArray(raw.messages)) {
     let lastCallId: string | undefined;

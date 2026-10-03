@@ -110,7 +110,7 @@ const save = () => {
 
 process.on("SIGINT", async () => {
   save();
-  await browser.close().catch(() => { });
+  await browser.close().catch(() => {});
   process.exit(0);
 });
 ctx.on("close", () => {
@@ -125,4 +125,4 @@ await page
 // Keep alive up to 15 minutes for the manual flow; calls.json is saved live regardless.
 await new Promise((r) => setTimeout(r, 15 * 60 * 1000));
 save();
-await browser.close().catch(() => { });
+await browser.close().catch(() => {});

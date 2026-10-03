@@ -556,11 +556,7 @@ export async function handleChatCompletion(
         // `softened` framing in a FRESH conversation (a Disengaged conversation stays
         // Disengaged). Drops the worst-case disengage ~100%→~4%. Off via
         // M365_NO_DISENGAGE_RETRY.
-        if (
-          hasTools &&
-          !disengageRetried &&
-          !getEnvironmentVariable("M365_NO_DISENGAGE_RETRY")
-        ) {
+        if (hasTools && !disengageRetried && !getEnvironmentVariable("M365_NO_DISENGAGE_RETRY")) {
           disengageRetried = true;
           session.newConversation();
           // `softened` is the low-override twin of the `<system>`-tagged framings.
@@ -884,13 +880,13 @@ export async function handleChatCompletion(
     if (p.kind === "tools") {
       const message = legacy
         ? {
-          role: "assistant",
-          content: null,
-          function_call: {
-            name: p.toolCalls[0].function.name,
-            arguments: p.toolCalls[0].function.arguments,
-          },
-        }
+            role: "assistant",
+            content: null,
+            function_call: {
+              name: p.toolCalls[0].function.name,
+              arguments: p.toolCalls[0].function.arguments,
+            },
+          }
         : { role: "assistant", content: null, tool_calls: p.toolCalls };
       return withProxyHeaders(
         jsonResponse(200, {
@@ -947,7 +943,7 @@ export async function handleChatCompletion(
           const hb = setInterval(() => {
             try {
               controller.enqueue(enc.encode(": keepalive\n\n"));
-            } catch { }
+            } catch {}
           }, 15000);
 
           // Live token passthrough (non-tool only). Track exactly what we've sent so the
@@ -966,21 +962,21 @@ export async function handleChatCompletion(
             hasTools || forcedExactReply
               ? undefined
               : (delta: string) => {
-                if (!delta) return;
-                if (gated) {
-                  head += delta;
-                  if (couldBePriorityAccessPrefix(head)) return; // still undecided — keep buffering
-                  gated = false;
-                  delta = head; // release everything held so far, in order
-                }
-                sent += delta;
-                try {
-                  send({
-                    ...base,
-                    choices: [{ index: 0, delta: { content: delta }, finish_reason: null }],
-                  });
-                } catch { }
-              };
+                  if (!delta) return;
+                  if (gated) {
+                    head += delta;
+                    if (couldBePriorityAccessPrefix(head)) return; // still undecided — keep buffering
+                    gated = false;
+                    delta = head; // release everything held so far, in order
+                  }
+                  sent += delta;
+                  try {
+                    send({
+                      ...base,
+                      choices: [{ index: 0, delta: { content: delta }, finish_reason: null }],
+                    });
+                  } catch {}
+                };
 
           let p: Produced;
           try {
@@ -1020,7 +1016,7 @@ export async function handleChatCompletion(
                     code = parsedError.code;
                   if (typeof parsedError.param === "string") param = parsedError.param;
                 }
-              } catch { }
+              } catch {}
               streamError = { message, type };
               const retryAfter = p.resp.headers.get("Retry-After");
               // HTTP 200 is already committed, so surface the failure as an in-stream error chunk.
@@ -1117,7 +1113,7 @@ export async function handleChatCompletion(
             try {
               controller.enqueue(enc.encode("data: [DONE]\n\n"));
               controller.close();
-            } catch { }
+            } catch {}
           }
         },
       }),

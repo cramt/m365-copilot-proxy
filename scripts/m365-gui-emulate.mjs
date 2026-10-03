@@ -110,11 +110,9 @@ try {
   }
   await page.waitForTimeout(6000);
   // Trigger a GUI turn so the GUI opens its WS and we capture token+params.
-  await page
-    .screenshot({ path: join(OUT, "emu-after-login.png") })
-    .catch((error) => {
-      void error;
-    });
+  await page.screenshot({ path: join(OUT, "emu-after-login.png") }).catch((error) => {
+    void error;
+  });
   let box = null;
   for (const s of [
     'div[contenteditable="true"]:visible',
@@ -161,7 +159,7 @@ try {
   console.log("[emu] GUI message sent; waiting for WS...");
   for (let i = 0; i < 20 && !chathubUrl; i++) await page.waitForTimeout(1000);
   if (!chathubUrl) {
-    await page.screenshot({ path: join(OUT, "emu-nows.png") }).catch(() => { });
+    await page.screenshot({ path: join(OUT, "emu-nows.png") }).catch(() => {});
     throw new Error("never captured GUI chathub URL");
   }
   await page.waitForTimeout(2000);
@@ -208,18 +206,18 @@ try {
     },
     ...(agentId
       ? {
-        gpts: [
-          {
-            id: agentId,
-            source: "MOS3",
-            version: "1.0.0",
-            clientOverrides: {
-              capabilities: [],
-              "deepResearchModels@odata.type": "Collection(String)",
+          gpts: [
+            {
+              id: agentId,
+              source: "MOS3",
+              version: "1.0.0",
+              clientOverrides: {
+                capabilities: [],
+                "deepResearchModels@odata.type": "Collection(String)",
+              },
             },
-          },
-        ],
-      }
+          ],
+        }
       : { plugins: [{ Id: "BingWebSearch", Source: "BuiltIn" }] }),
     isSbsSupported: true,
     tone: "magic",
@@ -281,9 +279,9 @@ try {
                   target: "chat",
                   type: 4,
                 }) +
-                RS +
-                JSON.stringify({ arguments: [{ Timestamps: {} }], target: "Metrics", type: 1 }) +
-                RS,
+                  RS +
+                  JSON.stringify({ arguments: [{ Timestamps: {} }], target: "Metrics", type: 1 }) +
+                  RS,
               );
               continue;
             }
