@@ -102,23 +102,23 @@ const SOME_TOOLS = [
 ];
 const TOOL_BLOCK = MANY_TOOLS
   ? `<tools>\n${SOME_TOOLS.concat([
-    ["edit", "Edit a file", { path: "string", oldString: "string", newString: "string" }],
-    ["write", "Write a file", { path: "string", content: "string" }],
-    ["glob", "Glob files", { pattern: "string" }],
-    ["grep", "Grep contents", { pattern: "string" }],
-    ["list", "List a dir", { path: "string" }],
-  ])
-    .map(([n, d, p]) =>
-      JSON.stringify({
-        name: n,
-        description: d,
-        parameters: {
-          type: "object",
-          properties: Object.fromEntries(Object.entries(p).map(([k, t]) => [k, { type: t }])),
-        },
-      }),
-    )
-    .join("\n")}\n</tools>\n`
+      ["edit", "Edit a file", { path: "string", oldString: "string", newString: "string" }],
+      ["write", "Write a file", { path: "string", content: "string" }],
+      ["glob", "Glob files", { pattern: "string" }],
+      ["grep", "Grep contents", { pattern: "string" }],
+      ["list", "List a dir", { path: "string" }],
+    ])
+      .map(([n, d, p]) =>
+        JSON.stringify({
+          name: n,
+          description: d,
+          parameters: {
+            type: "object",
+            properties: Object.fromEntries(Object.entries(p).map(([k, t]) => [k, { type: t }])),
+          },
+        }),
+      )
+      .join("\n")}\n</tools>\n`
   : "";
 
 const sessionId = crypto.randomUUID();
@@ -189,18 +189,18 @@ const chatMsg = {
       },
       ...(agentId
         ? {
-          gpts: [
-            {
-              id: agentId,
-              source: "MOS3",
-              version: "1.0.0",
-              clientOverrides: {
-                capabilities: [],
-                "deepResearchModels@odata.type": "Collection(String)",
+            gpts: [
+              {
+                id: agentId,
+                source: "MOS3",
+                version: "1.0.0",
+                clientOverrides: {
+                  capabilities: [],
+                  "deepResearchModels@odata.type": "Collection(String)",
+                },
               },
-            },
-          ],
-        }
+            ],
+          }
         : { plugins: [{ Id: "BingWebSearch", Source: "BuiltIn" }] }),
       isSbsSupported: true,
       tone: "magic",

@@ -114,7 +114,7 @@ try {
     console.log("[dig] login form, driving AAD...");
     await login();
   }
-  await page.waitForLoadState("networkidle", { timeout: 60000 }).catch(() => { });
+  await page.waitForLoadState("networkidle", { timeout: 60000 }).catch(() => {});
   await page.waitForTimeout(5000);
   await shot("01-home");
   console.log("[dig] home url:", page.url());
@@ -133,8 +133,8 @@ try {
           waitUntil: "domcontentloaded",
           timeout: 60000,
         })
-        .catch(() => { });
-      await page.waitForLoadState("networkidle", { timeout: 40000 }).catch(() => { });
+        .catch(() => {});
+      await page.waitForLoadState("networkidle", { timeout: 40000 }).catch(() => {});
       await page.waitForTimeout(4000);
       await shot(`02-${path.split("/").pop()}`);
     }

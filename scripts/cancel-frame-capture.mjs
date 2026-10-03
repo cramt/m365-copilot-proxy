@@ -207,7 +207,7 @@ try {
     if (/login\.microsoftonline|\/oauth2|signin/i.test(ctx.url())) {
       console.log("[cap] AAD login...");
       await login();
-      await ctx.waitForLoadState("networkidle", { timeout: 60000 }).catch(() => { });
+      await ctx.waitForLoadState("networkidle", { timeout: 60000 }).catch(() => {});
     }
     await ctx.waitForTimeout(4000);
     const composer = await findComposer();

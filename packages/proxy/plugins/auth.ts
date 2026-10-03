@@ -20,4 +20,4 @@ try {
   throw error;
 }
 
-export default defineNitroPlugin(() => { });
+export default defineNitroPlugin(() => {});

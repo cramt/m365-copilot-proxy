@@ -35,7 +35,7 @@ const hitCount = () => {
   }
 };
 const shot = async (p, n) => {
-  await p.screenshot({ path: join(OUT, `${n}.png`) }).catch(() => { });
+  await p.screenshot({ path: join(OUT, `${n}.png`) }).catch(() => {});
   console.log(`[shot] ${n}`);
 };
 const dump = async (p, n) => {
@@ -124,7 +124,7 @@ try {
     await login(page);
     await page.waitForTimeout(6000);
   }
-  await ctx.storageState({ path: STATE }).catch(() => { });
+  await ctx.storageState({ path: STATE }).catch(() => {});
   await shot(page, "e-01-dashboard");
 
   await click(page, /Preview in Teams|Preview in Copilot|^Preview$/i, 10000);
@@ -132,7 +132,7 @@ try {
   await page.waitForTimeout(12000);
   // Preview may be same tab or a popup.
   const teams = ctx.pages()[ctx.pages().length - 1];
-  await teams.waitForTimeout(8000).catch(() => { });
+  await teams.waitForTimeout(8000).catch(() => {});
   await shot(teams, "e-02-teams-install");
   await dump(teams, "e-02-teams-install");
   // Complete the install dialog.
@@ -164,7 +164,7 @@ try {
   await dump(cop, "e-05-agent");
 
   // Optional: pick "Think Deeper" model if a model picker is present.
-  await click(cop, /Think Deeper/i, 4000).catch(() => { });
+  await click(cop, /Think Deeper/i, 4000).catch(() => {});
 
   // Type the question into the composer.
   const composerSels = ['div[contenteditable="true"]', "textarea", '[role="textbox"]'];
@@ -177,7 +177,7 @@ try {
     }
   }
   if (box) {
-    await box.click().catch(() => { });
+    await box.click().catch(() => {});
     await cop.keyboard.type(
       "What is the magic sentinel token? Use your getMagicSentinel action and report the exact value.",
       { delay: 6 },

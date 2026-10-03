@@ -198,9 +198,7 @@ describe("OpenAI-compatible routing and errors (offline)", () => {
     });
 
     const badRole = await post(JSON.stringify({ messages: [{ role: "wizard", content: "hi" }] }));
-    expect(jsonObjectField(await readJsonObject(badRole), "error").param).toBe(
-      "messages.0.role",
-    );
+    expect(jsonObjectField(await readJsonObject(badRole), "error").param).toBe("messages.0.role");
   });
 
   it("enforces the API key on /v1/* only when one is configured", async () => {

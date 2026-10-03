@@ -23,12 +23,14 @@
     "check": "biome check .",
     "test": "pnpm test:unit",
     "test:unit": "pnpm build && vitest run",
-    "test:live": "pnpm build && M365_LIVE=1 vitest run"
+    "test:live": "pnpm build && M365_LIVE=1 vitest run",
+    "test:all": "pnpm test:unit && pnpm test:live"
   },
   "packageManager": "pnpm@12.8.1",
   "devDependencies": {
     "@biomejs/biome": "2.5.15",
     "@eslint/js": "^10.0.1",
+    "@types/node": "^26.6.4",
     "@typescript/native-preview": "npm:typescript@^7.0.2",
     "@vitest/eslint-plugin": "^1.6.27",
     "eslint": "^10.12.0",

@@ -145,18 +145,18 @@ export function oneTurn(o) {
         },
         ...(agentId
           ? {
-            gpts: [
-              {
-                id: agentId,
-                source: "MOS3",
-                version: "1.0.0",
-                clientOverrides: {
-                  capabilities: [],
-                  "deepResearchModels@odata.type": "Collection(String)",
+              gpts: [
+                {
+                  id: agentId,
+                  source: "MOS3",
+                  version: "1.0.0",
+                  clientOverrides: {
+                    capabilities: [],
+                    "deepResearchModels@odata.type": "Collection(String)",
+                  },
                 },
-              },
-            ],
-          }
+              ],
+            }
           : { plugins: plugins ?? [{ Id: "BingWebSearch", Source: "BuiltIn" }] }),
         isSbsSupported: true,
         tone,

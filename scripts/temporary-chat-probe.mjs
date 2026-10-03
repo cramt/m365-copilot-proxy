@@ -105,17 +105,18 @@ if (process.argv.includes("--sidebar")) {
     await page.waitForTimeout(2000);
     const text = await page.evaluate(() => document.body.innerText).catch(() => "");
     writeFileSync(join(OUT, "sidebar.txt"), text);
-    await page.screenshot({ path: join(OUT, "sidebar.png"), fullPage: true }).catch(() => { });
+    await page.screenshot({ path: join(OUT, "sidebar.png"), fullPage: true }).catch(() => {});
     const hasTemp = new RegExp(TEMP_MARKER, "i").test(text);
     const hasSaved = new RegExp(SAVED_MARKER, "i").test(text);
     console.log(`  temporary chat ("${TEMP_MARKER}") listed: ${hasTemp}`);
     console.log(`  saved chat     ("${SAVED_MARKER}") listed: ${hasSaved}`);
     console.log(
-      `  VERDICT: ${!hasTemp && hasSaved
-        ? "CONFIRMED — disableMemory keeps it out of history"
-        : hasTemp && hasSaved
-          ? "REFUTED — the temporary chat is listed too"
-          : "INCONCLUSIVE — sidebar not captured, or not yet indexed"
+      `  VERDICT: ${
+        !hasTemp && hasSaved
+          ? "CONFIRMED — disableMemory keeps it out of history"
+          : hasTemp && hasSaved
+            ? "REFUTED — the temporary chat is listed too"
+            : "INCONCLUSIVE — sidebar not captured, or not yet indexed"
       }`,
     );
   } catch (e) {
@@ -127,7 +128,7 @@ if (process.argv.includes("--sidebar")) {
   const s = new ModelSession({ useAgent: false, temporaryChat: true });
   console.log(
     (await say(s, `Remember this codeword exactly: ${MAGIC}. Reply with just "ok".`)) &&
-    `turn1 cid=${s.conversationId}`,
+      `turn1 cid=${s.conversationId}`,
   );
   await pause(3000);
   const recall = await say(

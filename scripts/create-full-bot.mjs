@@ -134,7 +134,7 @@ try {
     console.log("[cf] login...");
     await login();
   }
-  await page.waitForLoadState("networkidle", { timeout: 60000 }).catch(() => { });
+  await page.waitForLoadState("networkidle", { timeout: 60000 }).catch(() => {});
   await page.waitForTimeout(6000);
   await shot("01-home");
   console.log("[cf] home:", page.url());
@@ -144,7 +144,7 @@ try {
     if (!(await tryClick(/create/i, "Create"))) {
       await page
         .goto(`${page.url().replace(/\/home.*/, "")}/agents/new`, { waitUntil: "domcontentloaded" })
-        .catch(() => { });
+        .catch(() => {});
     }
   }
   await page.waitForTimeout(5000);

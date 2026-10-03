@@ -250,8 +250,8 @@ const resultTag = (t) =>
 export function cellLines({ tone, verdict: v, agent, baseline }) {
   const lines = [
     `[agent-tone] ${tone.padEnd(30)} ${agent.scenario.padEnd(25)} ${v.padEnd(22)} ` +
-    `origin=${agent.answerOrigin} agentTag=${agent.agentNames.join("|") || "-"}${resultTag(agent)} ${agent.elapsedMs}ms` +
-    `${agent.error ? ` ERR=${agent.error}` : ""} reply=${short(agent.reply)}`,
+      `origin=${agent.answerOrigin} agentTag=${agent.agentNames.join("|") || "-"}${resultTag(agent)} ${agent.elapsedMs}ms` +
+      `${agent.error ? ` ERR=${agent.error}` : ""} reply=${short(agent.reply)}`,
   ];
   if (baseline) {
     lines.push(

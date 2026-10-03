@@ -292,12 +292,12 @@ for (const variant of VARIANTS) {
     },
     dea_violation: deas.length
       ? {
-        median: median(deas),
-        p95: p95(deas),
-        min: Math.min(...deas),
-        max: Math.max(...deas),
-        n: deas.length,
-      }
+          median: median(deas),
+          p95: p95(deas),
+          min: Math.min(...deas),
+          max: Math.max(...deas),
+          n: deas.length,
+        }
       : null,
     verdicts: v.map((r) => r.verdict),
   };

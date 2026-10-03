@@ -191,9 +191,9 @@ function runTurn({ text, isStart, cancelAfterMs }) {
           handshakeDone = true;
           ws.send(
             JSON.stringify(buildChat({ text, requestId, isStart })) +
-            RS +
-            JSON.stringify(metrics()) +
-            RS,
+              RS +
+              JSON.stringify(metrics()) +
+              RS,
           );
           if (cancelAfterMs != null) {
             stopTimer = setTimeout(() => {
