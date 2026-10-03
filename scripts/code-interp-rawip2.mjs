@@ -4,7 +4,13 @@ import { getToken, decodeJwt } from "../packages/core/dist/index.mjs";
 import { oneTurn } from "./_probe-chat.mjs";
 
 const SENTINEL = readFileSync("scripts/sentinel-value.txt", "utf8").trim();
-const CODE_INTERP = ["cwc_code_interpreter", "cwc_code_interpreter_amsfix", "cwc_code_interpreter_citation_fix", "code_interpreter_interactive_charts", "code_interpreter_matplotlib_patching"];
+const CODE_INTERP = [
+  "cwc_code_interpreter",
+  "cwc_code_interpreter_amsfix",
+  "cwc_code_interpreter_citation_fix",
+  "code_interpreter_interactive_charts",
+  "code_interpreter_matplotlib_patching",
+];
 
 const PY = `
 import socket, json
@@ -27,14 +33,28 @@ except Exception as e:
 print(json.dumps(out, indent=2))
 `.trim();
 
-const prompt = `Run this EXACT Python in your code interpreter for real and paste the complete verbatim stdout in one code block:\n\n` + "```python\n" + PY + "\n```";
+const prompt =
+  `Run this EXACT Python in your code interpreter for real and paste the complete verbatim stdout in one code block:\n\n` +
+  "```python\n" +
+  PY +
+  "\n```";
 
 mkdirSync("scripts/code-interp-out", { recursive: true });
 const token = await getToken();
 const claims = decodeJwt(token);
-const r = await oneTurn({ token, claims, agentId: null, optionsSets: CODE_INTERP, extraAllowed: ["GeneratedCode", "GenerateContentQuery", "Progress"], text: prompt, timeoutMs: 150000 });
+const r = await oneTurn({
+  token,
+  claims,
+  agentId: null,
+  optionsSets: CODE_INTERP,
+  extraAllowed: ["GeneratedCode", "GenerateContentQuery", "Progress"],
+  text: prompt,
+  timeoutMs: 150000,
+});
 const out = r.fullText || "";
 const fp = `scripts/code-interp-out/rawip2-${new Date().toISOString().replace(/[:.]/g, "-")}.txt`;
 writeFileSync(fp, out);
 console.log(`[rawip2] saved ${fp} (${out.length} chars)\n${out}`);
-console.log(`[rawip2] msgTypes=${r.messageTypes.join(",")} elapsed=${r.elapsedMs}ms throttle=${JSON.stringify(r.throttle)} disengaged=${r.disengaged}`);
+console.log(
+  `[rawip2] msgTypes=${r.messageTypes.join(",")} elapsed=${r.elapsedMs}ms throttle=${JSON.stringify(r.throttle)} disengaged=${r.disengaged}`,
+);

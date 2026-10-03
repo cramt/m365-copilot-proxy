@@ -24,38 +24,91 @@ import { join } from "node:path";
 
 const PORT = Number(process.env.PORT || 4142);
 const BASE = `http://localhost:${PORT}/v1`;
-const MODELS = (process.env.MODELS || "gpt-5.5-think-deeper").split(",").map((s) => s.trim()).filter(Boolean);
-const PROMPTS = (process.env.PROMPTS || "none,small,medium,large,huge").split(",").map((s) => s.trim()).filter(Boolean);
-const PRESETS = (process.env.PRESETS || "standard").split(",").map((s) => s.trim()).filter(Boolean);
+const MODELS = (process.env.MODELS || "gpt-5.5-think-deeper")
+  .split(",")
+  .map((s) => s.trim())
+  .filter(Boolean);
+const PROMPTS = (process.env.PROMPTS || "none,small,medium,large,huge")
+  .split(",")
+  .map((s) => s.trim())
+  .filter(Boolean);
+const PRESETS = (process.env.PRESETS || "standard")
+  .split(",")
+  .map((s) => s.trim())
+  .filter(Boolean);
 const TASKS = process.env.TASKS || "fix-bug";
 const REPEAT = process.env.REPEAT || "1";
 const MAX_TURNS = process.env.MAX_TURNS || "8";
 const san = (s) => s.replace(/[^a-z0-9]+/gi, "-");
 
 const cells = [];
-for (const model of MODELS) for (const prompt of PROMPTS) for (const preset of PRESETS) cells.push({ model, prompt, preset });
-console.log(`[matrix] ${cells.length} cells (${MODELS.length} models × ${PROMPTS.length} prompts × ${PRESETS.length} presets), tasks=${TASKS}, repeat=${REPEAT}`);
-console.log(`[matrix] models=${MODELS.join(",")} prompts=${PROMPTS.join(",")} presets=${PRESETS.join(",")}`);
+for (const model of MODELS)
+  for (const prompt of PROMPTS) for (const preset of PRESETS) cells.push({ model, prompt, preset });
+console.log(
+  `[matrix] ${cells.length} cells (${MODELS.length} models × ${PROMPTS.length} prompts × ${PRESETS.length} presets), tasks=${TASKS}, repeat=${REPEAT}`,
+);
+console.log(
+  `[matrix] models=${MODELS.join(",")} prompts=${PROMPTS.join(",")} presets=${PRESETS.join(",")}`,
+);
 
 // --- start the in-process proxy ---
 console.log(`[matrix] starting proxy on :${PORT} ...`);
-const serve = spawn("node", [join("scripts", "harness", "serve.mjs"), String(PORT)], { stdio: ["ignore", "inherit", "inherit"], env: process.env });
-const health = async () => { try { const r = await fetch(`http://localhost:${PORT}/health`); return r.ok; } catch { return false; } };
+const serve = spawn("node", [join("scripts", "harness", "serve.mjs"), String(PORT)], {
+  stdio: ["ignore", "inherit", "inherit"],
+  env: process.env,
+});
+const health = async () => {
+  try {
+    const r = await fetch(`http://localhost:${PORT}/health`);
+    return r.ok;
+  } catch {
+    return false;
+  }
+};
 let up = false;
-for (let i = 0; i < 60; i++) { if (await health()) { up = true; break; } await new Promise((r) => setTimeout(r, 1000)); }
-if (!up) { console.error("[matrix] proxy did not come up"); serve.kill("SIGKILL"); process.exit(1); }
+for (let i = 0; i < 60; i++) {
+  if (await health()) {
+    up = true;
+    break;
+  }
+  await new Promise((r) => setTimeout(r, 1000));
+}
+if (!up) {
+  console.error("[matrix] proxy did not come up");
+  serve.kill("SIGKILL");
+  process.exit(1);
+}
 console.log("[matrix] proxy healthy\n");
 
 let done = 0;
 for (const { model, prompt, preset } of cells) {
   const label = `mx_${san(model)}_${prompt}_${preset}`;
-  console.log(`\n[matrix] cell ${++done}/${cells.length}: model=${model} prompt=${prompt} preset=${preset}`);
-  spawnSync("node", [
-    join("scripts", "harness", "run-cell.mjs"),
-    "--base-url", BASE, "--model", model,
-    "--system", join("scripts", "harness", "prompts", `sys_${prompt}.txt`),
-    "--tool-preset", preset, "--tasks", TASKS, "--repeat", REPEAT, "--max-turns", MAX_TURNS, "--label", label,
-  ], { stdio: "inherit", env: process.env });
+  console.log(
+    `\n[matrix] cell ${++done}/${cells.length}: model=${model} prompt=${prompt} preset=${preset}`,
+  );
+  spawnSync(
+    "node",
+    [
+      join("scripts", "harness", "run-cell.mjs"),
+      "--base-url",
+      BASE,
+      "--model",
+      model,
+      "--system",
+      join("scripts", "harness", "prompts", `sys_${prompt}.txt`),
+      "--tool-preset",
+      preset,
+      "--tasks",
+      TASKS,
+      "--repeat",
+      REPEAT,
+      "--max-turns",
+      MAX_TURNS,
+      "--label",
+      label,
+    ],
+    { stdio: "inherit", env: process.env },
+  );
   await new Promise((r) => setTimeout(r, 2500)); // pace between cells (throttle-friendly)
 }
 

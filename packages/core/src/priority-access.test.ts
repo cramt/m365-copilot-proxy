@@ -44,14 +44,19 @@ describe("parsePriorityAccessExhaustion", () => {
 
   it("handles a Sunday weekly cap (next day is Monday)", () => {
     const sun = new Date("2026-09-20T23:00:00Z");
-    expect(parsePriorityAccessExhaustion(WEEKLY, sun)!.resetsAt.toISOString())
-      .toBe("2026-09-21T00:00:00.000Z");
+    expect(parsePriorityAccessExhaustion(WEEKLY, sun)!.resetsAt.toISOString()).toBe(
+      "2026-09-21T00:00:00.000Z",
+    );
   });
 
   it("does not fire on ordinary content, including prose about rate limits", () => {
     expect(parsePriorityAccessExhaustion("The hostname is web-prod-01.")).toBeNull();
-    expect(parsePriorityAccessExhaustion("This API is rate limited; wait until tomorrow and retry.")).toBeNull();
-    expect(parsePriorityAccessExhaustion("Priority access to premium models is a licensing concept.")).toBeNull();
+    expect(
+      parsePriorityAccessExhaustion("This API is rate limited; wait until tomorrow and retry."),
+    ).toBeNull();
+    expect(
+      parsePriorityAccessExhaustion("Priority access to premium models is a licensing concept."),
+    ).toBeNull();
     expect(parsePriorityAccessExhaustion("")).toBeNull();
     expect(parsePriorityAccessExhaustion(null)).toBeNull();
   });
@@ -90,7 +95,12 @@ describe("couldBePriorityAccessPrefix (stream-head gate)", () => {
   });
 
   it("releases as soon as the head diverges", () => {
-    for (const head of ["pong", "You should run npm install", "You've got mail", "The hostname is"]) {
+    for (const head of [
+      "pong",
+      "You should run npm install",
+      "You've got mail",
+      "The hostname is",
+    ]) {
       expect(couldBePriorityAccessPrefix(head), head).toBe(false);
     }
   });

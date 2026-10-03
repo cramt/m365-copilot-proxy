@@ -16,6 +16,7 @@ const BAP_API = "https://api.bap.microsoft.com";
 
 const AGENT_BASE_NAME = "m365-tool-agent";
 const AGENT_DESCRIPTION = "Auto-created agent for tool calling";
+let extensibilityUnavailable = false;
 
 // The agent's instructions are baked in at creation time and can't be cheaply
 // updated in place (the Copilot Studio update API needs a changeToken that is
@@ -92,8 +93,7 @@ export function environmentUrlFromName(envName: string): string {
     throw new Error(`Unexpected Power Platform environment ID: ${envId}`);
   }
   return (
-    `https://default${envId.slice(0, -2)}.${envId.slice(-2)}` +
-    `.environment.api.powerplatform.com`
+    `https://default${envId.slice(0, -2)}.${envId.slice(-2)}` + `.environment.api.powerplatform.com`
   );
 }
 
@@ -153,11 +153,7 @@ function saveCachedAgent(data: CachedAgent): void {
   writeFileSync(AGENT_CACHE_FILE, JSON.stringify(data, null, 2));
 }
 
-async function ppFetch(
-  url: string,
-  token: string,
-  options: RequestInit = {},
-): Promise<Response> {
+async function ppFetch(url: string, token: string, options: RequestInit = {}): Promise<Response> {
   return fetch(url, {
     ...options,
     headers: {
@@ -177,15 +173,11 @@ async function listBots(
     `${envUrl}/copilotstudio/minimalBots/api?api-version=2022-03-01-preview`,
     token,
   );
-  if (!res.ok)
-    throw new Error(`Failed to list bots: ${res.status} ${await res.text()}`);
+  if (!res.ok) throw new Error(`Failed to list bots: ${res.status} ${await res.text()}`);
   return res.json();
 }
 
-async function createBot(
-  envUrl: string,
-  token: string,
-): Promise<{ botId: string }> {
+async function createBot(envUrl: string, token: string): Promise<{ botId: string }> {
   const body = {
     botComponentChanges: [
       {
@@ -272,18 +264,13 @@ async function createBot(
     },
   );
 
-  if (!res.ok)
-    throw new Error(`Failed to create bot: ${res.status} ${await res.text()}`);
+  if (!res.ok) throw new Error(`Failed to create bot: ${res.status} ${await res.text()}`);
   const data = await res.json();
   const botId = data.bot?.schemaName || data.bot?.cdsBotId;
   return { botId };
 }
 
-async function publishBot(
-  envUrl: string,
-  token: string,
-  botId: string,
-): Promise<string> {
+async function publishBot(envUrl: string, token: string, botId: string): Promise<string> {
   // Publish the bot to M365 Copilot — returns the TitleId needed for chat
   const res = await ppFetch(
     `${envUrl}/copilotstudio/minimalBots/api/${botId}/publish?api-version=2022-03-01-preview`,
@@ -293,8 +280,14 @@ async function publishBot(
     },
   );
 
-  if (!res.ok)
-    throw new Error(`Failed to publish bot: ${res.status} ${await res.text()}`);
+  if (!res.ok) {
+    const message = await res.text();
+    if (res.status === 403 && /extensibility/i.test(message)) {
+      extensibilityUnavailable = true;
+      log.info("Copilot extensibility unavailable; skipping agent creation for this process");
+    }
+    throw new Error(`Failed to publish bot: ${res.status} ${message}`);
+  }
   const data = await res.json();
   const titleId: string = data.TitleId;
   if (!titleId) throw new Error("Publish response missing TitleId");
@@ -312,6 +305,8 @@ async function publishBot(
 export async function getOrCreateAgent(
   opts: { forceRefresh?: boolean } = {},
 ): Promise<string | null> {
+  if (process.env.M365_DISABLE_AGENT === "1" || extensibilityUnavailable) return null;
+
   const wantHash = getInstructionsHash();
   const wantName = getAgentName();
 
@@ -370,10 +365,9 @@ export async function getOrCreateAgent(
     try {
       titleId = await publishBot(envUrl, ppToken, botId);
     } catch (pubErr: any) {
+      if (extensibilityUnavailable) return null;
       // If publish fails (e.g. missing icon/instructions on legacy bot), delete and recreate
-      log.info(
-        `Publish failed (${pubErr.message.slice(0, 100)}), deleting and recreating bot...`,
-      );
+      log.info(`Publish failed (${pubErr.message.slice(0, 100)}), deleting and recreating bot...`);
       await ppFetch(
         `${envUrl}/copilotstudio/minimalBots/api/${botId}?api-version=2022-03-01-preview`,
         ppToken,
@@ -393,7 +387,12 @@ export async function getOrCreateAgent(
     // deleted — so a second proxy (other PC / build) sharing this tenant can't have
     // the agent it's mid-conversation with pulled out from under it. A few orphaned
     // lightweight bots are harmless; a deleted in-use agent breaks the other host.
-    saveCachedAgent({ agentId, botId, instructionsHash: wantHash, createdAt: new Date().toISOString() });
+    saveCachedAgent({
+      agentId,
+      botId,
+      instructionsHash: wantHash,
+      createdAt: new Date().toISOString(),
+    });
     return agentId;
   } catch (err: any) {
     log.error("Agent creation failed:", err.message, err.cause?.message || "");

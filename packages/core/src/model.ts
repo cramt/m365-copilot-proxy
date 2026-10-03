@@ -38,7 +38,9 @@ export class ModelSession {
   readonly sessionId: string = crypto.randomUUID();
   private _conversationId: string = crypto.randomUUID();
   /** Current M365 ConversationId (the throttle/Disengage state keys on this). */
-  get conversationId(): string { return this._conversationId; }
+  get conversationId(): string {
+    return this._conversationId;
+  }
   /**
    * Rotate to a FRESH conversation. A conversation that has Disengaged appears to
    * STAY Disengaged (a clean retry in the same conversation kept refusing), so the
@@ -53,8 +55,7 @@ export class ModelSession {
   constructor(options: ModelSessionOptions = {}) {
     this.resolveToken = options.getToken ?? getToken;
     this.useAgent = options.useAgent !== false;
-    this.temporaryChat =
-      options.temporaryChat ?? process.env.M365_SAVE_HISTORY !== "1";
+    this.temporaryChat = options.temporaryChat ?? process.env.M365_SAVE_HISTORY !== "1";
   }
 
   /** Number of turns completed in this session */
@@ -74,6 +75,20 @@ export class ModelSession {
     });
   }
 
+  async resolveAgent(): Promise<string | null> {
+    if (!this.useAgent || process.env.M365_DISABLE_AGENT === "1") return null;
+    if (this.cachedAgentId === undefined) {
+      try {
+        this.cachedAgentId = await getOrCreateAgent();
+        if (this.cachedAgentId) log.info(`Using agent: ${this.cachedAgentId}`);
+        else log.info("No agent available");
+      } catch {
+        this.cachedAgentId = null;
+      }
+    }
+    return this.cachedAgentId;
+  }
+
   /**
    * Send text to M365 Copilot and stream back the response.
    *
@@ -88,21 +103,15 @@ export class ModelSession {
    * If `signal` aborts (the HTTP client disconnects) the in-flight turn is
    * cancelled by sending M365's Stop frame, mirroring the real UI's Stop button.
    */
-  async run(text: string, model: string = "m365-copilot", signal?: AbortSignal, useAgent: boolean = true): Promise<CopilotStream> {
+  async run(
+    text: string,
+    model: string = "m365-copilot",
+    signal?: AbortSignal,
+    useAgent: boolean = true,
+  ): Promise<CopilotStream> {
     const token = await this.resolveToken();
     const wantAgent = this.useAgent && useAgent;
-
-    // Resolve agent ID lazily (persists across resets), only when wanted.
-    if (wantAgent && this.cachedAgentId === undefined) {
-      try {
-        this.cachedAgentId = await getOrCreateAgent();
-        if (this.cachedAgentId) log.info(`Using agent: ${this.cachedAgentId}`);
-        else log.info("No agent available");
-      } catch {
-        this.cachedAgentId = null;
-      }
-    }
-    const agentForTurn = wantAgent ? (this.cachedAgentId ?? undefined) : undefined;
+    const agentForTurn = wantAgent ? ((await this.resolveAgent()) ?? undefined) : undefined;
 
     // Create (or recreate) the session when missing or when this turn's
     // agent-ness differs from the current session's — switching the agent on/off
@@ -112,7 +121,9 @@ export class ModelSession {
       this.currentAgentId = agentForTurn;
     }
 
-    log.info(`run: model=${model}, agent=${agentForTurn ?? "none"}, turn=${this.copilotSession.turnCount}, sid=${this.sessionId}, cid=${this.conversationId}, text=${JSON.stringify(trunc(text, 200))}`);
+    log.info(
+      `run: model=${model}, agent=${agentForTurn ?? "none"}, turn=${this.copilotSession.turnCount}, sid=${this.sessionId}, cid=${this.conversationId}, text=${JSON.stringify(trunc(text, 200))}`,
+    );
 
     try {
       return await this.copilotSession.chat(token, text, model, signal);

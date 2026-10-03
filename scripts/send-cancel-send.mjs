@@ -26,7 +26,10 @@ const wsMod = await import(`${ROOT}/node_modules/.pnpm/ws@8.20.0/node_modules/ws
 const WebSocket = wsMod.default ?? wsMod.WebSocket;
 
 const args = process.argv.slice(2);
-const val = (k, d) => { const i = args.indexOf(k); return i >= 0 && args[i + 1] ? args[i + 1] : d; };
+const val = (k, d) => {
+  const i = args.indexOf(k);
+  return i >= 0 && args[i + 1] ? args[i + 1] : d;
+};
 const STOP_AFTER_MS = Number(val("--stop-after-ms", "3000"));
 
 const TS = new Date().toISOString().replace(/[:.]/g, "-");
@@ -42,64 +45,162 @@ const conversationId = crypto.randomUUID();
 
 function buildChat({ text, requestId, isStart }) {
   return {
-    arguments: [{
-      source: "officeweb", clientCorrelationId: requestId, sessionId,
-      optionsSets: [], streamingMode: "ConciseWithPadding", spokenTextMode: "None",
-      options: {}, extraExtensionParameters: {},
-      allowedMessageTypes: ["Chat", "Suggestion", "InternalSearchQuery", "Disengaged", "Progress", "EndOfRequest", "ReferencesListComplete"],
-      sliceIds: [], threadLevelGptId: {}, traceId: requestId, isStartOfSession: isStart,
-      clientInfo: { clientPlatform: "mcmcopilot-web", clientAppName: "Office", clientEntrypoint: "mcmcopilot-officeweb", clientSessionId: sessionId, clientAppType: "Web", deviceOS: "Linux", deviceType: "Desktop" },
-      message: { author: "user", inputMethod: "Keyboard", text, requestId, locationInfo: { timeZoneOffset: 1, timeZone: "Europe/Copenhagen" }, locale: "en-gb", messageType: "Chat", experienceType: "Default", adaptiveCards: [], clientPreferences: {} },
-      plugins: [{ Id: "BingWebSearch", Source: "BuiltIn" }],
-      isSbsSupported: true, tone: "magic", renderReferencesBehindEOS: true, disconnectBehavior: "continue",
-    }],
-    invocationId: "0", target: "chat", type: 4,
+    arguments: [
+      {
+        source: "officeweb",
+        clientCorrelationId: requestId,
+        sessionId,
+        optionsSets: [],
+        streamingMode: "ConciseWithPadding",
+        spokenTextMode: "None",
+        options: {},
+        extraExtensionParameters: {},
+        allowedMessageTypes: [
+          "Chat",
+          "Suggestion",
+          "InternalSearchQuery",
+          "Disengaged",
+          "Progress",
+          "EndOfRequest",
+          "ReferencesListComplete",
+        ],
+        sliceIds: [],
+        threadLevelGptId: {},
+        traceId: requestId,
+        isStartOfSession: isStart,
+        clientInfo: {
+          clientPlatform: "mcmcopilot-web",
+          clientAppName: "Office",
+          clientEntrypoint: "mcmcopilot-officeweb",
+          clientSessionId: sessionId,
+          clientAppType: "Web",
+          deviceOS: "Linux",
+          deviceType: "Desktop",
+        },
+        message: {
+          author: "user",
+          inputMethod: "Keyboard",
+          text,
+          requestId,
+          locationInfo: { timeZoneOffset: 1, timeZone: "Europe/Copenhagen" },
+          locale: "en-gb",
+          messageType: "Chat",
+          experienceType: "Default",
+          adaptiveCards: [],
+          clientPreferences: {},
+        },
+        plugins: [{ Id: "BingWebSearch", Source: "BuiltIn" }],
+        isSbsSupported: true,
+        tone: "magic",
+        renderReferencesBehindEOS: true,
+        disconnectBehavior: "continue",
+      },
+    ],
+    invocationId: "0",
+    target: "chat",
+    type: 4,
   };
 }
-const metrics = () => ({ arguments: [{ Timestamps: { ConnectionStart: new Date().toISOString(), UserInputStart: new Date().toISOString(), ConnectionEstablished: new Date().toISOString(), UserInputSubmit: new Date().toISOString() } }], target: "Metrics", type: 1 });
+const metrics = () => ({
+  arguments: [
+    {
+      Timestamps: {
+        ConnectionStart: new Date().toISOString(),
+        UserInputStart: new Date().toISOString(),
+        ConnectionEstablished: new Date().toISOString(),
+        UserInputSubmit: new Date().toISOString(),
+      },
+    },
+  ],
+  target: "Metrics",
+  type: 1,
+});
 // The exact frame the real Stop button sends (captured June 13).
 const STOP_FRAME = { arguments: [{}], invocationId: "1", target: "stop", type: 1 };
 
 function runTurn({ text, isStart, cancelAfterMs }) {
   const requestId = crypto.randomUUID();
   const params = new URLSearchParams({
-    chatsessionid: requestId, clientrequestid: requestId, "X-SessionId": sessionId,
-    ConversationId: conversationId, access_token: token,
+    chatsessionid: requestId,
+    clientrequestid: requestId,
+    "X-SessionId": sessionId,
+    ConversationId: conversationId,
+    access_token: token,
     variants: "feature.IsStreamingModeInChatRequestEnabled",
-    source: '"officeweb"', product: "Office", agentHost: "Bizchat.FullScreen",
-    licenseType: "Starter", agent: "web", scenario: "OfficeWebIncludedCopilot",
+    source: '"officeweb"',
+    product: "Office",
+    agentHost: "Bizchat.FullScreen",
+    licenseType: "Starter",
+    agent: "web",
+    scenario: "OfficeWebIncludedCopilot",
   });
   const wsUrl = `wss://substrate.office.com/m365Copilot/Chathub/${claims.oid}@${claims.tid}?${params}`;
 
   return new Promise((resolve) => {
-    const ws = new WebSocket(wsUrl, { headers: { "Origin": "https://m365.cloud.microsoft", "User-Agent": "Mozilla/5.0 (X11; Linux x86_64; rv:148.0) Gecko/20100101 Firefox/148.0" } });
+    const ws = new WebSocket(wsUrl, {
+      headers: {
+        Origin: "https://m365.cloud.microsoft",
+        "User-Agent": "Mozilla/5.0 (X11; Linux x86_64; rv:148.0) Gecko/20100101 Firefox/148.0",
+      },
+    });
     const t0 = Date.now();
-    let handshakeDone = false, deltaText = "", snapshotText = "", throttle = null, disengaged = false, sentStop = false, stopAck = null, settled = false;
+    let handshakeDone = false,
+      deltaText = "",
+      snapshotText = "",
+      throttle = null,
+      disengaged = false,
+      sentStop = false,
+      stopAck = null,
+      settled = false;
     let stopTimer = null;
     const messageTypes = new Set();
 
     function finish(reason) {
-      if (settled) return; settled = true;
+      if (settled) return;
+      settled = true;
       if (stopTimer) clearTimeout(stopTimer);
-      try { ws.close(); } catch {}
+      try {
+        ws.close();
+      } catch {}
       const fullText = snapshotText.length >= deltaText.length ? snapshotText : deltaText;
-      resolve({ fullText, throttle, disengaged, messageTypes: [...messageTypes], sentStop, stopAck, elapsedMs: Date.now() - t0, reason });
+      resolve({
+        fullText,
+        throttle,
+        disengaged,
+        messageTypes: [...messageTypes],
+        sentStop,
+        stopAck,
+        elapsedMs: Date.now() - t0,
+        reason,
+      });
     }
     const hardTimer = setTimeout(() => finish("hard-timeout"), 60000);
 
     ws.on("open", () => ws.send(JSON.stringify({ protocol: "json", version: 1 }) + RS));
     ws.on("message", (data) => {
       for (const f of data.toString().split(RS).filter(Boolean)) {
-        let p; try { p = JSON.parse(f); } catch { continue; }
+        let p;
+        try {
+          p = JSON.parse(f);
+        } catch {
+          continue;
+        }
         if (!handshakeDone) {
           handshakeDone = true;
-          ws.send(JSON.stringify(buildChat({ text, requestId, isStart })) + RS + JSON.stringify(metrics()) + RS);
+          ws.send(
+            JSON.stringify(buildChat({ text, requestId, isStart })) +
+              RS +
+              JSON.stringify(metrics()) +
+              RS,
+          );
           if (cancelAfterMs != null) {
             stopTimer = setTimeout(() => {
               if (settled) return;
               sentStop = true;
               console.log(`   [turn] sending STOP frame at +${Date.now() - t0}ms`);
-              try { ws.send(JSON.stringify(STOP_FRAME) + RS); } catch {}
+              try {
+                ws.send(JSON.stringify(STOP_FRAME) + RS);
+              } catch {}
               // Give the server a moment to ack/close, then end the turn.
               setTimeout(() => finish("stopped"), 4000);
             }, cancelAfterMs);
@@ -111,22 +212,51 @@ function runTurn({ text, isStart, cancelAfterMs }) {
         for (const x of a) {
           if (!x || typeof x !== "object") continue;
           if (typeof x.writeAtCursor === "string") deltaText += x.writeAtCursor;
-          if (Array.isArray(x.messages)) for (const m of x.messages) {
-            if (m?.messageType) { messageTypes.add(m.messageType); if (m.messageType === "Disengaged") disengaged = true; }
-            else if (m?.author === "bot" && typeof m.text === "string" && m.text.length > snapshotText.length) snapshotText = m.text;
-          }
-          if (x.throttling) throttle = { current: x.throttling.numUserMessagesInConversation, max: x.throttling.maxNumUserMessagesInConversation };
+          if (Array.isArray(x.messages))
+            for (const m of x.messages) {
+              if (m?.messageType) {
+                messageTypes.add(m.messageType);
+                if (m.messageType === "Disengaged") disengaged = true;
+              } else if (
+                m?.author === "bot" &&
+                typeof m.text === "string" &&
+                m.text.length > snapshotText.length
+              )
+                snapshotText = m.text;
+            }
+          if (x.throttling)
+            throttle = {
+              current: x.throttling.numUserMessagesInConversation,
+              max: x.throttling.maxNumUserMessagesInConversation,
+            };
         }
         if (p.type === 2) {
           const it = (Array.isArray(p.item) ? p.item[0] : p.item) ?? a[0]?.item;
-          if (it?.throttling) throttle = { current: it.throttling.numUserMessagesInConversation, max: it.throttling.maxNumUserMessagesInConversation };
-          if (Array.isArray(it?.messages)) for (const m of it.messages) { if (!m?.messageType && m?.author === "bot" && typeof m.text === "string" && m.text.length > snapshotText.length) snapshotText = m.text; }
+          if (it?.throttling)
+            throttle = {
+              current: it.throttling.numUserMessagesInConversation,
+              max: it.throttling.maxNumUserMessagesInConversation,
+            };
+          if (Array.isArray(it?.messages))
+            for (const m of it.messages) {
+              if (
+                !m?.messageType &&
+                m?.author === "bot" &&
+                typeof m.text === "string" &&
+                m.text.length > snapshotText.length
+              )
+                snapshotText = m.text;
+            }
         }
         // Did the server respond to our stop frame? (completion w/ invocationId 1, or close)
-        if (sentStop && (p.type === 3 || p.type === 7)) stopAck = { type: p.type, error: p.error ?? null };
+        if (sentStop && (p.type === 3 || p.type === 7))
+          stopAck = { type: p.type, error: p.error ?? null };
         if (p.type === 6) ws.send(JSON.stringify({ type: 6 }) + RS);
         // If NOT cancelling, end on normal terminators.
-        if (cancelAfterMs == null && (p.type === 2 || p.type === 3 || p.type === 7)) { clearTimeout(hardTimer); finish("complete"); }
+        if (cancelAfterMs == null && (p.type === 2 || p.type === 3 || p.type === 7)) {
+          clearTimeout(hardTimer);
+          finish("complete");
+        }
       }
     });
     ws.on("error", (e) => finish("error:" + e.message));
@@ -134,15 +264,20 @@ function runTurn({ text, isStart, cancelAfterMs }) {
   });
 }
 
-console.log(`[scs] conversation=${conversationId.slice(0, 8)} secret=${SECRET} stopAfter=${STOP_AFTER_MS}ms\n`);
+console.log(
+  `[scs] conversation=${conversationId.slice(0, 8)} secret=${SECRET} stopAfter=${STOP_AFTER_MS}ms\n`,
+);
 
 // --- Turn 1: plant the secret, ask for a long answer, then CANCEL mid-stream.
 console.log(`[scs] TURN 1 (plant secret + long gen, will cancel):`);
 const t1 = await runTurn({
-  isStart: true, cancelAfterMs: STOP_AFTER_MS,
+  isStart: true,
+  cancelAfterMs: STOP_AFTER_MS,
   text: `Remember this secret code for later: ${SECRET}. Now, write an extremely detailed 3000-word essay about the history of medieval cathedral construction, in long continuous prose.`,
 });
-console.log(`   partialChars=${t1.fullText.length} throttle=${JSON.stringify(t1.throttle)} sentStop=${t1.sentStop} stopAck=${JSON.stringify(t1.stopAck)} reason=${t1.reason} ${t1.elapsedMs}ms`);
+console.log(
+  `   partialChars=${t1.fullText.length} throttle=${JSON.stringify(t1.throttle)} sentStop=${t1.sentStop} stopAck=${JSON.stringify(t1.stopAck)} reason=${t1.reason} ${t1.elapsedMs}ms`,
+);
 console.log(`   partial head: ${JSON.stringify(t1.fullText.slice(0, 90))}`);
 
 await new Promise((r) => setTimeout(r, 1500));
@@ -150,19 +285,40 @@ await new Promise((r) => setTimeout(r, 1500));
 // --- Turn 2: ask the model to recall the secret (tests context survival).
 console.log(`\n[scs] TURN 2 (recall secret — tests context survival of a cancelled turn):`);
 const t2 = await runTurn({
-  isStart: false, cancelAfterMs: null,
+  isStart: false,
+  cancelAfterMs: null,
   text: `What was the secret code I asked you to remember? Reply with only the code.`,
 });
 const recalled = t2.fullText.includes(SECRET);
 console.log(`   reply=${JSON.stringify(t2.fullText.slice(0, 120))}`);
-console.log(`   recalledSecret=${recalled} throttle=${JSON.stringify(t2.throttle)} reason=${t2.reason} ${t2.elapsedMs}ms`);
+console.log(
+  `   recalledSecret=${recalled} throttle=${JSON.stringify(t2.throttle)} reason=${t2.reason} ${t2.elapsedMs}ms`,
+);
 
 // --- Verdict
-const q1 = t2.throttle ? `turn2 counter=${t2.throttle.current} (turn1 cancelled ${t1.throttle ? `had counter=${t1.throttle.current}` : "reported no counter"}) → cancelled turn ${t2.throttle.current >= 2 ? "DID" : "did NOT"} count against quota` : "no throttle data";
+const q1 = t2.throttle
+  ? `turn2 counter=${t2.throttle.current} (turn1 cancelled ${t1.throttle ? `had counter=${t1.throttle.current}` : "reported no counter"}) → cancelled turn ${t2.throttle.current >= 2 ? "DID" : "did NOT"} count against quota`
+  : "no throttle data";
 console.log(`\n[scs] === VERDICT ===`);
 console.log(`[scs] Q1 quota cost of cancel: ${q1}`);
-console.log(`[scs] Q2 context survives cancel: ${recalled ? "YES — secret recalled after cancel" : "NO — secret lost"}`);
-console.log(`[scs] Q3 stop frame ack: turn1 ${t1.sentStop ? "sent stop" : "no stop"}, server ${t1.stopAck ? "acked " + JSON.stringify(t1.stopAck) : "no explicit ack (closed)"}`);
+console.log(
+  `[scs] Q2 context survives cancel: ${recalled ? "YES — secret recalled after cancel" : "NO — secret lost"}`,
+);
+console.log(
+  `[scs] Q3 stop frame ack: turn1 ${t1.sentStop ? "sent stop" : "no stop"}, server ${t1.stopAck ? "acked " + JSON.stringify(t1.stopAck) : "no explicit ack (closed)"}`,
+);
 
-writeFileSync(join(OUT, "results.json"), JSON.stringify({ meta: { conversationId, secret: SECRET, stopAfterMs: STOP_AFTER_MS, ts: TS }, turn1: t1, turn2: t2, recalled }, null, 2));
+writeFileSync(
+  join(OUT, "results.json"),
+  JSON.stringify(
+    {
+      meta: { conversationId, secret: SECRET, stopAfterMs: STOP_AFTER_MS, ts: TS },
+      turn1: t1,
+      turn2: t2,
+      recalled,
+    },
+    null,
+    2,
+  ),
+);
 console.log(`[scs] full output: ${OUT}`);

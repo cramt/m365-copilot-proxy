@@ -33,7 +33,10 @@ import { oneTurn } from "./_probe-chat.mjs";
 
 const args = process.argv.slice(2);
 const has = (k) => args.includes(k);
-const val = (k, d) => { const i = args.indexOf(k); return i >= 0 && args[i + 1] ? args[i + 1] : d; };
+const val = (k, d) => {
+  const i = args.indexOf(k);
+  return i >= 0 && args[i + 1] ? args[i + 1] : d;
+};
 
 const USE_AGENT = has("--agent");
 const LADDER = val("--ladder", "2000,8000,32000,64000,128000,256000").split(",").map(Number);
@@ -46,7 +49,10 @@ console.log(`[in-probe] out=${OUT}`);
 const token = await getToken();
 const claims = decodeJwt(token);
 let agentId = null;
-if (USE_AGENT) { agentId = await getOrCreateAgent(); console.log(`[in-probe] agent=${agentId}`); }
+if (USE_AGENT) {
+  agentId = await getOrCreateAgent();
+  console.log(`[in-probe] agent=${agentId}`);
+}
 
 // Benign filler: innocuous, low-entropy prose. Nothing jailbreak-shaped.
 const FILLER_UNIT = "The quick brown fox jumps over the lazy dog. ";
@@ -78,7 +84,7 @@ const results = [];
 async function run(chars) {
   const text = makePrompt(chars);
   const r = await oneTurn({ token, claims, text, agentId, timeoutMs: 150000 });
-  const out = (r.fullText ?? "");
+  const out = r.fullText ?? "";
   const sawHead = out.includes(CANARY_HEAD);
   const sawTail = out.includes(CANARY_TAIL);
   const row = {
@@ -102,9 +108,9 @@ async function run(chars) {
   results.push(row);
   console.log(
     `[in-probe] in=${text.length}c (~${row.approxTokens}t) → content=${row.gotContent} ` +
-    `head=${sawHead} tail=${sawTail} disengaged=${r.disengaged} ` +
-    `dea=${row.dea != null ? row.dea.toExponential(2) : "?"} ${r.elapsedMs}ms ` +
-    `${r.error ? "ERR=" + r.error : ""}`
+      `head=${sawHead} tail=${sawTail} disengaged=${r.disengaged} ` +
+      `dea=${row.dea != null ? row.dea.toExponential(2) : "?"} ${r.elapsedMs}ms ` +
+      `${r.error ? "ERR=" + r.error : ""}`,
   );
   console.log(`           reply: ${JSON.stringify(out.slice(0, 100))}`);
   return row;
@@ -114,34 +120,63 @@ for (const c of LADDER) {
   await run(c);
 }
 
-writeFileSync(join(OUT, "results.json"), JSON.stringify({
-  meta: { agent: USE_AGENT, ladder: LADDER, canaryHead: CANARY_HEAD, canaryTail: CANARY_TAIL, ts: TS },
-  results,
-}, null, 2));
+writeFileSync(
+  join(OUT, "results.json"),
+  JSON.stringify(
+    {
+      meta: {
+        agent: USE_AGENT,
+        ladder: LADDER,
+        canaryHead: CANARY_HEAD,
+        canaryTail: CANARY_TAIL,
+        ts: TS,
+      },
+      results,
+    },
+    null,
+    2,
+  ),
+);
 
 // Verdict
 console.log(`\n[in-probe] === VERDICT ===`);
 for (const r of results) {
-  const verdict = r.error ? `ERROR(${r.error})`
-    : r.disengaged ? "DISENGAGED"
-    : !r.gotContent ? "EMPTY"
-    : !r.sawTailCanary ? "TAIL-TRUNCATED"
-    : !r.sawHeadCanary ? "HEAD-LOST"
-    : "OK";
-  console.log(`  ${String(r.inputChars).padStart(7)}c (~${String(r.approxTokens).padStart(6)}t): ${verdict.padEnd(16)} dea=${r.dea != null ? r.dea.toExponential(2) : "?"}`);
+  const verdict = r.error
+    ? `ERROR(${r.error})`
+    : r.disengaged
+      ? "DISENGAGED"
+      : !r.gotContent
+        ? "EMPTY"
+        : !r.sawTailCanary
+          ? "TAIL-TRUNCATED"
+          : !r.sawHeadCanary
+            ? "HEAD-LOST"
+            : "OK";
+  console.log(
+    `  ${String(r.inputChars).padStart(7)}c (~${String(r.approxTokens).padStart(6)}t): ${verdict.padEnd(16)} dea=${r.dea != null ? r.dea.toExponential(2) : "?"}`,
+  );
 }
 const firstBad = results.find((r) => r.disengaged || !r.gotContent || !r.sawTailCanary || r.error);
-const lastGood = [...results].reverse().find((r) => r.gotContent && r.sawTailCanary && !r.disengaged && !r.error);
+const lastGood = [...results]
+  .reverse()
+  .find((r) => r.gotContent && r.sawTailCanary && !r.disengaged && !r.error);
 if (firstBad) {
-  console.log(`[in-probe] INPUT CEILING between ${lastGood ? lastGood.inputChars : "?"}c (last good) and ${firstBad.inputChars}c (first bad).`);
+  console.log(
+    `[in-probe] INPUT CEILING between ${lastGood ? lastGood.inputChars : "?"}c (last good) and ${firstBad.inputChars}c (first bad).`,
+  );
   console.log(`[in-probe] Next: bisect that range with --ladder.`);
 } else {
-  console.log(`[in-probe] All ${LADDER.length} rungs OK up to ${Math.max(...LADDER)}c (~${Math.round(Math.max(...LADDER) / 4)}t). Ceiling is higher — extend the ladder.`);
+  console.log(
+    `[in-probe] All ${LADDER.length} rungs OK up to ${Math.max(...LADDER)}c (~${Math.round(Math.max(...LADDER) / 4)}t). Ceiling is higher — extend the ladder.`,
+  );
 }
 // Did benign size move the classifier?
 const deas = results.filter((r) => r.dea != null).map((r) => ({ c: r.inputChars, dea: r.dea }));
 if (deas.length >= 2) {
-  const lo = deas[0], hi = deas[deas.length - 1];
-  console.log(`[in-probe] dea_violation: ${lo.c}c=${lo.dea.toExponential(2)} → ${hi.c}c=${hi.dea.toExponential(2)} (does benign bulk raise the score?)`);
+  const lo = deas[0],
+    hi = deas[deas.length - 1];
+  console.log(
+    `[in-probe] dea_violation: ${lo.c}c=${lo.dea.toExponential(2)} → ${hi.c}c=${hi.dea.toExponential(2)} (does benign bulk raise the score?)`,
+  );
 }
 console.log(`[in-probe] full output: ${OUT}`);

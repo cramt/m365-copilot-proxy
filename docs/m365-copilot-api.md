@@ -362,6 +362,33 @@ The final `type:2` frame carries the canonical state of the whole conversation i
 - This is why we **reuse one conversation** across an agent session and send **only new messages** on follow-up turns (delta mode) — every `Please continue.` retry also counts against the 600.
 - There is also opaque **account-level throttling** (rapid-fire requests can start returning empties). It recovers on its own.
 
+The account throttle can also be explicit: the final `type:2.item.result` contains
+`value: "Throttled"`, `errorCode: "PerUserThrottled"`, and a request-volume refusal.
+This can occur at `1/600`; the conversation counter is not the account's remaining budget.
+The proxy detects this before accepting content and returns HTTP 429 with
+`type: "rate_limit_error"`, `code: "m365_throttled"`, and the upstream scope in `param`.
+It does not retry that turn or re-authenticate.
+
+An explicit throttle now opens the proxy's local degradation backoff immediately.
+The remaining window is sent as `Retry-After` and `error.retry_after` in seconds;
+an early-flushed SSE response instead carries the same fields in an error chunk.
+`M365_THROTTLE_RETRY_AFTER_S` can extend this recommendation, but cannot shorten
+active local backoff. M365 supplies no reset time, so the hint is a local policy,
+not an observed upstream duration. Defaults start at 90 seconds, escalate on
+continued throttling after expiry up to 600 seconds, and reset on a clean response.
+`M365_NO_BACKOFF=1` disables the local window; a configured retry hint still applies.
+These response changes are verified offline; see hypotheses §23.
+
+The dashboard separately reads persisted account-throttle observations from completion
+metrics: last observed status, first refusal since the last successful response, and
+latest refusal time. Elapsed observation ages update every second. A proxy restart or
+local wait expiry does not mark the account recovered; a later successful response does.
+HTTP 200 SSE errors are not successes for this purpose, and Opus priority-access refusals
+are not account-throttle observations. This is last-known state, not an automatic probe
+of whether the account is still blocked. The Oct 3 final frames inspected (n=3) contain
+the refusal and metering allowances but no retry duration or reset timestamp, so the
+dashboard leaves the upstream reset time unknown (hypotheses §23).
+
 ### Account degradation under sustained use (observed June 13 2026)
 
 A full session of heavy use (~80+ messages across probes, bench runs, and logins
@@ -521,6 +548,19 @@ Two behaviours of the chat-tuned model distort any naïve "is it tool-calling ye
 3. **Create a bot** via the Copilot Studio `minimalBots` API (`…/copilotstudio/minimalBots/api?api-version=2022-03-01-preview`), with the tool-calling instructions as the GPT component's `instructions` text.
 4. **Publish** it → returns a `TitleId`.
 5. The usable **agent id** is `T_{titleId}.{botId}.gpt.default`, cached in `~/.config/m365-proxy/agent-id.json`.
+
+**Unavailable extensibility (2026-10-02).** A publish **403 mentioning extensibility**
+now marks the agent unavailable for the process lifetime. That error does not delete and
+recreate the bot, and later sessions (including force-refresh) do not repeat provisioning.
+Other publish failures retain the existing recovery path. Restarting the proxy clears this
+negative cache; `M365_DISABLE_AGENT=1` skips resolution and attachment entirely. These are
+proxy-side safeguards verified with mocked provisioning tests, not a new live API finding.
+
+`ModelSession.resolveAgent()` exposes the same lazy cache used by `run()`, so the handler
+chooses framing after it knows whether an agent exists. Agent-less GPT provisionally uses
+`relay` with GPT sandbox wording; agent-backed defaults are unchanged. Tool definitions are
+lean by default (`M365_TOOL_ALLOWLIST`), while response parsing retains the full toolset.
+The dual-environment candidates and pending comparison are in hypotheses §23.
 
 ### Referencing the agent in a chat turn
 Instead of `plugins`, set on the chat message:

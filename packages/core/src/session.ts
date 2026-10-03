@@ -10,12 +10,7 @@ import {
   CompletionFrame,
   CloseFrame,
 } from "./schemas.js";
-import {
-  decodeJwt,
-  getScenarioForModel,
-  getToneForModel,
-  type CopilotStream,
-} from "./copilot.js";
+import { decodeJwt, getScenarioForModel, getToneForModel, type CopilotStream } from "./copilot.js";
 import {
   parseActionConfirmation,
   buildResumeInvokeAction,
@@ -32,7 +27,8 @@ const log = createLogger("session");
 // invocation with target "stop" and invocationId "1" (distinct from chat's "0"),
 // sent on the same socket; the server acks with a type:3 completion and discards
 // the partial answer. See docs/m365-copilot-api.md §6 and hypotheses.md F11.
-const STOP_FRAME = JSON.stringify({ arguments: [{}], invocationId: "1", target: "stop", type: 1 }) + RS;
+const STOP_FRAME =
+  JSON.stringify({ arguments: [{}], invocationId: "1", target: "stop", type: 1 }) + RS;
 
 // Enabling these optionsSets unlocks M365's real server-side Python sandbox:
 // the model writes and EXECUTES Python and returns true results (verified with a
@@ -252,7 +248,9 @@ export class CopilotSession {
     this.agentId = options?.agentId;
     this.nativeActions = options?.nativeActions;
     this.temporaryChat = options?.temporaryChat ?? true;
-    log.info(`New session: sid=${this.sessionId}, cid=${this.conversationId}, agent=${this.agentId ?? "none"}, nativeActions=${!!this.nativeActions}, temporaryChat=${this.temporaryChat}`);
+    log.info(
+      `New session: sid=${this.sessionId}, cid=${this.conversationId}, agent=${this.agentId ?? "none"}, nativeActions=${!!this.nativeActions}, temporaryChat=${this.temporaryChat}`,
+    );
   }
 
   /** Number of turns completed in this session */
@@ -265,11 +263,18 @@ export class CopilotSession {
    * Each turn opens a fresh WebSocket with invocationId "0" (per SignalR protocol).
    * Session/conversation IDs are reused so M365 maintains server-side context.
    */
-  chat(token: string, text: string, model: string = "m365-copilot", signal?: AbortSignal): Promise<CopilotStream> {
+  chat(
+    token: string,
+    text: string,
+    model: string = "m365-copilot",
+    signal?: AbortSignal,
+  ): Promise<CopilotStream> {
     const isFirst = this._turnCount === 0;
     this._turnCount++;
 
-    log.info(`Chat turn ${this._turnCount - 1}: model=${model}, isFirst=${isFirst}, text=${JSON.stringify(trunc(text, 200))}`);
+    log.info(
+      `Chat turn ${this._turnCount - 1}: model=${model}, isFirst=${isFirst}, text=${JSON.stringify(trunc(text, 200))}`,
+    );
 
     const claims = decodeJwt(token);
     const requestId = crypto.randomUUID();
@@ -445,11 +450,11 @@ export class CopilotSession {
 
       const ws = new WebSocket(wsUrl, {
         headers: {
-          "Origin": "https://m365.cloud.microsoft",
+          Origin: "https://m365.cloud.microsoft",
           "User-Agent": "Mozilla/5.0 (X11; Linux x86_64; rv:148.0) Gecko/20100101 Firefox/148.0",
           "Accept-Language": "en-US,en;q=0.9",
           "Cache-Control": "no-cache",
-          "Pragma": "no-cache",
+          Pragma: "no-cache",
         },
       });
 
@@ -469,12 +474,20 @@ export class CopilotSession {
             log.info("Aborted — sending Stop frame to cancel the turn");
             dumpFrame(requestId, { target: "stop", type: 1 }, "send");
             ws.send(STOP_FRAME);
-            setTimeout(() => { try { ws.close(); } catch {} }, 2_000);
+            setTimeout(() => {
+              try {
+                ws.close();
+              } catch {}
+            }, 2_000);
           } else {
-            try { ws.close(); } catch {}
+            try {
+              ws.close();
+            } catch {}
           }
         } catch {
-          try { ws.close(); } catch {}
+          try {
+            ws.close();
+          } catch {}
         }
       };
       if (signal) {
@@ -541,117 +554,121 @@ export class CopilotSession {
 
       const sendChat = () => {
         const args = {
-              source: "officeweb",
-              clientCorrelationId: requestId,
-              sessionId,
-              // Code interpreter on the agent-less path only (see const above).
-              // M365_EXTRA_OPTIONSSETS (comma-sep) merges in on ANY path — used to
-              // test whether matching the official GUI's rich optionsSets stops the
-              // agent-path "replace X→Y" Disengage (F17/F21). The GUI sends a rich
-              // set + NO agent; we send [] + agent and Disengage.
-              optionsSets: [
-                ...((!agentId && !process.env.M365_NO_CODE_INTERPRETER) ? CODE_INTERPRETER_OPTIONS_SETS : []),
-                ...(process.env.M365_EXTRA_OPTIONSSETS ? process.env.M365_EXTRA_OPTIONSSETS.split(",").map((s) => s.trim()).filter(Boolean) : []),
-              ],
-              streamingMode: "ConciseWithPadding",
-              spokenTextMode: "None",
-              options: {},
-              extraExtensionParameters: {},
-              allowedMessageTypes: [
-                "Chat",
-                "Suggestion",
-                "InternalSearchQuery",
-                "Disengaged",
-                "InternalLoaderMessage",
-                "Progress",
-                "RenderCardRequest",
-                "SemanticSerp",
-                "GenerateContentQuery",
-                "SearchQuery",
-                "ConfirmationCard",
-                "DeveloperLogs",
-                "EndOfRequest",
-                "ReferencesListComplete",
-                "GeneratedCode",        // code-interpreter execution frames
-                // Native custom-action vocabulary (H-NATIVE-6): the server only
-                // SENDS these trigger frames if the client says it can handle them.
-                ...(nativeActions ? ACTION_ALLOWED_MESSAGE_TYPES : []),
-              ],
-              sliceIds: [] as string[],
-              threadLevelGptId: agentId
-                ? { id: agentId, source: "MOS3" }
-                : {},
-              traceId: requestId,
-              isStartOfSession: isFirst,
-              clientInfo: {
-                clientPlatform: "mcmcopilot-web",
-                clientAppName: "Office",
-                clientEntrypoint: "mcmcopilot-officeweb",
-                clientSessionId: sessionId,
-                clientAppType: "Web",
-                deviceOS: "Linux",
-                deviceType: "Desktop",
-              },
-              message: {
-                author: "user",
-                inputMethod: "Keyboard",
-                text,
-                entityAnnotationTypes: [
-                  "People",
-                  "File",
-                  "Event",
-                  "Email",
-                  "TeamsMessage",
+          source: "officeweb",
+          clientCorrelationId: requestId,
+          sessionId,
+          // Code interpreter on the agent-less path only (see const above).
+          // M365_EXTRA_OPTIONSSETS (comma-sep) merges in on ANY path — used to
+          // test whether matching the official GUI's rich optionsSets stops the
+          // agent-path "replace X→Y" Disengage (F17/F21). The GUI sends a rich
+          // set + NO agent; we send [] + agent and Disengage.
+          optionsSets: [
+            ...(!agentId && !process.env.M365_NO_CODE_INTERPRETER
+              ? CODE_INTERPRETER_OPTIONS_SETS
+              : []),
+            ...(process.env.M365_EXTRA_OPTIONSSETS
+              ? process.env.M365_EXTRA_OPTIONSSETS.split(",")
+                  .map((s) => s.trim())
+                  .filter(Boolean)
+              : []),
+          ],
+          streamingMode: "ConciseWithPadding",
+          spokenTextMode: "None",
+          options: {},
+          extraExtensionParameters: {},
+          allowedMessageTypes: [
+            "Chat",
+            "Suggestion",
+            "InternalSearchQuery",
+            "Disengaged",
+            "InternalLoaderMessage",
+            "Progress",
+            "RenderCardRequest",
+            "SemanticSerp",
+            "GenerateContentQuery",
+            "SearchQuery",
+            "ConfirmationCard",
+            "DeveloperLogs",
+            "EndOfRequest",
+            "ReferencesListComplete",
+            "GeneratedCode", // code-interpreter execution frames
+            // Native custom-action vocabulary (H-NATIVE-6): the server only
+            // SENDS these trigger frames if the client says it can handle them.
+            ...(nativeActions ? ACTION_ALLOWED_MESSAGE_TYPES : []),
+          ],
+          sliceIds: [] as string[],
+          threadLevelGptId: agentId ? { id: agentId, source: "MOS3" } : {},
+          traceId: requestId,
+          isStartOfSession: isFirst,
+          clientInfo: {
+            clientPlatform: "mcmcopilot-web",
+            clientAppName: "Office",
+            clientEntrypoint: "mcmcopilot-officeweb",
+            clientSessionId: sessionId,
+            clientAppType: "Web",
+            deviceOS: "Linux",
+            deviceType: "Desktop",
+          },
+          message: {
+            author: "user",
+            inputMethod: "Keyboard",
+            text,
+            entityAnnotationTypes: ["People", "File", "Event", "Email", "TeamsMessage"],
+            requestId,
+            locationInfo: { timeZoneOffset: 1, timeZone: "Europe/Copenhagen" },
+            locale: "en-gb",
+            messageType: "Chat",
+            experienceType: "Default",
+            adaptiveCards: [] as any[],
+            clientPreferences: {},
+          },
+          ...(agentId
+            ? {
+                gpts: [
+                  {
+                    id: agentId,
+                    source: "MOS3",
+                    version: "1.0.0",
+                    clientOverrides: {
+                      // The real capability channel (H8.2/H8.3/H8.7) — RegisteredPlugins,
+                      // ScenarioModels, CodeInterpreter, … ride here per the decompile.
+                      capabilities: nativeActions?.capabilities ?? [],
+                      "deepResearchModels@odata.type": "Collection(String)",
+                    },
+                  },
                 ],
-                requestId,
-                locationInfo: { timeZoneOffset: 1, timeZone: "Europe/Copenhagen" },
-                locale: "en-gb",
-                messageType: "Chat",
-                experienceType: "Default",
-                adaptiveCards: [] as any[],
-                clientPreferences: {},
-              },
-              ...(agentId
-                ? {
-                    gpts: [{
-                      id: agentId,
-                      source: "MOS3",
-                      version: "1.0.0",
-                      clientOverrides: {
-                        // The real capability channel (H8.2/H8.3/H8.7) — RegisteredPlugins,
-                        // ScenarioModels, CodeInterpreter, … ride here per the decompile.
-                        capabilities: nativeActions?.capabilities ?? [],
-                        "deepResearchModels@odata.type": "Collection(String)",
-                      },
-                    }],
-                  }
-                : {}),
-              // Inline agent definition — attach a custom action WITHOUT sideloading
-              // through Teams/Graph (H-NATIVE-7). Best-effort schema from the decompile;
-              // run with M365_DUMP_FRAMES=1 to see what the server accepts.
-              ...(nativeActions?.gptDefinitions ? { gptDefinitions: nativeActions.gptDefinitions } : {}),
-              // plugins[]: an explicit native-action list wins; otherwise Bing on the
-              // plain (agent-less) path only, exactly as before.
-              ...(nativeActions?.plugins
-                ? { plugins: nativeActions.plugins }
-                : (!agentId ? { plugins: [{ Id: "BingWebSearch", Source: "BuiltIn" }] } : {})),
-              // Skill flags that gate the action/confirmation flow — the real client
-              // sends these in the chat payload (bundle 8af68b68f4a2 destructure at
-              // :9373-9378 → payload :11111). Without them the server has no reason to
-              // run the confirmation-dialog / auto-invoke skills, so an attached action
-              // never triggers. Only sent on the native-action path.
-              ...(nativeActions
-                ? {
-                    enableConfirmationDialogSkill: true,
-                    enableAgentAutoInvoke: true,
-                    enableMsgExtAuthSkill: true,
-                    enablePPCAuthSkill: true,
-                  }
-                : {}),
-              isSbsSupported: true,
-              tone,
-              renderReferencesBehindEOS: true,
-              disconnectBehavior: "continue",
+              }
+            : {}),
+          // Inline agent definition — attach a custom action WITHOUT sideloading
+          // through Teams/Graph (H-NATIVE-7). Best-effort schema from the decompile;
+          // run with M365_DUMP_FRAMES=1 to see what the server accepts.
+          ...(nativeActions?.gptDefinitions
+            ? { gptDefinitions: nativeActions.gptDefinitions }
+            : {}),
+          // plugins[]: an explicit native-action list wins; otherwise Bing on the
+          // plain (agent-less) path only, exactly as before.
+          ...(nativeActions?.plugins
+            ? { plugins: nativeActions.plugins }
+            : !agentId
+              ? { plugins: [{ Id: "BingWebSearch", Source: "BuiltIn" }] }
+              : {}),
+          // Skill flags that gate the action/confirmation flow — the real client
+          // sends these in the chat payload (bundle 8af68b68f4a2 destructure at
+          // :9373-9378 → payload :11111). Without them the server has no reason to
+          // run the confirmation-dialog / auto-invoke skills, so an attached action
+          // never triggers. Only sent on the native-action path.
+          ...(nativeActions
+            ? {
+                enableConfirmationDialogSkill: true,
+                enableAgentAutoInvoke: true,
+                enableMsgExtAuthSkill: true,
+                enablePPCAuthSkill: true,
+              }
+            : {}),
+          isSbsSupported: true,
+          tone,
+          renderReferencesBehindEOS: true,
+          disconnectBehavior: "continue",
         };
         baseArgs = args;
         const chatMsg = {
@@ -696,7 +713,9 @@ export class CopilotSession {
         if (!conf) return false;
         sawAction = true;
         if (!shouldAutoConfirm(conf, { autoConfirmAll: nativeActions.autoConfirmAll })) {
-          log.info(`Native action ${conf.actionId} is consequential; autoConfirmAll off — not resuming`);
+          log.info(
+            `Native action ${conf.actionId} is consequential; autoConfirmAll off — not resuming`,
+          );
           return false;
         }
         actionResumed = true;
@@ -704,7 +723,11 @@ export class CopilotSession {
         const frame = { arguments: [resumeArgs], invocationId: "0", target: "chat", type: 4 };
         dumpFrame(requestId, frame, "send");
         log.info(`Native action: auto-confirming actionId=${conf.actionId} via ResumeInvokeAction`);
-        try { ws.send(JSON.stringify(frame) + RS); } catch (e) { log.error("resume send failed:", (e as Error).message); }
+        try {
+          ws.send(JSON.stringify(frame) + RS);
+        } catch (e) {
+          log.error("resume send failed:", (e as Error).message);
+        }
         return true;
       };
 
@@ -737,19 +760,38 @@ export class CopilotSession {
         if (base.type === 2) {
           // Stream item — the FINAL state of the conversation, with authoritative
           // throttle/turnCount/scores. Mine it before closing.
-          const item = (raw as { item?: { messages?: any[]; throttling?: any; turnState?: string; result?: { value?: unknown; errorCode?: unknown; message?: unknown } } }).item;
+          const item = (
+            raw as {
+              item?: {
+                messages?: any[];
+                throttling?: any;
+                turnState?: string;
+                result?: { value?: unknown; errorCode?: unknown; message?: unknown };
+              };
+            }
+          ).item;
           if (item) {
             if (typeof item.result?.value === "string") {
               serverResult = {
                 value: item.result.value,
-                ...(typeof item.result.errorCode === "string" ? { errorCode: item.result.errorCode } : {}),
-                ...(typeof item.result.message === "string" ? { message: item.result.message } : {}),
+                ...(typeof item.result.errorCode === "string"
+                  ? { errorCode: item.result.errorCode }
+                  : {}),
+                ...(typeof item.result.message === "string"
+                  ? { message: item.result.message }
+                  : {}),
               };
-              if (item.result.value !== "Success") log.info(`Turn result: ${item.result.value}${serverResult.errorCode ? ` (${serverResult.errorCode})` : ""}`);
+              if (item.result.value !== "Success")
+                log.info(
+                  `Turn result: ${item.result.value}${serverResult.errorCode ? ` (${serverResult.errorCode})` : ""}`,
+                );
             }
             if (item.turnState) turnState = item.turnState;
             if (item.throttling) {
-              throttleInfo = { current: item.throttling.numUserMessagesInConversation, max: item.throttling.maxNumUserMessagesInConversation };
+              throttleInfo = {
+                current: item.throttling.numUserMessagesInConversation,
+                max: item.throttling.maxNumUserMessagesInConversation,
+              };
             }
             let resumedHere = false;
             for (const m of item.messages ?? []) {
@@ -824,8 +866,13 @@ export class CopilotSession {
             const throttle = ThrottlingUpdate.safeParse(arg);
             if (throttle.success) {
               const t = throttle.data.throttling;
-              throttleInfo = { current: t.numUserMessagesInConversation, max: t.maxNumUserMessagesInConversation };
-              log.info(`Throttle: ${t.numUserMessagesInConversation}/${t.maxNumUserMessagesInConversation} messages`);
+              throttleInfo = {
+                current: t.numUserMessagesInConversation,
+                max: t.maxNumUserMessagesInConversation,
+              };
+              log.info(
+                `Throttle: ${t.numUserMessagesInConversation}/${t.maxNumUserMessagesInConversation} messages`,
+              );
             }
           }
         }

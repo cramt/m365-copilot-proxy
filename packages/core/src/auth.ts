@@ -1,18 +1,12 @@
 import * as msal from "@azure/msal-node";
-import {
-  readFileSync,
-  writeFileSync,
-  existsSync,
-  mkdirSync,
-} from "node:fs";
+import { readFileSync, writeFileSync, existsSync, mkdirSync } from "node:fs";
 import { execSync } from "node:child_process";
 import { join } from "node:path";
 import { homedir } from "node:os";
 
 const CLIENT_ID = "c0ab8ce9-e9a0-42e7-b064-33d422df41f1";
 const AUTHORITY = "https://login.microsoftonline.com/common";
-const REDIRECT_URI =
-  "https://login.microsoftonline.com/common/oauth2/nativeclient";
+const REDIRECT_URI = "https://login.microsoftonline.com/common/oauth2/nativeclient";
 const SCOPES = [
   "https://substrate.office.com/sydney/M365Chat.Read",
   "https://substrate.office.com/sydney/sydney.readwrite",
@@ -36,11 +30,7 @@ const SECRETS_FILE = resolveFile("M365_SECRETS_FILE", "secrets.json");
 const BROWSER_PROFILE_DIR = join(homedir(), ".config", "m365-proxy", "edge-profile");
 const SILENT_AUTH_TIMEOUT_MS = 15_000;
 
-async function withTimeout<T>(
-  promise: Promise<T>,
-  timeoutMs: number,
-  label: string,
-): Promise<T> {
+async function withTimeout<T>(promise: Promise<T>, timeoutMs: number, label: string): Promise<T> {
   let timer: ReturnType<typeof setTimeout> | undefined;
   try {
     return await Promise.race([
@@ -63,14 +53,14 @@ function loadCache(app: msal.PublicClientApplication) {
   if (existsSync(CACHE_FILE)) {
     try {
       app.getTokenCache().deserialize(readFileSync(CACHE_FILE, "utf-8"));
-    } catch { }
+    } catch {}
   }
 }
 
 function saveCache(app: msal.PublicClientApplication) {
   try {
     writeFileSync(CACHE_FILE, app.getTokenCache().serialize());
-  } catch { }
+  } catch {}
 }
 
 let _app: msal.PublicClientApplication | null = null;
@@ -216,10 +206,7 @@ async function fillVerified(
 
 /** Click the visible primary submit button (Next / Sign in / Verify / Yes). */
 async function clickSubmit(page: any): Promise<void> {
-  await page
-    .locator('input[type="submit"]:visible, button[type="submit"]:visible')
-    .first()
-    .click();
+  await page.locator('input[type="submit"]:visible, button[type="submit"]:visible').first().click();
 }
 
 /** Drive the Azure AD interactive login form using stored credentials + TOTP. */
@@ -265,7 +252,9 @@ interface BrowserLoginOptions {
 
 function isProfileLockError(err: unknown): boolean {
   const message = err instanceof Error ? err.message : String(err ?? "");
-  return /ProcessSingleton|SingletonLock|profile directory\s+is\s+already\s+in\s+use/i.test(message);
+  return /ProcessSingleton|SingletonLock|profile directory\s+is\s+already\s+in\s+use/i.test(
+    message,
+  );
 }
 
 async function runBrowserLogin(
@@ -298,7 +287,9 @@ async function runBrowserLogin(
         log.info(`Interactive login using persistent profile: ${BROWSER_PROFILE_DIR}`);
       } catch (err: any) {
         if (!isProfileLockError(err)) throw err;
-        log.info(`Interactive profile is locked, falling back to a temporary browser profile: ${err.message}`);
+        log.info(
+          `Interactive profile is locked, falling back to a temporary browser profile: ${err.message}`,
+        );
         const browser = await chromium.launch({
           headless: false,
           executablePath,
@@ -440,38 +431,22 @@ export async function loginAutomated(
 ): Promise<string> {
   const app = getApp();
   log.info("Starting automated login...");
-  const token = await runBrowserLogin(
-    app,
-    SCOPES,
-    { email, password, mfaSecret },
-    { attempts: 1 },
-  );
+  const token = await runBrowserLogin(app, SCOPES, { email, password, mfaSecret }, { attempts: 1 });
   if (!token) {
-    throw new Error(
-      `Automated login failed — see artifacts in ${LOGIN_DEBUG_DIR}`,
-    );
+    throw new Error(`Automated login failed — see artifacts in ${LOGIN_DEBUG_DIR}`);
   }
   return token;
 }
 
-export async function loginInteractive(
-  scopes: string[] = SCOPES,
-): Promise<string> {
+export async function loginInteractive(scopes: string[] = SCOPES): Promise<string> {
   if (!isInteractiveLoginAllowed()) {
     throw new Error("Interactive login disabled by M365_NO_INTERACTIVE=1");
   }
   const app = getApp();
   log.info("Starting interactive browser login (manual sign-in)...");
-  const token = await runBrowserLogin(
-    app,
-    scopes,
-    null,
-    { interactive: true, attempts: 1 },
-  );
+  const token = await runBrowserLogin(app, scopes, null, { interactive: true, attempts: 1 });
   if (!token) {
-    throw new Error(
-      `Interactive login failed — see artifacts in ${LOGIN_DEBUG_DIR}`,
-    );
+    throw new Error(`Interactive login failed — see artifacts in ${LOGIN_DEBUG_DIR}`);
   }
   return token;
 }
@@ -506,7 +481,9 @@ async function doForceReauth(): Promise<boolean> {
         await loginAutomated(secrets.email, secrets.password, secrets.mfaSecret);
       } catch (err: any) {
         if (!isInteractiveLoginAllowed()) throw err;
-        log.info(`forceReauth: automated login failed (${err.message}), prompting interactive sign-in`);
+        log.info(
+          `forceReauth: automated login failed (${err.message}), prompting interactive sign-in`,
+        );
         await loginInteractive();
       }
     } else {
@@ -529,7 +506,7 @@ export function loadSecrets(): {
   try {
     const data = JSON.parse(readFileSync(SECRETS_FILE, "utf-8"));
     if (data.email && data.password && data.mfaSecret) return data;
-  } catch { }
+  } catch {}
   return null;
 }
 

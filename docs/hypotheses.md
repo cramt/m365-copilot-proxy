@@ -3428,6 +3428,45 @@ requests carry the agent: not Claude tones, not `Gpt_6_Reasoning`. `M365_FORCE_A
 overrides. Routing alone wasn't enough, though: see F47.
 
 ### F46 — the paid scenario on a non-premium account: `ForbiddenRequest` / `InvalidCopilotLicense` 🟢
+**2026-10-02 follow-up hypothesis (tested, n=1 per cell):** An agent-less self-ID sweep of
+`scripts/agent-tone-probe.mjs`'s 11 default cells will distinguish successful
+model replies from scenario entitlement refusals and upstream empty/error turns.
+The additional `claude-sonnet-5.5` model ID resolves locally to `Claude_Sonnet`
++ `OfficeWebPaidCopilot`, the same selector as `claude-sonnet-5`, so the name
+alone does not establish Sonnet 5.5 support. Falsification: a paid cell answers
+without a licence refusal on this account, or the shared Sonnet route explicitly
+self-identifies as 5.5 rather than 5. Probe: the exact self-ID prompt, one raw
+agent-less turn per cell, including the invalid-tone control and the resolved
+`claude-sonnet-5.5` cell; sequential requests with a cooldown, raw frames and
+structured results saved, stop on `Throttled`. Self-ID remains a claim, not an
+independent model-version attestation.
+
+**Result (13:50-13:53Z):** All 12 cells completed, with no throttling or
+Disengaged frames. Five included GPT cells answered from `DeepLeo`: `magic`,
+`Gpt_5_5_Chat`, and `Gpt_5_6_Chat` claimed "GPT-5 chat model";
+`Gpt_5_5_Reasoning` and `Gpt_5_6_Reasoning` claimed "GPT-5 reasoning model".
+None specified a minor version, so this does not establish a downgrade or
+independently identify GPT-5.5 versus GPT-5.6. Chat replies credited Microsoft;
+reasoning replies named OpenAI's GPT-5 and Microsoft as Copilot's creator.
+All five paid attempts (`Gpt_5_6_Chat`, `Gpt_6_Reasoning`, `Claude_Sonnet`,
+`Claude_Opus`, and the resolved `claude-sonnet-5.5`) returned `BotConnection`
++ `ForbiddenRequest` / `InvalidCopilotLicense`. This confirms the agent-less
+licence refusal on the current account, including GPT-6; it does not establish
+model availability on a licensed account. Included `Claude_Sonnet` returned
+`BotConnection` + `InternalError` and the canned apology, not a model self-ID
+(one failed connection, not evidence of universal lack of support). The invalid
+tone control was rejected by a type-3 invocation error. `claude-sonnet-5.5` is
+not advertised by the proxy and shares Sonnet 5's paid selector; its distinct
+version remains unverified. No tools were supplied, so this sweep measures no
+tool-calling capability.
+
+**Evidence:** `/var/folders/dy/cmh5cgm90xq3r0pk5mr9sbvc0000gp/T/m365-selfid-sweep-VCXCi8/results.json`
+and the 12 sibling raw-frame `.jsonl` files. Outcomes were checked against raw
+final results; the classifier adapter explicitly maps the helper's
+`contentOrigin` to `outcome()`'s `answerOrigin` so a BotConnection apology is
+not counted as a model answer. Requests were agent-less, temporary chats, the
+exact prompt above, 15 seconds between fresh threads, with no retries.
+
 On the non-premium account, `Gpt_5_6_Chat`, `Claude_Sonnet` and `Claude_Opus` on the paid scenario
 (6/6 across two runs, agent attached) returned `result.value: "ForbiddenRequest"`,
 `errorCode: "InvalidCopilotLicense"`, a BotConnection reply "It looks like you don't have a valid
@@ -3494,3 +3533,89 @@ run came from the code interpreter or the jailbreak classifier.
 
 **Open.** Would `M365_NO_CODE_INTERPRETER=1` alone rescue baseline? Untested; relay already scores
 30/30.
+
+## 23. Oct 2 2026 - dual-environment tool calling without a publishable agent
+
+**Status: partial live evidence; framing comparison confounded, no winner promoted.**
+The user's pre-change pi suite scored GPT-5.5 reasoning 2/5 and Claude Sonnet reasoning
+1/5 on this account (`/tmp/m365-e2e/pi-e2e.sh`; results supplied in `/tmp/plan.md`).
+Agent publishing returns 403 "Copilot extensibility not enabled", so these sessions have
+no tool agent. Live samples collected Oct 3 are recorded below; real pi confirmation
+is still pending.
+
+| Hypothesis | Prediction and falsification | Cheapest discriminating check |
+|---|---|---|
+| H-dual-env | Naming both machines and allowing scratch sandbox use reduces wrong-machine work. Falsified as an improvement if it does not beat baseline across repeated tasks and real pi. | Sweep baseline, relay, honest, dual_env, dual_env_sys, dual_env_protocol on three unfakeable tasks, two rotated rounds; confirm top two with three rounds. |
+| H-gpt-tag | GPT responds differently to the system wrapper. Falsified if dual_env and identical-text dual_env_sys show no repeatable difference. | Same sweep, paired outcomes and DEA scores. |
+| H-lean | A coding-role allowlist reduces heavy-harness prompt weight without excluding required tools. Runtime improvement remains unmeasured. | Unit checks for pi unchanged, opencode-style trimming, explicit/all lists, zero-match fallback and forced tool retention; later opencode run. |
+| H-agent-cache | A permanent extensibility refusal should not trigger bot deletion or repeated publishing. | Mocked 403: one publish, zero deletes, zero later requests; unrelated failures retain recovery. |
+| H-throttle-hint | A first explicit throttle should activate local backoff and give clients a usable retry delay without extra upstream attempts. Falsified if 429/SSE lacks the remaining delay, a shorter override bypasses it, or the handler retries the same throttled turn. | Offline backoff and scripted JSON/SSE tests; real opencode retry timing remains unverified. |
+
+**Implemented:** process-level negative caching of the publish extensibility 403;
+`M365_DISABLE_AGENT`; public lazy `ModelSession.resolveAgent`; framing chosen after
+resolution; per-tone sandbox text; three dual-environment variants; prompt-only lean
+selection via `M365_TOOL_ALLOWLIST`; `run_in_terminal` shell routing without VS Code
+parameter defaulting. GPT without an agent provisionally uses `relay`, not a claimed winner.
+Agent-backed defaults and code-interpreter availability remain intact.
+
+**Offline evidence:** `packages/core/src/agent.test.ts`, `model.test.ts`, `fenced.test.ts`,
+`tools.test.ts`, and `packages/proxy-lib/src/streaming.test.ts`. Handler checks cover agent
+presence/absence, disable-over-force precedence, framing overrides, retry tone context,
+follow-up tags and parsing against tools omitted from the prompt. Synthetic scorecards
+confirmed repeated-sample aggregation and latest-label deduplication; dry runs confirmed
+36 scheduled threads, 60-second per-thread cooldowns and rotated starting arms.
+
+**Oct 3 live evidence (nominal labels, not controlled framing scores):** the
+`dual-env-confirm-20261003` prefix contains 75 saved files across four models.
+The analyzer formerly deduplicated solely by label, allowing another model's latest
+result to overwrite it; deduplication is now by model and label. Latest saved rows:
+
+| Model | relay | dual_env |
+|---|---|---|
+| gpt-5.5-think-deeper | 7/9 | 6/6 |
+| gpt-5.6-think-deeper | 9/9 | 9/9 |
+| claude-sonnet | 0/9 | 0/9 |
+| claude-sonnet-think-deeper | 3/9 | 4/9 |
+
+Evidence: `scripts/bench/out/dual-env-confirm-20261003-*.json`, model-specific output
+from `scripts/bench/analyze-sweep.mjs`, and the Oct 3 proxy logs/frame dumps around
+02:10-02:31 UTC. GPT-5.5's sequential run used 60s; user-started GPT-5.6 (5s) and
+Claude (0s) sweeps overlapped it on the same proxy/control file. These runs both
+consume shared account quota and overwrite active framing between turns, so labels
+are not proof of the actual prompt. GPT-5.6's solved tasks demonstrate real harness
+work, but neither arm can be ranked from this run. Claude Sonnet's rows were empty
+502s, not observed framing-specific refusals. Explicit `PerUserThrottled` 429s
+appeared on both Claude reasoning and GPT-5.5 despite conversation counts of 1/600.
+GPT-5.5's third round was interrupted; the 6/6 arm is incomplete, not a 9-task win.
+The proxy's active-conversation count is not a measurement of the throttle threshold.
+
+**H-throttle-hint offline result:** explicit throttling now opens local backoff on
+the first occurrence; 429 JSON sends `Retry-After` and `error.retry_after`, and SSE
+errors retain `param` plus `retry_after`. Delays count down, escalate after expiry,
+are capped, and reset on clean content. Finite positive operator hints may extend,
+but not shorten, the local recommendation. `auth-recovery.test.ts` and
+`streaming.test.ts`: 53/53 passed, no live requests. This is not evidence of the
+upstream reset duration or opencode honoring the hint. Sweep cooldown is now 5s
+per user request; it does not override an account-throttle recommendation.
+
+**Oct 3 throttle-display follow-up:** a local countdown is not the upstream throttle
+duration, and its process-local state disappears on restart. The dashboard now reads
+last-known account state from persisted completion errors, shows first/latest observed
+refusal ages, and marks recovery only after a successful response (not an HTTP 200 SSE
+error). In-memory SQLite tests cover restart survival, unrelated failures, recovery and
+separate priority-access quotas: 6/6 passed. No new live requests were sent.
+The latest three captured `Throttled` frames contain `PerUserThrottled`, conversation
+counters and metering allowances, but no retry-after/reset field. Evidence:
+`87307280-1bf4-4116-85a0-55894a19938d.ndjson`,
+`713aaa2b-01f5-4e62-ae59-81fd761fa1b4.ndjson`,
+`564c32e3-94cb-4980-b812-f10c49597384.ndjson` in the proxy frames directory.
+Persisted requests 279-281 are throttles; the last recorded successful response is 270.
+Display an unknown upstream reset, not an invented countdown or proof of current recovery.
+
+**Next, only with quota approval:** experiments E-D1, with sequential runs and
+fresh per-model tags after account recovery. Live scorecards go to
+`scripts/bench/out/dual-env-*.json`; each task row records its maximum returned DEA score.
+The repository pi suite is now `scripts/pi-e2e.sh` (PROXY_URL, MODEL, KEY, COOLDOWN, ONLY;
+isolated config, nonce per conversation, local verification and per-task evidence logs).
+After a repeated bench win, real pi must beat 2/5, targeting at least 4/5, before promoting
+a framing winner. Native tools/MCP and agent publishing fixes remain out of scope.

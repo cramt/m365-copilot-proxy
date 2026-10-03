@@ -18,8 +18,16 @@ const triggerMsg = {
   adaptiveCards: [
     {
       actions: [
-        { type: "Action.Submit", title: "Cancel", data: { message: { actionId: "act_123", confirmationOption: "decline" } } },
-        { type: "Action.Submit", title: "Allow", data: { message: { actionId: "act_123", confirmationOption: "confirm" } } },
+        {
+          type: "Action.Submit",
+          title: "Cancel",
+          data: { message: { actionId: "act_123", confirmationOption: "decline" } },
+        },
+        {
+          type: "Action.Submit",
+          title: "Allow",
+          data: { message: { actionId: "act_123", confirmationOption: "confirm" } },
+        },
       ],
     },
   ],
@@ -36,7 +44,9 @@ describe("parseActionConfirmation", () => {
   });
 
   it("ignores ordinary bot chat messages", () => {
-    expect(parseActionConfirmation({ author: "bot", messageType: "Chat", text: "hello" })).toBeNull();
+    expect(
+      parseActionConfirmation({ author: "bot", messageType: "Chat", text: "hello" }),
+    ).toBeNull();
     expect(parseActionConfirmation({ author: "bot", text: "plain" })).toBeNull();
     expect(parseActionConfirmation(null)).toBeNull();
     expect(parseActionConfirmation(undefined)).toBeNull();
@@ -45,18 +55,37 @@ describe("parseActionConfirmation", () => {
   it("detects via adaptive-card actionId even without a confirm messageType", () => {
     const c = parseActionConfirmation({
       author: "bot",
-      adaptiveCards: [{ actions: [{ type: "Action.Submit", title: "Allow", data: { message: { actionId: "x9", confirmationOption: "confirm" } } }] }],
+      adaptiveCards: [
+        {
+          actions: [
+            {
+              type: "Action.Submit",
+              title: "Allow",
+              data: { message: { actionId: "x9", confirmationOption: "confirm" } },
+            },
+          ],
+        },
+      ],
     });
     expect(c?.actionId).toBe("x9");
   });
 
   it("falls back to requestId/messageId for sourceRequestId", () => {
-    const c = parseActionConfirmation({ messageType: "TriggerConfirmation", actionId: "a", messageId: "mid1", adaptiveCards: [] });
+    const c = parseActionConfirmation({
+      messageType: "TriggerConfirmation",
+      actionId: "a",
+      messageId: "mid1",
+      adaptiveCards: [],
+    });
     expect(c?.sourceRequestId).toBe("mid1");
   });
 
   it("defaults isConsequential to true when absent (safe default)", () => {
-    const c = parseActionConfirmation({ messageType: "ConfirmationCard", actionId: "a", adaptiveCards: [] });
+    const c = parseActionConfirmation({
+      messageType: "ConfirmationCard",
+      actionId: "a",
+      adaptiveCards: [],
+    });
     expect(c?.isConsequential).toBe(true);
   });
 
@@ -83,7 +112,11 @@ describe("buildResumeInvokeAction", () => {
   });
 
   it("falls back to 'confirmation response' when no title/option is present", () => {
-    const c = parseActionConfirmation({ messageType: "ConfirmationCard", actionId: "a", adaptiveCards: [] })!;
+    const c = parseActionConfirmation({
+      messageType: "ConfirmationCard",
+      actionId: "a",
+      adaptiveCards: [],
+    })!;
     const msg = buildResumeInvokeAction(c);
     expect(msg.text).toBe("confirmation response");
     expect("confirmationOption" in msg).toBe(false);
@@ -97,7 +130,12 @@ describe("shouldAutoConfirm", () => {
   });
 
   it("does NOT auto-confirm consequential actions unless opted in", () => {
-    const c = parseActionConfirmation({ messageType: "ConfirmationCard", actionId: "a", isConsequential: true, adaptiveCards: [] })!;
+    const c = parseActionConfirmation({
+      messageType: "ConfirmationCard",
+      actionId: "a",
+      isConsequential: true,
+      adaptiveCards: [],
+    })!;
     expect(shouldAutoConfirm(c)).toBe(false);
     expect(shouldAutoConfirm(c, { autoConfirmAll: true })).toBe(true);
   });

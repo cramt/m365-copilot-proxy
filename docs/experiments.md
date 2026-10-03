@@ -209,6 +209,61 @@ All run with `scripts/_probe-chat.mjs` overrides; no license needed.
 
 ---
 
+## F. Agent-less dual-environment framing (hypotheses §23)
+
+### E-D1 - Which framing keeps project work on the harness machine?
+
+- **Hypothesis:** distinguishing the scratch sandbox from the user's project improves
+  real local tool loops; `dual_env_sys` isolates the wrapper's effect on GPT.
+- **Approval required:** the initial sweep starts 36 threads (6 arms x 3 tasks x 2
+  rounds); confirmation starts 18 more, and the five-task pi suite starts 5. Runs are
+  sequential with 5-second thread cooldowns (the requested sweep default); do not
+  start them concurrently. Five seconds does not guarantee avoidance of account throttling.
+- **Offline preview:** `bash scripts/bench/variant-sweep.sh --dry-run` and
+  `bash scripts/pi-e2e.sh --dry-run` make no requests.
+
+Build first, then start one persistent proxy on an available port (macOS: no Nix needed):
+
+```sh
+M365_DISABLE_AGENT=1 M365_FRAMING_FILE=/tmp/m365-framing M365_DEBUG=1 M365_DUMP_FRAMES=1 \
+  M365_NO_CONFAB_RETRY=1 M365_NO_DISENGAGE_RETRY=1 \
+  node packages/proxy/bin/m365-proxy.mjs 4199
+```
+
+The retry flags isolate framing performance and prevent extra Disengage-recovery threads.
+From another terminal, after approval:
+
+```sh
+TAG=dual-env REPEAT=2 COOLDOWN=5 bash scripts/bench/variant-sweep.sh
+node scripts/bench/analyze-sweep.mjs dual-env
+```
+
+The script rotates the first arm per round, sets the control file explicitly even for
+baseline, and paces every task, not just arm boundaries. Scorecards include all repeats,
+Disengaged errors and the maximum returned `x_m365_dea_score`. Check debug logs/frame dumps
+for sandbox work and refusals; a returned score does not count hidden/retried refusals.
+Confirm the measured top two by setting `ARMS` to their names, `REPEAT=3` and a fresh `TAG`.
+
+Use a fresh tag per model/run. The analyzer separates models and accepts an optional
+model argument (`node scripts/bench/analyze-sweep.mjs <tag> <model>`); rerunning the same
+model/label keeps its latest file, not an independent repeat. Concurrent sweeps against
+one framing control file change each other's per-turn prompts and invalidate arm labels.
+Separate ports/control files prevent that interference, but still share the account quota.
+On `m365_throttled`, respect `Retry-After`/`error.retry_after` rather than continuing at 5s.
+
+Restart the proxy with its normal retry defaults, retaining `M365_DISABLE_AGENT=1` and
+the framing control file. Set that file to the measured winner, then run:
+
+```sh
+MODEL=gpt-5.5-think-deeper COOLDOWN=5 bash scripts/pi-e2e.sh
+```
+
+**Read:** local verifier scores, not prose claims; beat the user-supplied 2/5 baseline,
+target at least 4/5. `ONLY=edit,multistep` selects tasks, `PROXY_URL` defaults to
+`http://localhost:4199/v1`, and `KEY` defaults to `sk-local`. Task directories and pi logs
+are retained as evidence; the isolated pi configuration is removed on exit. Record the
+sample size and evidence in hypotheses §23 before changing the provisional default.
+
 ## Adding an experiment
 
 1. State the hypothesis + falsification criterion in `hypotheses.md`.

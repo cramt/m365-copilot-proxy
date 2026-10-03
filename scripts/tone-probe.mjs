@@ -26,7 +26,11 @@
 
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { getToken, decodeJwt, parsePriorityAccessExhaustion } from "../packages/core/dist/index.mjs";
+import {
+  getToken,
+  decodeJwt,
+  parsePriorityAccessExhaustion,
+} from "../packages/core/dist/index.mjs";
 import { oneTurn } from "./_probe-chat.mjs";
 
 const INCLUDED = { scenario: "OfficeWebIncludedCopilot", licenseType: "Starter" };
@@ -42,14 +46,26 @@ const TONES = [
   // on the strength of included-scenario probes alone while it was serving
   // fine on the paid one (§18 F33). Both cells should now be DeepLeo — the
   // included one is the regression detector if Microsoft re-gates it.
-  { tone: "Gpt_5_6_Chat", note: "included scenario: expect DeepLeo — BotConnection here means re-gated", ...INCLUDED },
-  { tone: "Gpt_5_6_Chat", note: "PAID scenario: expect DeepLeo (it served here even while gated)", ...PAID },
+  {
+    tone: "Gpt_5_6_Chat",
+    note: "included scenario: expect DeepLeo — BotConnection here means re-gated",
+    ...INCLUDED,
+  },
+  {
+    tone: "Gpt_5_6_Chat",
+    note: "PAID scenario: expect DeepLeo (it served here even while gated)",
+    ...PAID,
+  },
   { tone: "Gpt_6_Chat", note: "REJECTED outright — validator error, not the 5.6 deflection" },
   // One tone, TWO models: Sonnet 4.6 on included, Sonnet 5 on paid (2026-09-28,
   // docs §21). Both cells read LIVE with this `pong` prompt — LIVE says a model
   // answered, not which one; a self-ID prompt is what tells them apart.
   { tone: "Claude_Sonnet", note: "included scenario: Claude Sonnet 4.6", ...INCLUDED },
-  { tone: "Claude_Sonnet", note: "PAID scenario: Claude Sonnet 5 (model ID claude-sonnet-5)", ...PAID },
+  {
+    tone: "Claude_Sonnet",
+    note: "PAID scenario: Claude Sonnet 5 (model ID claude-sonnet-5)",
+    ...PAID,
+  },
   { tone: "Anthropic_Claude", note: "speculative Claude" },
   { tone: "Claude_Reasoning", note: "accepted but actually GPT-5 — don't use" },
 
@@ -60,7 +76,11 @@ const TONES = [
   // GPT-6, likewise paired. Entitlement-gated exactly like Opus but NOT
   // separately metered, so these two cells are cheap — they spend one ordinary
   // message each and can stay in a sweep that drops the Opus cells.
-  { tone: "Gpt_6_Reasoning", note: "included scenario: expect the BotConnection apology", ...INCLUDED },
+  {
+    tone: "Gpt_6_Reasoning",
+    note: "included scenario: expect the BotConnection apology",
+    ...INCLUDED,
+  },
   { tone: "Gpt_6_Reasoning", note: "PAID scenario: expect DeepLeo + a real answer", ...PAID },
 
   // Claude_Fable: present in the real web client's tone list (§12.6 decompile)
@@ -74,7 +94,11 @@ const TONES = [
   // a model ID that lies about what answers. Probed on both entitlements to see
   // whether the paid scenario is the gate (as it is for Opus) or whether the
   // gate is program membership, which no scenario string can fake.
-  { tone: "Claude_Fable", note: "self-IDs as GPT-5, not Fable — likely Frontier-gated", ...INCLUDED },
+  {
+    tone: "Claude_Fable",
+    note: "self-IDs as GPT-5, not Fable — likely Frontier-gated",
+    ...INCLUDED,
+  },
   { tone: "Claude_Fable", note: "PAID scenario: does the entitlement move it?", ...PAID },
 
   { tone: "Definitely_Not_A_Real_Tone_XYZ", note: "CONTROL: invalid" },
@@ -103,7 +127,13 @@ for (const cell of TONES) {
   const scenario = cell.scenario ?? INCLUDED.scenario;
   const licenseType = cell.licenseType ?? INCLUDED.licenseType;
   const r = await oneTurn({
-    token, claims, agentId: null, tone: cell.tone, scenario, licenseType, timeoutMs: 60000,
+    token,
+    claims,
+    agentId: null,
+    tone: cell.tone,
+    scenario,
+    licenseType,
+    timeoutMs: 60000,
     text: `Reply with exactly the single word: pong`,
   });
   const row = {
@@ -120,14 +150,18 @@ for (const cell of TONES) {
     elapsedMs: r.elapsedMs,
   };
   results.push(row);
-  console.log(`[tone] ${cell.tone.padEnd(32)} ${scenario.padEnd(25)} ${row.verdict.padEnd(20)} origin=${String(r.contentOrigin)} ${r.elapsedMs}ms ${r.error ? "ERR=" + r.error : ""} reply=${JSON.stringify(row.reply)}`);
+  console.log(
+    `[tone] ${cell.tone.padEnd(32)} ${scenario.padEnd(25)} ${row.verdict.padEnd(20)} origin=${String(r.contentOrigin)} ${r.elapsedMs}ms ${r.error ? "ERR=" + r.error : ""} reply=${JSON.stringify(row.reply)}`,
+  );
   await new Promise((res) => setTimeout(res, 1500)); // gentle spacing
 }
 
 writeFileSync(join(OUT, "results.json"), JSON.stringify(results, null, 2));
 console.log(`\n[tone] === VERDICT ===`);
 const control = results.find((r) => r.tone.includes("Definitely_Not"));
-console.log(`[tone] control (invalid tone): content=${control?.gotContent} error=${control?.error} → ${control?.gotContent ? "server SILENTLY FALLS BACK (can't distinguish fallback from real)" : "server REJECTS unknown tones (so content = a real tone)"}`);
+console.log(
+  `[tone] control (invalid tone): content=${control?.gotContent} error=${control?.error} → ${control?.gotContent ? "server SILENTLY FALLS BACK (can't distinguish fallback from real)" : "server REJECTS unknown tones (so content = a real tone)"}`,
+);
 for (const r of results) {
   if (r.tone.includes("Definitely_Not")) continue;
   console.log(`  ${r.tone} @ ${r.scenario}: ${r.verdict} (origin=${r.contentOrigin})`);
@@ -136,8 +170,12 @@ for (const r of results) {
 for (const tone of new Set(results.map((r) => r.tone))) {
   const cells = results.filter((r) => r.tone === tone);
   if (cells.length > 1 && new Set(cells.map((c) => c.verdict)).size > 1) {
-    console.log(`[tone] SCENARIO-SENSITIVE: ${tone} → ${cells.map((c) => `${c.scenario}=${c.verdict}`).join(", ")}`);
+    console.log(
+      `[tone] SCENARIO-SENSITIVE: ${tone} → ${cells.map((c) => `${c.scenario}=${c.verdict}`).join(", ")}`,
+    );
   }
 }
-console.log(`[tone] NOTE: a non-empty reply is not proof — only contentOrigin "DeepLeo" is (§12.15).`);
+console.log(
+  `[tone] NOTE: a non-empty reply is not proof — only contentOrigin "DeepLeo" is (§12.15).`,
+);
 console.log(`[tone] out: ${OUT}`);

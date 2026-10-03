@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, afterEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 
 // Replace core's ModelSession with a scripted fake so we can exercise the handler's
 // streaming path with no auth/WebSocket. Everything else in core stays real.
@@ -14,7 +14,9 @@ const scripted: {
   queue: Array<{ fullText: string; messageType?: string | null }>;
   /** The `useAgent` argument of every run() call, in order. */
   agentFlags: Array<boolean | undefined>;
-} = { deltas: [], runs: 0, texts: [], queue: [], agentFlags: [] };
+  agentId?: string | null;
+  resolutions: number;
+} = { deltas: [], runs: 0, texts: [], queue: [], agentFlags: [], resolutions: 0 };
 
 vi.mock("@m365-copilot/core", async (importActual) => {
   const actual = await importActual<typeof import("@m365-copilot/core")>();
@@ -23,8 +25,16 @@ vi.mock("@m365-copilot/core", async (importActual) => {
     sessionId = "session-test";
     conversationId = "conv-test";
     reset() {}
-    newConversation() { this.conversationId = "conv-test-2"; }
-    async refreshAgent() { return false; }
+    newConversation() {
+      this.conversationId = "conv-test-2";
+    }
+    async refreshAgent() {
+      return false;
+    }
+    async resolveAgent() {
+      scripted.resolutions++;
+      return scripted.agentId === undefined ? "agent-test" : scripted.agentId;
+    }
     async run(text: string, _model?: string, _signal?: AbortSignal, useAgent?: boolean) {
       this.turnCount++; // like the real session: later requests go down the delta path
       scripted.runs++;
@@ -55,21 +65,31 @@ vi.mock("@m365-copilot/core", async (importActual) => {
       return stream;
     }
   }
-  return { ...actual, ModelSession: FakeModelSession };
+  return {
+    ...actual,
+    ModelSession: FakeModelSession,
+    awaitDegradationBackoff: vi.fn(async () => {}),
+  };
 });
 
 const { handleChatCompletion, SessionPool, ChatCompletionRequest } = await import("./index.js");
+const { noteRequestOutcome } = await import("@m365-copilot/core");
 
 describe("model-aware conversation snapshots", () => {
   it("reuses a conversation only for the same model and first user message", () => {
     const pool = new SessionPool();
-    const messages = ChatCompletionRequest.parse({ messages: [{ role: "user", content: "same prompt" }] }).messages;
+    const messages = ChatCompletionRequest.parse({
+      messages: [{ role: "user", content: "same prompt" }],
+    }).messages;
     const sonnet = pool.resolve(messages, "claude-sonnet");
     expect(pool.resolve(messages, "claude-sonnet")).toBe(sonnet);
     expect(pool.resolve(messages, "gpt-6-think-deeper")).not.toBe(sonnet);
-    expect(pool.getActiveConversations().map((snapshot) => snapshot.model).sort()).toEqual([
-      "claude-sonnet", "gpt-6-think-deeper",
-    ]);
+    expect(
+      pool
+        .getActiveConversations()
+        .map((snapshot) => snapshot.model)
+        .sort(),
+    ).toEqual(["claude-sonnet", "gpt-6-think-deeper"]);
   });
 
   it("publishes usage and proxy headers for completed JSON responses", async () => {
@@ -77,14 +97,23 @@ describe("model-aware conversation snapshots", () => {
     scripted.fullText = "Hello";
     scripted.deltas = ["Hello"];
     const pool = new SessionPool();
-    const response = await handleChatCompletion(ChatCompletionRequest.parse({
-      model: "claude-sonnet", messages: [{ role: "user", content: "usage" }],
-    }), pool);
+    const response = await handleChatCompletion(
+      ChatCompletionRequest.parse({
+        model: "claude-sonnet",
+        messages: [{ role: "user", content: "usage" }],
+      }),
+      pool,
+    );
     expect(response.headers.get("x-proxy-session-id")).toBe("session-test");
     expect(response.headers.get("x-proxy-model")).toBe("claude-sonnet");
     expect(response.headers.get("x-proxy-finish-reason")).toBe("stop");
-    expect(JSON.parse(response.headers.get("x-proxy-usage")!).x_proxy_model_latency_ms).toBeGreaterThanOrEqual(0);
-    expect(pool.getActiveConversations()[0].usage).toMatchObject({ model: "claude-sonnet", conversationMessages: 1 });
+    expect(
+      JSON.parse(response.headers.get("x-proxy-usage")!).x_proxy_model_latency_ms,
+    ).toBeGreaterThanOrEqual(0);
+    expect(pool.getActiveConversations()[0].usage).toMatchObject({
+      model: "claude-sonnet",
+      conversationMessages: 1,
+    });
   });
 
   it("reports streaming usage only after the turn completes", async () => {
@@ -93,31 +122,49 @@ describe("model-aware conversation snapshots", () => {
     scripted.deltas = ["Hello"];
     const onComplete = vi.fn();
     const pool = new SessionPool();
-    const response = await handleChatCompletion(ChatCompletionRequest.parse({
-      stream: true, stream_options: { include_usage: true }, messages: [{ role: "user", content: "stream usage" }],
-    }), pool, { onComplete });
+    const response = await handleChatCompletion(
+      ChatCompletionRequest.parse({
+        stream: true,
+        stream_options: { include_usage: true },
+        messages: [{ role: "user", content: "stream usage" }],
+      }),
+      pool,
+      { onComplete },
+    );
     expect(response.headers.get("x-proxy-session-id")).toBe("session-test");
     const text = await response.text();
     expect(text).toContain("x_proxy_model_latency_ms");
     expect(onComplete).toHaveBeenCalledOnce();
     const completedResponse = onComplete.mock.calls[0][0] as Response;
-    expect(JSON.parse(completedResponse.headers.get("x-proxy-usage")!).x_m365_conversation_remaining).toBe(599);
+    expect(
+      JSON.parse(completedResponse.headers.get("x-proxy-usage")!).x_m365_conversation_remaining,
+    ).toBe(599);
     expect(pool.getActiveConversations()[0].usage?.modelLatencyMs).toBeGreaterThanOrEqual(0);
   });
 });
 
 describe("exact-reply system guard", () => {
-  it.each([false, true])("enforces the directive without leaking upstream prose (stream=%s)", async (stream) => {
-    scripted.result = null;
-    scripted.fullText = "This is not the requested answer.";
-    scripted.deltas = ["This is not ", "the requested answer."];
-    const response = await handleChatCompletion(ChatCompletionRequest.parse({
-      stream, messages: [{ role: "system", content: 'Only reply with "EXACT".' }, { role: "user", content: "hello" }],
-    }), new SessionPool());
-    const result = await response.text();
-    expect(result).toContain("EXACT");
-    expect(result).not.toContain("This is not");
-  });
+  it.each([false, true])(
+    "enforces the directive without leaking upstream prose (stream=%s)",
+    async (stream) => {
+      scripted.result = null;
+      scripted.fullText = "This is not the requested answer.";
+      scripted.deltas = ["This is not ", "the requested answer."];
+      const response = await handleChatCompletion(
+        ChatCompletionRequest.parse({
+          stream,
+          messages: [
+            { role: "system", content: 'Only reply with "EXACT".' },
+            { role: "user", content: "hello" },
+          ],
+        }),
+        new SessionPool(),
+      );
+      const result = await response.text();
+      expect(result).toContain("EXACT");
+      expect(result).not.toContain("This is not");
+    },
+  );
 
   it("forwards system messages introduced on a follow-up turn", async () => {
     scripted.result = null;
@@ -127,7 +174,10 @@ describe("exact-reply system guard", () => {
     const pool = new SessionPool();
     const messages = [{ role: "user", content: "follow-up system" }];
     await handleChatCompletion(ChatCompletionRequest.parse({ messages }), pool);
-    messages.push({ role: "system", content: "Use concise prose." }, { role: "user", content: "continue" });
+    messages.push(
+      { role: "system", content: "Use concise prose." },
+      { role: "user", content: "continue" },
+    );
     await handleChatCompletion(ChatCompletionRequest.parse({ messages }), pool);
     expect(scripted.texts[1]).toContain("<system>\nUse concise prose.\n</system>");
   });
@@ -229,7 +279,7 @@ describe("priority-access exhaustion on the streaming path", () => {
     expect(errors[0].retry_after).toBeGreaterThan(0);
   });
 
-  it("still streams an ordinary answer that merely starts with \"You\"", async () => {
+  it('still streams an ordinary answer that merely starts with "You"', async () => {
     const { contents, errors } = await streamRaw(["You", "r code ", "has a bug."]);
     expect(errors).toHaveLength(0);
     expect(contents.join("")).toBe("Your code has a bug.");
@@ -237,7 +287,15 @@ describe("priority-access exhaustion on the streaming path", () => {
 });
 
 describe("the only-the-first-call-ran note", () => {
-  const tools = [{ type: "function", function: { name: "bash", parameters: { type: "object", properties: { command: { type: "string" } } } } }];
+  const tools = [
+    {
+      type: "function",
+      function: {
+        name: "bash",
+        parameters: { type: "object", properties: { command: { type: "string" } } },
+      },
+    },
+  ];
   const NOTE = "(Note: only the first tool call in your previous reply was actually run.";
 
   /** One conversation, several requests through the same pool. */
@@ -246,13 +304,23 @@ describe("the only-the-first-call-ran note", () => {
     scripted.texts = [];
     scripted.queue = replies.map((fullText) => ({ fullText }));
     const pool = new SessionPool();
-    const messages: any[] = [{ role: "system", content: "sys" }, { role: "user", content: `fix it ${Math.random()}` }];
+    const messages: any[] = [
+      { role: "system", content: "sys" },
+      { role: "user", content: `fix it ${Math.random()}` },
+    ];
     for (let i = 0; i < replies.length; i++) {
-      const res = await handleChatCompletion(ChatCompletionRequest.parse({ model: "claude-sonnet", stream: false, tools, messages }), pool);
+      const res = await handleChatCompletion(
+        ChatCompletionRequest.parse({ model: "claude-sonnet", stream: false, tools, messages }),
+        pool,
+      );
       const msg = (await res.json()).choices[0].message;
       if (!msg.tool_calls) break;
       messages.push({ role: "assistant", content: null, tool_calls: msg.tool_calls });
-      messages.push({ role: "tool", tool_call_id: msg.tool_calls[0].id, content: `real output ${i}` });
+      messages.push({
+        role: "tool",
+        tool_call_id: msg.tool_calls[0].id,
+        content: `real output ${i}`,
+      });
     }
     scripted.queue = [];
     return scripted.texts;
@@ -260,7 +328,7 @@ describe("the only-the-first-call-ran note", () => {
 
   it("tells the model, with the real result, that its invented tail never ran", async () => {
     const sent = await converse([
-      "```bash\ncat config.json\n```\n\n<tool_response>\n{\"port\": 3000}\n</tool_response>\n\nThe bug is fixed.",
+      '```bash\ncat config.json\n```\n\n<tool_response>\n{"port": 3000}\n</tool_response>\n\nThe bug is fixed.',
       "```bash\nsed -i s/3000/8080/ config.json\n```",
       "Done.",
     ]);
@@ -272,7 +340,9 @@ describe("the only-the-first-call-ran note", () => {
 
   it("says how many batched calls were dropped by one-call-per-turn", async () => {
     const sent = await converse(["```bash\nls\n```\n\n```bash\ncat a.txt\n```", "Done."]);
-    expect(sent[1]).toContain("only the first of the 2 tool calls in your previous reply was run; the other one was not");
+    expect(sent[1]).toContain(
+      "only the first of the 2 tool calls in your previous reply was run; the other one was not",
+    );
   });
 
   it("adds nothing when the whole reply ran", async () => {
@@ -283,22 +353,45 @@ describe("the only-the-first-call-ran note", () => {
 
 describe("a reply that opens with a tool call and then writes an essay", () => {
   it("runs the opening call and tells the model its essay was written before the result", async () => {
-    const tools = [{ type: "function", function: { name: "bash", parameters: { type: "object", properties: { command: { type: "string" } } } } }];
+    const tools = [
+      {
+        type: "function",
+        function: {
+          name: "bash",
+          parameters: { type: "object", properties: { command: { type: "string" } } },
+        },
+      },
+    ];
     scripted.result = null;
     scripted.texts = [];
     scripted.queue = [
-      { fullText: "```bash\ncat config.json\n```\n\nThe file `config.json` doesn't exist in my environment, so here is how you could fix it yourself:\n\n## Steps\n\n```bash\nsed -i s/3000/8080/ config.json\n```\n\nThat's all." },
+      {
+        fullText:
+          "```bash\ncat config.json\n```\n\nThe file `config.json` doesn't exist in my environment, so here is how you could fix it yourself:\n\n## Steps\n\n```bash\nsed -i s/3000/8080/ config.json\n```\n\nThat's all.",
+      },
       { fullText: "Done." },
     ];
     const pool = new SessionPool();
     const messages: any[] = [{ role: "user", content: `essay ${Math.random()}` }];
-    const r1 = await (await handleChatCompletion(ChatCompletionRequest.parse({ model: "claude-sonnet", stream: false, tools, messages }), pool)).json();
+    const r1 = await (
+      await handleChatCompletion(
+        ChatCompletionRequest.parse({ model: "claude-sonnet", stream: false, tools, messages }),
+        pool,
+      )
+    ).json();
     const call = r1.choices[0].message.tool_calls?.[0];
     expect(call).toBeDefined(); // the old guard returned the essay as text
     expect(JSON.parse(call.function.arguments).command).toBe("cat config.json");
-    messages.push({ role: "assistant", content: null, tool_calls: r1.choices[0].message.tool_calls });
+    messages.push({
+      role: "assistant",
+      content: null,
+      tool_calls: r1.choices[0].message.tool_calls,
+    });
     messages.push({ role: "tool", tool_call_id: call.id, content: '{"port": 3000}' });
-    await handleChatCompletion(ChatCompletionRequest.parse({ model: "claude-sonnet", stream: false, tools, messages }), pool);
+    await handleChatCompletion(
+      ChatCompletionRequest.parse({ model: "claude-sonnet", stream: false, tools, messages }),
+      pool,
+    );
     expect(scripted.texts[1]).toContain("was written before its result existed");
     expect(scripted.texts[1]).toContain('{"port": 3000}');
     scripted.queue = [];
@@ -306,11 +399,25 @@ describe("a reply that opens with a tool call and then writes an essay", () => {
 });
 
 describe("an explicitly Throttled turn (result.value = Throttled)", () => {
+  beforeEach(() => {
+    vi.stubEnv("M365_NO_BACKOFF", "");
+    vi.stubEnv("M365_NO_AUTO_REAUTH", "");
+    vi.stubEnv("M365_THROTTLE_RETRY_AFTER_S", "");
+    noteRequestOutcome(false, "throttle-test");
+  });
+
+  afterEach(() => {
+    noteRequestOutcome(false, "throttle-test");
+    vi.unstubAllEnvs();
+    scripted.result = null;
+  });
+
   // Verbatim from the Sep 28 dumps: no content frames, only this final result.
   const THROTTLED = {
     value: "Throttled",
     errorCode: "PerUserThrottled",
-    message: "We're temporarily unable to respond to this volume of requests. Please try again later.",
+    message:
+      "We're temporarily unable to respond to this volume of requests. Please try again later.",
   };
 
   it("fails fast with a 429 — no quick retries back into the throttle", async () => {
@@ -329,29 +436,97 @@ describe("an explicitly Throttled turn (result.value = Throttled)", () => {
     expect(err.type).toBe("rate_limit_error");
     expect(err.code).toBe("m365_throttled");
     expect(err.param).toBe("PerUserThrottled");
+    expect(Number(res.headers.get("Retry-After"))).toBeGreaterThan(0);
+    expect(err.retry_after).toBe(Number(res.headers.get("Retry-After")));
+    expect(err.message).toContain("M365 provides no reset time");
     expect(scripted.runs).toBe(1); // the old path spent 3 attempts here
     scripted.result = null;
   });
 
+  it("allows M365_THROTTLE_RETRY_AFTER_S to extend the local retry delay", async () => {
+    scripted.deltas = [];
+    scripted.fullText = "";
+    scripted.result = THROTTLED;
+    process.env.M365_THROTTLE_RETRY_AFTER_S = "1800.2";
+    try {
+      const res = await handleChatCompletion(
+        ChatCompletionRequest.parse({
+          model: "claude-sonnet",
+          messages: [{ role: "user", content: "hello throttled retry-after" }],
+        }),
+        new SessionPool(),
+      );
+      expect(res.status).toBe(429);
+      expect(res.headers.get("Retry-After")).toBe("1801");
+      expect((await res.json()).error.retry_after).toBe(1801);
+    } finally {
+      delete process.env.M365_THROTTLE_RETRY_AFTER_S;
+      scripted.result = null;
+    }
+  });
+
+  it.each(["0", "-1", "NaN", "Infinity", "1"])(
+    "does not shorten local backoff with override %s",
+    async (override) => {
+      scripted.deltas = [];
+      scripted.fullText = "";
+      scripted.result = THROTTLED;
+      vi.stubEnv("M365_THROTTLE_RETRY_AFTER_S", override);
+      const response = await handleChatCompletion(
+        ChatCompletionRequest.parse({
+          model: "claude-sonnet",
+          messages: [{ role: "user", content: "invalid throttle retry delay" }],
+        }),
+        new SessionPool(),
+      );
+      expect(response.status).toBe(429);
+      const delay = Number(response.headers.get("Retry-After"));
+      expect(Number.isFinite(delay)).toBe(true);
+      expect(delay).toBeGreaterThan(1);
+      expect((await response.json()).error.retry_after).toBe(delay);
+    },
+  );
+
   it("carries the code through the streaming path as an error chunk", async () => {
     scripted.result = THROTTLED;
+    scripted.runs = 0;
     const { contents, errors } = await streamRaw([], "");
     expect(contents).toHaveLength(0);
     expect(errors).toHaveLength(1);
     expect(errors[0].code).toBe("m365_throttled");
+    expect(errors[0].type).toBe("rate_limit_error");
+    expect(errors[0].param).toBe("PerUserThrottled");
+    expect(errors[0].retry_after).toBeGreaterThan(0);
+    expect(scripted.runs).toBe(1);
     scripted.result = null;
   });
 });
 
 describe("Disengage retry keeps a model's <system>-free framing", () => {
-  const tools = [{ type: "function", function: { name: "bash", parameters: { type: "object", properties: { command: { type: "string" } } } } }];
+  const tools = [
+    {
+      type: "function",
+      function: {
+        name: "bash",
+        parameters: { type: "object", properties: { command: { type: "string" } } },
+      },
+    },
+  ];
   async function disengageThenAnswer(model: string): Promise<string> {
     scripted.result = null;
     scripted.texts = [];
-    scripted.queue = [{ fullText: "", messageType: "Disengaged" }, { fullText: "```bash\nls\n```" }];
+    scripted.queue = [
+      { fullText: "", messageType: "Disengaged" },
+      { fullText: "```bash\nls\n```" },
+    ];
     const body = ChatCompletionRequest.parse({
-      model, stream: false, tools,
-      messages: [{ role: "system", content: "sys" }, { role: "user", content: `do it ${model}` }],
+      model,
+      stream: false,
+      tools,
+      messages: [
+        { role: "system", content: "sys" },
+        { role: "user", content: `do it ${model}` },
+      ],
     });
     const res = await handleChatCompletion(body, new SessionPool());
     expect(res.status).toBe(200);
@@ -369,12 +544,22 @@ describe("Disengage retry keeps a model's <system>-free framing", () => {
   it("still retries the <system>-tagged defaults with softened (F22)", async () => {
     const retry = await disengageThenAnswer("gpt-5.5-think-deeper");
     expect(retry).toContain("<system>");
-    expect(retry).toContain("You are an automated coding agent working in a real working directory");
+    expect(retry).toContain(
+      "You are an automated coding agent working in a real working directory",
+    );
   });
 });
 
 describe("which requests carry the tool agent (#41)", () => {
-  const tools = [{ type: "function", function: { name: "bash", parameters: { type: "object", properties: { command: { type: "string" } } } } }];
+  const tools = [
+    {
+      type: "function",
+      function: {
+        name: "bash",
+        parameters: { type: "object", properties: { command: { type: "string" } } },
+      },
+    },
+  ];
 
   /** The `useAgent` flag the handler passed for one request on `model`. */
   async function agentFlagFor(model: string, withTools = true): Promise<boolean | undefined> {
@@ -382,7 +567,8 @@ describe("which requests carry the tool agent (#41)", () => {
     scripted.agentFlags = [];
     scripted.queue = [{ fullText: "```bash\nls\n```" }];
     const body = ChatCompletionRequest.parse({
-      model, stream: false,
+      model,
+      stream: false,
       ...(withTools ? { tools } : {}),
       messages: [{ role: "user", content: `list files ${model} ${Math.random()}` }],
     });
@@ -393,7 +579,9 @@ describe("which requests carry the tool agent (#41)", () => {
     return scripted.agentFlags[0];
   }
 
-  afterEach(() => { delete process.env.M365_FORCE_AGENT; });
+  afterEach(() => {
+    delete process.env.M365_FORCE_AGENT;
+  });
 
   it("sends gpt-6-think-deeper tool requests without the agent", async () => {
     expect(await agentFlagFor("gpt-6-think-deeper")).toBe(false);
@@ -417,4 +605,241 @@ describe("which requests carry the tool agent (#41)", () => {
     process.env.M365_FORCE_AGENT = "1";
     expect(await agentFlagFor("gpt-6-think-deeper")).toBe(true);
   });
+});
+
+describe("agent availability and prompt selection", () => {
+  const tools = [
+    {
+      type: "function",
+      function: { name: "bash", parameters: { properties: { command: { type: "string" } } } },
+    },
+    {
+      type: "function",
+      function: { name: "skill", parameters: { properties: { input: { type: "string" } } } },
+    },
+  ];
+
+  afterEach(() => {
+    scripted.agentId = undefined;
+    scripted.queue = [];
+    vi.unstubAllEnvs();
+  });
+
+  async function request(extra: Record<string, unknown> = {}) {
+    scripted.result = null;
+    scripted.texts = [];
+    scripted.agentFlags = [];
+    scripted.resolutions = 0;
+    scripted.queue = [{ fullText: "```bash\nls\n```" }];
+    const response = await handleChatCompletion(
+      ChatCompletionRequest.parse({
+        model: "gpt-5.5-think-deeper",
+        tools,
+        messages: [
+          { role: "system", content: "sys" },
+          { role: "user", content: "inspect project" },
+        ],
+        ...extra,
+      }),
+      new SessionPool(),
+    );
+    expect(response.status).toBe(200);
+    return response.json();
+  }
+
+  it("keeps the agent-backed baseline when resolution succeeds", async () => {
+    await request();
+    expect(scripted.resolutions).toBe(1);
+    expect(scripted.texts[0]).toContain("execution core of an automated agent");
+    expect(scripted.agentFlags).toEqual([true]);
+  });
+
+  it("selects GPT-aware relay when resolution returns no agent", async () => {
+    scripted.agentId = null;
+    await request();
+    expect(scripted.resolutions).toBe(1);
+    expect(scripted.texts[0]).toContain("guide me through this from my terminal");
+    expect(scripted.texts[0]).toContain("Python code interpreter at /mnt/data");
+    expect(scripted.texts[0]).not.toContain("<system>");
+    expect(scripted.texts[0]).not.toContain("bash_tool");
+    expect(scripted.agentFlags).toEqual([false]);
+  });
+
+  it("lets disable-agent take precedence over force-agent", async () => {
+    vi.stubEnv("M365_DISABLE_AGENT", "1");
+    vi.stubEnv("M365_FORCE_AGENT", "1");
+    await request();
+    expect(scripted.resolutions).toBe(0);
+    expect(scripted.agentFlags).toEqual([false]);
+    expect(scripted.texts[0]).toContain("guide me through this from my terminal");
+  });
+
+  it("still honors an explicit framing override", async () => {
+    scripted.agentId = null;
+    vi.stubEnv("M365_FRAMING_VARIANT", "dual_env_sys");
+    await request();
+    expect(scripted.texts[0]).toContain("<system>");
+    expect(scripted.texts[0]).toContain("there are two environments");
+    expect(scripted.texts[0]).toContain("Python code interpreter");
+  });
+
+  it("omits tools only from definitions and parses against the full request", async () => {
+    vi.stubEnv("M365_TOOL_ALLOWLIST", "bash");
+    scripted.result = null;
+    scripted.texts = [];
+    scripted.queue = [{ fullText: "```skill\nlookup\n```" }];
+    const response = await handleChatCompletion(
+      ChatCompletionRequest.parse({
+        model: "gpt-5.5-think-deeper",
+        tools,
+        messages: [{ role: "user", content: "lookup" }],
+      }),
+      new SessionPool(),
+    );
+    const body = await response.json();
+    expect(body.choices[0].message.tool_calls[0].function.name).toBe("skill");
+    expect(scripted.texts[0]).not.toContain("```skill");
+    expect(scripted.texts[0]).toContain("```bash");
+  });
+
+  it("includes a forced tool even when the configured list omits it", async () => {
+    vi.stubEnv("M365_TOOL_ALLOWLIST", "bash");
+    await request({ tool_choice: { type: "function", function: { name: "skill" } } });
+    expect(scripted.texts[0]).toContain("```skill");
+  });
+
+  it("keeps relay and GPT sandbox wording on a Disengage retry without an agent", async () => {
+    scripted.agentId = null;
+    scripted.result = null;
+    scripted.texts = [];
+    scripted.queue = [
+      { fullText: "", messageType: "Disengaged" },
+      { fullText: "```bash\nls\n```" },
+    ];
+    const response = await handleChatCompletion(
+      ChatCompletionRequest.parse({
+        model: "gpt-5.5-think-deeper",
+        tools,
+        messages: [{ role: "user", content: "inspect" }],
+      }),
+      new SessionPool(),
+    );
+    expect(response.status).toBe(200);
+    expect(scripted.texts).toHaveLength(2);
+    expect(scripted.texts[1]).toContain("Python code interpreter");
+    expect(scripted.texts[1]).not.toContain("<system>");
+  });
+
+  it("keeps user-voice tags on system messages introduced in a tool follow-up", async () => {
+    scripted.agentId = null;
+    scripted.result = null;
+    scripted.texts = [];
+    scripted.queue = [{ fullText: "```bash\nls\n```" }, { fullText: "Checked." }];
+    const pool = new SessionPool();
+    const messages = [{ role: "user", content: "inspect follow-up" }];
+    await handleChatCompletion(
+      ChatCompletionRequest.parse({ model: "gpt-5.5-think-deeper", tools, messages }),
+      pool,
+    );
+    messages.push(
+      { role: "system", content: "Use concise prose." },
+      { role: "user", content: "continue" },
+    );
+    await handleChatCompletion(
+      ChatCompletionRequest.parse({ model: "gpt-5.5-think-deeper", tools, messages }),
+      pool,
+    );
+    expect(scripted.texts[1]).toContain(
+      "<harness_system_prompt>\nUse concise prose.\n</harness_system_prompt>",
+    );
+    expect(scripted.texts[1]).not.toContain("<system>");
+  });
+});
+
+describe("OpenAI response shape", () => {
+  const bash = {
+    name: "bash",
+    parameters: { type: "object", properties: { command: { type: "string" } } },
+  };
+
+  function chunksOf(sse: string): any[] {
+    return sse
+      .split("\n")
+      .filter((line) => line.startsWith("data: ") && line !== "data: [DONE]")
+      .map((line) => JSON.parse(line.slice(6)));
+  }
+
+  it("estimates token usage and carries system_fingerprint (non-stream)", async () => {
+    scripted.result = null;
+    scripted.fullText = "x".repeat(40);
+    scripted.deltas = [scripted.fullText];
+    const res = await handleChatCompletion(
+      ChatCompletionRequest.parse({
+        model: "claude-sonnet",
+        messages: [{ role: "user", content: `${"y".repeat(80)} ${Math.random()}` }],
+      }),
+      new SessionPool(),
+    );
+    const body = await res.json();
+    expect(body).toHaveProperty("system_fingerprint", null);
+    expect(body.choices[0]).toHaveProperty("logprobs", null);
+    expect(body.usage.completion_tokens).toBe(10);
+    expect(body.usage.prompt_tokens).toBeGreaterThan(20);
+    expect(body.usage.total_tokens).toBe(body.usage.prompt_tokens + body.usage.completion_tokens);
+    expect(body.usage.x_proxy_tokens_estimated).toBe(true);
+  });
+
+  it("puts estimated usage in the final include_usage chunk", async () => {
+    scripted.result = null;
+    scripted.fullText = "Hello there";
+    scripted.deltas = ["Hello ", "there"];
+    const res = await handleChatCompletion(
+      ChatCompletionRequest.parse({
+        stream: true,
+        stream_options: { include_usage: true },
+        model: "claude-sonnet",
+        messages: [{ role: "user", content: `usage chunk ${Math.random()}` }],
+      }),
+      new SessionPool(),
+    );
+    const chunks = chunksOf(await res.text());
+    expect(chunks.every((c) => c.system_fingerprint === null)).toBe(true);
+    const last = chunks[chunks.length - 1];
+    expect(last.usage.completion_tokens).toBe(3);
+    expect(last.usage.prompt_tokens).toBeGreaterThan(0);
+  });
+
+  it.each([false, true])(
+    "answers a legacy `functions` request with function_call (stream=%s)",
+    async (stream) => {
+      scripted.result = null;
+      scripted.queue = [{ fullText: "```bash\nls\n```" }];
+      const res = await handleChatCompletion(
+        ChatCompletionRequest.parse({
+          model: "claude-sonnet",
+          stream,
+          functions: [bash],
+          messages: [{ role: "user", content: `legacy ${stream} ${Math.random()}` }],
+        }),
+        new SessionPool(),
+      );
+      if (stream) {
+        const chunks = chunksOf(await res.text());
+        scripted.queue = [];
+        const call = chunks.find((c) => c.choices?.[0]?.delta?.function_call)?.choices[0].delta
+          .function_call;
+        expect(call.name).toBe("bash");
+        expect(JSON.parse(call.arguments).command).toBe("ls");
+        expect(chunks.some((c) => c.choices?.[0]?.delta?.tool_calls)).toBe(false);
+        expect(chunks[chunks.length - 1].choices[0].finish_reason).toBe("function_call");
+      } else {
+        const body = await res.json();
+        scripted.queue = [];
+        expect(body.choices[0].finish_reason).toBe("function_call");
+        expect(body.choices[0].message.tool_calls).toBeUndefined();
+        expect(body.choices[0].message.function_call.name).toBe("bash");
+        expect(JSON.parse(body.choices[0].message.function_call.arguments).command).toBe("ls");
+      }
+    },
+  );
 });
