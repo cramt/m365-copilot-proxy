@@ -84,6 +84,9 @@ export const DEFAULT_CELLS = [
   { tone: "Gpt_5_6_Chat", note: "gpt-5.6 — paid scenario", ...PAID },
   { tone: "Gpt_5_6_Reasoning", note: "gpt-5.6-think-deeper" },
   { tone: "Gpt_6_Reasoning", note: "gpt-6-think-deeper (paid — the only scenario it serves on)" },
+  // Serves with the agent on a premium account, dead route on a non-premium
+  // one (#23) — the proxy learns which at runtime (PREMIUM_ONLY_AGENT_TONES).
+  { tone: "Gpt_6_Sol_Reasoning", note: "gpt-6-sol — agent only on a premium account" },
   // One tone, two models agent-less: Sonnet 4.6 included, Sonnet 5 paid (§21).
   { tone: "Claude_Sonnet", note: "claude-sonnet (Sonnet 4.6 agent-less)", ...INCLUDED },
   { tone: "Claude_Sonnet", note: "claude-sonnet-5 (Sonnet 5 agent-less)", ...PAID },

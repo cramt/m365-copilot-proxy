@@ -102,11 +102,18 @@
         };
 
         devShells.default = pkgs.mkShell {
+          # python3 + curl: the bench scripts health-check the proxy with curl,
+          # and pi-reliability / phase-sweep run model-written Python on the
+          # HOST (pi has no sandbox). Neither is guaranteed outside the shell,
+          # and a NixOS host has no python3 at all. Docker is NOT here: the bench
+          # needs the system daemon (and the user in its group) anyway.
           buildInputs = with pkgs; [
             nodejs
             pnpm
             chromium
             pi
+            python3
+            curl
           ];
 
           shellHook = ''

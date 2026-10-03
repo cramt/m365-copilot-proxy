@@ -6,9 +6,8 @@
 # the bench), pinning the comply-rate F14 asked for (~10x).
 #
 # pi runs model-generated commands on the HOST in a throwaway /tmp dir (benign task).
-# python3 is absent from the nix shell, so we resolve it from nixpkgs and prepend it.
-# Must run inside `nix develop` so `pi` is on PATH:
-#   nix develop --command bash -c 'N=10 bash scripts/bench/pi-reliability.sh'
+# Run it inside the repo's Nix dev shell, which provides pi, python3 and curl:
+#   N=10 nix develop --command bash scripts/bench/pi-reliability.sh
 set -u
 cd "$(dirname "$0")/../.." || exit 1
 
@@ -19,16 +18,14 @@ COOLDOWN="${COOLDOWN:-60}"
 TIMEOUT="${TIMEOUT:-240}"
 BASE="http://localhost:${PORT}/v1"
 CSV="${CSV:-/tmp/m365-pi-reliability.csv}"
-TASK="${TASK:-fix-bug}"   # fix-bug (find+fix) | edit-config (F17 "change X->Y" shape)
+TASK="${TASK:-fix-bug}"   # fix-bug (find+fix) | multi (2-file bug) | edit-config (F17 "change X->Y" shape)
 
-command -v pi >/dev/null || { echo "[pi-rel] pi not on PATH — run inside nix develop"; exit 1; }
-# NixOS: the nix shell has no python3, so resolve it from nixpkgs. Elsewhere a
-# system python3 is fine (and `nix` may not exist at all). PYBIN overrides both.
-if [ -z "${PYBIN:-}" ]; then
-  if command -v nix >/dev/null; then PYBIN="$(nix build --no-link --print-out-paths nixpkgs#python3 2>/dev/null)/bin"; fi
-  [ -x "${PYBIN:-}/python3" ] || PYBIN="$(dirname "$(command -v python3 2>/dev/null || echo /nonexistent/python3)")"
-fi
-[ -x "$PYBIN/python3" ] || { echo "[pi-rel] could not resolve python3 (set PYBIN)"; exit 1; }
+for t in pi python3 curl; do
+  command -v "$t" >/dev/null || { echo "[pi-rel] $t isn't on PATH — run this inside the repo's dev shell: nix develop --command bash scripts/bench/pi-reliability.sh"; exit 1; }
+done
+# The model's commands and the verifier both run this python3. PYBIN overrides it.
+PYBIN="${PYBIN:-$(dirname "$(command -v python3)")}"
+[ -x "$PYBIN/python3" ] || { echo "[pi-rel] no python3 in $PYBIN"; exit 1; }
 curl -s -m3 "http://localhost:${PORT}/health" >/dev/null || { echo "[pi-rel] proxy not answering on :$PORT"; exit 1; }
 
 [ -f "$CSV" ] || echo "run,iso_ts,outcome,elapsed_s,dir" > "$CSV"
@@ -79,4 +76,4 @@ EOF
   [ "$outcome" = SOLVED ] && rm -rf "$D" || echo "    (kept $D for diagnosis: pi.out)"
   [ "$i" -lt "$N" ] && sleep "$COOLDOWN"
 done
-echo "[pi-rel] === $(tail -n+2 "$CSV" | awk -F, '$3=="SOLVED"{s++}END{print s"/"NR" SOLVED"}') ==="
+echo "[pi-rel] === $(tail -n+2 "$CSV" | awk -F, '$3=="SOLVED"{s++}END{print s+0"/"NR" SOLVED"}') ==="
