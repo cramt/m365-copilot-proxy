@@ -8,7 +8,7 @@ export default defineNitroConfig({
       target: "node26",
     },
   },
-  errorHandler: "~/error",
+  errorHandler: "~/error.ts",
   rollupConfig: {
     // Node 22 builtin. Mark as explicit external to avoid unresolved warnings
     // from Rollup's builtin resolver list.
