@@ -286,6 +286,32 @@ describe("looksLikeConfabulation", () => {
     expect(looksLikeConfabulation("The problem is that this session does not expose the local repository filesystem at /Users/dev/project. My filesystem only contained /mnt/data.")).toBe(true);
   });
 
+  it("flags Turkish give-ups (the model answers in the user's language)", () => {
+    // Exact strings from live Windows/pi/GPT-5.6 runs that went straight to the user.
+    expect(looksLikeConfabulation("Projeyi inceledim ancak bu oturumda dosya oluşturma özelliğim devre dışı olduğu için `ozet.md` dosyasını doğrudan kaydedemiyorum.")).toBe(true);
+    expect(looksLikeConfabulation("Projeyi inceleyip ozet.md oluşturabilmem için bu oturumda depo dosyalarını okuma ve dosya yazma aracı etkin değil.")).toBe(true);
+    expect(looksLikeConfabulation("Bu oturumda yeni bir araç çağrısı yapamadığım için dosyayı güvenilir biçimde oluşturamadım.")).toBe(true);
+    expect(looksLikeConfabulation("Dosya erişimi etkin bir kodlama oturumunda aynı isteği yeniden çalıştırdığınızda hazırlanabilir.")).toBe(true);
+    expect(looksLikeConfabulation("İçeriği kopyalayıp ozet.md adıyla kaydedebilirsin.")).toBe(true);
+    expect(looksLikeConfabulation("Üzgünüm, dosyaya erişemiyorum.")).toBe(true);
+    // Missed live (pdf + docx tasks): "ability" and "produce" weren't in the lists.
+    expect(looksLikeConfabulation("Dosya oluşturma yeteneğim şu anda devre dışı olduğu için `notlar.pdf` dosyasını doğrudan üretemiyorum.")).toBe(true);
+    expect(looksLikeConfabulation("Word belgesini hazırlayamıyorum.")).toBe(true);
+    // Missed live on the final build (pdf task, after a real tool call).
+    expect(looksLikeConfabulation("PDF oluşturma işlemini bu oturumda tamamlayamıyorum. Alternatif olarak Markdown dosyasını Visual Studio Code’da açabilirsiniz.")).toBe(true);
+    expect(looksLikeConfabulation("`pandoc` sistemde kurulu olmadığı için PDF oluşturma komutu başarısız oldu. Bu oturumda yeni araç kurma veya indirilebilir PDF oluşturma yetkim bulunmuyor.")).toBe(true);
+  });
+
+  it("does NOT flag a Turkish project summary that merely talks about sessions or disabled flags", () => {
+    // This repo's own vocabulary — a summary of it must not read as a give-up.
+    expect(looksLikeConfabulation("Kimlik doğrulama ve oturum yönetimi MSAL ile yapılır.")).toBe(false);
+    expect(looksLikeConfabulation("M365_NO_CONFAB_RETRY ile retry devre dışı bırakılır.")).toBe(false);
+    expect(looksLikeConfabulation("Harness dosyayı okuyamıyorsa hata döner; proxy komutu kendisi çalıştıramaz.")).toBe(false);
+    expect(looksLikeConfabulation("ozet.md oluşturuldu: 18 bölüm, paket mimarisi ve araç çağrısı akışı.")).toBe(false);
+    // Third person ("yetkisi"), not first ("yetkim"): describes the code, not a give-up.
+    expect(looksLikeConfabulation("Kullanıcının yetkisi bulunmuyorsa proxy 403 döner.")).toBe(false);
+  });
+
   it("does NOT flag genuine final answers or normal prose", () => {
     expect(looksLikeConfabulation("Fixed the bug: add now returns a + b, and check.py prints OK.")).toBe(false);
     expect(looksLikeConfabulation("The hostname is web-prod-01.")).toBe(false);

@@ -68,6 +68,7 @@ export {
   defaultFramingForModel,
   transcriptStyleForVariant,
   FRAMING_VARIANT_NAMES,
+  longHeredocAsWrite,
   type TranscriptStyle,
 } from "./fenced.js";
 
@@ -106,6 +107,7 @@ export {
   truncateAtFabricatedToolResponse,
   textAfterFirstToolCall,
   isProseDocument,
+  formatToolResponse,
   type Message,
   type ToolDef,
   type ToolFunction,

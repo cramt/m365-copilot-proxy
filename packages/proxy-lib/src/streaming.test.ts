@@ -436,3 +436,140 @@ describe("GPT-6 Sol: agent on premium, learned fallback on non-premium (#23)", (
     expect(scripted.agentFlags).toEqual([true, true]);
   });
 });
+
+describe("follow-up turns and give-ups (Windows / pi, measured)", () => {
+  const tools = [{ type: "function", function: { name: "bash", parameters: { type: "object", properties: { command: { type: "string" } } } } }];
+
+  async function ask(messages: any[], pool: InstanceType<typeof SessionPool>) {
+    const res = await handleChatCompletion(ChatCompletionRequest.parse({ model: "gpt-5.6-think-deeper", stream: false, tools, messages }), pool);
+    return (await res.json()).choices[0].message;
+  }
+
+  // A pi session is delta turns from turn 2 on. The delta path labelled every
+  // tool result name="unknown" with no command — the misread formatMessages was
+  // fixed for, and the turn on which live runs said "bash is not enabled".
+  it("names a follow-up tool result after the call that produced it", async () => {
+    scripted.result = null;
+    scripted.texts = [];
+    scripted.queue = [{ fullText: "```bash\nls -la\n```" }, { fullText: "Done." }];
+    const pool = new SessionPool();
+    const messages: any[] = [{ role: "user", content: `look ${Math.random()}` }];
+    const m1 = await ask(messages, pool);
+    messages.push({ role: "assistant", content: null, tool_calls: m1.tool_calls });
+    messages.push({ role: "tool", tool_call_id: m1.tool_calls[0].id, content: "README.md" });
+    await ask(messages, pool);
+    expect(scripted.texts[1]).toContain('<tool_response tool="bash" command="ls -la">');
+    expect(scripted.texts[1]).not.toContain('name="unknown"');
+    scripted.queue = [];
+  });
+
+  // Live: a refusal that came with "run these yourself" fences was parsed as two
+  // tool calls (confab check skipped), then returned to the user as a document.
+  it("forces a retry when a give-up comes dressed as a document", async () => {
+    scripted.result = null;
+    scripted.texts = [];
+    scripted.queue = [
+      // Verbatim from the live run (pdf task, Windows / pi / gpt-5.6-think-deeper).
+      { fullText: "Dosya oluşturma özelliği bu oturumda devre dışı olduğu için `notlar.pdf` dosyasını doğrudan oluşturamıyorum.\n\nYerel bilgisayarınızda Türkçe karakter desteğiyle dönüştürmek için şu komutu çalıştırabilirsiniz:\n\n```bash\nwinget install --id JohnMacFarlane.Pandoc\npandoc notlar.md -o notlar.pdf --pdf-engine=weasyprint\n```\n\n`weasyprint` eksikse:\n\n```bash\npy -m pip install weasyprint\npandoc notlar.md -o notlar.pdf --pdf-engine=weasyprint\n```\n\nHer iki komutu da `notlar.md` dosyasının bulunduğu klasörde çalıştırın. Dosyanın UTF-8 olarak kaydedilmiş olması `ç, ğ, ı, İ, ö, ş, ü` karakterlerinin doğru görünmesini sağlar." },
+      { fullText: "```bash\nls -la\n```" },
+    ];
+    const m = await ask([{ role: "user", content: `pdf ${Math.random()}` }], new SessionPool());
+    expect(scripted.texts).toHaveLength(2); // the forcing retry ran
+    expect(m.tool_calls?.[0] && JSON.parse(m.tool_calls[0].function.arguments).command).toBe("ls -la");
+    scripted.queue = [];
+  });
+
+  // Live: after a real tool result showed no PDF tool installed, the model said
+  // "bash is not enabled"; the forcing prompt then claimed "you have not run any
+  // command yet", and the model refused that too.
+  it("doesn't tell a model that already ran tools that it ran nothing", async () => {
+    scripted.result = null;
+    scripted.texts = [];
+    scripted.queue = [
+      { fullText: "```bash\ncommand -v pandoc || echo none\n```" },
+      { fullText: "Dosya oluşturma araçları şu anda etkin olmadığı için notlar.pdf dosyasını oluşturamıyorum." },
+      { fullText: "```bash\npy -m pip install fpdf2\n```" },
+    ];
+    const pool = new SessionPool();
+    const messages: any[] = [{ role: "user", content: `pdf ${Math.random()}` }];
+    const m1 = await ask(messages, pool);
+    messages.push({ role: "assistant", content: null, tool_calls: m1.tool_calls });
+    messages.push({ role: "tool", tool_call_id: m1.tool_calls[0].id, content: "none" });
+    const m2 = await ask(messages, pool);
+    expect(scripted.texts).toHaveLength(3);
+    expect(scripted.texts[2]).toContain("Your tools are working");
+    expect(scripted.texts[2]).not.toContain("you have not run any command yet");
+    expect(JSON.parse(m2.tool_calls[0].function.arguments).command).toBe("py -m pip install fpdf2");
+    scripted.queue = [];
+  });
+
+  it("leaves a real document alone even if its body sounds like a give-up", async () => {
+    scripted.result = null;
+    scripted.texts = [];
+    const doc = "Here is the README you asked for:\n\n# Setup\n\nIf you can't access the API, check the token.\n\n```bash\nnpm install\n```\n\n```bash\nnpm test\n```";
+    scripted.queue = [{ fullText: doc }];
+    const m = await ask([{ role: "user", content: `readme ${Math.random()}` }], new SessionPool());
+    expect(scripted.texts).toHaveLength(1); // no forcing retry
+    expect(m.tool_calls).toBeUndefined();
+    expect(m.content).toContain("If you can't access the API");
+    scripted.queue = [];
+  });
+});
+
+describe("a new harness session that shares the first user message", () => {
+  const tools = [{ type: "function", function: { name: "bash", parameters: { type: "object", properties: { command: { type: "string" } } } } }];
+  const ask = async (messages: any[], pool: InstanceType<typeof SessionPool>) =>
+    (await (await handleChatCompletion(ChatCompletionRequest.parse({ model: "gpt-5.6-think-deeper", stream: false, tools, messages }), pool)).json()).choices[0].message;
+
+  // Measured: pi sessions opened with the same prompt (even in different
+  // directories) were joined to the first session's M365 conversation and
+  // answered from it — "notlar.docx was already created" in an empty directory.
+  it("gets a fresh M365 conversation after a longer earlier session", async () => {
+    scripted.result = null;
+    scripted.texts = [];
+    scripted.newConversations = 0;
+    scripted.queue = [{ fullText: "```bash\nls\n```" }, { fullText: "Done." }, { fullText: "```bash\nls\n```" }];
+    const pool = new SessionPool();
+    const prompt = `make a pdf ${Math.random()}`;
+    const first: any[] = [{ role: "user", content: prompt }];
+    const m1 = await ask(first, pool);
+    first.push({ role: "assistant", content: null, tool_calls: m1.tool_calls });
+    first.push({ role: "tool", tool_call_id: m1.tool_calls[0].id, content: "notlar.md" });
+    await ask(first, pool);
+    await ask([{ role: "user", content: prompt }], pool); // a new session, same opener
+    expect(scripted.newConversations).toBe(1);
+    expect(scripted.texts[2]).toContain(prompt); // the full prompt, not a delta
+    scripted.queue = [];
+  });
+
+  it("gets one after a single-turn session too (equal length used to send 'Please continue.')", async () => {
+    scripted.result = null;
+    scripted.texts = [];
+    scripted.newConversations = 0;
+    scripted.queue = [{ fullText: "I can't do that." }, { fullText: "```bash\nls\n```" }];
+    const pool = new SessionPool();
+    const prompt = `make a docx ${Math.random()}`;
+    await ask([{ role: "user", content: prompt }], pool);
+    await ask([{ role: "user", content: prompt }], pool);
+    expect(scripted.newConversations).toBe(1);
+    expect(scripted.texts[scripted.texts.length - 1]).not.toBe("Please continue.");
+    expect(scripted.texts[scripted.texts.length - 1]).toContain(prompt);
+    scripted.queue = [];
+  });
+
+  it("still continues a real continuation in the same conversation", async () => {
+    scripted.result = null;
+    scripted.texts = [];
+    scripted.newConversations = 0;
+    scripted.queue = [{ fullText: "```bash\nls\n```" }, { fullText: "Done." }];
+    const pool = new SessionPool();
+    const msgs: any[] = [{ role: "user", content: `go ${Math.random()}` }];
+    const m1 = await ask(msgs, pool);
+    msgs.push({ role: "assistant", content: null, tool_calls: m1.tool_calls });
+    msgs.push({ role: "tool", tool_call_id: m1.tool_calls[0].id, content: "a.txt" });
+    await ask(msgs, pool);
+    expect(scripted.newConversations).toBe(0);
+    expect(scripted.texts[1]).toContain('<tool_response tool="bash"'); // a delta
+    scripted.queue = [];
+  });
+});

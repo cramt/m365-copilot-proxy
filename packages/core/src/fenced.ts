@@ -76,6 +76,85 @@ const SHELL_LANGS = new Set([
 const SHELL_TOOL_NAME = /^(bash|sh|shell|zsh|run|exec|execute|command|cmd|terminal|run_command|run_terminal_cmd|execute_command|execute_bash|shell_exec|system)$/i;
 
 /** The harness tool (if any) that runs a shell command — the target for ```bash routing. */
+const WRITE_PATH_PARAM = /^(path|file_path|filepath|filename|file)$/i;
+const WRITE_CONTENT_PARAM = /^(content|contents|text|body)$/i;
+
+/** The harness tool (if any) that writes a whole file from a path + content —
+ *  pi's `write`, others' `write_file`. An edit tool (old/new pair) doesn't count. */
+export function findWriteTool(tools: ToolDef[]): ToolDef | undefined {
+  return tools.find((t) => {
+    const props = Object.keys(t.function.parameters?.properties ?? {});
+    return props.some((p) => WRITE_PATH_PARAM.test(p)) &&
+      props.some((p) => WRITE_CONTENT_PARAM.test(p)) &&
+      !props.some((p) => SEARCH_KEYS.includes(p));
+  });
+}
+
+/** Longest shell command the Windows command line carries intact. pi's shell
+ *  tool cuts a longer one SILENTLY: a 12,070-char command arrived as its first
+ *  ~8,186 chars, a 7,000-char one whole (measured model-free with a scripted
+ *  tool call). Margin left below the measured edge. */
+export const WINDOWS_COMMAND_CAP = 8000;
+
+// `cat > PATH <<'DELIM'` … a line that is exactly DELIM. It may start a line or
+// follow `… && ` on one (`mkdir -p d && cat > d/f <<'EOF'`); the model also
+// bundles it after exploration commands — measured: a 13,185-char call that
+// ran `printf`/`find` first and wrote ozet.md last. Quoted delimiter only: bash
+// does no expansion in that body, so the file it writes is byte-for-byte the
+// body plus its final newline. A path bash would expand ($, `, ~) is left alone.
+const HEREDOC_WRITE = /(?:^|\n)([^\n]*?&&[ \t]*)?[ \t]*cat[ \t]*>[ \t]*(?:"([^"$`\\\n]+)"|'([^'\n]+)'|([^\s'"$`~;|&<>]+))[ \t]*<<[ \t]*(['"])([A-Za-z_][A-Za-z0-9_]*)\5[ \t]*\n([\s\S]*?)\n\6(?=\n|$)/;
+
+/** A shell call that is too long for the Windows command line AND is a single
+ *  quoted heredoc writing a file, re-expressed as the harness's write tool —
+ *  or null to leave the call as it is.
+ *
+ *  The framing teaches `cat > f <<'EOF'` for file writes, so on Windows every
+ *  file past ~8k chars (a project summary, a README) landed truncated, and the
+ *  model can't see why — bash only says "here-document delimited by
+ *  end-of-file". Telling it to use the write tool instead was measured not to
+ *  hold: it still wrote one big heredoc. The proxy holds the WHOLE command, so
+ *  it can run the same write losslessly. Only one call runs per turn, so the
+ *  rest of the command doesn't run; it's returned as `skipped` for the caller to
+ *  tell the model. That costs a re-run of cheap commands (ls, find, wc) to keep
+ *  the expensive part — the file the model just generated. */
+export function longHeredocAsWrite(
+  call: ParsedToolCall,
+  tools: ToolDef[] | undefined,
+  platform: NodeJS.Platform = process.platform,
+): { call: ParsedToolCall; path: string; skipped: string } | null {
+  if (platform !== "win32" || !tools?.length) return null;
+  const shell = findShellTool(tools);
+  const write = findWriteTool(tools);
+  if (!shell || !write || call.function.name !== shell.function.name) return null;
+  const bodyParam = deriveFencedSpec(shell).bodyParam;
+  let args: Record<string, unknown>;
+  try {
+    args = JSON.parse(call.function.arguments);
+  } catch {
+    return null;
+  }
+  const command = bodyParam ? args[bodyParam] : undefined;
+  if (typeof command !== "string" || command.length <= WINDOWS_COMMAND_CAP) return null;
+  const m = HEREDOC_WRITE.exec(command);
+  if (!m) return null;
+  const path = m[2] ?? m[3] ?? m[4];
+  const props = Object.keys(write.function.parameters?.properties ?? {});
+  const pathKey = props.find((p) => WRITE_PATH_PARAM.test(p))!;
+  const contentKey = props.find((p) => WRITE_CONTENT_PARAM.test(p))!;
+  // Everything that isn't the heredoc: commands before it (including a `… &&`
+  // on its own line) and after its delimiter.
+  const before = `${command.slice(0, m.index)}\n${(m[1] ?? "").replace(/&&[ \t]*$/, "")}`.trim();
+  const after = command.slice(m.index + m[0].length).trim();
+  // A `cd` before the heredoc moves where a relative PATH lands; the write
+  // tool resolves against the harness's cwd, so it would write elsewhere.
+  if (/(?:^|[\n;&|(])[ \t]*(?:cd|pushd)\b/.test(before)) return null;
+  return {
+    call: makeCall(write.function.name, { [pathKey]: path, [contentKey]: `${m[7]}\n` }),
+    path,
+    skipped: [before, after].filter(Boolean).join("\n"),
+  };
+}
+
 export function findShellTool(tools: ToolDef[]): ToolDef | undefined {
   return tools.find((t) => SHELL_TOOL_NAME.test(t.function.name)) ??
     // fallback: a single-string-param tool whose param is command-ish
@@ -211,7 +290,35 @@ export function formatFencedToolDefinitions(tools: ToolDef[], variantOverride?: 
   // baseline framing plus a synthetic reply() tool (see tools.ts).
   const key = variant === "reply_tool" ? "baseline" : variant;
   const build = FRAMING_VARIANTS[key] ?? FRAMING_VARIANTS.baseline;
-  return build(tools) + hostPlatformNote(findShellTool(tools));
+  return build(tools) + hostPlatformNote(findShellTool(tools), undefined, findWriteTool(tools));
+}
+
+/** Which dialect the harness's shell tool actually speaks.
+ *
+ *  `process.platform` cannot answer this — it describes the host, and on Windows
+ *  the two common agent harnesses disagree: pi gives a Git Bash-backed `bash`
+ *  tool, others give PowerShell. Guessing wrong costs the whole session, because
+ *  every shell turn fails on syntax and the model reads that as "I have no tools".
+ *
+ *  Decided from the tool definition the harness sent (name + description, which is
+ *  what the harness itself claims to run). `M365_HOST_SHELL=bash|powershell`
+ *  overrides for a harness whose tool is named misleadingly. */
+export function shellDialect(
+  shell: ToolDef | undefined,
+  platform: NodeJS.Platform = process.platform,
+): "posix" | "powershell" | undefined {
+  if (!shell) return undefined;
+  const override = process.env.M365_HOST_SHELL?.toLowerCase();
+  if (override === "bash" || override === "sh" || override === "posix") return "posix";
+  if (override === "powershell" || override === "pwsh") return "powershell";
+
+  const claim = `${shell.function.name} ${shell.function.description ?? ""}`.toLowerCase();
+  // PowerShell first: a tool described as "run a powershell command" may still be
+  // *named* something generic like `shell`, and `sh` would match it by substring.
+  if (/\b(powershell|pwsh|cmd\.exe)\b/.test(claim)) return "powershell";
+  if (/\b(bash|zsh|sh|posix|wsl)\b/.test(claim)) return "posix";
+  // Nothing declared: fall back to the host's native shell.
+  return platform === "win32" ? "powershell" : "posix";
 }
 
 /** Per-turn correction telling the model which OS it is actually driving.
@@ -230,8 +337,40 @@ export function formatFencedToolDefinitions(tools: ToolDef[], variantOverride?: 
 export function hostPlatformNote(
   shell: ToolDef | undefined,
   platform: NodeJS.Platform = process.platform,
+  writeTool?: ToolDef,
 ): string {
   if (platform !== "win32" || !shell) return "";
+
+  // A Windows HOST does not imply a PowerShell SHELL. pi on Windows ships a tool
+  // named `bash`, described as "Execute a bash command", backed by Git Bash — the
+  // tool_response says `/usr/bin/bash`. Telling that harness to emit ```powershell
+  // makes every shell turn come back as
+  //     /usr/bin/bash: line 2: Write-Output: command not found
+  // and after a failure or two the model concludes it has no working tools and
+  // gives up in prose — the exact "it just says it can't" report in #7, now with
+  // the shell dialect rather than the fence routing as the cause. So read the
+  // dialect off the tool the harness actually gave us, not off process.platform.
+  if (shellDialect(shell, platform) === "posix") {
+    // The Windows command line is capped near 8,190 characters and pi's shell
+    // tool CUTS a longer command silently — measured model-free against pi with
+    // a scripted tool call: a 12,070-char heredoc wrote 8,164 bytes, its trailing
+    // `wc`/`echo` never ran, and bash only said "here-document delimited by
+    // end-of-file"; a 7,000-char one was intact. pi's `write` tool took 50,000
+    // chars intact. The framing teaches heredocs for file writes, so without this
+    // every long file (a project summary, a README) lands truncated. Unmeasured
+    // for the PowerShell branch below, so it isn't claimed there.
+    const longWrite = writeTool
+      ? `write any file longer than a few thousand characters with the \`${writeTool.function.name}\` tool, never in one heredoc`
+      : "write a long file in parts: create it with the first part, then append the rest with `cat >> file <<'EOF'` in later turns";
+    return `
+
+HOST PLATFORM: Windows, but the \`${shell.function.name}\` tool is a POSIX shell on it (Git Bash or WSL), NOT PowerShell and NOT a container. Keep using \`\`\`${"bash"} blocks and POSIX idioms — \`<<'EOF'\` heredocs, \`sed -i\`, \`ls\`/\`grep\` all work. Do NOT emit PowerShell: \`Get-ChildItem\`, \`Set-Content\` and \`Write-Output\` are not commands here and the turn will fail.
+
+The Windows command line is capped near 8,000 characters and a longer command is cut off silently, so a big heredoc leaves a truncated file. Keep each command short and ${longWrite}.
+
+Only the filesystem is Windows: paths may be \`C:/Users/...\` or contain spaces, so quote them and prefer forward slashes. You are NOT in a Linux sandbox and have no \`/mnt/data\`; the working directory is the caller's real project directory — run \`pwd\` if you need to see it.`;
+  }
+
   return `
 
 HOST PLATFORM: Windows. The \`${shell.function.name}\` tool runs PowerShell on a real Windows machine — not Linux, and not a container. Any POSIX idiom named above is wrong here and will fail: there are no \`<<'EOF'\` heredocs, no \`sed -i\`, no \`ls\`/\`grep\`. Emit \`\`\`powershell blocks instead of \`\`\`bash, and use the Windows equivalents:
@@ -706,12 +845,64 @@ export const FRAMING_VARIANT_NAMES = Object.keys(FRAMING_VARIANTS);
 
 // --- Parsing -----------------------------------------------------------------
 
-// Match a fenced block with a tool-like info-string. Dots and hyphens are allowed
-// so namespaced runtime tool names (```container.exec) can be recognised and
-// routed; an info-string that resolves to no spec is left in prose by
-// parseFencedToolCalls, so widening this costs nothing. Non-greedy body; the
-// closing fence is a line that is exactly ``` (start of line).
-const FENCE_REGEX = /```([A-Za-z0-9_.-]+)[ \t]*\r?\n([\s\S]*?)\r?\n?```/g;
+// Info-string of a fence that can be a tool call. Dots and hyphens are allowed so
+// namespaced runtime tool names (```container.exec) can be recognised and routed;
+// an info-string that resolves to no spec is left in prose by
+// parseFencedToolCalls, so widening this costs nothing.
+const FENCE_OPEN = /^[ \t]*```([A-Za-z0-9_.-]*)[ \t]*$/;
+const FENCE_CLOSE = /^[ \t]*```[ \t]*$/;
+
+interface FenceBlock {
+  info: string;
+  inner: string;
+  start: number;
+  end: number;
+}
+
+/** Top-level fenced blocks, with nesting counted.
+ *
+ *  The model nests same-length fences — a ```markdown document containing
+ *  ```bash examples, or a write_file whose body is a README with code in it —
+ *  and means them as nested. The old regex closed a fence at the first ``` it
+ *  met, including the backticks that OPEN an inner ```bash, so the outer block
+ *  ended early and every later inner block surfaced at the top level as a real
+ *  tool call. Measured: a ```markdown answer holding 3 illustrative ```bash
+ *  examples parsed as 2 executable bash calls — illustration run as a command;
+ *  an `rm -rf` in a code sample would have run.
+ *
+ *  So: an opener WITH an info-string inside an open fence nests; a bare ```
+ *  line closes the innermost; only depth-0 blocks are returned. Inner fences
+ *  stay part of their parent's body, which also lets a write_file carry a body
+ *  containing balanced fences — the limitation noted at the top of this file.
+ *  An unterminated fence at end of text is dropped, as the regex did. */
+function scanFences(text: string): FenceBlock[] {
+  const blocks: FenceBlock[] = [];
+  let depth = 0;
+  let open: { info: string; start: number; bodyStart: number } | null = null;
+  let offset = 0;
+  for (const raw of text.split("\n")) {
+    const line = raw.endsWith("\r") ? raw.slice(0, -1) : raw;
+    const lineEnd = offset + raw.length;
+    const opener = FENCE_OPEN.exec(line)?.[1];
+    if (depth === 0) {
+      if (opener) {
+        open = { info: opener, start: offset, bodyStart: lineEnd + 1 };
+        depth = 1;
+      }
+    } else if (FENCE_CLOSE.test(line)) {
+      if (--depth === 0 && open) {
+        let inner = text.slice(open.bodyStart, Math.max(open.bodyStart, offset - 1));
+        if (inner.endsWith("\r")) inner = inner.slice(0, -1);
+        blocks.push({ info: open.info, inner, start: open.start, end: lineEnd });
+        open = null;
+      }
+    } else if (opener) {
+      depth++;
+    }
+    offset = lineEnd + 1;
+  }
+  return blocks;
+}
 const SEARCH_REPLACE_REGEX =
   /<{5,}\s*SEARCH\s*\r?\n([\s\S]*?)\r?\n={5,}\s*\r?\n([\s\S]*?)\r?\n>{5,}\s*REPLACE/;
 
@@ -826,15 +1017,13 @@ export function parseFencedToolCalls(
   const calls: ParsedToolCall[] = [];
   let leftover = text;
 
-  const re = new RegExp(FENCE_REGEX.source, "g");
-  let match: RegExpExecArray | null;
-  while ((match = re.exec(text)) !== null) {
-    const spec = specs.get(match[1]);
+  for (const block of scanFences(text)) {
+    const spec = specs.get(block.info);
     if (!spec) continue; // ```python illustration etc. — not a tool, leave in prose
-    const args = parseFencedInner(spec, match[2]);
+    const args = parseFencedInner(spec, block.inner);
     if (!args) continue;
     calls.push(makeCall(spec.name, args));
-    leftover = leftover.replace(match[0], "");
+    leftover = leftover.replace(text.slice(block.start, block.end), "");
   }
 
   return { calls, leftover };
@@ -846,11 +1035,9 @@ export function findFirstToolFence(
   text: string,
   specs: Map<string, FencedToolSpec>,
 ): { start: number; end: number } | null {
-  const re = new RegExp(FENCE_REGEX.source, "g");
-  let match: RegExpExecArray | null;
-  while ((match = re.exec(text)) !== null) {
-    const spec = specs.get(match[1]);
-    if (spec && parseFencedInner(spec, match[2])) return { start: match.index, end: match.index + match[0].length };
+  for (const block of scanFences(text)) {
+    const spec = specs.get(block.info);
+    if (spec && parseFencedInner(spec, block.inner)) return { start: block.start, end: block.end };
   }
   return null;
 }

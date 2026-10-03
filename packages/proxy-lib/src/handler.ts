@@ -23,6 +23,8 @@ import {
   looksLikeRemoteArtifactCompletion,
   truncateAtFabricatedToolResponse,
   textAfterFirstToolCall,
+  longHeredocAsWrite,
+  formatToolResponse,
   isProseDocument,
   getMessageContent,
   noteRequestOutcome,
@@ -30,6 +32,7 @@ import {
   getImageArtifactToken,
   fetchImageBytes,
   type CapturedImage,
+  type ParseResult,
 } from "@m365-copilot/core";
 import { ChatCompletionRequest } from "./schemas.js";
 import type { z } from "zod/v4";
@@ -65,6 +68,16 @@ async function renderImagesMarkdown(images: CapturedImage[]): Promise<string> {
 // inability to act instead of calling a tool. See the confab-retry loop below.
 const CONFAB_FORCE_PROMPT =
   "The working directory and the files named in the task ARE present on a real filesystem right now. Do NOT ask me to paste anything, and do NOT say commands return no output — you have not run any command yet. Emit ONE ```bash block this turn: run `ls -la` and `cat` the relevant files. Output only the ```bash block, nothing else.";
+
+// The same give-up AFTER the model has already run tools. CONFAB_FORCE_PROMPT
+// says "you have not run any command yet" — false at that point, and the model
+// treats a prompt that contradicts its own transcript as untrustworthy: live
+// (Windows / pi / gpt-5.6-think-deeper) it answered "so I can't run `ls -la` or
+// `cat`", refusing the prompt's own instruction. The give-ups that reach here
+// follow an obstacle — no PDF tool or Word library installed — so say what is
+// true: the tools work, and a missing program is something to install.
+const MIDTASK_FORCE_PROMPT =
+  "Your tools are working: your previous command really ran on this machine, and its real output is in the last <tool_response>. Continue the task from there with ONE tool block for the next step. A missing program or library is not a missing tool — install it with the package manager (pip, npm, …) or do the job with what is already installed. Output only the tool block, nothing else.";
 
 // Forcing follow-up when the model CLAIMS it did a file change but ran no tool.
 const HALLUCINATION_FORCE_PROMPT =
@@ -161,10 +174,21 @@ export class SessionPool {
     const existing = this.conversations.get(fingerprint);
 
     if (existing) {
-      // Messages shrunk means client restarted this conversation — reset M365 session
-      if (messages.length < existing.sentMessageCount) {
-        log.info(`Conversation ${fingerprint}: messages shrunk (${messages.length} < ${existing.sentMessageCount}), resetting`);
-        existing.session.reset();
+      // A request that carries no more messages than this conversation already
+      // sent is not its continuation (a harness re-sends the whole history and
+      // only ever appends). It's a new session that shares the first user message
+      // — two pi sessions opened with the same prompt, even in different
+      // directories — or a re-sent request. Either way it needs a FRESH M365
+      // conversation: reset() kept the conversationId, so the full prompt went
+      // into the old thread, and at equal length nothing reset at all and
+      // "Please continue." went there. Measured (Windows / pi, 30 runs of 2
+      // prompts): later sessions answered from earlier ones — "notlar.docx was
+      // already created and verified" in an empty directory — and the pass rate
+      // fell 7/10 → 4/10 → 3/10 over the sweep. The full prompt re-sends the
+      // whole history, so nothing the harness holds is lost.
+      if (messages.length <= existing.sentMessageCount) {
+        log.info(`Conversation ${fingerprint}: not a continuation (${messages.length} <= ${existing.sentMessageCount} sent), starting a fresh M365 conversation`);
+        existing.session.newConversation();
         existing.sentMessageCount = 0;
         existing.pendingNote = null;
       }
@@ -213,9 +237,37 @@ function simpleHash(str: string): string {
   return String(hash);
 }
 
+/** Parse a tool-mode reply, with the document guard applied.
+ *
+ *  The shell-routing parser turns every ```bash block into a tool call, so a
+ *  model that ANSWERS with a markdown document full of code fences ("here's a
+ *  simplified README") would get its own answer executed as shell. That shape
+ *  (multiple fences + prose) comes back as plain text instead — unless the reply
+ *  OPENS with a tool call, which makes it an action with a speculative tail (#33).
+ *
+ *  This runs BEFORE the give-up checks, because a document runs nothing. It used
+ *  to run after them, so a refusal that came with "run these yourself" fences —
+ *  measured: "Dosya oluşturma özelliği bu oturumda devre dışı olduğu için
+ *  notlar.pdf dosyasını oluşturamıyorum" + two ```bash blocks — counted as tool
+ *  calls for the confabulation check (skipped), then as text for the user.
+ *
+ *  `judged` is the text the give-up checks read. For a document it's only the
+ *  opening paragraph: a give-up announces itself there, and everything after
+ *  is document content ("if you can't access the API…") that must not trip a
+ *  forcing retry. */
+function parseReply(text: string, tools: Parameters<typeof parseToolCalls>[1]): { parsed: ParseResult; judged: string | null } {
+  const parsed = parseToolCalls(text, tools);
+  if (isProseDocument(parsed, text, tools)) {
+    log.info(`Response is a prose document (${parsed.toolCalls.length} embedded fences), returning as text instead of executing`);
+    const opening = text.split("```")[0].trim().split(/\n\s*\n/)[0];
+    return { parsed: { hasToolCalls: false, toolCalls: [], textContent: text }, judged: opening };
+  }
+  return { parsed, judged: parsed.textContent };
+}
+
 // --- Delta message formatting ---
 
-function formatDeltaMessages(messages: ParsedMessage[]): string {
+function formatDeltaMessages(messages: ParsedMessage[], history: ParsedMessage[]): string {
   const parts: string[] = [];
   for (const m of messages) {
     if (m.role === "assistant") {
@@ -223,9 +275,8 @@ function formatDeltaMessages(messages: ParsedMessage[]): string {
       // Echoing them back as a user message confuses M365.
       continue;
     } else if (m.role === "tool") {
-      const name = m.name || "unknown";
-      const callId = m.tool_call_id || "?";
-      parts.push(`<tool_response name="${name}" call_id="${callId}">\n${getMessageContent(m)}\n</tool_response>`);
+      // Same rendering as the first turn: named for the call that produced it.
+      parts.push(formatToolResponse(m, history));
     } else if (m.role === "system") {
       // Skip system messages on follow-up turns
     } else {
@@ -286,7 +337,7 @@ export async function handleChatCompletion(
     log.info(`Chat completion: model=${model}, stream=${body.stream}, messages=${body.messages.length}, turn=${session.turnCount}, mode=full, cid=${convId}`);
   } else {
     const newMessages = body.messages.slice(conv.sentMessageCount);
-    const delta = newMessages.length > 0 ? formatDeltaMessages(newMessages) : "";
+    const delta = newMessages.length > 0 ? formatDeltaMessages(newMessages, body.messages) : "";
     if (delta.length > 0) {
       text = delta;
       // Only a tool result is the thing the note corrects the model about.
@@ -553,7 +604,7 @@ export async function handleChatCompletion(
     let fullText = stopAtFabricatedResult(result.fullText);
 
     log.debug("Raw response (tool mode):", trunc(fullText, 1000));
-    let parsed = parseToolCalls(fullText, body.tools);
+    let { parsed, judged } = parseReply(fullText, body.tools);
     log.info(`Parse result: hasToolCalls=${parsed.hasToolCalls}, count=${parsed.toolCalls.length}`);
 
     // Salvage stochastic turn-1 confabulation: M365's chat model sometimes claims it
@@ -571,18 +622,20 @@ export async function handleChatCompletion(
       (m) => m.role === "assistant" && Array.isArray(m.tool_calls) && m.tool_calls.length > 0,
     );
     for (let attempt = 0; attempt < maxConfabRetries && !parsed.hasToolCalls; attempt++) {
-      const confab = looksLikeConfabulation(parsed.textContent);
+      const confab = looksLikeConfabulation(judged);
       const remoteArtifact = looksLikeRemoteArtifactCompletion(parsed.textContent);
-      const halluc = !everActed && looksLikeHallucinatedCompletion(parsed.textContent);
+      const halluc = !everActed && looksLikeHallucinatedCompletion(judged);
       if (!confab && !remoteArtifact && !halluc) break;
       const retryKind = remoteArtifact ? "Remote artifact completion" : confab ? "Confabulation" : "Hallucinated completion";
       log.info(`${retryKind} detected (no tool call) — forcing retry ${attempt + 1}/${maxConfabRetries}`);
-      text = remoteArtifact ? REMOTE_ARTIFACT_FORCE_PROMPT : confab ? CONFAB_FORCE_PROMPT : HALLUCINATION_FORCE_PROMPT;
+      text = remoteArtifact ? REMOTE_ARTIFACT_FORCE_PROMPT
+        : confab ? (everActed ? MIDTASK_FORCE_PROMPT : CONFAB_FORCE_PROMPT)
+        : HALLUCINATION_FORCE_PROMPT;
       const retry = await runBuffered();
       if ("error" in retry) return { kind: "error", resp: retry.error };
       conv.sentMessageCount = body.messages.length;
       fullText = stopAtFabricatedResult(retry.fullText);
-      parsed = parseToolCalls(fullText, body.tools);
+      ({ parsed, judged } = parseReply(fullText, body.tools));
       log.info(`After forcing retry: hasToolCalls=${parsed.hasToolCalls}, count=${parsed.toolCalls.length}`);
     }
 
@@ -605,17 +658,6 @@ export async function handleChatCompletion(
           },
         }),
       };
-    }
-
-    // Document guard: the shell-routing parser turns every ```bash block into a
-    // tool call, so a model that ANSWERS with a markdown document full of code
-    // fences (e.g. "here's a simplified README") would get its own answer executed
-    // as shell. Detect that shape (multiple fences + prose) and return the document
-    // as plain text instead of running it — unless the reply OPENS with a tool
-    // call, which makes it an action with a speculative tail (#33).
-    if (isProseDocument(parsed, fullText, body.tools)) {
-      log.info(`Response is a prose document (${parsed.toolCalls.length} embedded fences), returning as text instead of executing`);
-      parsed = { hasToolCalls: false, toolCalls: [], textContent: fullText };
     }
 
     // Fail-closed: if model mixed text with tool calls, strip text and re-prompt once.
@@ -666,9 +708,19 @@ export async function handleChatCompletion(
     }
 
     if (parsed.hasToolCalls && parsed.toolCalls.length > 0) {
+      // A heredoc file write past the Windows command-line cap would reach the
+      // shell cut short; run the same write through the harness's write tool.
+      const asWrite = longHeredocAsWrite(parsed.toolCalls[0], body.tools);
+      let rewriteNote: string | null = null;
+      if (asWrite) {
+        log.info(`Heredoc write to ${asWrite.path} is over the Windows command-line cap — sent as ${asWrite.call.function.name} instead`);
+        parsed.toolCalls = [asWrite.call];
+        rewriteNote = `(Note: your heredoc to \`${asWrite.path}\` was longer than the ~8,000-character Windows command-line limit and would have been cut off, so it was written with the \`${asWrite.call.function.name}\` tool instead.${asWrite.skipped ? ` The commands after the heredoc did NOT run: \`${asWrite.skipped.slice(0, 200)}\`.` : ""})`;
+      }
       // The model's server-side history holds more than what runs; say so on
       // the turn that carries the real result (executedOnlyFirstNote).
-      conv.pendingNote = executedOnlyFirstNote(cutFabricated, droppedCalls, textAfterFirstToolCall(fullText, body.tools).length);
+      const notes = [rewriteNote, executedOnlyFirstNote(cutFabricated, droppedCalls, textAfterFirstToolCall(fullText, body.tools).length)].filter(Boolean);
+      conv.pendingNote = notes.length ? notes.join("\n") : null;
       return { kind: "tools", toolCalls: parsed.toolCalls };
     }
     return { kind: "text", text: fullText };

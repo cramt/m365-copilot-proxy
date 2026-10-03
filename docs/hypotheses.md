@@ -43,6 +43,10 @@ than "we eyeballed one run." See §M (Methods) for the experimental rig.
 - §23 — GPT-6 Sol (#23): ungated, takes the agent only on a premium account (learned at runtime),
   has its own sandbox agent-less that no optionsSet removes, and `relay` wins on both paths
   (30/30 agent, 60/60 agent-less, 21/21 in real pi); a premium transient that mimics the dead route (F52)
+- §24 — Windows / pi as a general agent (Oct 2 2026): a host is not a shell (F53), nested fences
+  executed (F54), an ~8.2k-char command-line cap (F55), give-ups the retry never saw (F56–F58);
+  framing variants and thread poisoning not supported (F59); documents still open (F60); sessions
+  sharing an opening message shared an M365 conversation (F61)
 
 ---
 
@@ -3640,3 +3644,111 @@ its conversation and drops tasks lost to the network): agent 30/30 vs `demo_only
 difference: it counts the premium `demo_only` arm's post-F52 tail (4 tasks, 1 solved) under
 agent-less, since that is the path that served them, so agent-less `demo_only` is 10/24 and the
 comparison p = 6×10⁻¹⁰ (relay 60/60 either way).
+
+## 24. Oct 2 2026 — Windows / pi as a general agent (#6, #7): six proxy-side causes, and what is still open
+
+**Question.** #7's fix (673911b) was reasoned, not measured: no Windows host had run it. On a real
+Windows 11 machine with real pi and `gpt-5.6-think-deeper`, does a pi session work as a general
+agent — scan a repo, write and fix code, use a skill, produce documents? Where it doesn't, which
+causes are the proxy's?
+
+**Raw data** (local, not in the repo): one non-premium account; pi
+`@earendil-works/pi-coding-agent` 1.0.0, Git Bash, Node 24; per-run debug logs, outputs and
+`results.json` of a six-task suite (`%TEMP%\m365-agent-suite-*`); sweeps, a mock OpenAI endpoint and
+probes (`%TEMP%\m365-tooltest`). Service version not captured (`M365_DEBUG` truncates frames).
+Methods note for anyone sweeping single turns: **vary the first user message** — `SessionPool`
+fingerprints a conversation by it, so identical prompts land in one M365 conversation (F59).
+
+### F53 — a Windows host is not a PowerShell shell: the platform note sent pi's bash PowerShell 🟢
+pi on Windows gives a tool named `bash` ("Execute a bash command…") backed by Git Bash. The #7 note
+said it "runs PowerShell" and to emit ```powershell, so every shell turn came back as
+`/usr/bin/bash: line 2: Write-Output: command not found` (trace, 1/1) and the model gave up after
+one or two. That is also #7's original report read the other way: "only works when I say use bash"
+— bash *was* the right dialect there. Fixed by reading the dialect off the tool definition
+(`shellDialect`, `M365_HOST_SHELL` override). After: the same "inspect the project" prompt explored
+with `find`/`grep`; "count the .ts files and write the number" wrote 43 (actual 43).
+**Falsify:** a harness whose tool is named `bash` but runs PowerShell (set `M365_HOST_SHELL`).
+
+### F54 — the fence regex closed on the first ```, so nested fences executed 🟢
+A ```markdown answer holding N illustrative ```bash examples parsed as N−1 executable calls
+(deterministic; 3 examples → 2 calls), and a heredoc writing Markdown with a code block reached the
+shell as `cat > ozet.md <<'EOF'\n# Title` (unterminated). `scanFences` counts depth; only depth-0
+blocks are tool candidates. 0 of ~1 MB of logged model output glues a closer to code, so the
+own-line rule costs nothing observed.
+
+### F55 — pi's shell tool cuts commands past ~8,190 characters silently 🟢 (model-free)
+A mock OpenAI endpoint returning scripted tool calls to real pi: a 12,070-char heredoc wrote 8,164
+bytes, the trailing `wc`/`echo` never ran, and bash only said "here-document … delimited by
+end-of-file"; 7,000 chars and 6,000 double quotes were intact (the cap is on characters, not escaped
+length); pi's `write` tool took 50,000 chars intact and created parent dirs. Live, every long file
+landed cut mid-word (two runs: 8,165 and 7,564 chars — the second command had ~600 chars of `find`
+before the heredoc). A platform-note line telling the model to use the write tool did not hold (1/1:
+it still wrote one 13.6 KB heredoc), so the proxy rewrites an over-cap quoted heredoc write to the
+harness write tool (`longHeredocAsWrite`). After: the summary task wrote 13,418 chars, complete.
+
+### F56 — every follow-up tool result went out as `name="unknown"` 🟢; that it caused the give-ups ⚫ not supported
+`formatMessages` names a result after its call (fixed earlier for the misread it causes); the
+handler's delta path — every pi turn from turn 2 on — kept `m.name || "unknown"`. Fixed: one
+`formatToolResponse` for both. The hypothesis that the label caused the mid-task "bash is not
+enabled" give-ups (both observed ones came right after the first result) is **not supported**:
+after the fix, pdf and docx still gave up the same way (3 of 4 runs).
+
+### F57 — give-ups the forcing retry never saw: Turkish ones, and ones dressed as a document 🟢
+(1) Every confabulation pattern was English; a Turkish user's give-ups went straight through.
+(2) "…devre dışı olduğu için oluşturamıyorum" + two "run these yourself" ```bash blocks parsed as
+tool calls, so the retry (gated on no calls) was skipped, then the document guard returned it as
+text. The guard now runs first, and for a document only the opening paragraph is judged. Turkish
+patterns are first-person / session-scoped so a Turkish summary of this repo doesn't match (tested).
+Live detections after the change rescued fix-bug, skill-use, docx (2×), pdf (1×) and a turn-1
+summary refusal; one summary retry also failed.
+
+### F58 — the forcing prompt contradicted the transcript mid-task 🟡
+`CONFAB_FORCE_PROMPT` says "you have not run any command yet"; after a real tool result the model
+answered "so I can't run `ls -la` or `cat`" (2/2 observed retries). With `everActed`, the retry now
+says the tools work and a missing program is something to install. Indicative only: the first pdf
+pass of the night came after it (a 39.6 KB PDF via Edge headless print-to-pdf, Segoe UI / Consolas
+embedded, every Turkish glyph of the source mapped). n too small for a rate.
+
+### F59 — framing variants and "a refusal poisons the thread": both ⚫ at the scale tested
+An n=1-per-arm read suggested `relay`/`honest`/`minimal` beat `baseline` for GPT-5.6 tool calls. A
+5-per-arm sweep that reused one first message put all 30 trials in **one** conversation
+(`x_m365_conversation_messages` 3→4→5…) and scored 1/30. With a nonce per trial and interleaved
+arms: `baseline` 5/5, `relay` 5/5, `honest` 5/5 — no framing effect on the turn-1 call. "One refusal
+poisons the thread" (re-send in a fresh conversation on a give-up): in-thread 5/6 vs fresh 6/6, not a
+result; left as the opt-in lever it was on the fork, not shipped.
+
+### F60 — the general suite: coding works, documents don't yet 🟡
+Real pi, `gpt-5.6-think-deeper`, one objective verifier per task, across the night's builds after
+F53: write code (Turkish slugify, with the `İ` trap) 3/3 · fix two seeded bugs 3/3 · use a project
+skill 2/2 · repo Q&A 2/3 (one answer from context, wrong file) · .docx 3/6 · PDF 1/10. Two caveats:
+project skills are trust-gated and `-p` mode skips them (`--approve` for automation — the first two
+skill runs were a test bug, not a model failure); and the last three PDF runs were turn-1 refusals
+in a row after well over 100 threads that night — plausibly account degradation (§9 F13), unproven.
+**Update (Oct 4, rested account):** the "obstacle" reading was partly my harness. pandoc 3.12 and
+MiKTeX `xelatex` had been installed since Sep 29, but the shell the suite ran from had a stale PATH,
+so its agents never saw them; and one of the night's docx runs `pip install`ed python-docx, changing
+the environment for later runs. Day-to-day numbers are therefore not comparable. See F61 for what the
+probe actually found.
+
+### F61 — sessions that share an opening message shared one M365 conversation 🟢
+The F60 probe (Oct 4, one day of rest, 3 arms × {pdf, docx} × 5, interleaved; arms: control, the
+document recipes in the platform note, the same recipes as a project skill) scored control 7/10, note
+3/10, skill 4/10 — and **by position in the sweep** 7/10 → 4/10 → 3/10, every arm falling together.
+The failed runs' text explains it: in **empty** directories the model wrote "notlar.docx was already
+created and verified successfully", "Earlier in the conversation, the filesystem run already confirmed
+that notlar.md and notlar.docx exist", "Önceki çıktıya göre notlar.pdf başarıyla oluşturulmuş".
+`SessionPool` keys a conversation on the first user message, every run of a task sent the same one,
+and on a match the handler called `session.reset()` — which drops the `CopilotSession` object but
+keeps the `conversationId` — so the full prompt went into the previous run's M365 thread. At equal
+length nothing reset at all, the delta was empty, and `"Please continue."` went there. Real-use
+shape: two pi sessions opened with the same prompt within 30 minutes, even in different directories.
+This is also what F59's 1/30 was, read as a measurement artifact at the time. Fixed:
+`messages.length <= sentMessageCount` → `newConversation()` (a harness only ever appends, and the
+full prompt re-sends the whole history). Regression tests fail on the old handler.
+The document-recipe arms did not help (note 3/10 with 7 turn-1 give-ups vs control 2; p ≈ 0.07 on
+the give-ups, not significant) and were not shipped. **Live after the fix** (same sweep, control only, 10 × {pdf, docx}, interleaved, rested account):
+**17/20** (pdf 8/10, docx 9/10) vs control 7/10 before; by position 9/10 then 8/10 — the decline is
+gone. The fresh-conversation path fired on 18 of 20 runs (every repeat of a prompt), and 0 outputs
+referred to an earlier run (5 of 30 before). 7 of the 17 passes were rescued by the forcing retry
+(F57/F58), so the give-up reflex is still there; the retry is carrying it. The 3 failures: one
+mid-task give-up after 2 tool calls, two turn-1 refusals.
