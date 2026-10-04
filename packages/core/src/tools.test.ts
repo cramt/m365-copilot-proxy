@@ -1,5 +1,86 @@
-import { describe, it, expect } from "vitest";
-import { parseToolCalls, formatToolDefinitions, looksLikeConfabulation, looksLikeHallucinatedCompletion, looksLikeRemoteArtifactCompletion, isProseDocument } from "./tools.js";
+import { afterEach, describe, it, expect, vi } from "vitest";
+import {
+  parseToolCalls,
+  formatToolDefinitions,
+  selectPromptTools,
+  looksLikeConfabulation,
+  looksLikeHallucinatedCompletion,
+  looksLikeRemoteArtifactCompletion,
+  isProseDocument,
+  type ToolDef,
+} from "./tools.js";
+
+describe("selectPromptTools", () => {
+  afterEach(() => vi.unstubAllEnvs());
+  const tool = (name: string): ToolDef => ({ type: "function", function: { name } });
+  const piTools = ["read", "write", "edit", "bash"].map(tool);
+  const opencodeTools = [
+    "bash",
+    "read",
+    "apply_patch",
+    "glob",
+    "grep",
+    "task",
+    "skill",
+    "todowrite",
+    "webfetch",
+  ].map(tool);
+
+  it("leaves pi's lean tools unchanged", () => {
+    vi.stubEnv("M365_TOOL_ALLOWLIST", "");
+    expect(selectPromptTools(piTools)).toEqual(piTools);
+  });
+
+  it("trims an opencode-style set by coding role", () => {
+    vi.stubEnv("M365_TOOL_ALLOWLIST", "");
+    expect(selectPromptTools(opencodeTools).map((entry) => entry.function.name)).toEqual([
+      "bash",
+      "read",
+      "apply_patch",
+      "glob",
+      "grep",
+    ]);
+  });
+
+  it("allows an explicit comma-separated set", () => {
+    vi.stubEnv("M365_TOOL_ALLOWLIST", " skill, webfetch ");
+    expect(selectPromptTools(opencodeTools).map((entry) => entry.function.name)).toEqual([
+      "skill",
+      "webfetch",
+    ]);
+  });
+
+  it("keeps all tools when requested", () => {
+    vi.stubEnv("M365_TOOL_ALLOWLIST", "all");
+    expect(selectPromptTools(opencodeTools)).toBe(opencodeTools);
+  });
+
+  it.each(["", "unknown"])("falls back to all tools when no names match (%s)", (allowlist) => {
+    vi.stubEnv("M365_TOOL_ALLOWLIST", allowlist);
+    const tools = [tool("custom_action"), tool("custom_lookup")];
+    expect(selectPromptTools(tools)).toBe(tools);
+  });
+
+  it.each(["", "bash"])("retains a forced tool even outside the allowlist (%s)", (allowlist) => {
+    vi.stubEnv("M365_TOOL_ALLOWLIST", allowlist);
+    expect(
+      selectPromptTools(opencodeTools, { type: "function", function: { name: "skill" } }).map(
+        (entry) => entry.function.name,
+      ),
+    ).toContain("skill");
+  });
+
+  it("recognizes VS Code's shell and namespaced file tools", () => {
+    vi.stubEnv("M365_TOOL_ALLOWLIST", "");
+    const tools = [
+      tool("run_in_terminal"),
+      tool("functions.read_file"),
+      tool("file_search"),
+      tool("ask_question"),
+    ];
+    expect(selectPromptTools(tools)).toEqual(tools.slice(0, 3));
+  });
+});
 
 describe("parseToolCalls", () => {
   it("should parse a clean tool call with no extra text", () => {
@@ -13,19 +94,24 @@ describe("parseToolCalls", () => {
   });
 
   it("should detect mixed output (text + tool call)", () => {
-    const input = 'I\'ll read that file for you now.\n{"tool": "read_file", "arguments": {"path": "/etc/hostname"}}';
+    const input =
+      'I\'ll read that file for you now.\n{"tool": "read_file", "arguments": {"path": "/etc/hostname"}}';
     const result = parseToolCalls(input);
 
     expect(result.hasToolCalls).toBe(true);
     expect(result.toolCalls).toHaveLength(1);
     expect(result.toolCalls[0].function.name).toBe("read_file");
     // textContent should be non-null — the handler must strip this
-    expect(result.textContent).not.toBeNull();
-    expect(result.textContent!.length).toBeGreaterThan(0);
+    const textContent = result.textContent;
+    if (textContent === null) {
+      throw new Error("Expected mixed output to include text");
+    }
+    expect(textContent.length).toBeGreaterThan(0);
   });
 
   it("should detect mixed output with trailing text", () => {
-    const input = '{"tool": "bash", "arguments": {"command": "ls"}}\nLet me know if you need anything else.';
+    const input =
+      '{"tool": "bash", "arguments": {"command": "ls"}}\nLet me know if you need anything else.';
     const result = parseToolCalls(input);
 
     expect(result.hasToolCalls).toBe(true);
@@ -42,7 +128,8 @@ describe("parseToolCalls", () => {
   });
 
   it("should parse multiple tool calls", () => {
-    const input = '{"tool": "read_file", "arguments": {"path": "/a"}}\n{"tool": "read_file", "arguments": {"path": "/b"}}';
+    const input =
+      '{"tool": "read_file", "arguments": {"path": "/a"}}\n{"tool": "read_file", "arguments": {"path": "/b"}}';
     const result = parseToolCalls(input);
 
     expect(result.hasToolCalls).toBe(true);
@@ -105,7 +192,8 @@ describe("parseToolCalls", () => {
   });
 
   it("drops a premature {final} success claim emitted alongside a tool call", () => {
-    const input = '{"tool": "bash", "arguments": {"command": "nix build"}}{"final": "✅ SUCCESS\\nThe build passed."}';
+    const input =
+      '{"tool": "bash", "arguments": {"command": "nix build"}}{"final": "✅ SUCCESS\\nThe build passed."}';
     const result = parseToolCalls(input);
 
     expect(result.hasToolCalls).toBe(true);
@@ -135,7 +223,11 @@ describe("M365_INJECT_REPLY_TOOL", () => {
       function: {
         name: "bash",
         description: "Run a shell command",
-        parameters: { type: "object", properties: { command: { type: "string" } }, required: ["command"] },
+        parameters: {
+          type: "object",
+          properties: { command: { type: "string" } },
+          required: ["command"],
+        },
       },
     },
   ];
@@ -166,7 +258,11 @@ describe("M365_INJECT_REPLY_TOOL", () => {
       function: {
         name: "reply",
         description: "Caller-supplied reply",
-        parameters: { type: "object", properties: { text: { type: "string" } }, required: ["text"] },
+        parameters: {
+          type: "object",
+          properties: { text: { type: "string" } },
+          required: ["text"],
+        },
       },
     };
     const out = fmt(userMsg, [callerReply, ...sampleTools]);
@@ -179,20 +275,36 @@ describe("M365_INJECT_REPLY_TOOL", () => {
 
 describe("looksLikeHallucinatedCompletion", () => {
   it("flags claimed-but-not-done file mutations", () => {
-    expect(looksLikeHallucinatedCompletion("I've replaced the README with a simplified, cleaner version that:")).toBe(true);
+    expect(
+      looksLikeHallucinatedCompletion(
+        "I've replaced the README with a simplified, cleaner version that:",
+      ),
+    ).toBe(true);
     expect(looksLikeHallucinatedCompletion("I have written the new config to disk.")).toBe(true);
-    expect(looksLikeHallucinatedCompletion("The README has been replaced with a shorter version.")).toBe(true);
+    expect(
+      looksLikeHallucinatedCompletion("The README has been replaced with a shorter version."),
+    ).toBe(true);
     expect(looksLikeHallucinatedCompletion("Done — I updated calc.py and saved it.")).toBe(true);
-    expect(looksLikeHallucinatedCompletion("The requested local edit is complete. No further changes are needed.")).toBe(true);
+    expect(
+      looksLikeHallucinatedCompletion(
+        "The requested local edit is complete. No further changes are needed.",
+      ),
+    ).toBe(true);
   });
 
   it("flags fakeable create-from-scratch hallucinations (no leading 'I')", () => {
     // The exact §8.12 failure string — bare "Created <file>" + "executed it".
-    expect(looksLikeHallucinatedCompletion("Created fizzbuzz.py and executed it with python3.")).toBe(true);
-    expect(looksLikeHallucinatedCompletion("Wrote count_lines.py and ran it; the output is 42.")).toBe(true);
+    expect(
+      looksLikeHallucinatedCompletion("Created fizzbuzz.py and executed it with python3."),
+    ).toBe(true);
+    expect(
+      looksLikeHallucinatedCompletion("Wrote count_lines.py and ran it; the output is 42."),
+    ).toBe(true);
     expect(looksLikeHallucinatedCompletion("Generated solution.js and executed it.")).toBe(true);
     expect(looksLikeHallucinatedCompletion("I ran the script and it printed OK.")).toBe(true);
-    expect(looksLikeHallucinatedCompletion("Executed it with python3 — all tests pass.")).toBe(true);
+    expect(looksLikeHallucinatedCompletion("Executed it with python3 — all tests pass.")).toBe(
+      true,
+    );
   });
 
   it("does NOT flag neutral prose, questions, or future intent", () => {
@@ -203,17 +315,31 @@ describe("looksLikeHallucinatedCompletion", () => {
     // FP guards for the new fakeable-task patterns:
     expect(looksLikeHallucinatedCompletion("The result is 56.")).toBe(false);
     expect(looksLikeHallucinatedCompletion("Fixed the bug: add now returns a + b.")).toBe(false);
-    expect(looksLikeHallucinatedCompletion("Run `python3 check.py` to verify, e.g. in your shell.")).toBe(false);
-    expect(looksLikeHallucinatedCompletion("I ran into an issue understanding the request.")).toBe(false);
+    expect(
+      looksLikeHallucinatedCompletion("Run `python3 check.py` to verify, e.g. in your shell."),
+    ).toBe(false);
+    expect(looksLikeHallucinatedCompletion("I ran into an issue understanding the request.")).toBe(
+      false,
+    );
     expect(looksLikeHallucinatedCompletion("This created some confusion, sorry.")).toBe(false);
   });
 });
 
 describe("isProseDocument (don't execute a written document's code fences)", () => {
-  const bashTool = [{
-    type: "function" as const,
-    function: { name: "bash", description: "run", parameters: { type: "object", properties: { command: { type: "string" } }, required: ["command"] } },
-  }];
+  const bashTool = [
+    {
+      type: "function" as const,
+      function: {
+        name: "bash",
+        description: "run",
+        parameters: {
+          type: "object",
+          properties: { command: { type: "string" } },
+          required: ["command"],
+        },
+      },
+    },
+  ];
   const parse = (t: string) => parseToolCalls(t, bashTool);
 
   it("flags a markdown answer full of ```bash fences as a document", () => {
@@ -241,7 +367,9 @@ That should be everything you need to get going quickly.`;
   });
 
   it("does NOT flag a single action even with explanatory prose around it", () => {
-    expect(isProseDocument(parse("I'll inspect the files first.\n```bash\nls -la && cat calc.py\n```"))).toBe(false);
+    expect(
+      isProseDocument(parse("I'll inspect the files first.\n```bash\nls -la && cat calc.py\n```")),
+    ).toBe(false);
   });
 
   it("does NOT flag two terse back-to-back commands (no document prose)", () => {
@@ -249,12 +377,14 @@ That should be everything you need to get going quickly.`;
   });
 
   it("does NOT flag Claude's 'preamble + a couple command fences' action style (F23)", () => {
-    const claude = "I'll start by exploring the project structure and understanding the bug before fixing it.\n\n```bash\nls -la\n```\n\n```bash\ncat check.py\n```";
+    const claude =
+      "I'll start by exploring the project structure and understanding the bug before fixing it.\n\n```bash\nls -la\n```\n\n```bash\ncat check.py\n```";
     expect(isProseDocument(parse(claude))).toBe(false);
   });
 
   it("still flags a document with markdown headers (the F15 case)", () => {
-    const doc = "Here's a simplified README:\n\n## Install\n```bash\npnpm install\n```\n\n## Run\n```bash\npnpm start\n```";
+    const doc =
+      "Here's a simplified README:\n\n## Install\n```bash\npnpm install\n```\n\n## Run\n```bash\npnpm start\n```";
     expect(isProseDocument(parse(doc))).toBe(true);
   });
 
@@ -265,29 +395,69 @@ That should be everything you need to get going quickly.`;
 
 describe("looksLikeConfabulation", () => {
   it("flags real M365 give-up confabulations", () => {
-    expect(looksLikeConfabulation("I'm unable to access or list any files in the working directory (all shell commands are returning no output).")).toBe(true);
-    expect(looksLikeConfabulation("I don't have access to your project files or the ability to run python3 check.py here.")).toBe(true);
-    expect(looksLikeConfabulation("To move forward, please paste the contents of calc.py and check.py.")).toBe(true);
-    expect(looksLikeConfabulation("It looks like the execution environment isn't returning any output to the commands.")).toBe(true);
+    expect(
+      looksLikeConfabulation(
+        "I'm unable to access or list any files in the working directory (all shell commands are returning no output).",
+      ),
+    ).toBe(true);
+    expect(
+      looksLikeConfabulation(
+        "I don't have access to your project files or the ability to run python3 check.py here.",
+      ),
+    ).toBe(true);
+    expect(
+      looksLikeConfabulation("To move forward, please paste the contents of calc.py and check.py."),
+    ).toBe(true);
+    expect(
+      looksLikeConfabulation(
+        "It looks like the execution environment isn't returning any output to the commands.",
+      ),
+    ).toBe(true);
     // exact strings from the live pi README run that previously slipped through
-    expect(looksLikeConfabulation("The `README.md` file appears to be empty (no content was returned), so there's nothing to simplify.")).toBe(true);
+    expect(
+      looksLikeConfabulation(
+        "The `README.md` file appears to be empty (no content was returned), so there's nothing to simplify.",
+      ),
+    ).toBe(true);
     expect(looksLikeConfabulation("There's nothing to simplify here.")).toBe(true);
     // F12.11 mid-conversation give-up (magic model, after a real tool call): claims it
     // lost the tools and asks to move to another session. Previously slipped through.
-    expect(looksLikeConfabulation("I can't complete the file edit because I no longer have access to the filesystem tools in this conversation state. Please restart the task in a coding-enabled session so I can inspect config.json and change the port from 3000 to 8080.")).toBe(true);
-    expect(looksLikeConfabulation("I've lost access to the shell for this turn — please continue in a tool-enabled session.")).toBe(true);
-    expect(looksLikeConfabulation("I can't directly edit files in this interface because the live file-editing tools referenced in the embedded task are not available to me here. If you open config.json and change the port from 3000 to 8080 that will satisfy the request.")).toBe(true);
+    expect(
+      looksLikeConfabulation(
+        "I can't complete the file edit because I no longer have access to the filesystem tools in this conversation state. Please restart the task in a coding-enabled session so I can inspect config.json and change the port from 3000 to 8080.",
+      ),
+    ).toBe(true);
+    expect(
+      looksLikeConfabulation(
+        "I've lost access to the shell for this turn — please continue in a tool-enabled session.",
+      ),
+    ).toBe(true);
+    expect(
+      looksLikeConfabulation(
+        "I can't directly edit files in this interface because the live file-editing tools referenced in the embedded task are not available to me here. If you open config.json and change the port from 3000 to 8080 that will satisfy the request.",
+      ),
+    ).toBe(true);
 
     // §12.13 wrong-machine reports: true statements about M365's own sandbox.
-    expect(looksLikeConfabulation("I ran container.exec with `pwd` and it returned /mnt/data.")).toBe(true);
-    expect(looksLikeConfabulation("container.download output shows the file in /mnt/data/tmp.")).toBe(true);
+    expect(
+      looksLikeConfabulation("I ran container.exec with `pwd` and it returned /mnt/data."),
+    ).toBe(true);
+    expect(
+      looksLikeConfabulation("container.download output shows the file in /mnt/data/tmp."),
+    ).toBe(true);
     expect(looksLikeConfabulation("I ran the commands. - pwd -> /mnt/data")).toBe(true);
     // Exact GPT-5.6 follow-up from the live OMP failure (2026-08-06).
-    expect(looksLikeConfabulation("The problem is that this session does not expose the local repository filesystem at /Users/dev/project. My filesystem only contained /mnt/data.")).toBe(true);
+    expect(
+      looksLikeConfabulation(
+        "The problem is that this session does not expose the local repository filesystem at /Users/dev/project. My filesystem only contained /mnt/data.",
+      ),
+    ).toBe(true);
   });
 
   it("does NOT flag genuine final answers or normal prose", () => {
-    expect(looksLikeConfabulation("Fixed the bug: add now returns a + b, and check.py prints OK.")).toBe(false);
+    expect(
+      looksLikeConfabulation("Fixed the bug: add now returns a + b, and check.py prints OK."),
+    ).toBe(false);
     expect(looksLikeConfabulation("The hostname is web-prod-01.")).toBe(false);
     expect(looksLikeConfabulation("Done.")).toBe(false);
     expect(looksLikeConfabulation(null)).toBe(false);
@@ -297,7 +467,8 @@ describe("looksLikeConfabulation", () => {
 
 describe("looksLikeRemoteArtifactCompletion", () => {
   it("flags the exact Teams-hosted patch shape returned by GPT-5.6", () => {
-    const response = "I prepared the update for `plan.md`.\n\n[Download the update patch](https://eu-prod.asyncgw.teams.microsoft.com/v1/objects/0-weu-d17-example/views/original/plan-update.patch)";
+    const response =
+      "I prepared the update for `plan.md`.\n\n[Download the update patch](https://eu-prod.asyncgw.teams.microsoft.com/v1/objects/0-weu-d17-example/views/original/plan-update.patch)";
     expect(looksLikeRemoteArtifactCompletion(response)).toBe(true);
   });
 
@@ -307,38 +478,82 @@ describe("looksLikeRemoteArtifactCompletion", () => {
   // forced retry and then breaks an ordinary answer. Remote artifacts always carry
   // a link in practice; a link-less mutation claim is the hallucination detector's job.
   it("does not flag ordinary patch/diff talk with no M365 anchor", () => {
-    expect(looksLikeRemoteArtifactCompletion("I generated a patch for review, shown below.")).toBe(false);
-    expect(looksLikeRemoteArtifactCompletion("You can download the patch from the GitHub release page.")).toBe(false);
-    expect(looksLikeRemoteArtifactCompletion("I've attached the diff inline above for you to inspect.")).toBe(false);
-    expect(looksLikeRemoteArtifactCompletion("git format-patch generated 3 patch files in the repo.")).toBe(false);
-    expect(looksLikeRemoteArtifactCompletion("Here is the diff I prepared for the change:\n\n```diff\n-a\n+b\n```")).toBe(false);
+    expect(looksLikeRemoteArtifactCompletion("I generated a patch for review, shown below.")).toBe(
+      false,
+    );
+    expect(
+      looksLikeRemoteArtifactCompletion("You can download the patch from the GitHub release page."),
+    ).toBe(false);
+    expect(
+      looksLikeRemoteArtifactCompletion("I've attached the diff inline above for you to inspect."),
+    ).toBe(false);
+    expect(
+      looksLikeRemoteArtifactCompletion("git format-patch generated 3 patch files in the repo."),
+    ).toBe(false);
+    expect(
+      looksLikeRemoteArtifactCompletion(
+        "Here is the diff I prepared for the change:\n\n```diff\n-a\n+b\n```",
+      ),
+    ).toBe(false);
   });
 
   it("flags GPT-5.6's hidden M365 file citation presented as a local edit", () => {
-    expect(looksLikeRemoteArtifactCompletion("Updated [plan.md](\uE200cite\uE202turn1file1\uE201) locally:\n\n- Changed the status to complete")).toBe(true);
+    expect(
+      looksLikeRemoteArtifactCompletion(
+        "Updated [plan.md](\uE200cite\uE202turn1file1\uE201) locally:\n\n- Changed the status to complete",
+      ),
+    ).toBe(true);
   });
 
   it("flags an entire updated file hosted in Teams instead of written locally", () => {
-    const response = "Updated `plan.md` with `Status: complete`.\n\n[Download the updated plan.md](https://eu-prod.asyncgw.teams.microsoft.com/v1/objects/0-weu-d15-example/views/original/plan.md)";
+    const response =
+      "Updated `plan.md` with `Status: complete`.\n\n[Download the updated plan.md](https://eu-prod.asyncgw.teams.microsoft.com/v1/objects/0-weu-d15-example/views/original/plan.md)";
     expect(looksLikeRemoteArtifactCompletion(response)).toBe(true);
   });
 
   it("flags M365's sandbox path returned after a forced local-edit retry", () => {
-    expect(looksLikeRemoteArtifactCompletion("The update is complete. [Download plan.md](sandbox:/mnt/data/plan.md)")).toBe(true);
+    expect(
+      looksLikeRemoteArtifactCompletion(
+        "The update is complete. [Download plan.md](sandbox:/mnt/data/plan.md)",
+      ),
+    ).toBe(true);
   });
 
   it("does not flag normal links, images, or local-edit confirmations", () => {
-    expect(looksLikeRemoteArtifactCompletion("See the documentation at https://example.com/setup.patch-notes")).toBe(false);
-    expect(looksLikeRemoteArtifactCompletion("Download the source at https://eu-prod.asyncgw.teams.microsoft.com/v1/objects/example/views/original/plan.md")).toBe(false);
-    expect(looksLikeRemoteArtifactCompletion("![generated image](https://example.com/image.png)")).toBe(false);
-    expect(looksLikeRemoteArtifactCompletion("Updated plan.md using the local edit tool.")).toBe(false);
+    expect(
+      looksLikeRemoteArtifactCompletion(
+        "See the documentation at https://example.com/setup.patch-notes",
+      ),
+    ).toBe(false);
+    expect(
+      looksLikeRemoteArtifactCompletion(
+        "Download the source at https://eu-prod.asyncgw.teams.microsoft.com/v1/objects/example/views/original/plan.md",
+      ),
+    ).toBe(false);
+    expect(
+      looksLikeRemoteArtifactCompletion("![generated image](https://example.com/image.png)"),
+    ).toBe(false);
+    expect(looksLikeRemoteArtifactCompletion("Updated plan.md using the local edit tool.")).toBe(
+      false,
+    );
     expect(looksLikeRemoteArtifactCompletion(null)).toBe(false);
   });
 });
 
 describe("tool-result labelling", () => {
   const tools = [
-    { type: "function" as const, function: { name: "bash", description: "run", parameters: { type: "object", properties: { command: { type: "string" } }, required: ["command"] } } },
+    {
+      type: "function" as const,
+      function: {
+        name: "bash",
+        description: "run",
+        parameters: {
+          type: "object",
+          properties: { command: { type: "string" } },
+          required: ["command"],
+        },
+      },
+    },
   ];
 
   it("labels a tool result with the command that produced it (not 'unknown')", async () => {
@@ -346,7 +561,10 @@ describe("tool-result labelling", () => {
     const out = formatMessages(
       [
         { role: "user", content: "list files" },
-        { role: "assistant", tool_calls: [{ id: "c1", function: { name: "bash", arguments: '{"command":"ls -la"}' } }] },
+        {
+          role: "assistant",
+          tool_calls: [{ id: "c1", function: { name: "bash", arguments: '{"command":"ls -la"}' } }],
+        },
         { role: "tool", tool_call_id: "c1", content: "README.md" },
       ],
       tools,
@@ -366,13 +584,17 @@ describe("tool-result labelling", () => {
 });
 
 describe("fenced tool format (the only format)", () => {
-  const tools = [
+  const tools: ToolDef[] = [
     {
       type: "function" as const,
       function: {
         name: "bash",
         description: "Run a shell command",
-        parameters: { type: "object", properties: { command: { type: "string" } }, required: ["command"] },
+        parameters: {
+          type: "object",
+          properties: { command: { type: "string" } },
+          required: ["command"],
+        },
       },
     },
     {
@@ -404,7 +626,10 @@ describe("fenced tool format (the only format)", () => {
   });
 
   it("normalizes a leaked container.exec JSON tool call to the caller shell tool", () => {
-    const result = parseToolCalls('{"tool":"container.exec","arguments":{"command":"ls -la"}}', tools);
+    const result = parseToolCalls(
+      '{"tool":"container.exec","arguments":{"command":"ls -la"}}',
+      tools,
+    );
     expect(result.hasToolCalls).toBe(true);
     expect(result.toolCalls[0].function.name).toBe("bash");
     expect(JSON.parse(result.toolCalls[0].function.arguments)).toEqual({ command: "ls -la" });
@@ -417,7 +642,12 @@ describe("fenced tool format (the only format)", () => {
         { role: "user", content: "make a file" },
         {
           role: "assistant",
-          tool_calls: [{ id: "c1", function: { name: "write_file", arguments: '{"path":"a.py","content":"print(1)"}' } }],
+          tool_calls: [
+            {
+              id: "c1",
+              function: { name: "write_file", arguments: '{"path":"a.py","content":"print(1)"}' },
+            },
+          ],
         },
       ],
       tools,
@@ -464,19 +694,41 @@ describe("formatToolDefinitions", () => {
 });
 
 describe("truncateAtFabricatedToolResponse (a self-written <tool_response> is a stop sequence)", () => {
-  const bash = { type: "function" as const, function: { name: "bash", description: "run", parameters: { type: "object", properties: { command: { type: "string" } }, required: ["command"] } } };
+  const bash = {
+    type: "function" as const,
+    function: {
+      name: "bash",
+      description: "run",
+      parameters: {
+        type: "object",
+        properties: { command: { type: "string" } },
+        required: ["command"],
+      },
+    },
+  };
   // Shape of a Sonnet 4.6 fix-bug turn (Sep 28 bench): a real action, then an
   // INVENTED result, then more actions built on the invention — 3-4 fences in
   // the 13 turns the document guard returned as prose in that run.
-  const fabricated = "\n```bash\nls -la && cat check.py && cat calc.py\n```\n\n<tool_response>\ntotal 20\ndrwxr-xr-x 1 user user 4096 .\n-rw-r--r-- 1 user user 30 calc.py\ndef add(a, b):\n    return a - b\n</tool_response>\n\nThe bug is the minus sign. Fixing it:\n\n```bash\nsed -i 's/a - b/a + b/' calc.py\n```\n\n<tool_response>\n</tool_response>\n\n```bash\ncat calc.py\n```\n\n<tool_response>\ndef add(a, b):\n    return a + b\n</tool_response>\n\n```bash\npython3 check.py\n```\n\n<tool_response>\nOK\n</tool_response>\n\nFixed — check.py prints OK.";
+  const fabricated =
+    "\n```bash\nls -la && cat check.py && cat calc.py\n```\n\n<tool_response>\ntotal 20\ndrwxr-xr-x 1 user user 4096 .\n-rw-r--r-- 1 user user 30 calc.py\ndef add(a, b):\n    return a - b\n</tool_response>\n\nThe bug is the minus sign. Fixing it:\n\n```bash\nsed -i 's/a - b/a + b/' calc.py\n```\n\n<tool_response>\n</tool_response>\n\n```bash\ncat calc.py\n```\n\n<tool_response>\ndef add(a, b):\n    return a + b\n</tool_response>\n\n```bash\npython3 check.py\n```\n\n<tool_response>\nOK\n</tool_response>\n\nFixed — check.py prints OK.";
 
   it("keeps the real action and drops the invented result and everything after it", async () => {
-    const { truncateAtFabricatedToolResponse, parseToolCalls, isProseDocument } = await import("./tools.js");
+    const { truncateAtFabricatedToolResponse, parseToolCalls, isProseDocument } = await import(
+      "./tools.js"
+    );
     const cut = truncateAtFabricatedToolResponse(fabricated, [bash]);
     expect(cut).toBe("\n```bash\nls -la && cat check.py && cat calc.py\n```");
     const parsed = parseToolCalls(cut, [bash]);
     expect(parsed.toolCalls).toHaveLength(1);
-    expect(JSON.parse(parsed.toolCalls[0].function.arguments).command).toBe("ls -la && cat check.py && cat calc.py");
+    const parsedArguments: unknown = JSON.parse(parsed.toolCalls[0].function.arguments);
+    if (
+      typeof parsedArguments !== "object" ||
+      parsedArguments === null ||
+      !("command" in parsedArguments)
+    ) {
+      throw new Error("Expected parsed tool arguments to include a command");
+    }
+    expect(parsedArguments.command).toBe("ls -la && cat check.py && cat calc.py");
     expect(isProseDocument(parsed)).toBe(false);
   });
 
@@ -487,7 +739,11 @@ describe("truncateAtFabricatedToolResponse (a self-written <tool_response> is a 
 
   it("also stops at a <tool_result> tag", async () => {
     const { truncateAtFabricatedToolResponse } = await import("./tools.js");
-    expect(truncateAtFabricatedToolResponse("```bash\nls\n```\n<tool_result>\nx\n</tool_result>", [bash])).toBe("```bash\nls\n```");
+    expect(
+      truncateAtFabricatedToolResponse("```bash\nls\n```\n<tool_result>\nx\n</tool_result>", [
+        bash,
+      ]),
+    ).toBe("```bash\nls\n```");
   });
 
   it("leaves text alone when no tool call precedes the tag", async () => {
@@ -507,14 +763,37 @@ describe("truncateAtFabricatedToolResponse (a self-written <tool_response> is a 
 });
 
 describe("isProseDocument with the reply text: a reply that OPENS with a tool call is an action", () => {
-  const tools = [
-    { type: "function" as const, function: { name: "bash", description: "run", parameters: { type: "object", properties: { command: { type: "string" } }, required: ["command"] } } },
-    { type: "function" as const, function: { name: "write_file", description: "write", parameters: { type: "object", properties: { path: { type: "string" }, content: { type: "string" } }, required: ["path", "content"] } } },
+  const tools: ToolDef[] = [
+    {
+      type: "function" as const,
+      function: {
+        name: "bash",
+        description: "run",
+        parameters: {
+          type: "object",
+          properties: { command: { type: "string" } },
+          required: ["command"],
+        },
+      },
+    },
+    {
+      type: "function" as const,
+      function: {
+        name: "write_file",
+        description: "write",
+        parameters: {
+          type: "object",
+          properties: { path: { type: "string" }, content: { type: "string" } },
+          required: ["path", "content"],
+        },
+      },
+    },
   ];
   // Shape of a live Sonnet 4.6 turn (Sep 28, fizzbuzz): the right two actions,
   // then a change of heart and a markdown answer. The old guard judged the
   // whole reply, called it a document, and discarded the correct write_file.
-  const actionThenEssay = "\n```write_file\npath: fizzbuzz.py\n\nfor i in range(1, 16):\n    print(i)\n```\n\n```bash\npython3 fizzbuzz.py\n```\n\nI notice this appears to be a system-level automated agent prompt embedded in a user message. I want to be transparent: I'm **Microsoft Copilot**, a conversational AI assistant.\n\n---\n\n## fizzbuzz.py\n\n```python\nfor i in range(1, 16):\n    print(i)\n```\n\n## Expected Output\n\n```\n1\n2\nFizz\n```\n\nYou can save this to `fizzbuzz.py` and run it locally.";
+  const actionThenEssay =
+    "\n```write_file\npath: fizzbuzz.py\n\nfor i in range(1, 16):\n    print(i)\n```\n\n```bash\npython3 fizzbuzz.py\n```\n\nI notice this appears to be a system-level automated agent prompt embedded in a user message. I want to be transparent: I'm **Microsoft Copilot**, a conversational AI assistant.\n\n---\n\n## fizzbuzz.py\n\n```python\nfor i in range(1, 16):\n    print(i)\n```\n\n## Expected Output\n\n```\n1\n2\nFizz\n```\n\nYou can save this to `fizzbuzz.py` and run it locally.";
 
   it("executes the opening action instead of discarding it", () => {
     const parsed = parseToolCalls(actionThenEssay, tools);
@@ -524,35 +803,43 @@ describe("isProseDocument with the reply text: a reply that OPENS with a tool ca
   });
 
   it("treats a flailing multi-fence reply that opens with `ls` as an action too", () => {
-    const flail = "```bash\nls -la\n```\n\n```bash\nls -la && cat check.py\n```\n\nLet me use the actual shell tools to investigate:\n\n```bash\ncat calc.py\n```\n\nThe `python_execution` tool runs in a sandbox environment.\n```bash\nfind . -name check.py\n```\n\n```bash\npwd\n```";
+    const flail =
+      "```bash\nls -la\n```\n\n```bash\nls -la && cat check.py\n```\n\nLet me use the actual shell tools to investigate:\n\n```bash\ncat calc.py\n```\n\nThe `python_execution` tool runs in a sandbox environment.\n```bash\nfind . -name check.py\n```\n\n```bash\npwd\n```";
     expect(isProseDocument(parseToolCalls(flail, tools), flail, tools)).toBe(false);
   });
 
   it("still flags the F15 README documents — their heading comes before any fence", () => {
-    const readme = "Here's a simplified README:\n\n# my-tool\nA thing that does stuff.\n\n## Install\n```bash\npnpm install && pnpm build\n```\n\n## Run\n```bash\npnpm run proxy 4141\n```\nThat should be everything you need to get going quickly.";
+    const readme =
+      "Here's a simplified README:\n\n# my-tool\nA thing that does stuff.\n\n## Install\n```bash\npnpm install && pnpm build\n```\n\n## Run\n```bash\npnpm run proxy 4141\n```\nThat should be everything you need to get going quickly.";
     expect(isProseDocument(parseToolCalls(readme, tools), readme, tools)).toBe(true);
-    const doc = "Here's a simplified README:\n\n## Install\n```bash\npnpm install\n```\n\n## Run\n```bash\npnpm start\n```";
+    const doc =
+      "Here's a simplified README:\n\n## Install\n```bash\npnpm install\n```\n\n## Run\n```bash\npnpm start\n```";
     expect(isProseDocument(parseToolCalls(doc, tools), doc, tools)).toBe(true);
   });
 
   it("still flags a document whose example code comes before its first tool fence", () => {
-    const doc = "Example:\n```python\nprint(1)\n```\n\n```bash\npip install x\n```\n\n```bash\npython3 app.py\n```\n\n## Notes\nThat's all there is to it, really. " + "x".repeat(300);
+    const doc =
+      "Example:\n```python\nprint(1)\n```\n\n```bash\npip install x\n```\n\n```bash\npython3 app.py\n```\n\n## Notes\nThat's all there is to it, really. " +
+      "x".repeat(300);
     expect(isProseDocument(parseToolCalls(doc, tools), doc, tools)).toBe(true);
   });
 
   it("falls through to the old rule when the preamble is a long intro", () => {
-    const intro = "A".repeat(210) + "\n\n```bash\nls\n```\n\n## Next\n```bash\ncat a\n```";
+    const intro = `${"A".repeat(210)}\n\n\`\`\`bash\nls\n\`\`\`\n\n## Next\n\`\`\`bash\ncat a\n\`\`\``;
     expect(isProseDocument(parseToolCalls(intro, tools), intro, tools)).toBe(true);
   });
 
   it("keeps Claude's one-line lead-in style an action", () => {
-    const claude = "I'll start by exploring the project structure.\n\n```bash\nls -la\n```\n\n```bash\ncat check.py\n```";
+    const claude =
+      "I'll start by exploring the project structure.\n\n```bash\nls -la\n```\n\n```bash\ncat check.py\n```";
     expect(isProseDocument(parseToolCalls(claude, tools), claude, tools)).toBe(false);
   });
 
   it("textAfterFirstToolCall returns the tail after the first real call", async () => {
     const { textAfterFirstToolCall } = await import("./tools.js");
-    expect(textAfterFirstToolCall("```bash\nls\n```\n\nand then more", tools)).toBe("and then more");
+    expect(textAfterFirstToolCall("```bash\nls\n```\n\nand then more", tools)).toBe(
+      "and then more",
+    );
     expect(textAfterFirstToolCall("```bash\nls\n```", tools)).toBe("");
     expect(textAfterFirstToolCall("no calls here", tools)).toBe("");
     expect(textAfterFirstToolCall("```python\nx\n```\n```bash\nls\n```\ntail", tools)).toBe("tail");
@@ -565,7 +852,18 @@ describe("transcript style (which tags wrap the framing and harness system promp
   // variants therefore label text by its real source; every other variant
   // must keep the historical tags byte-for-byte.
   const tools = [
-    { type: "function" as const, function: { name: "bash", description: "run", parameters: { type: "object", properties: { command: { type: "string" } }, required: ["command"] } } },
+    {
+      type: "function" as const,
+      function: {
+        name: "bash",
+        description: "run",
+        parameters: {
+          type: "object",
+          properties: { command: { type: "string" } },
+          required: ["command"],
+        },
+      },
+    },
   ];
   const msgs = [
     { role: "system", content: "You are an autonomous coding agent." },
@@ -585,7 +883,9 @@ describe("transcript style (which tags wrap the framing and harness system promp
     for (const v of ["honest", "terse_user", "relay"]) {
       const out = formatMessages(msgs, tools, undefined, undefined, v);
       expect(out).not.toContain("<system>");
-      expect(out).toContain("<harness_system_prompt>\nYou are an autonomous coding agent.\n</harness_system_prompt>");
+      expect(out).toContain(
+        "<harness_system_prompt>\nYou are an autonomous coding agent.\n</harness_system_prompt>",
+      );
       expect(out).toContain("```bash"); // shell-routing survives
       expect(out).toContain("<user>\nfix the bug\n</user>");
     }
@@ -594,7 +894,9 @@ describe("transcript style (which tags wrap the framing and harness system promp
   it("retag changes only the wrapper, not the baseline text inside it", async () => {
     const { formatMessages, formatToolDefinitions } = await import("./tools.js");
     const out = formatMessages(msgs, tools, undefined, undefined, "retag");
-    expect(out).toContain(`<harness_instructions>\n${formatToolDefinitions(tools, "baseline")}\n</harness_instructions>`);
+    expect(out).toContain(
+      `<harness_instructions>\n${formatToolDefinitions(tools, "baseline")}\n</harness_instructions>`,
+    );
     expect(out).not.toContain("<system>");
   });
 

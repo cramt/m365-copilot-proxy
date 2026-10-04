@@ -20,27 +20,58 @@ import { getToken, getTokenSilent, decodeJwt } from "../packages/core/dist/index
 const MODE = process.argv[2] || "baseline";
 
 function claims(t) {
-  const p = JSON.parse(Buffer.from(t.split(".")[1].replace(/-/g, "+").replace(/_/g, "/"), "base64").toString());
-  return { iat: p.iat, exp: p.exp, aud: p.aud, appid: p.appid, tid: p.tid?.slice(0, 8), oid: p.oid?.slice(0, 8), scp: p.scp, len: t.length, ttl_min: Math.round((p.exp - p.iat) / 60), uti: p.uti };
+  const p = JSON.parse(
+    Buffer.from(t.split(".")[1].replace(/-/g, "+").replace(/_/g, "/"), "base64").toString(),
+  );
+  return {
+    iat: p.iat,
+    exp: p.exp,
+    aud: p.aud,
+    appid: p.appid,
+    tid: p.tid?.slice(0, 8),
+    oid: p.oid?.slice(0, 8),
+    scp: p.scp,
+    len: t.length,
+    ttl_min: Math.round((p.exp - p.iat) / 60),
+    uti: p.uti,
+  };
 }
 
 if (MODE === "baseline") {
   const t0 = Date.now();
   const t = await getTokenSilent();
-  if (!t) { console.log("BASELINE: silent returned NULL (no valid cache)"); process.exit(0); }
+  if (!t) {
+    console.log("BASELINE: silent returned NULL (no valid cache)");
+    process.exit(0);
+  }
   console.log(`BASELINE silent: ok ${Date.now() - t0}ms`);
   console.log(`  claims: ${JSON.stringify(claims(t))}`);
 } else if (MODE === "cold") {
   const t0 = Date.now();
   let t;
-  try { t = await getToken(); } catch (e) { console.log(`COLD: regeneration FAILED — ${e.message}`); process.exit(1); }
+  try {
+    t = await getToken();
+  } catch (e) {
+    console.log(`COLD: regeneration FAILED — ${e.message}`);
+    process.exit(1);
+  }
   const ms = Date.now() - t0;
   console.log(`COLD regen: ok ${ms}ms  (browser-login=${ms > 5000})`);
   console.log(`  claims: ${JSON.stringify(claims(t))}`);
   // Confirm the fresh token actually works + read throttle state.
   try {
     const { oneTurn } = await import("./_probe-chat.mjs");
-    const r = await oneTurn({ token: t, claims: decodeJwt(t), agentId: null, text: "Reply with exactly the word: pong", timeoutMs: 60000 });
-    console.log(`  fresh-token chat: reply=${JSON.stringify((r.fullText || "(empty)").slice(0, 40))} throttle=${JSON.stringify(r.throttle)} disengaged=${r.disengaged} ${r.elapsedMs}ms`);
-  } catch (e) { console.log(`  fresh-token chat ERROR: ${e.message}`); }
+    const r = await oneTurn({
+      token: t,
+      claims: decodeJwt(t),
+      agentId: null,
+      text: "Reply with exactly the word: pong",
+      timeoutMs: 60000,
+    });
+    console.log(
+      `  fresh-token chat: reply=${JSON.stringify((r.fullText || "(empty)").slice(0, 40))} throttle=${JSON.stringify(r.throttle)} disengaged=${r.disengaged} ${r.elapsedMs}ms`,
+    );
+  } catch (e) {
+    console.log(`  fresh-token chat ERROR: ${e.message}`);
+  }
 }
