@@ -205,13 +205,17 @@ function renderFencedTemplate(spec: FencedToolSpec): string {
  * lever (docs/hypotheses.md §9). `M365_FRAMING_VARIANT` selects among a registry
  * of competing strategies so they can be A/B'd on the bench without rebuilding
  * the server-side agent. Default = `baseline` (the shipped framing). */
-export function formatFencedToolDefinitions(tools: ToolDef[], variantOverride?: string): string {
+export function formatFencedToolDefinitions(
+  tools: ToolDef[],
+  variantOverride?: string,
+  platform: NodeJS.Platform = process.platform,
+): string {
   const variant = variantOverride ?? currentFramingVariant();
   // `reply_tool` is a tool-injection strategy, not a framing one — it runs the
   // baseline framing plus a synthetic reply() tool (see tools.ts).
   const key = variant === "reply_tool" ? "baseline" : variant;
   const build = FRAMING_VARIANTS[key] ?? FRAMING_VARIANTS.baseline;
-  return build(tools) + hostPlatformNote(findShellTool(tools));
+  return build(tools) + hostPlatformNote(findShellTool(tools), platform);
 }
 
 /** Per-turn correction telling the model which OS it is actually driving.
