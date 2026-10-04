@@ -584,7 +584,7 @@ describe("tool-result labelling", () => {
 });
 
 describe("fenced tool format (the only format)", () => {
-  const tools = [
+  const tools: ToolDef[] = [
     {
       type: "function" as const,
       function: {
@@ -763,7 +763,7 @@ describe("truncateAtFabricatedToolResponse (a self-written <tool_response> is a 
 });
 
 describe("isProseDocument with the reply text: a reply that OPENS with a tool call is an action", () => {
-  const tools = [
+  const tools: ToolDef[] = [
     {
       type: "function" as const,
       function: {

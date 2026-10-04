@@ -3808,3 +3808,6 @@ its conversation and drops tasks lost to the network): agent 30/30 vs `demo_only
 difference: it counts the premium `demo_only` arm's post-F52 tail (4 tasks, 1 solved) under
 agent-less, since that is the path that served them, so agent-less `demo_only` is 10/24 and the
 comparison p = 6×10⁻¹⁰ (relay 60/60 either way).
+
+### H24 — New Luna, Astra, Sol 6.1, and Sonnet 5.5 routes (open, 2026-10-04)
+**Hypothesis:** Candidate `Gpt_6_{Luna,Astra}{,_Chat,_Reasoning}` and `Gpt_6_1_Sol{,_Chat,_Reasoning}` tones may be registered and serve their named models; the existing `Claude_Sonnet` tone may now serve Sonnet 5.5 under the paid scenario. **Falsification:** validator rejection, BotConnection dead route on both licensed scenarios, or a live response that consistently identifies as another model. A paid-scenario `InvalidCopilotLicense` on this account is inconclusive, not falsification. **Probe:** `scripts/new-model-tone-probe.mjs`, sequential agent-less turns with both scenario/license pairs, raw frames, final result/error code, `contentOrigin`, latency and reply; stop on `PerUserThrottled`. Run self-ID only for live cells, then agent compatibility only for verified models. Self-ID is evidence, not proof. **Evidence:** pending; record output directory and sample counts here after each run.
