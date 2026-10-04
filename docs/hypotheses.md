@@ -3314,7 +3314,7 @@ p = 3×10⁻⁴; relay ≥ baseline within every build and on both accounts). **
 `defaultFramingForTone("Claude_Sonnet") = "relay"`, so 4.6, Sonnet 5 and unmapped `claude-*`
 strings all default to it. Against the user's morning 4.6 run (15/30) that is p = 9×10⁻⁵.
 **Real harness:** pi, `claude-sonnet`, fix-bug, final build: **3/3 SOLVED** (52–60 s).
-`claude-sonnet-think-deeper` and Opus are unmeasured under relay and keep their defaults.
+`claude-sonnet-think-deeper` was unmeasured at the time of this comparison; see H25 below. Opus keeps its default.
 
 **Open leads.** (a) Relay names *Sonnet 5's* sandbox (`bash_tool`, `/home/claude`); 4.6's is the
 python code interpreter (`/mnt/data`), so a variant naming both may do better for 4.6 — untested,
@@ -3811,3 +3811,38 @@ comparison p = 6×10⁻¹⁰ (relay 60/60 either way).
 
 ### H24 — New Luna, Astra, Sol 6.1, and Sonnet 5.5 routes (open, 2026-10-04)
 **Hypothesis:** Candidate `Gpt_6_{Luna,Astra}{,_Chat,_Reasoning}` and `Gpt_6_1_Sol{,_Chat,_Reasoning}` tones may be registered and serve their named models; the existing `Claude_Sonnet` tone may now serve Sonnet 5.5 under the paid scenario. **Falsification:** validator rejection, BotConnection dead route on both licensed scenarios, or a live response that consistently identifies as another model. A paid-scenario `InvalidCopilotLicense` on this account is inconclusive, not falsification. **Probe:** `scripts/new-model-tone-probe.mjs`, sequential agent-less turns with both scenario/license pairs, raw frames, final result/error code, `contentOrigin`, latency and reply; stop on `PerUserThrottled`. Run self-ID only for live cells, then agent compatibility only for verified models. Self-ID is evidence, not proof. **Evidence:** pending; record output directory and sample counts here after each run.
+
+
+### H25 — Sonnet reasoning cannot see local Pi files under baseline (supported, 2026-10-04)
+
+**Hypothesis:** The `<system>`-tagged baseline framing makes `claude-sonnet-think-deeper`
+treat Pi's local tool instructions as an injection or as inaccessible tools. Switching
+only the framing to user-voice `relay` should cause real local tool calls and file
+verification. **Falsification:** repeated baseline and relay runs with the same model,
+Pi setup, tasks, and proxy settings perform equally, or relay produces only prose
+without verified local tool calls.
+
+**Controlled checks:** Standalone proxies on :4200 (`M365_FRAMING_VARIANT=baseline`)
+and :4199 (`M365_FRAMING_VARIANT=relay`), both with
+`M365_DISABLE_AGENT=1 M365_NO_CONFAB_RETRY=1 M365_NO_DISENGAGE_RETRY=1`;
+`scripts/pi-e2e.sh` used the same isolated Pi configuration and
+`claude-sonnet-think-deeper`. Sequential fresh conversations, with 45-second
+cooldowns initially and 120 seconds after the user's pacing request. Read and edit:
+baseline **0/2**, relay **2/2**; an additional order-reversed read pair:
+relay **1/1**, baseline **0/1**. Baseline replied that it could not access
+`config.ini` or `calc.py`, with `finish=stop`; relay used local tool calls
+(`finish=tool_calls`) and passed the local verifiers. An earlier relay read/edit
+pair also passed **2/2**. These are small, throttle-sensitive samples, not a
+population reliability estimate. Evidence: `/tmp/m365-sonnet-baseline-proxy.log`,
+`/tmp/m365-sonnet-relay-proxy.log`, and the temporary `.pi-out.txt` paths
+reported by `scripts/pi-e2e.sh`.
+
+**Fix and post-change check:** `defaultFramingForTone("Claude_Sonnet_Reasoning")`
+now selects `relay`, without changing other model defaults or removing explicit
+overrides. `pnpm build` and `pnpm test` passed (342 passed, 3 skipped).
+The rebuilt standalone proxy on :4201, with no framing override, passed isolated
+real-Pi **read 1/1, edit 1/1, multistep 1/1**, with 120-second spacing between
+fresh conversations. Its log recorded `finish=tool_calls` and no throttled
+turns. Evidence: `/tmp/m365-sonnet-default-proxy.log`; task output directories
+`tmp.LacKmkzi9m`, `tmp.TJNijqdrjT`, and `tmp.jxVIHGMAuc` under the
+Pi harness temporary directory. **Usual Pi configuration:** a fresh `scripts/pi-local.sh -p` invocation against the rebuilt :4201 proxy, with its normal context/extensions enabled and the same model, read the exact first heading of `.plans/claude-sonnet-think-deeper-relay.md` from the repository (1/1). The proxy logged `finish=tool_calls` followed by `finish=stop`; this verifies local file access in that configuration, not long-run reliability. Existing long-running Pi conversations may retain earlier context and should be restarted before judging the new default.

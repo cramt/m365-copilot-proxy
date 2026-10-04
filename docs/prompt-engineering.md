@@ -144,7 +144,7 @@ the transcript's **tags** (`transcriptStyleForVariant`): the Claude Sonnet set n
 the harness's own system prompt becomes `<harness_system_prompt>`.
 
 **The default is model-aware** (`defaultFramingForModel`, falling back to `defaultFramingForTone`).
-`Claude_Sonnet` — Sonnet 4.6 and Sonnet 5 — `Gpt_6_Reasoning` and `Gpt_6_Sol_Reasoning` → `relay` (above). `baseline` is a cage built for
+`Claude_Sonnet` — Sonnet 4.6 and Sonnet 5 — `Claude_Sonnet_Reasoning`, `Gpt_6_Reasoning`, and `Gpt_6_Sol_Reasoning` → `relay` (above). `baseline` is a cage built for
 M365's chat-tuned GPT path — most of its length goes on forcing a model that would rather
 narrate into acting. `Claude_Opus` doesn't need that and is metered by a small
 priority-access budget (docs/hypotheses.md §15), so it defaults to `minimal`: 684 chars vs
@@ -153,8 +153,11 @@ anti-confabulation clause while dropping the strict-rules wall. GPT-6 also uses 
 (30/30 agent-less, hypotheses §22 F47). As of 2026-10-02, the handler resolves agent
 availability before choosing framing: **other agent-less GPT tones provisionally use
 `relay`**, pending the §23 sweep; their agent-backed defaults remain `baseline`.
-`claude-sonnet-think-deeper` remains on baseline unless overridden. `M365_FRAMING_*`
-still wins. `relay`, `honest`, and the dual-environment variants now describe the sandbox
+`claude-sonnet-think-deeper` now defaults to `relay`: paired real-Pi read and edit checks
+found baseline 0/2 and relay 2/2; a second, order-reversed read pair was baseline 0/1
+and relay 1/1. Against the rebuilt proxy with no framing override, read, edit, and
+multistep passed 3/3. These small samples establish the failure mechanism, not a
+long-run reliability rate. `M365_FRAMING_*` still wins. `relay`, `honest`, and the dual-environment variants now describe the sandbox
 by tone: GPT's Python code interpreter at `/mnt/data` and web search, or Claude's tools
 at `/home/claude` / `/mnt/user-data`.
 Caveat worth repeating: it is unproven that the Opus budget is token-weighted, so read this

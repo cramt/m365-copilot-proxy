@@ -351,7 +351,7 @@ describe("defaultFramingForTone", () => {
       expect(defaultFramingForTone(tone, { agentLess: false })).toBeUndefined();
     }
     expect(defaultFramingForTone("Claude_Opus", { agentLess: true })).toBe("minimal");
-    expect(defaultFramingForTone("Claude_Sonnet_Reasoning", { agentLess: true })).toBeUndefined();
+    expect(defaultFramingForTone("Claude_Sonnet_Reasoning", { agentLess: true })).toBe("relay");
     expect(defaultFramingForModel("gpt-5.5-think-deeper", { agentLess: true })).toBe("relay");
   });
 
@@ -359,8 +359,8 @@ describe("defaultFramingForTone", () => {
     expect(defaultFramingForTone("Claude_Opus")).toBe("minimal");
   });
 
-  it("leaves every other tone on the bench-tuned baseline", () => {
-    for (const tone of ["magic", "Claude_Sonnet_Reasoning", "Gpt_5_5_Reasoning", undefined]) {
+  it("leaves unrelated tones on the bench-tuned baseline", () => {
+    for (const tone of ["magic", "Gpt_5_5_Reasoning", undefined]) {
       expect(defaultFramingForTone(tone)).toBeUndefined();
     }
   });
@@ -419,9 +419,35 @@ describe("defaultFramingForModel", () => {
 
   it("falls through to the tone default for everything else", () => {
     expect(defaultFramingForModel("claude-opus")).toBe("minimal");
-    expect(defaultFramingForModel("claude-sonnet-think-deeper")).toBeUndefined(); // unmeasured: stays baseline
     expect(defaultFramingForModel("m365-copilot")).toBeUndefined();
     expect(defaultFramingForModel("gpt-5.5-think-deeper")).toBeUndefined();
+  });
+});
+
+describe("Sonnet reasoning framing", () => {
+  it("uses user-voice relay without a forged system wrapper", () => {
+    const framing = defaultFramingForModel("claude-sonnet-think-deeper");
+    expect(framing).toBe("relay");
+    expect(defaultFramingForTone("Claude_Sonnet_Reasoning")).toBe("relay");
+    expect(transcriptStyleForVariant(framing)).toEqual({
+      framingTag: null,
+      systemTag: "harness_system_prompt",
+    });
+    const prompt = formatFencedToolDefinitions(ALL, framing, { tone: "Claude_Sonnet_Reasoning" });
+    expect(prompt).toContain("one command at a time");
+    expect(prompt).toContain("```bash");
+    expect(prompt).not.toContain("<system>");
+  });
+
+  it("allows an explicit baseline override", () => {
+    const previous = process.env.M365_FRAMING_VARIANT;
+    try {
+      process.env.M365_FRAMING_VARIANT = "baseline";
+      expect(currentFramingVariant(defaultFramingForModel("claude-sonnet-think-deeper"))).toBe("baseline");
+    } finally {
+      if (previous === undefined) delete process.env.M365_FRAMING_VARIANT;
+      else process.env.M365_FRAMING_VARIANT = previous;
+    }
   });
 });
 

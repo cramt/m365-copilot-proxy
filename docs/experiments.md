@@ -281,3 +281,53 @@ sample size and evidence in hypotheses §23 before changing the provisional defa
 - **Identity:** repeat only LIVE tones with `--phase=self-id --tones=<comma-separated-live-tones>`. For Sonnet, use `--tones=Claude_Sonnet` and compare included with paid.
 - **Read:** `scripts/new-model-tone-out/<timestamp>/results.json` and per-cell raw `.jsonl` frames. `DeepLeo` plus final `Success` is liveness, not model identity; `BotConnection` is not liveness. `InvalidCopilotLicense` is inconclusive for paid availability. Stop on `PerUserThrottled`; never run sweeps concurrently.
 - **Cost:** one fresh conversation per tone/scenario cell, with 20 seconds between cells. Do not run the full candidate matrix until a small smoke sweep confirms the instrument.
+
+
+## E-SR1 — Sonnet reasoning local-tool framing (H25)
+
+**Hypothesis:** `relay`, unlike `baseline`, makes
+`claude-sonnet-think-deeper` call Pi's local tools. Use the same built
+standalone proxy and identical settings for both arms; change only the framing
+variant. Run sequentially, rotating arm order on repeats. Wait **120 seconds
+between fresh Pi conversations**, including across arms; do not run proxies'
+requests concurrently.
+
+```sh
+pnpm build
+M365_FRAMING_VARIANT=baseline M365_DISABLE_AGENT=1 M365_NO_CONFAB_RETRY=1 M365_NO_DISENGAGE_RETRY=1 node packages/proxy/bin/m365-proxy.mjs 4200
+# In another terminal, start the same command with relay and port 4199.
+MODEL=claude-sonnet-think-deeper PROXY_URL=http://localhost:4200/v1 ONLY=read COOLDOWN=120 bash scripts/pi-e2e.sh
+sleep 120
+MODEL=claude-sonnet-think-deeper PROXY_URL=http://localhost:4199/v1 ONLY=read COOLDOWN=120 bash scripts/pi-e2e.sh
+```
+
+Repeat with `ONLY=edit` and reversed arm order. `COOLDOWN` only spaces
+tasks *within one invocation*, so the explicit sleep between invocations is
+essential. Inspect each retained task directory's `.pi-out.txt`, verify the
+local file/result, and compare proxy `finish=tool_calls` against `finish=stop`.
+Stop on `PerUserThrottled`, Disengaged, or connection errors rather than
+counting them as model failures. After changing the default, start a rebuilt
+proxy **without** `M365_FRAMING_VARIANT` or `M365_FRAMING_FILE` and repeat
+`ONLY=read`, `ONLY=edit`, and `ONLY=multistep` at 120-second intervals.
+Results and limitations: hypotheses H25.
+
+
+## E-SR2 — Go recursive folder-size task in real Pi
+
+Run against a healthy local proxy built with the Sonnet reasoning relay default:
+
+```sh
+MODEL=claude-sonnet-think-deeper PROXY_URL=http://localhost:4201/v1 ONLY=go-du COOLDOWN=120 bash scripts/pi-e2e.sh
+```
+
+The task asks Pi to create and run a Go program in an isolated temporary directory,
+measure the repository's `node_modules`, and report a summary. The verifier
+builds and runs the generated source, checks a small fixture containing a
+symbolic link, compares allocated bytes with `du -sk` (5% tolerance, minimum
+2 MiB), and checks that Pi reported the measured number. It retains the task
+directory and Pi output as evidence. Space separate invocations by 120 seconds;
+`COOLDOWN` only spaces tasks within one invocation.
+
+Initial live result: 1/1 PASS; generated program reported 348942336 allocated
+bytes, matching `du` exactly. Evidence: the `go-du` task directory and
+`.pi-out.txt` printed by `scripts/pi-e2e.sh`.

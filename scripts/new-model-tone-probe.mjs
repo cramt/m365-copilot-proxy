@@ -46,10 +46,10 @@ async function main(args) {
   const scenarioOption = option("scenario", "both");
   const scenarios = scenarioOption === "both" ? Object.keys(SCENARIOS) : [scenarioOption];
   const phase = option("phase", "live");
-  const cooldownMs = Number(option("cooldown-ms", "20000"));
+  const cooldownMs = Number(option("cooldown-ms", "300000"));
   if (!tones.length || scenarios.some((s) => !SCENARIOS[s]) ||
       !["live", "self-id"].includes(phase) || !Number.isFinite(cooldownMs) || cooldownMs < 0) {
-    throw new Error("Use --tones=a,b --scenario=included|paid|both --phase=live|self-id --cooldown-ms=20000");
+    throw new Error("Use --tones=a,b --scenario=included|paid|both --phase=live|self-id --cooldown-ms=300000");
   }
   const { oneTurn } = await import("./_probe-chat.mjs");
   const out = join(process.cwd(), "scripts", "new-model-tone-out",

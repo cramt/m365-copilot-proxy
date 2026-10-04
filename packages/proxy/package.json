@@ -16,7 +16,8 @@
   "scripts": {
     "dev": "nitro dev --port 4141",
     "build": "nitro build",
-    "prepare": "nitro prepare"
+    "prepare": "nitro prepare",
+    "start": "PORT=4141 NITRO_HOST=127.0.0.1 node .output/server/index.mjs"
   },
   "dependencies": {
     "@m365-copilot/core": "workspace:*",
