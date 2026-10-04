@@ -8,6 +8,7 @@
   },
   "scripts": {
     "dev": "pnpm --filter @m365-copilot/proxy dev",
+    "start": "pnpm --filter @m365-copilot/proxy start",
     "build": "pnpm -r build",
     "proxy": "node packages/proxy/bin/m365-proxy.mjs",
     "pi": "bash scripts/pi-local.sh",

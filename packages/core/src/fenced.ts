@@ -323,6 +323,10 @@ export function currentFramingVariant(toneDefault?: string): string {
  *  injected prompt, and relay beat baseline for each — Sonnet 5 45/50 vs 6/40,
  *  Sonnet 4.6 78/90 vs 47/76 (docs §21).
  *
+ *  `Claude_Sonnet_Reasoning` also defaults to `relay`: paired real-Pi read
+ *  and edit checks found baseline claiming it could not access local files,
+ *  while relay used local tools and completed both tasks.
+ *
  *  `Gpt_6_Reasoning` defaults to `relay` too. It used to keep `baseline` on the
  *  theory that it drives M365's GPT agent path — but it never served WITH the
  *  agent (#41), so its tool requests go agent-less, where the proxy also enables
@@ -346,6 +350,7 @@ export function defaultFramingForTone(
 ): string | undefined {
   if (tone === "Claude_Opus") return "minimal";
   if (tone === "Claude_Sonnet") return "relay";
+  if (tone === "Claude_Sonnet_Reasoning") return "relay";
   if (tone === "Gpt_6_Reasoning") return "relay";
   if (tone === "Gpt_6_Sol_Reasoning") return "relay";
   if (opts.agentLess && tone && /^(Gpt_|magic$)/i.test(tone)) return "relay";
