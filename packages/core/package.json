@@ -15,7 +15,12 @@
     "dist"
   ],
   "scripts": {
-    "build": "tsdown src/index.ts --format esm --dts"
+    "build": "tsdown src/index.ts --format esm"
+  },
+  "tsdown": {
+    "dts": {
+      "generator": "tsgo"
+    }
   },
   "dependencies": {
     "@azure/msal-node": "^5.1.1",

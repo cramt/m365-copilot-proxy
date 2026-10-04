@@ -11,11 +11,19 @@ import { readFileSync, writeFileSync, mkdirSync } from "node:fs";
 import { getToken, decodeJwt } from "../packages/core/dist/index.mjs";
 import { oneTurn } from "./_probe-chat.mjs";
 
-const TUNNEL = (process.argv[2] || readFileSync("/tmp/tunnel_url.txt", "utf8")).trim().replace(/\/$/, "");
+const TUNNEL = (process.argv[2] || readFileSync("/tmp/tunnel_url.txt", "utf8"))
+  .trim()
+  .replace(/\/$/, "");
 const SENTINEL = readFileSync("scripts/sentinel-value.txt", "utf8").trim();
 const host = TUNNEL.replace(/^https?:\/\//, "");
 
-const CODE_INTERP = ["cwc_code_interpreter", "cwc_code_interpreter_amsfix", "cwc_code_interpreter_citation_fix", "code_interpreter_interactive_charts", "code_interpreter_matplotlib_patching"];
+const CODE_INTERP = [
+  "cwc_code_interpreter",
+  "cwc_code_interpreter_amsfix",
+  "cwc_code_interpreter_citation_fix",
+  "code_interpreter_interactive_charts",
+  "code_interpreter_matplotlib_patching",
+];
 
 // The exact Python we want executed. We give it verbatim and ask for verbatim output.
 const PY = `
@@ -60,24 +68,46 @@ print(json.dumps(out, indent=2))
 const prompt =
   `Run this EXACT Python program in your code interpreter sandbox, with no modifications. ` +
   `Execute it for real (do not simulate or predict the output). Then paste the COMPLETE stdout it produced, verbatim, inside a code block. Do not summarise or omit any field.\n\n` +
-  "```python\n" + PY + "\n```";
+  "```python\n" +
+  PY +
+  "\n```";
 
 mkdirSync("scripts/code-interp-out", { recursive: true });
 
 const token = await getToken();
 const claims = decodeJwt(token);
 
-const hitsBefore = (() => { try { return readFileSync("scripts/sentinel-hits.log", "utf8"); } catch { return ""; } })();
+const hitsBefore = (() => {
+  try {
+    return readFileSync("scripts/sentinel-hits.log", "utf8");
+  } catch {
+    return "";
+  }
+})();
 
 console.log(`[diag] tunnel=${TUNNEL} host=${host} sentinel=${SENTINEL}`);
-const r = await oneTurn({ token, claims, agentId: null, optionsSets: CODE_INTERP, extraAllowed: ["GeneratedCode", "GenerateContentQuery", "Progress"], text: prompt, timeoutMs: 150000 });
+const r = await oneTurn({
+  token,
+  claims,
+  agentId: null,
+  optionsSets: CODE_INTERP,
+  extraAllowed: ["GeneratedCode", "GenerateContentQuery", "Progress"],
+  text: prompt,
+  timeoutMs: 150000,
+});
 const out = r.fullText || "";
 
 const stamp = new Date().toISOString().replace(/[:.]/g, "-");
 const fp = `scripts/code-interp-out/diag-${stamp}.txt`;
 writeFileSync(fp, out);
 
-const hitsAfter = (() => { try { return readFileSync("scripts/sentinel-hits.log", "utf8"); } catch { return ""; } })();
+const hitsAfter = (() => {
+  try {
+    return readFileSync("scripts/sentinel-hits.log", "utf8");
+  } catch {
+    return "";
+  }
+})();
 const newHits = hitsAfter.slice(hitsBefore.length);
 const serverGotHit = /GET \/sentinel|SENTINEL ENDPOINT CALLED/.test(newHits);
 const modelHasValue = out.includes(SENTINEL);
@@ -85,7 +115,11 @@ const modelHasValue = out.includes(SENTINEL);
 console.log(`\n[diag] === RESULT ===`);
 console.log(`[diag] full reply saved to ${fp} (${out.length} chars)`);
 console.log(`[diag] --- model reply ---\n${out}`);
-console.log(`\n[diag] sentinel server got a NEW inbound hit: ${serverGotHit}  ${serverGotHit ? "SANDBOX HAS EGRESS" : "no inbound hit"}`);
+console.log(
+  `\n[diag] sentinel server got a NEW inbound hit: ${serverGotHit}  ${serverGotHit ? "SANDBOX HAS EGRESS" : "no inbound hit"}`,
+);
 console.log(`[diag] model reported the correct sentinel value: ${modelHasValue}`);
 if (newHits.trim()) console.log(`[diag] new hit log lines:\n${newHits.trim()}`);
-console.log(`[diag] msgTypes=${r.messageTypes.join(",")} elapsed=${r.elapsedMs}ms throttle=${JSON.stringify(r.throttle)} disengaged=${r.disengaged}`);
+console.log(
+  `[diag] msgTypes=${r.messageTypes.join(",")} elapsed=${r.elapsedMs}ms throttle=${JSON.stringify(r.throttle)} disengaged=${r.disengaged}`,
+);

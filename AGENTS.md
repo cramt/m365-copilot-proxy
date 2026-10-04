@@ -104,10 +104,8 @@ hypothesis that teaches us something.
   real agentic coding tasks objectively, executing every tool call in a
   `--network none` Docker sandbox. To compare *any* lever (tool format, model/tone,
   prompt, optionsSets) run it with a `--label` and diff the scorecards in
-  `scripts/bench/out/`. "Best" is a pass-rate number, not an opinion. For a framing or
-  proxy-env sweep use `scripts/bench/phase-sweep.sh`, and read it back with
-  `scripts/bench/analyze-arms.mjs`, which also says what happened on the wire (agent path,
-  sandbox, Disengaged) and drops tasks lost to the network. See `scripts/bench/README.md`.
+  `scripts/bench/out/`. "Best" is a pass-rate number, not an opinion. See
+  `scripts/bench/README.md`.
 - Prefer empirical evidence — what the real first-party client sends/receives
   (capture it with Playwright), what the bench scores — over schema guesses.
 
@@ -140,12 +138,11 @@ pnpm test:live      # M365_LIVE=1; live tests that hit real M365 (uses quota)
 ## Running against real M365 (important)
 
 - **Run inside the Nix dev shell**: `nix develop --command bash -c '...'`. It provides
-  `CHROMIUM_PATH` (a system Chromium; Playwright's bundled one is broken on NixOS), pi, python3
-  and curl. Run the bench scripts in it too: `nix develop --command bash scripts/bench/phase-sweep.sh`.
-- Auth uses `~/.config/opencode-m365/secrets.json` (email/password/mfaSecret) +
-  `msal-cache.json`. **This data dir keeps the legacy `opencode-m365` name** — do not
-  rename it or you orphan working credentials.
-- Set `M365_DEBUG=1` to log to `~/.config/opencode-m365/debug.log`. There is **no
+  `CHROMIUM_PATH` (a system Chromium); Playwright's bundled one is broken on NixOS.
+- Auth uses `~/.config/m365-proxy/secrets.json` (email/password/mfaSecret) +
+  `msal-cache.json`. **This checkout uses the `m365-proxy` data dir.** Move existing
+  credentials from the previous directory before starting.
+- Set `M365_DEBUG=1` to log to `~/.config/m365-proxy/debug.log`. There is **no
   interactive login** — auth is silent-refresh → automated (secrets.json) → fail loudly.
   A headless host / second PC never opens a browser tab or hangs on a paste-the-URL prompt.
 - **Mind the quota**: ~600 messages **per conversation**, plus account-level throttling.
@@ -214,23 +211,12 @@ pnpm test:live      # M365_LIVE=1; live tests that hit real M365 (uses quota)
   in `<user>` tags either: tags are just text to it, and the variant that did (`relay_inline`,
   removed) scored 1/20 (§21 F43).
   **Read its `ChainOfThoughtSummary` frames** (`M365_DUMP_FRAMES=1`) — they say why it refused.
-- **Not every tone serves with the tool agent — `toneUsesToolAgent()` decides, per exact tone**
-  (`M365_FORCE_AGENT=1`/`0` overrides it either way).
+- **Not every tone serves with the tool agent — `toneUsesToolAgent()` decides, per exact tone.**
   Claude tones and `Gpt_6_Reasoning` go agent-less even with tools. With the agent attached GPT-6 is
   a dead route on every account (`result: InternalError`; the proxy used to 502 on it, #41), and
   Claude is dead on non-premium accounts. Add a tone to `AGENTLESS_TOOL_TONES` only after
   `scripts/agent-tone-probe.mjs` says so. Agent-less also means M365's code interpreter is on, and under `baseline` GPT-6
   worked there instead of acting (0/30); its default is `relay` (30/30; 5/5 in real pi). See docs/hypotheses.md §22.
-- **Some tones take the agent only on a premium account — and nothing on the token says which
-  account this is.** `Gpt_6_Sol_Reasoning` (`gpt-6-sol`) serves with the agent on a premium account
-  and is the dead route (`InternalError`) on a non-premium one. It is in `PREMIUM_ONLY_AGENT_TONES`:
-  the first tool request carries the agent, and the handler turns a no-content `InternalError` into
-  "this account isn't premium" (`noteAgentRouteDead`, process-lifetime) and re-sends agent-less —
-  unless the agent already answered for that tone (`noteAgentRouteAlive`): premium accounts emit the
-  same `InternalError` as a rare transient (§23 F52). Run
-  `agent-tone-probe.mjs` on **both** kinds of account before classifying a new tone. Agent-less, GPT-6
-  Sol has its own sandbox that `M365_NO_CODE_INTERPRETER` does not remove; only `relay` keeps it out
-  (60/60 vs ≤6/10), relay wins with the agent too (30/30), and real pi went 21/21. See docs/hypotheses.md §23.
 - **A turn can hold several bot messages; assemble text per message.** Each new message's head
   arrives only as a snapshot with a `cursor`; folding everything into one string drops it (it ate
   a fence's backticks). `TurnTextComposer` in `session.ts` — don't "simplify" it away. #29.

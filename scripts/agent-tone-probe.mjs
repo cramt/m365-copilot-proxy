@@ -95,12 +95,17 @@ export const DEFAULT_CELLS = [
 ];
 
 export function parseCells(spec) {
-  return spec.split(",").map((s) => s.trim()).filter(Boolean).map((s) => {
-    const [tone, where] = s.split("@");
-    const pin = where === "paid" ? PAID : where === "included" ? INCLUDED : {};
-    if (where && !pin.scenario) throw new Error(`unknown scenario "@${where}" — use @paid or @included`);
-    return { tone, note: "from --tones", ...pin };
-  });
+  return spec
+    .split(",")
+    .map((s) => s.trim())
+    .filter(Boolean)
+    .map((s) => {
+      const [tone, where] = s.split("@");
+      const pin = where === "paid" ? PAID : where === "included" ? INCLUDED : {};
+      if (where && !pin.scenario)
+        throw new Error(`unknown scenario "@${where}" — use @paid or @included`);
+      return { tone, note: "from --tones", ...pin };
+    });
 }
 
 // --- classification ----------------------------------------------------------
@@ -128,7 +133,11 @@ function expectedFromTone(tone) {
 }
 
 /** What a turn MEASURED itself as, in the same shape as expectedFromTone. */
-const expectedFromTurn = (t) => ({ family: t.id.family, gptMajor: majorOf(t.id.gptVersion), claudeModel: t.id.claudeModel });
+const expectedFromTurn = (t) => ({
+  family: t.id.family,
+  gptMajor: majorOf(t.id.gptVersion),
+  claudeModel: t.id.claudeModel,
+});
 
 /**
  * Compare a self-ID against an expectation, only at the granularity both state
@@ -186,7 +195,8 @@ export function verdict(cell, agentTurn, baselineTurn) {
     // Only the tone's name to go on, and a mismatch can't be pinned on the agent:
     // the tone may not serve what it's named after even agent-less.
     const miss = identityMismatch(agentTurn.id, expectedFromTone(cell.tone));
-    if (miss) return `${miss.level === "version" ? "VERSION_MISMATCH" : "WRONG_MODEL"}(${miss.what})`;
+    if (miss)
+      return `${miss.level === "version" ? "VERSION_MISMATCH" : "WRONG_MODEL"}(${miss.what})`;
   }
   if (agentTurn.id.family === "unknown") return "UNIDENTIFIED";
   return "SUPPORTED";
@@ -205,10 +215,12 @@ export function toneMisnamed(cell, baselineTurn) {
 /** One sweep row from a cell and its turns (`baseline` may be null). */
 export function classifyRow(cell, agent, baseline) {
   return {
-    tone: cell.tone, note: cell.note,
+    tone: cell.tone,
+    note: cell.note,
     verdict: verdict(cell, agent, baseline),
     toneMisnamed: toneMisnamed(cell, baseline),
-    agent, baseline,
+    agent,
+    baseline,
   };
 }
 
@@ -221,7 +233,9 @@ export function reclassify(saved) {
   const reread = (t) => t && { ...t, id: selfId(t.reply ?? "") };
   return {
     ...saved,
-    results: saved.results.map((r) => classifyRow({ tone: r.tone, note: r.note }, reread(r.agent), reread(r.baseline))),
+    results: saved.results.map((r) =>
+      classifyRow({ tone: r.tone, note: r.note }, reread(r.agent), reread(r.baseline)),
+    ),
   };
 }
 
@@ -230,17 +244,22 @@ export function reclassify(saved) {
 const short = (s, n = 90) => JSON.stringify(s.length > n ? `${s.slice(0, n)}…` : s);
 // The final item's result.value: "Success" is the norm, so only show the rest
 // (a dead route under the agent comes back "InternalError", not an error frame).
-const resultTag = (t) => (t.result && t.result.value !== "Success" ? ` result=${t.result.value}${t.result.errorCode ? `/${t.result.errorCode}` : ""}` : "");
+const resultTag = (t) =>
+  t.result && t.result.value !== "Success"
+    ? ` result=${t.result.value}${t.result.errorCode ? `/${t.result.errorCode}` : ""}`
+    : "";
 
 /** The per-cell lines printed as the sweep goes. */
 export function cellLines({ tone, verdict: v, agent, baseline }) {
   const lines = [
     `[agent-tone] ${tone.padEnd(30)} ${agent.scenario.padEnd(25)} ${v.padEnd(22)} ` +
-    `origin=${agent.answerOrigin} agentTag=${agent.agentNames.join("|") || "-"}${resultTag(agent)} ${agent.elapsedMs}ms` +
-    `${agent.error ? ` ERR=${agent.error}` : ""} reply=${short(agent.reply)}`,
+      `origin=${agent.answerOrigin} agentTag=${agent.agentNames.join("|") || "-"}${resultTag(agent)} ${agent.elapsedMs}ms` +
+      `${agent.error ? ` ERR=${agent.error}` : ""} reply=${short(agent.reply)}`,
   ];
   if (baseline) {
-    lines.push(`[agent-tone] ${"".padEnd(30)} ${"  └ agent-less".padEnd(25)} ${outcome(baseline).padEnd(22)} origin=${baseline.answerOrigin}${resultTag(baseline)} ${baseline.elapsedMs}ms reply=${short(baseline.reply)}`);
+    lines.push(
+      `[agent-tone] ${"".padEnd(30)} ${"  └ agent-less".padEnd(25)} ${outcome(baseline).padEnd(22)} origin=${baseline.answerOrigin}${resultTag(baseline)} ${baseline.elapsedMs}ms reply=${short(baseline.reply)}`,
+    );
   }
   return lines;
 }
@@ -250,9 +269,17 @@ export function cellLines({ tone, verdict: v, agent, baseline }) {
 // didn't complete) say nothing either way.
 const NOT_SUPPORTED = /^(REJECTED|REGISTERED_BUT_DEAD|AGENT_DROPPED|OVERRIDDEN)/;
 export const bucket = (v) =>
-  v === "SUPPORTED" ? "SUPPORTED" : v === "UNLICENSED" ? "UNLICENSED" : NOT_SUPPORTED.test(v) ? "NOT SUPPORTED" : "INCONCLUSIVE";
+  v === "SUPPORTED"
+    ? "SUPPORTED"
+    : v === "UNLICENSED"
+      ? "UNLICENSED"
+      : NOT_SUPPORTED.test(v)
+        ? "NOT SUPPORTED"
+        : "INCONCLUSIVE";
 const describeId = ({ family, gptVersion, claudeModel }) =>
-  family === "unknown" ? "" : ` self-ID=${[family, gptVersion ?? claudeModel].filter(Boolean).join(" ")}`;
+  family === "unknown"
+    ? ""
+    : ` self-ID=${[family, gptVersion ?? claudeModel].filter(Boolean).join(" ")}`;
 
 /** The end-of-sweep verdict block, as lines. Pure: takes a results.json object. */
 export function summarize({ account, baseline: ranBaseline, results }) {
@@ -268,23 +295,35 @@ export function summarize({ account, baseline: ranBaseline, results }) {
   for (const r of results) {
     if (r.tone === CONTROL_TONE) continue;
     const b = bucket(r.verdict);
-    const misnamed = r.toneMisnamed ? ` — tone itself serves ${r.toneMisnamed} agent-less (not the agent's doing)` : "";
-    out.push(`  ${b.padEnd(14)} ${`${r.tone} @ ${r.agent.scenario}`.padEnd(52)} ${["SUPPORTED", "UNLICENSED"].includes(b) ? "" : r.verdict}${describeId(r.agent.id)}${misnamed}`.trimEnd());
+    const misnamed = r.toneMisnamed
+      ? ` — tone itself serves ${r.toneMisnamed} agent-less (not the agent's doing)`
+      : "";
+    out.push(
+      `  ${b.padEnd(14)} ${`${r.tone} @ ${r.agent.scenario}`.padEnd(52)} ${["SUPPORTED", "UNLICENSED"].includes(b) ? "" : r.verdict}${describeId(r.agent.id)}${misnamed}`.trimEnd(),
+    );
   }
   // A cell this account isn't licensed for can't differ "by scenario" in any
   // sense that matters to the agent, so leave those out of the comparison.
   for (const tone of new Set(results.map((r) => r.tone))) {
     const cells = results.filter((r) => r.tone === tone && r.verdict !== "UNLICENSED");
     if (cells.length > 1 && new Set(cells.map((c) => c.verdict)).size > 1) {
-      out.push(`[agent-tone] SCENARIO-SENSITIVE: ${tone} → ${cells.map((c) => `${c.agent.scenario}=${c.verdict}`).join(", ")}`);
+      out.push(
+        `[agent-tone] SCENARIO-SENSITIVE: ${tone} → ${cells.map((c) => `${c.agent.scenario}=${c.verdict}`).join(", ")}`,
+      );
     }
   }
-  const unlicensed = [...new Set(results.filter((r) => r.verdict === "UNLICENSED").map((r) => r.agent.scenario))];
+  const unlicensed = [
+    ...new Set(results.filter((r) => r.verdict === "UNLICENSED").map((r) => r.agent.scenario)),
+  ];
   if (unlicensed.length) {
-    out.push(`[agent-tone] UNLICENSED: ${account ?? "this account"} can't use ${unlicensed.join(", ")} at all (InvalidCopilotLicense). Those cells say nothing about the agent; run them on an account that has the licence.`);
+    out.push(
+      `[agent-tone] UNLICENSED: ${account ?? "this account"} can't use ${unlicensed.join(", ")} at all (InvalidCopilotLicense). Those cells say nothing about the agent; run them on an account that has the licence.`,
+    );
   }
   if (!ranBaseline && results.some((r) => /^(WRONG_MODEL|VERSION_MISMATCH)/.test(r.verdict))) {
-    out.push(`[agent-tone] re-run the WRONG_MODEL / VERSION_MISMATCH cells with --baseline to tell an agent override from a misnamed tone.`);
+    out.push(
+      `[agent-tone] re-run the WRONG_MODEL / VERSION_MISMATCH cells with --baseline to tell an agent override from a misnamed tone.`,
+    );
   }
   return out;
 }
@@ -295,7 +334,10 @@ export function summarize({ account, baseline: ranBaseline, results }) {
 function scanFrame(frame, acc) {
   const walk = (o) => {
     if (!o || typeof o !== "object") return;
-    if (Array.isArray(o)) { for (const v of o) walk(v); return; }
+    if (Array.isArray(o)) {
+      for (const v of o) walk(v);
+      return;
+    }
     if (o.author === "bot") {
       if (o.contentOrigin) acc.origins.add(o.contentOrigin);
       for (const g of Array.isArray(o.gptIdentifiers) ? o.gptIdentifiers : []) {
@@ -316,14 +358,24 @@ async function probeTurn({ oneTurn, token, claims, agentId, cell, framesFile }) 
   const acc = { origins: new Set(), agentNames: new Set(), result: null };
   const frames = [];
   const r = await oneTurn({
-    token, claims, agentId, tone: cell.tone, scenario, licenseType,
-    timeoutMs: 90000, text: PROMPT,
-    onFrame: (f) => { frames.push(f); scanFrame(f, acc); },
+    token,
+    claims,
+    agentId,
+    tone: cell.tone,
+    scenario,
+    licenseType,
+    timeoutMs: 90000,
+    text: PROMPT,
+    onFrame: (f) => {
+      frames.push(f);
+      scanFrame(f, acc);
+    },
   });
-  writeFileSync(framesFile, frames.map((f) => JSON.stringify(f)).join("\n") + "\n");
+  writeFileSync(framesFile, `${frames.map((f) => JSON.stringify(f)).join("\n")}\n`);
   const reply = (r.fullText || "").trim();
   return {
-    scenario, licenseType,
+    scenario,
+    licenseType,
     reply,
     id: selfId(reply),
     answerOrigin: r.contentOrigin,
@@ -367,7 +419,9 @@ async function main(argv) {
   }
   console.log(`[agent-tone] account=${account}`);
   console.log(`[agent-tone] agent=${agentId}`);
-  console.log(`[agent-tone] ${CELLS.length} cells${BASELINE ? " × 2 (agent + agent-less baseline)" : ""}, cooldown ${COOLDOWN_MS}ms\n`);
+  console.log(
+    `[agent-tone] ${CELLS.length} cells${BASELINE ? " × 2 (agent + agent-less baseline)" : ""}, cooldown ${COOLDOWN_MS}ms\n`,
+  );
 
   const sleep = (ms) => new Promise((res) => setTimeout(res, ms));
   const results = [];
@@ -376,19 +430,35 @@ async function main(argv) {
   for (const [i, cell] of CELLS.entries()) {
     const slug = `${String(i).padStart(2, "0")}-${cell.tone}-${cell.scenario ?? "default"}`;
     if (i > 0) await sleep(COOLDOWN_MS);
-    const agent = await probeTurn({ oneTurn, token, claims, agentId, cell, framesFile: join(OUT, `${slug}.agent.jsonl`) });
+    const agent = await probeTurn({
+      oneTurn,
+      token,
+      claims,
+      agentId,
+      cell,
+      framesFile: join(OUT, `${slug}.agent.jsonl`),
+    });
 
     let baseline = null;
     if (BASELINE && agent.result?.value !== "Throttled") {
       await sleep(COOLDOWN_MS);
-      baseline = await probeTurn({ oneTurn, token, claims, agentId: null, cell, framesFile: join(OUT, `${slug}.agentless.jsonl`) });
+      baseline = await probeTurn({
+        oneTurn,
+        token,
+        claims,
+        agentId: null,
+        cell,
+        framesFile: join(OUT, `${slug}.agentless.jsonl`),
+      });
     }
 
     const row = classifyRow(cell, agent, baseline);
     results.push(row);
     for (const line of cellLines(row)) console.log(line);
     if ([agent, baseline].some((t) => t?.result?.value === "Throttled")) {
-      console.log(`\n[agent-tone] THROTTLED (${agent.result?.errorCode ?? baseline?.result?.errorCode}) — stopping; later cells would read as failures. A fresh login clears it (AGENTS.md).`);
+      console.log(
+        `\n[agent-tone] THROTTLED (${agent.result?.errorCode ?? baseline?.result?.errorCode}) — stopping; later cells would read as failures. A fresh login clears it (AGENTS.md).`,
+      );
       stoppedEarly = true;
       break;
     }

@@ -9,16 +9,48 @@
 import { createServer } from "node:http";
 
 const PORT = Number(process.argv[2] || 8799);
-const FIZZ = "for i in range(1,16):\n    print('FizzBuzz' if i%15==0 else 'Fizz' if i%3==0 else 'Buzz' if i%5==0 else i)\n";
+const FIZZ =
+  "for i in range(1,16):\n    print('FizzBuzz' if i%15==0 else 'Fizz' if i%3==0 else 'Buzz' if i%5==0 else i)\n";
 
 createServer((req, res) => {
-  let body = ""; req.on("data", c => body += c); req.on("end", () => {
-    const msgs = (() => { try { return JSON.parse(body).messages || []; } catch { return []; } })();
-    const hadToolResult = msgs.some(m => m.role === "tool");
+  let body = "";
+  req.on("data", (c) => (body += c));
+  req.on("end", () => {
+    const msgs = (() => {
+      try {
+        return JSON.parse(body).messages || [];
+      } catch {
+        return [];
+      }
+    })();
+    const hadToolResult = msgs.some((m) => m.role === "tool");
     const reply = hadToolResult
-      ? { role: "assistant", content: "Done — fizzbuzz.py created." }  // 2nd turn: finish in prose
-      : { role: "assistant", content: null, tool_calls: [{ id: "call_1", type: "function", function: { name: "write_file", arguments: JSON.stringify({ path: "fizzbuzz.py", content: FIZZ }) } }] };
+      ? { role: "assistant", content: "Done — fizzbuzz.py created." } // 2nd turn: finish in prose
+      : {
+          role: "assistant",
+          content: null,
+          tool_calls: [
+            {
+              id: "call_1",
+              type: "function",
+              function: {
+                name: "write_file",
+                arguments: JSON.stringify({ path: "fizzbuzz.py", content: FIZZ }),
+              },
+            },
+          ],
+        };
     res.writeHead(200, { "Content-Type": "application/json" });
-    res.end(JSON.stringify({ id: "mock", object: "chat.completion", created: 0, model: "mock", choices: [{ index: 0, message: reply, finish_reason: reply.tool_calls ? "tool_calls" : "stop" }] }));
+    res.end(
+      JSON.stringify({
+        id: "mock",
+        object: "chat.completion",
+        created: 0,
+        model: "mock",
+        choices: [
+          { index: 0, message: reply, finish_reason: reply.tool_calls ? "tool_calls" : "stop" },
+        ],
+      }),
+    );
   });
 }).listen(PORT, () => console.log(`mock proxy on ${PORT}`));

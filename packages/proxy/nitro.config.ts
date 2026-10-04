@@ -3,7 +3,36 @@
 export default defineNitroConfig({
   compatibilityDate: "2025-01-01",
   preset: "node-server",
+  ignore: ["**/*.test.*", "**/*.spec.*"],
+  esbuild: {
+    options: {
+      target: "node26",
+    },
+  },
+  errorHandler: "~/error.ts",
+  rollupConfig: {
+    // Node 22 builtin. Mark as explicit external to avoid unresolved warnings
+    // from Rollup's builtin resolver list.
+    external: ["node:sqlite"],
+  },
+  hooks: {
+    "rollup:before"(_nitro, config) {
+      const onwarn = config.onwarn;
+      config.onwarn = (warning, warn) => {
+        if (
+          warning.code === "UNUSED_EXTERNAL_IMPORT" &&
+          warning.message.startsWith('"formatToolDefinitions" is imported from external module ') &&
+          warning.message.includes("/core/dist/index.mjs") &&
+          warning.message.includes("proxy-lib/dist/index.mjs")
+        )
+          return;
+        if (onwarn) onwarn(warning, warn);
+        else warn(warning);
+      };
+    },
+  },
   externals: {
+    inline: ["jsonwebtoken"],
     // pnpm2nix serves node_modules from the read-only Nix store. Nitro's
     // node-externals plugin copyFile's each external into
     // .output/server/node_modules/<pkg>/ preserving the source mode

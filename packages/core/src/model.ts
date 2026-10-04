@@ -6,6 +6,13 @@ import type { CopilotStream } from "./copilot.js";
 
 const log = createLogger("model");
 
+function getErrorMessage(error: unknown): unknown {
+  if ((typeof error === "object" && error !== null) || typeof error === "function") {
+    return "message" in error ? error.message : undefined;
+  }
+  return undefined;
+}
+
 export interface ModelSessionOptions {
   /** Pre-resolved auth token. If not provided, getToken() is called. */
   getToken?: () => Promise<string>;
@@ -38,7 +45,9 @@ export class ModelSession {
   readonly sessionId: string = crypto.randomUUID();
   private _conversationId: string = crypto.randomUUID();
   /** Current M365 ConversationId (the throttle/Disengage state keys on this). */
-  get conversationId(): string { return this._conversationId; }
+  get conversationId(): string {
+    return this._conversationId;
+  }
   /**
    * Rotate to a FRESH conversation. A conversation that has Disengaged appears to
    * STAY Disengaged (a clean retry in the same conversation kept refusing), so the
@@ -53,8 +62,7 @@ export class ModelSession {
   constructor(options: ModelSessionOptions = {}) {
     this.resolveToken = options.getToken ?? getToken;
     this.useAgent = options.useAgent !== false;
-    this.temporaryChat =
-      options.temporaryChat ?? process.env.M365_SAVE_HISTORY !== "1";
+    this.temporaryChat = options.temporaryChat ?? process.env.M365_SAVE_HISTORY !== "1";
   }
 
   /** Number of turns completed in this session */
@@ -74,6 +82,20 @@ export class ModelSession {
     });
   }
 
+  async resolveAgent(): Promise<string | null> {
+    if (!this.useAgent || process.env.M365_DISABLE_AGENT === "1") return null;
+    if (this.cachedAgentId === undefined) {
+      try {
+        this.cachedAgentId = await getOrCreateAgent();
+        if (this.cachedAgentId) log.info(`Using agent: ${this.cachedAgentId}`);
+        else log.info("No agent available");
+      } catch {
+        this.cachedAgentId = null;
+      }
+    }
+    return this.cachedAgentId;
+  }
+
   /**
    * Send text to M365 Copilot and stream back the response.
    *
@@ -88,21 +110,15 @@ export class ModelSession {
    * If `signal` aborts (the HTTP client disconnects) the in-flight turn is
    * cancelled by sending M365's Stop frame, mirroring the real UI's Stop button.
    */
-  async run(text: string, model: string = "m365-copilot", signal?: AbortSignal, useAgent: boolean = true): Promise<CopilotStream> {
+  async run(
+    text: string,
+    model: string = "m365-copilot",
+    signal?: AbortSignal,
+    useAgent: boolean = true,
+  ): Promise<CopilotStream> {
     const token = await this.resolveToken();
     const wantAgent = this.useAgent && useAgent;
-
-    // Resolve agent ID lazily (persists across resets), only when wanted.
-    if (wantAgent && this.cachedAgentId === undefined) {
-      try {
-        this.cachedAgentId = await getOrCreateAgent();
-        if (this.cachedAgentId) log.info(`Using agent: ${this.cachedAgentId}`);
-        else log.info("No agent available");
-      } catch {
-        this.cachedAgentId = null;
-      }
-    }
-    const agentForTurn = wantAgent ? (this.cachedAgentId ?? undefined) : undefined;
+    const agentForTurn = wantAgent ? ((await this.resolveAgent()) ?? undefined) : undefined;
 
     // Create (or recreate) the session when missing or when this turn's
     // agent-ness differs from the current session's — switching the agent on/off
@@ -112,20 +128,16 @@ export class ModelSession {
       this.currentAgentId = agentForTurn;
     }
 
-    log.info(`run: model=${model}, agent=${agentForTurn ?? "none"}, turn=${this.copilotSession.turnCount}, sid=${this.sessionId}, cid=${this.conversationId}, text=${JSON.stringify(trunc(text, 200))}`);
-
-    // Match the GUI: on the agent-less path, image gen is always available, so a
-    // plain "draw me an image" produces one with no special mode (§14). Kept OFF on
-    // the tool-calling agent path — image optionsSets are agent-less, and we don't
-    // want the image tool competing with fenced tool-call emission. Opt out with
-    // M365_NO_IMAGE_GEN for a pure-text agent-less turn.
+    log.info(
+      `run: model=${model}, agent=${agentForTurn ?? "none"}, turn=${this.copilotSession.turnCount}, sid=${this.sessionId}, cid=${this.conversationId}, text=${JSON.stringify(trunc(text, 200))}`,
+    );
     const turnOpts = { generateImages: !agentForTurn && !process.env.M365_NO_IMAGE_GEN };
 
     try {
       return await this.copilotSession.chat(token, text, model, signal, turnOpts);
-    } catch (err: any) {
+    } catch (err: unknown) {
       // Session might be stale — reconnect with same IDs
-      log.info("Session error, reconnecting:", err.message);
+      log.info("Session error, reconnecting:", getErrorMessage(err));
       this.copilotSession = this.createCopilotSession(agentForTurn);
       this.currentAgentId = agentForTurn;
       return await this.copilotSession.chat(token, text, model, signal, turnOpts);
@@ -154,8 +166,8 @@ export class ModelSession {
         this.currentAgentId = undefined;
         return true;
       }
-    } catch (err: any) {
-      log.info(`Agent refresh failed: ${err.message}`);
+    } catch (err: unknown) {
+      log.info(`Agent refresh failed: ${String(getErrorMessage(err))}`);
     }
     return false;
   }

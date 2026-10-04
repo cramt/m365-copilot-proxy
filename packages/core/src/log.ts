@@ -2,7 +2,7 @@ import { appendFileSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { homedir } from "node:os";
 
-const LOG_DIR = join(homedir(), ".config", "opencode-m365");
+const LOG_DIR = join(homedir(), ".config", "m365-proxy");
 const LOG_FILE = join(LOG_DIR, "debug.log");
 
 // M365_TRACE implies debug logging and disables all payload truncation, so
@@ -10,7 +10,7 @@ const LOG_FILE = join(LOG_DIR, "debug.log");
 // engineering. M365_DEBUG keeps the lighter, truncated logging.
 const trace = !!process.env.M365_TRACE;
 const enabled = !!process.env.M365_DEBUG || trace;
-// Tailing ~/.config/opencode-m365/debug.log in a second terminal is the usual
+// Tailing ~/.config/m365-proxy/debug.log in a second terminal is the usual
 // way to watch a run; this mirrors the same lines to the proxy's own stdout so
 // one terminal is enough. Safe here because the proxy speaks HTTP — stdout is
 // not a protocol channel.
@@ -22,9 +22,7 @@ function timestamp(): string {
 
 function write(level: string, component: string, ...args: unknown[]) {
   if (!enabled) return;
-  const msg = args
-    .map((a) => (typeof a === "string" ? a : JSON.stringify(a, null, 2)))
-    .join(" ");
+  const msg = args.map((a) => (typeof a === "string" ? a : JSON.stringify(a, null, 2))).join(" ");
   const line = `[${timestamp()}] [${level}] [${component}] ${msg}\n`;
   if (stdoutEnabled) process.stdout.write(line);
   try {

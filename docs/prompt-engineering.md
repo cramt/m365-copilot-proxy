@@ -138,19 +138,28 @@ registered in `packages/core/src/fenced.ts` (`FRAMING_VARIANTS`) and selected pe
 Current strategies: `baseline` (shipped default, unchanged), `minimal`, `recency`,
 `fewshot`, `proof_demand`, `persona`, `react`, `negative`, `terse`, `softened`, `demo_only`,
 `session_facts`, `reply_tool` (synthetic `reply()` tool; also `M365_INJECT_REPLY_TOOL=1`), and the
-Claude Sonnet set: `retag`, `honest`, `terse_user`, `relay`. A variant can also change
+Claude Sonnet set: `retag`, `honest`, `terse_user`, `relay`, plus the experimental
+`dual_env`, `dual_env_sys`, `dual_env_protocol`. A variant can also change
 the transcript's **tags** (`transcriptStyleForVariant`): the Claude Sonnet set never emits `<system>`;
 the harness's own system prompt becomes `<harness_system_prompt>`.
 
 **The default is model-aware** (`defaultFramingForModel`, falling back to `defaultFramingForTone`).
-`Claude_Sonnet` — Sonnet 4.6 and Sonnet 5 — `Gpt_6_Reasoning` and `Gpt_6_Sol_Reasoning` → `relay` (above). `baseline` is a cage built for
+`Claude_Sonnet` — Sonnet 4.6 and Sonnet 5 — `Claude_Sonnet_Reasoning`, `Gpt_6_Reasoning`, and `Gpt_6_Sol_Reasoning` → `relay` (above). `baseline` is a cage built for
 M365's chat-tuned GPT path — most of its length goes on forcing a model that would rather
 narrate into acting. `Claude_Opus` doesn't need that and is metered by a small
 priority-access budget (docs/hypotheses.md §15), so it defaults to `minimal`: 684 chars vs
 `baseline`'s 3,894 on a 2-tool request (~82% smaller), keeping shell-routing and the
-anti-confabulation clause while dropping the strict-rules wall. **Every other model keeps
-`baseline` byte-for-byte** (including `claude-sonnet-think-deeper`, unmeasured under relay), so
-no GPT bench number moves, and `M365_FRAMING_*` still wins.
+anti-confabulation clause while dropping the strict-rules wall. GPT-6 also uses `relay`
+(30/30 agent-less, hypotheses §22 F47). As of 2026-10-02, the handler resolves agent
+availability before choosing framing: **other agent-less GPT tones provisionally use
+`relay`**, pending the §23 sweep; their agent-backed defaults remain `baseline`.
+`claude-sonnet-think-deeper` now defaults to `relay`: paired real-Pi read and edit checks
+found baseline 0/2 and relay 2/2; a second, order-reversed read pair was baseline 0/1
+and relay 1/1. Against the rebuilt proxy with no framing override, read, edit, and
+multistep passed 3/3. These small samples establish the failure mechanism, not a
+long-run reliability rate. `M365_FRAMING_*` still wins. `relay`, `honest`, and the dual-environment variants now describe the sandbox
+by tone: GPT's Python code interpreter at `/mnt/data` and web search, or Claude's tools
+at `/home/claude` / `/mnt/user-data`.
 Caveat worth repeating: it is unproven that the Opus budget is token-weighted, so read this
 as prompt hygiene for a model that doesn't need the cage — not as a measured quota saving.
 
@@ -188,6 +197,25 @@ ARMS="default retag relay default" MODEL=claude-sonnet-5 TAG=mysweep bash script
 ```
 
 ## Results
+
+### Oct 2-3 2026 - agent-less dual-environment comparison (pi pending)
+
+| Framing | Current-account pi result | Status |
+|---|---|---|
+| `baseline`, GPT-5.5 reasoning | 2/5 | User-supplied pre-change baseline, `/tmp/m365-e2e/pi-e2e.sh` |
+| `relay`, GPT-5.5 reasoning | Not measured | Provisional agent-less default; GPT-6's results do not establish a GPT-5.5 win |
+| `honest`, `dual_env`, `dual_env_sys`, `dual_env_protocol` | Not measured | Registered candidates; real pi confirmation still pending |
+
+The dual-environment candidates permit scratch work in the remote sandbox, while project
+inspection, mutations and tests go through harness tool blocks. `dual_env_sys` uses the
+same text as `dual_env` with a `<system>` wrapper; `dual_env_protocol` uses a two-machine
+table and a worked two-turn exchange. Recipe: experiments E-D1; notebook: hypotheses §23.
+
+Oct 3's overlapping bench runs used a shared framing control file and reused labels
+across models, then encountered explicit account throttling. The corrected analyzer
+separates models (GPT-5.6's nominal arms both solved 9/9), but shared per-turn framing
+prevents a controlled comparison. No winner or default change follows from that run;
+full partial results and limitations are in hypotheses §23.
 
 ### June 24 2026 — 10-strategy framing sweep — ⏳ IN PROGRESS
 

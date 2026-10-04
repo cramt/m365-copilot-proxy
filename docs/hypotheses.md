@@ -678,7 +678,7 @@ don't fully close — the honest ceiling of the prompt-emulated path. (i) is F17
 The headline §8.12 problem (0/5, model narrates instead of acting) is **broken open**.
 Service version unrecorded this session (capture next run); single tenant `ao@re-zip.com`,
 `magic` tone, fenced format. All bench runs in `scripts/bench/out/`, full trace in
-`~/.config/opencode-m365/debug.log`, frames in `~/.config/opencode-m365/frames/`.
+`~/.config/m365-proxy/debug.log`, frames in `~/.config/m365-proxy/frames/`.
 
 ### F12 — Shell-routing is the unlock: model writes ```bash, proxy executes it 🟢
 
@@ -914,7 +914,7 @@ A run can be re-played offline by walking `raw-frames.ndjson`.
 
 To capture frames from the **running proxy** (not just from probes), set
 `M365_DUMP_FRAMES=1`. Frames land in
-`~/.config/opencode-m365/frames/<requestId>.ndjson`, one file per turn,
+`~/.config/m365-proxy/frames/<requestId>.ndjson`, one file per turn,
 both `send` and `recv` directions. Useful for diagnosing a regression in
 production without re-running the bisect.
 
@@ -2681,6 +2681,37 @@ directives (`buildImagePrompt`), not request params, because the model fills the
 args itself — same mechanism as the GUI's meta-prompting. All the GUI's image optionsSets are now
 sent on every agent-less turn, so any type the GUI can reach is reachable here.
 
+### Oct 3 2026 - restore the image pipeline after PR #45
+
+**Hypothesis:** the PR's deletions removed upstream image support; restoring the
+helper alone is insufficient without its auth scope, request capabilities,
+boundary schemas, collector and public types. Falsification: the restored build
+cannot expose the image API, or mocked turns lose image payloads, duplicate
+snapshots, downgrade ready images, or omit the declared generation capabilities.
+
+**Offline result: confirmed.** Core builds and 76 focused tests pass across
+`image.test.ts`, `session.test.ts`, `model.test.ts` and `copilot.test.ts`, including
+three mocked transport cases for flags, Progress/final-frame collection and
+readiness deduplication. A separate smoke check against the built core exports
+passed URL-only generation, artifact authorization, quota refusals, an empty
+result and a failed artifact download (five scenarios, mocked chat/fetch).
+Image opt-out and agent-path isolation are covered by the model tests. No new
+live requests were made; this restores the §14 implementation, not a new
+upstream model or quota finding. Protocol reference: m365-copilot-api.md,
+Image generation.
+
+**Live follow-up (Oct 3): blocked by tenant policy, not quota.** Two image
+requests on the premium account returned no images. The controlled retry used
+the original F14.1 bicycle/lighthouse prompt and captured the final type-2 item:
+`result.value: ForbiddenRequest`, `errorCode: ImageGenerationAdminPolicyBlocked`,
+`message: Your organisation has turned off image generation. Contact your IT
+Admin for more information.` Text was empty and no image was captured; the
+artifact-download step was therefore not reached. This does not establish a
+capture or Designer-auth regression. Evidence: frame capture
+`3c05863b-4fd2-41f3-8a40-384a93e23eeb` under the standard M365 frame-dump directory.
+`generateImage()` currently returns `[]` for this terminal policy refusal; a
+typed admin-policy error is a separate follow-up.
+
 ### Follow-ups now that the core API exists
 
 - **Proxy endpoint:** expose `generateImage()` as `POST /v1/images/generations` (OpenAI shape:
@@ -3156,7 +3187,7 @@ under `OfficeWebPaidCopilot` the same tone is **Sonnet 5**. Sonnet 5 scored **5/
 (confab-retry off) while working fine in the user's own pi session.
 
 All bench numbers below: 10 tasks × n reps, `M365_NO_CONFAB_RETRY=1`, service `1.0.0355x`.
-Raw data (local to the machine that ran them, not in the repo): `~/.config/opencode-m365/s5-sweep/`
+Raw data (local to the machine that ran them, not in the repo): `~/.config/m365-proxy/s5-sweep/`
 (per-arm debug logs + frame dumps) and `scripts/bench/out/s5a-*`, `s5b-*`, `s46*-*`. The proxy bugs
 these runs surfaced are in §20 (#29, #31, #33, #35).
 
@@ -3283,7 +3314,7 @@ p = 3×10⁻⁴; relay ≥ baseline within every build and on both accounts). **
 `defaultFramingForTone("Claude_Sonnet") = "relay"`, so 4.6, Sonnet 5 and unmapped `claude-*`
 strings all default to it. Against the user's morning 4.6 run (15/30) that is p = 9×10⁻⁵.
 **Real harness:** pi, `claude-sonnet`, fix-bug, final build: **3/3 SOLVED** (52–60 s).
-`claude-sonnet-think-deeper` and Opus are unmeasured under relay and keep their defaults.
+`claude-sonnet-think-deeper` was unmeasured at the time of this comparison; see H25 below. Opus keeps its default.
 
 **Open leads.** (a) Relay names *Sonnet 5's* sandbox (`bash_tool`, `/home/claude`); 4.6's is the
 python code interpreter (`/mnt/data`), so a variant naming both may do better for 4.6 — untested,
@@ -3363,7 +3394,7 @@ relay                                   relay_inline
 ```
 
 Raw data (local, not in the repo):
-`~/.config/opencode-m365/s5-sweep/inl5-1-*` and `inl5b-*` (Sonnet 5), `inl46T-*` and `inl46P-*` on
+`~/.config/m365-proxy/s5-sweep/inl5-1-*` and `inl5b-*` (Sonnet 5), `inl46T-*` and `inl46P-*` on
 the two other accounts, bench JSON under each checkout's `scripts/bench/out/inl5*` / `inl46*`.
 
 ---
@@ -3433,6 +3464,44 @@ requests carry the agent: not Claude tones, not `Gpt_6_Reasoning`. `M365_FORCE_A
 overrides. Routing alone wasn't enough, though: see F47.
 
 ### F46 — the paid scenario on a non-premium account: `ForbiddenRequest` / `InvalidCopilotLicense` 🟢
+**2026-10-02 follow-up hypothesis (tested, n=1 per cell):** An agent-less self-ID sweep of
+`scripts/agent-tone-probe.mjs`'s 11 default cells will distinguish successful
+model replies from scenario entitlement refusals and upstream empty/error turns.
+The additional `claude-sonnet-5.5` model ID resolves locally to `Claude_Sonnet`
++ `OfficeWebPaidCopilot`, the same selector as `claude-sonnet-5`, so the name
+alone does not establish Sonnet 5.5 support. Falsification: a paid cell answers
+without a licence refusal on this account, or the shared Sonnet route explicitly
+self-identifies as 5.5 rather than 5. Probe: the exact self-ID prompt, one raw
+agent-less turn per cell, including the invalid-tone control and the resolved
+`claude-sonnet-5.5` cell; sequential requests with a cooldown, raw frames and
+structured results saved, stop on `Throttled`. Self-ID remains a claim, not an
+independent model-version attestation.
+
+**Result (13:50-13:53Z):** All 12 cells completed, with no throttling or
+Disengaged frames. Five included GPT cells answered from `DeepLeo`: `magic`,
+`Gpt_5_5_Chat`, and `Gpt_5_6_Chat` claimed "GPT-5 chat model";
+`Gpt_5_5_Reasoning` and `Gpt_5_6_Reasoning` claimed "GPT-5 reasoning model".
+None specified a minor version, so this does not establish a downgrade or
+independently identify GPT-5.5 versus GPT-5.6. Chat replies credited Microsoft;
+reasoning replies named OpenAI's GPT-5 and Microsoft as Copilot's creator.
+All five paid attempts (`Gpt_5_6_Chat`, `Gpt_6_Reasoning`, `Claude_Sonnet`,
+`Claude_Opus`, and the resolved `claude-sonnet-5.5`) returned `BotConnection`
++ `ForbiddenRequest` / `InvalidCopilotLicense`. This confirms the agent-less
+licence refusal on the current account, including GPT-6; it does not establish
+model availability on a licensed account. Included `Claude_Sonnet` returned
+`BotConnection` + `InternalError` and the canned apology, not a model self-ID
+(one failed connection, not evidence of universal lack of support). The invalid
+tone control was rejected by a type-3 invocation error. `claude-sonnet-5.5` is
+not advertised by the proxy and shares Sonnet 5's paid selector; its distinct
+version remains unverified. No tools were supplied, so this sweep measures no
+tool-calling capability.
+
+**Evidence:** Results and 12 sibling raw-frame `.jsonl` files were saved in a machine-local temporary run directory and were not committed. Outcomes were checked against raw
+final results; the classifier adapter explicitly maps the helper's
+`contentOrigin` to `outcome()`'s `answerOrigin` so a BotConnection apology is
+not counted as a model answer. Requests were agent-less, temporary chats, the
+exact prompt above, 15 seconds between fresh threads, with no retries.
+
 On the non-premium account, `Gpt_5_6_Chat`, `Claude_Sonnet` and `Claude_Opus` on the paid scenario
 (6/6 across two runs, agent attached) returned `result.value: "ForbiddenRequest"`,
 `errorCode: "InvalidCopilotLicense"`, a BotConnection reply "It looks like you don't have a valid
@@ -3498,6 +3567,93 @@ turn used `relay`, and there were no Throttled, Disengaged or remote-artifact tu
 run came from the code interpreter or the jailbreak classifier.
 
 **Open.** Would `M365_NO_CODE_INTERPRETER=1` alone rescue baseline? Untested; relay already scores
+30/30.
+
+## 23. Oct 2 2026 - dual-environment tool calling without a publishable agent
+
+**Status: partial live evidence; framing comparison confounded, no winner promoted.**
+The user's pre-change pi suite scored GPT-5.5 reasoning 2/5 and Claude Sonnet reasoning
+1/5 on this account (`/tmp/m365-e2e/pi-e2e.sh`; results supplied in `/tmp/plan.md`).
+Agent publishing returns 403 "Copilot extensibility not enabled", so these sessions have
+no tool agent. Live samples collected Oct 3 are recorded below; real pi confirmation
+is still pending.
+
+| Hypothesis | Prediction and falsification | Cheapest discriminating check |
+|---|---|---|
+| H-dual-env | Naming both machines and allowing scratch sandbox use reduces wrong-machine work. Falsified as an improvement if it does not beat baseline across repeated tasks and real pi. | Sweep baseline, relay, honest, dual_env, dual_env_sys, dual_env_protocol on three unfakeable tasks, two rotated rounds; confirm top two with three rounds. |
+| H-gpt-tag | GPT responds differently to the system wrapper. Falsified if dual_env and identical-text dual_env_sys show no repeatable difference. | Same sweep, paired outcomes and DEA scores. |
+| H-lean | A coding-role allowlist reduces heavy-harness prompt weight without excluding required tools. Runtime improvement remains unmeasured. | Unit checks for pi unchanged, opencode-style trimming, explicit/all lists, zero-match fallback and forced tool retention; later opencode run. |
+| H-agent-cache | A permanent extensibility refusal should not trigger bot deletion or repeated publishing. | Mocked 403: one publish, zero deletes, zero later requests; unrelated failures retain recovery. |
+| H-throttle-hint | A first explicit throttle should activate local backoff and give clients a usable retry delay without extra upstream attempts. Falsified if 429/SSE lacks the remaining delay, a shorter override bypasses it, or the handler retries the same throttled turn. | Offline backoff and scripted JSON/SSE tests; real opencode retry timing remains unverified. |
+
+**Implemented:** process-level negative caching of the publish extensibility 403;
+`M365_DISABLE_AGENT`; public lazy `ModelSession.resolveAgent`; framing chosen after
+resolution; per-tone sandbox text; three dual-environment variants; prompt-only lean
+selection via `M365_TOOL_ALLOWLIST`; `run_in_terminal` shell routing without VS Code
+parameter defaulting. GPT without an agent provisionally uses `relay`, not a claimed winner.
+Agent-backed defaults and code-interpreter availability remain intact.
+
+**Offline evidence:** `packages/core/src/agent.test.ts`, `model.test.ts`, `fenced.test.ts`,
+`tools.test.ts`, and `packages/proxy-lib/src/streaming.test.ts`. Handler checks cover agent
+presence/absence, disable-over-force precedence, framing overrides, retry tone context,
+follow-up tags and parsing against tools omitted from the prompt. Synthetic scorecards
+confirmed repeated-sample aggregation and latest-label deduplication; dry runs confirmed
+36 scheduled threads, 60-second per-thread cooldowns and rotated starting arms.
+
+**Oct 3 live evidence (nominal labels, not controlled framing scores):** the
+`dual-env-confirm-20261003` prefix contains 75 saved files across four models.
+The analyzer formerly deduplicated solely by label, allowing another model's latest
+result to overwrite it; deduplication is now by model and label. Latest saved rows:
+
+| Model | relay | dual_env |
+|---|---|---|
+| gpt-5.5-think-deeper | 7/9 | 6/6 |
+| gpt-5.6-think-deeper | 9/9 | 9/9 |
+| claude-sonnet | 0/9 | 0/9 |
+| claude-sonnet-think-deeper | 3/9 | 4/9 |
+
+Evidence: `scripts/bench/out/dual-env-confirm-20261003-*.json`, model-specific output
+from `scripts/bench/analyze-sweep.mjs`, and the Oct 3 proxy logs/frame dumps around
+02:10-02:31 UTC. GPT-5.5's sequential run used 60s; user-started GPT-5.6 (5s) and
+Claude (0s) sweeps overlapped it on the same proxy/control file. These runs both
+consume shared account quota and overwrite active framing between turns, so labels
+are not proof of the actual prompt. GPT-5.6's solved tasks demonstrate real harness
+work, but neither arm can be ranked from this run. Claude Sonnet's rows were empty
+502s, not observed framing-specific refusals. Explicit `PerUserThrottled` 429s
+appeared on both Claude reasoning and GPT-5.5 despite conversation counts of 1/600.
+GPT-5.5's third round was interrupted; the 6/6 arm is incomplete, not a 9-task win.
+The proxy's active-conversation count is not a measurement of the throttle threshold.
+
+**H-throttle-hint offline result:** explicit throttling now opens local backoff on
+the first occurrence; 429 JSON sends `Retry-After` and `error.retry_after`, and SSE
+errors retain `param` plus `retry_after`. Delays count down, escalate after expiry,
+are capped, and reset on clean content. Finite positive operator hints may extend,
+but not shorten, the local recommendation. `auth-recovery.test.ts` and
+`streaming.test.ts`: 53/53 passed, no live requests. This is not evidence of the
+upstream reset duration or opencode honoring the hint. Sweep cooldown is now 5s
+per user request; it does not override an account-throttle recommendation.
+
+**Oct 3 throttle-display follow-up:** a local countdown is not the upstream throttle
+duration, and its process-local state disappears on restart. The dashboard now reads
+last-known account state from persisted completion errors, shows first/latest observed
+refusal ages, and marks recovery only after a successful response (not an HTTP 200 SSE
+error). In-memory SQLite tests cover restart survival, unrelated failures, recovery and
+separate priority-access quotas: 6/6 passed. No new live requests were sent.
+The latest three captured `Throttled` frames contain `PerUserThrottled`, conversation
+counters and metering allowances, but no retry-after/reset field. Evidence:
+`87307280-1bf4-4116-85a0-55894a19938d.ndjson`,
+`713aaa2b-01f5-4e62-ae59-81fd761fa1b4.ndjson`,
+`564c32e3-94cb-4980-b812-f10c49597384.ndjson` in the proxy frames directory.
+Persisted requests 279-281 are throttles; the last recorded successful response is 270.
+Display an unknown upstream reset, not an invented countdown or proof of current recovery.
+
+**Next, only with quota approval:** experiments E-D1, with sequential runs and
+fresh per-model tags after account recovery. Live scorecards go to
+`scripts/bench/out/dual-env-*.json`; each task row records its maximum returned DEA score.
+The repository pi suite is now `scripts/pi-e2e.sh` (PROXY_URL, MODEL, KEY, COOLDOWN, ONLY;
+isolated config, nonce per conversation, local verification and per-task evidence logs).
+After a repeated bench win, real pi must beat 2/5, targeting at least 4/5, before promoting
+a framing winner. Native tools/MCP and agent publishing fixes remain out of scope.
 30/30. (Untested for GPT-6 itself; for GPT-6 Sol the answer is no — its sandbox runs without the
 code-interpreter optionsSets, 0/20, §23 F50.)
 
@@ -3634,9 +3790,58 @@ fallback per proxy process (5 processes, 5 fallbacks), every later request agent
 - **Real pi: 21/21** — premium (agent) fix-bug 5/5, multi 5/5; non-premium (agent-less, via the
   fallback) fix-bug 5/5, multi 6/6. 39–153 s per run.
 
+**Oct 3 local PR #45 verification:** `pnpm build` and the offline suite passed
+(338 tests, 3 live tests skipped). Enabling the existing proxy-lib live suite
+in one worker passed all 8 tests, including those 3 live checks. Real pi against
+the rebuilt standalone proxy with `MODEL=gpt-6-sol COOLDOWN=10` passed **5/5**:
+bash 18s, write 32s, read 18s, edit 31s, multistep 50s. This is one run per task,
+not a repeated reliability estimate, and is separate from the historical 21/21.
+The proxy recorded 16 successful streamed completions across the five pi
+conversations. Evidence: `scripts/pi-e2e.sh`, run marker
+`E2E_1791039407_55612`; each task's `.pi-out.txt` remains in its temporary task
+directory reported by the harness. No runtime source changes were needed.
+
 **Re-derived with `scripts/bench/analyze-arms.mjs`** over the three archives (it maps each task to
 its conversation and drops tasks lost to the network): agent 30/30 vs `demo_only` 21/26 (p =
 0.017) and the per-arm sandbox counts of F50 reproduce exactly, as does every exclusion above. One
 difference: it counts the premium `demo_only` arm's post-F52 tail (4 tasks, 1 solved) under
 agent-less, since that is the path that served them, so agent-less `demo_only` is 10/24 and the
 comparison p = 6×10⁻¹⁰ (relay 60/60 either way).
+
+### H24 — New Luna, Astra, Sol 6.1, and Sonnet 5.5 routes (open, 2026-10-04)
+**Hypothesis:** Candidate `Gpt_6_{Luna,Astra}{,_Chat,_Reasoning}` and `Gpt_6_1_Sol{,_Chat,_Reasoning}` tones may be registered and serve their named models; the existing `Claude_Sonnet` tone may now serve Sonnet 5.5 under the paid scenario. **Falsification:** validator rejection, BotConnection dead route on both licensed scenarios, or a live response that consistently identifies as another model. A paid-scenario `InvalidCopilotLicense` on this account is inconclusive, not falsification. **Probe:** `scripts/new-model-tone-probe.mjs`, sequential agent-less turns with both scenario/license pairs, raw frames, final result/error code, `contentOrigin`, latency and reply; stop on `PerUserThrottled`. Run self-ID only for live cells, then agent compatibility only for verified models. Self-ID is evidence, not proof. **Evidence:** pending; record output directory and sample counts here after each run.
+
+
+### H25 — Sonnet reasoning cannot see local Pi files under baseline (supported, 2026-10-04)
+
+**Hypothesis:** The `<system>`-tagged baseline framing makes `claude-sonnet-think-deeper`
+treat Pi's local tool instructions as an injection or as inaccessible tools. Switching
+only the framing to user-voice `relay` should cause real local tool calls and file
+verification. **Falsification:** repeated baseline and relay runs with the same model,
+Pi setup, tasks, and proxy settings perform equally, or relay produces only prose
+without verified local tool calls.
+
+**Controlled checks:** Standalone proxies on :4200 (`M365_FRAMING_VARIANT=baseline`)
+and :4199 (`M365_FRAMING_VARIANT=relay`), both with
+`M365_DISABLE_AGENT=1 M365_NO_CONFAB_RETRY=1 M365_NO_DISENGAGE_RETRY=1`;
+`scripts/pi-e2e.sh` used the same isolated Pi configuration and
+`claude-sonnet-think-deeper`. Sequential fresh conversations, with 45-second
+cooldowns initially and 120 seconds after the user's pacing request. Read and edit:
+baseline **0/2**, relay **2/2**; an additional order-reversed read pair:
+relay **1/1**, baseline **0/1**. Baseline replied that it could not access
+`config.ini` or `calc.py`, with `finish=stop`; relay used local tool calls
+(`finish=tool_calls`) and passed the local verifiers. An earlier relay read/edit
+pair also passed **2/2**. These are small, throttle-sensitive samples, not a
+population reliability estimate. Evidence: `/tmp/m365-sonnet-baseline-proxy.log`,
+`/tmp/m365-sonnet-relay-proxy.log`, and the temporary `.pi-out.txt` paths
+reported by `scripts/pi-e2e.sh`.
+
+**Fix and post-change check:** `defaultFramingForTone("Claude_Sonnet_Reasoning")`
+now selects `relay`, without changing other model defaults or removing explicit
+overrides. `pnpm build` and `pnpm test` passed (342 passed, 3 skipped).
+The rebuilt standalone proxy on :4201, with no framing override, passed isolated
+real-Pi **read 1/1, edit 1/1, multistep 1/1**, with 120-second spacing between
+fresh conversations. Its log recorded `finish=tool_calls` and no throttled
+turns. Evidence: `/tmp/m365-sonnet-default-proxy.log`; task output directories
+`tmp.LacKmkzi9m`, `tmp.TJNijqdrjT`, and `tmp.jxVIHGMAuc` under the
+Pi harness temporary directory. **Usual Pi configuration:** a fresh `scripts/pi-local.sh -p` invocation against the rebuilt :4201 proxy, with its normal context/extensions enabled and the same model, read the exact first heading of `.plans/claude-sonnet-think-deeper-relay.md` from the repository (1/1). The proxy logged `finish=tool_calls` followed by `finish=stop`; this verifies local file access in that configuration, not long-run reliability. Existing long-running Pi conversations may retain earlier context and should be restarted before judging the new default.

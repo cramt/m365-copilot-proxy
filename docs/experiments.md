@@ -205,11 +205,66 @@ All run with `scripts/_probe-chat.mjs` overrides; no license needed.
   (`scripts/bench/phase-sweep.sh` now does the proxy and archiving too, and
   `scripts/bench/analyze-arms.mjs` reads the result back; see scripts/bench/README.md.)
   **Read:** SOLVED per arm, then `ChainOfThoughtSummary` frames in the archived
-  `~/.config/opencode-m365/s5-sweep/<tag>-<n>-<arm>-frames` for *why* each miss refused.
+  `~/.config/m365-proxy/s5-sweep/<tag>-<n>-<arm>-frames` for *why* each miss refused.
   **Cost:** ~12 fresh threads per arm; ~190 threads in one day tripped `PerUserThrottled` (F40),
   so run at most ~8 arms per account per day.
 
 ---
+
+## F. Agent-less dual-environment framing (hypotheses §23)
+
+### E-D1 - Which framing keeps project work on the harness machine?
+
+- **Hypothesis:** distinguishing the scratch sandbox from the user's project improves
+  real local tool loops; `dual_env_sys` isolates the wrapper's effect on GPT.
+- **Approval required:** the initial sweep starts 36 threads (6 arms x 3 tasks x 2
+  rounds); confirmation starts 18 more, and the five-task pi suite starts 5. Runs are
+  sequential with 5-second thread cooldowns (the requested sweep default); do not
+  start them concurrently. Five seconds does not guarantee avoidance of account throttling.
+- **Offline preview:** `bash scripts/bench/variant-sweep.sh --dry-run` and
+  `bash scripts/pi-e2e.sh --dry-run` make no requests.
+
+Build first, then start one persistent proxy on an available port (macOS: no Nix needed):
+
+```sh
+M365_DISABLE_AGENT=1 M365_FRAMING_FILE=/tmp/m365-framing M365_DEBUG=1 M365_DUMP_FRAMES=1 \
+  M365_NO_CONFAB_RETRY=1 M365_NO_DISENGAGE_RETRY=1 \
+  node packages/proxy/bin/m365-proxy.mjs 4199
+```
+
+The retry flags isolate framing performance and prevent extra Disengage-recovery threads.
+From another terminal, after approval:
+
+```sh
+TAG=dual-env REPEAT=2 COOLDOWN=5 bash scripts/bench/variant-sweep.sh
+node scripts/bench/analyze-sweep.mjs dual-env
+```
+
+The script rotates the first arm per round, sets the control file explicitly even for
+baseline, and paces every task, not just arm boundaries. Scorecards include all repeats,
+Disengaged errors and the maximum returned `x_m365_dea_score`. Check debug logs/frame dumps
+for sandbox work and refusals; a returned score does not count hidden/retried refusals.
+Confirm the measured top two by setting `ARMS` to their names, `REPEAT=3` and a fresh `TAG`.
+
+Use a fresh tag per model/run. The analyzer separates models and accepts an optional
+model argument (`node scripts/bench/analyze-sweep.mjs <tag> <model>`); rerunning the same
+model/label keeps its latest file, not an independent repeat. Concurrent sweeps against
+one framing control file change each other's per-turn prompts and invalidate arm labels.
+Separate ports/control files prevent that interference, but still share the account quota.
+On `m365_throttled`, respect `Retry-After`/`error.retry_after` rather than continuing at 5s.
+
+Restart the proxy with its normal retry defaults, retaining `M365_DISABLE_AGENT=1` and
+the framing control file. Set that file to the measured winner, then run:
+
+```sh
+MODEL=gpt-5.5-think-deeper COOLDOWN=5 bash scripts/pi-e2e.sh
+```
+
+**Read:** local verifier scores, not prose claims; beat the user-supplied 2/5 baseline,
+target at least 4/5. `ONLY=edit,multistep` selects tasks, `PROXY_URL` defaults to
+`http://localhost:4199/v1`, and `KEY` defaults to `sk-local`. Task directories and pi logs
+are retained as evidence; the isolated pi configuration is removed on exit. Record the
+sample size and evidence in hypotheses §23 before changing the provisional default.
 
 ## Adding an experiment
 
@@ -217,3 +272,62 @@ All run with `scripts/_probe-chat.mjs` overrides; no license needed.
 2. Add a runnable recipe here (commands + readout + cost).
 3. Reuse `scripts/_probe-chat.mjs` (qualitative) or `scripts/bench/` (quantitative).
 4. Record the result back in `hypotheses.md` with sample size + evidence pointer.
+
+## E-N1 — Targeted new-model discovery (H24)
+
+- **Hypothesis:** Luna, Astra, Sol 6.1, or a newer Sonnet route is live and serves the named model rather than a silent fallback.
+- **Prerequisite:** `pnpm build`; use a rested, licensed account for paid-scenario conclusions.
+- **Liveness:** `M365_NO_INTERACTIVE=1 node scripts/new-model-tone-probe.mjs --tones=Gpt_6_Luna,Gpt_6_Luna_Chat --cooldown-ms=20000` (replace `--tones` with selected candidates; both scenarios by default).
+- **Identity:** repeat only LIVE tones with `--phase=self-id --tones=<comma-separated-live-tones>`. For Sonnet, use `--tones=Claude_Sonnet` and compare included with paid.
+- **Read:** `scripts/new-model-tone-out/<timestamp>/results.json` and per-cell raw `.jsonl` frames. `DeepLeo` plus final `Success` is liveness, not model identity; `BotConnection` is not liveness. `InvalidCopilotLicense` is inconclusive for paid availability. Stop on `PerUserThrottled`; never run sweeps concurrently.
+- **Cost:** one fresh conversation per tone/scenario cell, with 20 seconds between cells. Do not run the full candidate matrix until a small smoke sweep confirms the instrument.
+
+
+## E-SR1 — Sonnet reasoning local-tool framing (H25)
+
+**Hypothesis:** `relay`, unlike `baseline`, makes
+`claude-sonnet-think-deeper` call Pi's local tools. Use the same built
+standalone proxy and identical settings for both arms; change only the framing
+variant. Run sequentially, rotating arm order on repeats. Wait **120 seconds
+between fresh Pi conversations**, including across arms; do not run proxies'
+requests concurrently.
+
+```sh
+pnpm build
+M365_FRAMING_VARIANT=baseline M365_DISABLE_AGENT=1 M365_NO_CONFAB_RETRY=1 M365_NO_DISENGAGE_RETRY=1 node packages/proxy/bin/m365-proxy.mjs 4200
+# In another terminal, start the same command with relay and port 4199.
+MODEL=claude-sonnet-think-deeper PROXY_URL=http://localhost:4200/v1 ONLY=read COOLDOWN=120 bash scripts/pi-e2e.sh
+sleep 120
+MODEL=claude-sonnet-think-deeper PROXY_URL=http://localhost:4199/v1 ONLY=read COOLDOWN=120 bash scripts/pi-e2e.sh
+```
+
+Repeat with `ONLY=edit` and reversed arm order. `COOLDOWN` only spaces
+tasks *within one invocation*, so the explicit sleep between invocations is
+essential. Inspect each retained task directory's `.pi-out.txt`, verify the
+local file/result, and compare proxy `finish=tool_calls` against `finish=stop`.
+Stop on `PerUserThrottled`, Disengaged, or connection errors rather than
+counting them as model failures. After changing the default, start a rebuilt
+proxy **without** `M365_FRAMING_VARIANT` or `M365_FRAMING_FILE` and repeat
+`ONLY=read`, `ONLY=edit`, and `ONLY=multistep` at 120-second intervals.
+Results and limitations: hypotheses H25.
+
+
+## E-SR2 — Go recursive folder-size task in real Pi
+
+Run against a healthy local proxy built with the Sonnet reasoning relay default:
+
+```sh
+MODEL=claude-sonnet-think-deeper PROXY_URL=http://localhost:4201/v1 ONLY=go-du COOLDOWN=120 bash scripts/pi-e2e.sh
+```
+
+The task asks Pi to create and run a Go program in an isolated temporary directory,
+measure the repository's `node_modules`, and report a summary. The verifier
+builds and runs the generated source, checks a small fixture containing a
+symbolic link, compares allocated bytes with `du -sk` (5% tolerance, minimum
+2 MiB), and checks that Pi reported the measured number. It retains the task
+directory and Pi output as evidence. Space separate invocations by 120 seconds;
+`COOLDOWN` only spaces tasks within one invocation.
+
+Initial live result: 1/1 PASS; generated program reported 348942336 allocated
+bytes, matching `du` exactly. Evidence: the `go-du` task directory and
+`.pi-out.txt` printed by `scripts/pi-e2e.sh`.

@@ -66,7 +66,7 @@ wss://substrate.office.com/m365Copilot/Chathub/{oid}@{tid}?{query}
   - `https://api.bap.microsoft.com/.default` (environment discovery)
 
 ### Flow: MSAL PKCE
-We use `@azure/msal-node` `PublicClientApplication` with PKCE. The token cache is persisted to `~/.config/opencode-m365/msal-cache.json` and refreshed silently when possible.
+We use `@azure/msal-node` `PublicClientApplication` with PKCE. The token cache is persisted to `~/.config/m365-proxy/msal-cache.json` and refreshed silently when possible.
 
 > **The cache is disposable (tested June 2026, `scripts/token-regen-probe.mjs`).** Delete `msal-cache.json` and the next `getToken()` self-heals: silent fails → automated browser login (stored creds + TOTP) → a fresh, working token in **~12s**, no human in the loop. The regenerated token is **functionally identical** — same `aud`/`appid`/`tid`/`oid`/scopes, only `iat`/`exp`/`uti` change. Point auth at a throwaway cache with `M365_CACHE_FILE` to test this without touching the real one.
 >
@@ -283,6 +283,28 @@ The proxy enables this on the **agent-less path** (so plain chat can compute; th
 
 > The `optionsSets` array was previously sent **empty**. Live reference implementations (`kuchris/m365-copilot-openai-proxy`, Microsoft's own `PyRIT`) populate it richly — code interpreter, memory, custom-instructions, image input. See `docs/hypotheses.md` §8 for the full catalogue of flags still on the table.
 
+### Image generation
+
+Core exposes `generateImage()` and `fetchImageBytes()`. Image turns run agent-less
+with the GUI's ten image-generation optionsSets and `GenerateGraphicArt` declared
+in `allowedMessageTypes`. `CopilotSession.chat(..., {generateImages: true})`
+collects GraphicArt payloads from Progress updates and the final type-2 item into
+`stream.images`, deduplicated by file token with the highest observed readiness.
+`ModelSession` enables this on agent-less turns unless `M365_NO_IMAGE_GEN` is set.
+
+Artifact downloads use `getImageArtifactToken()` for
+`https://designerappservice.officeapps.live.com/.default`, not the Sydney chat
+token. `urlsOnly` skips downloads; style and orientation are prompt directives.
+Image-quota refusals throw `ImageGenerationError` with reason `quota_exceeded`.
+The OpenAI `/v1/images/generations` endpoint is still a follow-up, not implemented.
+Live evidence is in hypotheses §14; the Oct 3 restoration was verified offline.
+
+Tenant policy can block generation even on a premium account. Confirmed Oct 3:
+the final type-2 result was `ForbiddenRequest` with
+`errorCode: ImageGenerationAdminPolicyBlocked` and an administrator-policy
+message, without image payloads or answer text. This is distinct from image
+quota exhaustion; inspect the final result metadata when no image arrives.
+
 ---
 
 ## 6. Receiving a response
@@ -368,6 +390,33 @@ The final `type:2` frame carries the canonical state of the whole conversation i
 - **600 user messages per conversation** (`maxNumUserMessagesInConversation`). This is the hard cap; it is **per `ConversationId`**, not per day.
 - This is why we **reuse one conversation** across an agent session and send **only new messages** on follow-up turns (delta mode) — every `Please continue.` retry also counts against the 600.
 - There is also opaque **account-level throttling** (rapid-fire requests can start returning empties). It recovers on its own.
+
+The account throttle can also be explicit: the final `type:2.item.result` contains
+`value: "Throttled"`, `errorCode: "PerUserThrottled"`, and a request-volume refusal.
+This can occur at `1/600`; the conversation counter is not the account's remaining budget.
+The proxy detects this before accepting content and returns HTTP 429 with
+`type: "rate_limit_error"`, `code: "m365_throttled"`, and the upstream scope in `param`.
+It does not retry that turn or re-authenticate.
+
+An explicit throttle now opens the proxy's local degradation backoff immediately.
+The remaining window is sent as `Retry-After` and `error.retry_after` in seconds;
+an early-flushed SSE response instead carries the same fields in an error chunk.
+`M365_THROTTLE_RETRY_AFTER_S` can extend this recommendation, but cannot shorten
+active local backoff. M365 supplies no reset time, so the hint is a local policy,
+not an observed upstream duration. Defaults start at 90 seconds, escalate on
+continued throttling after expiry up to 600 seconds, and reset on a clean response.
+`M365_NO_BACKOFF=1` disables the local window; a configured retry hint still applies.
+These response changes are verified offline; see hypotheses §23.
+
+The dashboard separately reads persisted account-throttle observations from completion
+metrics: last observed status, first refusal since the last successful response, and
+latest refusal time. Elapsed observation ages update every second. A proxy restart or
+local wait expiry does not mark the account recovered; a later successful response does.
+HTTP 200 SSE errors are not successes for this purpose, and Opus priority-access refusals
+are not account-throttle observations. This is last-known state, not an automatic probe
+of whether the account is still blocked. The Oct 3 final frames inspected (n=3) contain
+the refusal and metering allowances but no retry duration or reset timestamp, so the
+dashboard leaves the upstream reset time unknown (hypotheses §23).
 
 ### Account degradation under sustained use (observed June 13 2026)
 
@@ -527,7 +576,20 @@ Two behaviours of the chat-tuned model distort any naïve "is it tool-calling ye
    **This was previously documented (and implemented) as a hardcoded `.df.` plus a "trim the last 2 characters" DNS quirk.** That is wrong, and it was invisible here because this tenant's env ID *ends in* `df` — so the trimmed candidate landed on the correct host by coincidence. Any tenant whose env ID ends in something else got two names that don't resolve, and provisioning failed outright. Measured (@FreemindTrader, [#8](https://github.com/cramt/m365-copilot-proxy/issues/8)): for an ID ending `df` the old and new forms hit the same host (200, byte-identical bot list); the full-length label `ENOTFOUND` either way. Implemented in `getEnvironmentUrl()`.
 3. **Create a bot** via the Copilot Studio `minimalBots` API (`…/copilotstudio/minimalBots/api?api-version=2022-03-01-preview`), with the tool-calling instructions as the GPT component's `instructions` text.
 4. **Publish** it → returns a `TitleId`.
-5. The usable **agent id** is `T_{titleId}.{botId}.gpt.default`, cached in `~/.config/opencode-m365/agent-id.json`.
+5. The usable **agent id** is `T_{titleId}.{botId}.gpt.default`, cached in `~/.config/m365-proxy/agent-id.json`.
+
+**Unavailable extensibility (2026-10-02).** A publish **403 mentioning extensibility**
+now marks the agent unavailable for the process lifetime. That error does not delete and
+recreate the bot, and later sessions (including force-refresh) do not repeat provisioning.
+Other publish failures retain the existing recovery path. Restarting the proxy clears this
+negative cache; `M365_DISABLE_AGENT=1` skips resolution and attachment entirely. These are
+proxy-side safeguards verified with mocked provisioning tests, not a new live API finding.
+
+`ModelSession.resolveAgent()` exposes the same lazy cache used by `run()`, so the handler
+chooses framing after it knows whether an agent exists. Agent-less GPT provisionally uses
+`relay` with GPT sandbox wording; agent-backed defaults are unchanged. Tool definitions are
+lean by default (`M365_TOOL_ALLOWLIST`), while response parsing retains the full toolset.
+The dual-environment candidates and pending comparison are in hypotheses §23.
 
 ### Referencing the agent in a chat turn
 Instead of `plugins`, set on the chat message:
@@ -645,7 +707,7 @@ Run unsandboxed with `CHROMIUM_PATH` set and `M365_NO_INTERACTIVE=1`. They reuse
 
 When set, `CopilotSession` appends every WS frame (both `send` and `recv`,
 both raw chat invocation and bot updates) to
-`~/.config/opencode-m365/frames/<requestId>.ndjson`. Use this in production
+`~/.config/m365-proxy/frames/<requestId>.ndjson`. Use this in production
 to catch a regression mid-flight: ship the suspect NDJSON to a dev box and
 diff against a known-good capture. Negligible overhead since the data is
 already in memory.
