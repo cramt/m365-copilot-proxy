@@ -119,22 +119,26 @@ export default defineEventHandler(async (event) => {
   // handleChatCompletion returns a Web Response (JSON or an SSE ReadableStream
   // when stream:true). Returning it directly lets h3 forward it untouched.
   let streamError: { type: string; message: string } | undefined;
+  let completedResponse: Response | undefined;
   const response = await handleChatCompletion(body, pool, {
     signal: ac.signal,
-    onComplete: (_response, error) => {
+    onComplete: (finalResponse, error) => {
+      completedResponse = finalResponse;
       streamError = error;
     },
   });
   async function recordResponse(responseBytesOverride?: number): Promise<void> {
     const endedAt = Date.now();
     const latencyMs = endedAt - startedAt;
-    const usage = parseJsonOrNull(response.headers.get("x-proxy-usage"));
-    const sessionId = response.headers.get("x-proxy-session-id");
-    const conversationId = response.headers.get("x-proxy-conversation-id");
-    const finishReason = response.headers.get("x-proxy-finish-reason");
-    const messageType = response.headers.get("x-proxy-message-type");
-    const modelHeader = response.headers.get("x-proxy-model") || body.model || "unknown";
-    const streamHeader = parseBoolean(response.headers.get("x-proxy-stream"));
+    // The SSE response is copied below; its headers cannot receive later updates.
+    const finalResponse = completedResponse ?? response;
+    const usage = parseJsonOrNull(finalResponse.headers.get("x-proxy-usage"));
+    const sessionId = finalResponse.headers.get("x-proxy-session-id");
+    const conversationId = finalResponse.headers.get("x-proxy-conversation-id");
+    const finishReason = finalResponse.headers.get("x-proxy-finish-reason");
+    const messageType = finalResponse.headers.get("x-proxy-message-type");
+    const modelHeader = finalResponse.headers.get("x-proxy-model") || body.model || "unknown";
+    const streamHeader = parseBoolean(finalResponse.headers.get("x-proxy-stream"));
     let usedUsage = usage;
     let finish = finishReason;
     let messageTypeFinal =
