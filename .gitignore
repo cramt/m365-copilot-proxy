@@ -45,3 +45,4 @@ scripts/harness/out/
 # local plans
 .plan/
 scripts/stdio-capture-out/
+scripts/studio-capture-out/
