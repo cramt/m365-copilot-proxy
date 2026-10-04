@@ -235,7 +235,7 @@ describe("hostPlatformNote", () => {
   it("is empty off Windows, so POSIX framing stays byte-for-byte", () => {
     expect(hostPlatformNote(bash, "linux")).toBe("");
     expect(hostPlatformNote(bash, "darwin")).toBe("");
-    expect(formatFencedToolDefinitions([bash, readFile])).not.toContain("HOST PLATFORM");
+    expect(formatFencedToolDefinitions([bash, readFile], undefined, "linux")).not.toContain("HOST PLATFORM");
   });
 
   it("is empty on Windows when the harness gave no shell tool", () => {

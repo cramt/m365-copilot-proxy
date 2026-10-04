@@ -43,6 +43,11 @@ than "we eyeballed one run." See §M (Methods) for the experimental rig.
 - §23 — GPT-6 Sol (#23): ungated, takes the agent only on a premium account (learned at runtime),
   has its own sandbox agent-less that no optionsSet removes, and `relay` wins on both paths
   (30/30 agent, 60/60 agent-less, 21/21 in real pi); a premium transient that mimics the dead route (F52)
+- §24 — Oct 3 2026, first native-Windows run: "interactive sign-in's first attempt closes" disproved
+  as a product bug (F53 — it was the human closing the terminal; a clean left-alone run signs in in
+  under half a second); a verification-code-shaped harmless phrase got refused as jailbreak-shaped
+  (F54); gpt-5.5-think-deeper's tool turn self-reported "no shell tool enabled" while still writing
+  the file correctly (F55, n=1 — flagged, not concluded)
 
 ---
 
@@ -3640,3 +3645,77 @@ its conversation and drops tasks lost to the network): agent 30/30 vs `demo_only
 difference: it counts the premium `demo_only` arm's post-F52 tail (4 tasks, 1 solved) under
 agent-less, since that is the path that served them, so agent-less `demo_only` is 10/24 and the
 comparison p = 6×10⁻¹⁰ (relay 60/60 either way).
+
+---
+
+## 24. Oct 3 2026 — first native-Windows run: three loose threads from live sign-in and smoke testing
+
+**Context.** Standing up this repo on a real Windows machine (PowerShell, not WSL) for the first
+time surfaced three live-M365 observations, each **n=1** — flagged for someone to deliberately
+reproduce, not concluded. (A fourth thing found the same day, `formatFencedToolDefinitions()`
+having no platform override so its own "off-Windows" unit test could never run off Windows, is a
+pure code bug, already fixed — see `packages/core/src/fenced.ts` and `docs/windows-proxy.md`, not
+repeated here since it isn't a claim about live M365 behaviour.)
+
+### F53 — "first attempt closes" is the human closing the terminal, not a product bug ⚫ (disproved)
+**Original observation.** `M365_ENABLE_INTERACTIVE_APPROVAL=1`, fresh account (no prior
+`msal-cache.json`/`browser-profile\`). First `Start-Proxy.ps1` run: proxy logged `[m365 auth] A
+browser window has opened — complete sign-in there.` / `Waiting up to 600s.`, the user completed
+sign-in, then the window and its whole process tree were gone with no further line ever logged —
+but the user had, by their own account, closed the *terminal* window themselves to force a retry.
+A second run ~2s later signed in silently with no browser at all, from the state the first attempt
+left on disk. The user independently reported the identical shape on a prior macOS setup.
+**Falsification run.** Backed up `msal-cache.json`/`browser-profile\` aside (reversible — moved,
+not deleted) to force a genuinely fresh first attempt, then re-ran with `M365_DEBUG=1
+M365_TRACE=1 M365_LOG_STDOUT=1`, and explicitly left the window alone this time instead of closing
+it. Result: the automated Chromium window itself closed on its own right after capturing the
+redirect — by design, not a crash (`loginInteractiveForScopes` closes the browser once it has the
+code) — while the PowerShell proxy window stayed up and logged a clean, fast success:
+```
+[2026-10-04T03:13:30.111Z] [INFO] [auth] Captured auth code from nativeclient redirect (interactive)
+[2026-10-04T03:13:30.553Z] [INFO] [auth] Interactive login succeeded as <redacted>
+```
+442ms between code capture and login success, no retry, no second browser popup needed on this
+run. **Conclusion: disproved as a product issue.** The only two data points where the proxy
+process was observed to die with nothing logged both coincide with the human closing the
+terminal/browser prematurely (confirmed directly in this session; inferred for the macOS report).
+When left alone, first-attempt interactive sign-in completes and logs normally. Downgraded 🔴→⚫.
+Residual advice, not a bug report: the automated browser window closing itself right after the
+redirect is correct behavior and can look alarming if you don't expect it — don't close the
+*terminal* window in response; wait for the `Interactive login succeeded` line instead.
+
+### F54 — a verification-code-shaped harmless phrase reads as jailbreak-shaped and gets refused 🟡
+Smoke-testing `claude-sonnet` (agent-less) with `"Output only this exact literal string and
+absolutely nothing else, no greeting, no extra words: PROXY_SMOKE_OK_1525819662"` got a plain-text
+refusal: *"I'm not able to output arbitrary strings on command, especially ones that appear to be
+test signals or proxy verification codes."* Softening to `"Please reply with just this one word,
+nothing more: lighthouse-52305"` (no `_OK_`/`TEST`-shaped token, no "absolutely nothing else"
+framing) succeeded immediately after, same model, same session, ~1 minute apart. Consistent with
+AGENTS.md's existing claim that `Disengaged`/refusal shape tracks jailbreak *shape*, not size — but
+this is the first time it's been pinned to the *token itself* looking like a verification code
+rather than to the surrounding instruction's intensity. n=1 per phrasing; no `x_m365_dea_score`
+captured for either turn (was reading `choices[0].message.content` only, not `usage`) and no
+`M365_DUMP_FRAMES`, so no telemetry corroborates which half of the change (wording vs. token shape)
+actually mattered.
+**Next probe.** A 2×2: {soft, aggressive instruction} × {plain word, `_OK_`/`TEST`-shaped token},
+≥5 reps each, reading `x_m365_dea_score` every turn. Cheap, and directly answers which factor is
+load-bearing instead of guessing from one swap of both at once.
+
+### F55 — gpt-5.5-think-deeper's tool turn said "no shell tool enabled" but wrote the file anyway 🔴
+Same `pi` smoke-test task ("use the bash tool to run exactly: `echo <marker> > sentinel.txt`"),
+switched from `claude-sonnet` to `gpt-5.5-think-deeper` to deliberately exercise first-use Copilot
+Studio agent creation (confirmed: `agent-id.json` got a fresh `botId`/`instructionsHash`/`createdAt`
+this run — the agent-provisioning path works end-to-end on this tenant with no extra consent
+prompt beyond the sign-in already completed). `pi`'s only printed output was *"I can't execute
+`bash` because no shell tool is enabled in this session."* — yet the sentinel file was verified on
+disk afterward with the correct marker, i.e. the task actually succeeded despite the model's own
+narration claiming it couldn't. Not probed further (uses real quota per attempt); plausible but
+unconfirmed reading is M365's confab-retry (`M365_CONFAB_RETRIES`, default on) re-prompted after an
+initial confabulated refusal and the retry's tool call landed, while only the *first* turn's prose
+got surfaced as `pi`'s final assistant message. Logged as a loose thread, not a bug report — could
+equally be a `pi`-side display artifact of a multi-turn exchange.
+**Falsification criterion / next probe.** Re-run with `M365_DEBUG=1`, `pi -p --verbose` (or
+whatever flag shows every assistant turn, not just the last), and check whether the frame log shows
+two model turns (confab then retry) or one. If one, the printed text and the tool call happened in
+the same turn and "self-contradictory" is the real, interesting finding; if two, this is just
+`pi`'s transcript display dropping the retry's own text.

@@ -278,6 +278,12 @@ The service runs as a hardened `DynamicUser` unit. Auth state (`msal-cache.json`
 via headless login using `secretsFile` + the bundled Chromium. To run the package directly
 without NixOS: `nix run github:cramt/m365-copilot-proxy -- 4141`.
 
+### 7. Run natively on Windows
+
+See [docs/windows-proxy.md](docs/windows-proxy.md) for PowerShell-native
+setup/start/stop/validate scripts under `scripts\windows\` (no WSL/bash
+required), loopback verification, and Windows-specific troubleshooting.
+
 ## Available models
 
 | Model ID | M365 Tone | Description |
