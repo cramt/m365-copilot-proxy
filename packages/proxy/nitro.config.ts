@@ -3,6 +3,7 @@
 export default defineNitroConfig({
   compatibilityDate: "2025-01-01",
   preset: "node-server",
+  ignore: ["**/*.test.*", "**/*.spec.*"],
   esbuild: {
     options: {
       target: "node26",
