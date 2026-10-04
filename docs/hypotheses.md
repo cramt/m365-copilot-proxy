@@ -43,10 +43,11 @@ than "we eyeballed one run." See §M (Methods) for the experimental rig.
 - §23 — GPT-6 Sol (#23): ungated, takes the agent only on a premium account (learned at runtime),
   has its own sandbox agent-less that no optionsSet removes, and `relay` wins on both paths
   (30/30 agent, 60/60 agent-less, 21/21 in real pi); a premium transient that mimics the dead route (F52)
-- §24 — Oct 3 2026, first native-Windows run: interactive sign-in's first attempt can close with no
-  browser completion, then succeed silently on retry (cross-platform, also seen on macOS); a
-  verification-code-shaped harmless phrase got refused as jailbreak-shaped; gpt-5.5-think-deeper's
-  tool turn self-reported "no shell tool enabled" while still writing the file correctly (all n=1 — flagged, not concluded)
+- §24 — Oct 3 2026, first native-Windows run: "interactive sign-in's first attempt closes" disproved
+  as a product bug (F53 — it was the human closing the terminal; a clean left-alone run signs in in
+  under half a second); a verification-code-shaped harmless phrase got refused as jailbreak-shaped
+  (F54); gpt-5.5-think-deeper's tool turn self-reported "no shell tool enabled" while still writing
+  the file correctly (F55, n=1 — flagged, not concluded)
 
 ---
 
@@ -3656,29 +3657,32 @@ having no platform override so its own "off-Windows" unit test could never run o
 pure code bug, already fixed — see `packages/core/src/fenced.ts` and `docs/windows-proxy.md`, not
 repeated here since it isn't a claim about live M365 behaviour.)
 
-### F53 — interactive sign-in's first attempt can close with nothing logged; a retry signs in silently 🔴
-`M365_ENABLE_INTERACTIVE_APPROVAL=1`, fresh account (no prior `msal-cache.json`/`browser-profile\`).
-First `Start-Proxy.ps1` run: proxy logged `[m365 auth] A browser window has opened — complete
-sign-in there.` / `Waiting up to 600s.`, the user completed sign-in, then the window and its whole
-process tree were gone with no further line ever logged (no success, no error, no timeout message
-— `M365_DEBUG` was not set, so there's no frame-level evidence of why). Clearing the stale PID file
-and re-running `Start-Proxy.ps1` ~2s later: **no browser opened at all**, auth succeeded silently,
-and `msal-cache.json` + `browser-profile\` were already on disk from the first attempt. The user
-independently reported the identical shape ("This happened on my mac the first time") before being
-told the Windows run did the same thing — so if real, it predates and is independent of this
-Windows work.
-**Reading, unconfirmed.** Two candidate explanations, not distinguished by this data: (a) the OAuth
-redirect/code capture completes and gets written to the persistent browser profile / MSAL cache
-*before* the code-exchange step that was supposed to report success back to the waiting process,
-so the first run's human-visible failure is cosmetic — the credential material already landed; or
-(b) unrelated to auth at all — the user closed the window themselves before the process reported
-anything. (b) was explicitly true in this session (the user closed it to retry), which undercuts
-treating this as a confirmed product bug — but the Mac precedent suggests at least some fraction of
-"first attempt closes" cases are the first kind.
-**Falsification criterion / next probe.** Repeat with `M365_DEBUG=1` and `M365_TRACE=1`, moving
-`msal-cache.json`/`browser-profile\` aside first, and *do not* close the window — let it run to
-either a logged success or a logged error/timeout. If it reliably reaches a logged outcome when
-left alone, F53 is just "someone closed it", not a product issue, and should be downgraded to ⚫.
+### F53 — "first attempt closes" is the human closing the terminal, not a product bug ⚫ (disproved)
+**Original observation.** `M365_ENABLE_INTERACTIVE_APPROVAL=1`, fresh account (no prior
+`msal-cache.json`/`browser-profile\`). First `Start-Proxy.ps1` run: proxy logged `[m365 auth] A
+browser window has opened — complete sign-in there.` / `Waiting up to 600s.`, the user completed
+sign-in, then the window and its whole process tree were gone with no further line ever logged —
+but the user had, by their own account, closed the *terminal* window themselves to force a retry.
+A second run ~2s later signed in silently with no browser at all, from the state the first attempt
+left on disk. The user independently reported the identical shape on a prior macOS setup.
+**Falsification run.** Backed up `msal-cache.json`/`browser-profile\` aside (reversible — moved,
+not deleted) to force a genuinely fresh first attempt, then re-ran with `M365_DEBUG=1
+M365_TRACE=1 M365_LOG_STDOUT=1`, and explicitly left the window alone this time instead of closing
+it. Result: the automated Chromium window itself closed on its own right after capturing the
+redirect — by design, not a crash (`loginInteractiveForScopes` closes the browser once it has the
+code) — while the PowerShell proxy window stayed up and logged a clean, fast success:
+```
+[2026-10-04T03:13:30.111Z] [INFO] [auth] Captured auth code from nativeclient redirect (interactive)
+[2026-10-04T03:13:30.553Z] [INFO] [auth] Interactive login succeeded as <redacted>
+```
+442ms between code capture and login success, no retry, no second browser popup needed on this
+run. **Conclusion: disproved as a product issue.** The only two data points where the proxy
+process was observed to die with nothing logged both coincide with the human closing the
+terminal/browser prematurely (confirmed directly in this session; inferred for the macOS report).
+When left alone, first-attempt interactive sign-in completes and logs normally. Downgraded 🔴→⚫.
+Residual advice, not a bug report: the automated browser window closing itself right after the
+redirect is correct behavior and can look alarming if you don't expect it — don't close the
+*terminal* window in response; wait for the `Interactive login succeeded` line instead.
 
 ### F54 — a verification-code-shaped harmless phrase reads as jailbreak-shaped and gets refused 🟡
 Smoke-testing `claude-sonnet` (agent-less) with `"Output only this exact literal string and
