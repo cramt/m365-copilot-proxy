@@ -20,14 +20,9 @@ if (!creds) {
   process.exit(1);
 }
 
-const ROOT = process.cwd();
-const pwMod = await import(
-  `${ROOT}/node_modules/.pnpm/playwright@1.58.2/node_modules/playwright/index.js`
-);
+const pwMod = await import("playwright");
 const chromium = pwMod.chromium ?? pwMod.default?.chromium;
-const { TOTP } = await import(
-  `${ROOT}/node_modules/.pnpm/otpauth@9.5.0/node_modules/otpauth/dist/otpauth.esm.js`
-);
+const { TOTP } = await import("otpauth");
 
 const shot = async (page, name) => {
   await page.screenshot({ path: join(OUT, `${name}.png`), fullPage: false }).catch((error) => {

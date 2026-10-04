@@ -16,7 +16,7 @@
 
 const RS = "\x1E";
 
-const wsMod = await import("../packages/core/node_modules/ws/wrapper.mjs");
+const wsMod = await import("ws");
 const WebSocket = wsMod.default ?? wsMod.WebSocket;
 
 const BASE_ALLOWED = [

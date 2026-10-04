@@ -3496,7 +3496,8 @@ not advertised by the proxy and shares Sonnet 5's paid selector; its distinct
 version remains unverified. No tools were supplied, so this sweep measures no
 tool-calling capability.
 
-**Evidence:** Results and 12 sibling raw-frame `.jsonl` files were saved in a machine-local temporary run directory and were not committed. Outcomes were checked against raw
+**Evidence:** `/var/folders/dy/cmh5cgm90xq3r0pk5mr9sbvc0000gp/T/m365-selfid-sweep-VCXCi8/results.json`
+and the 12 sibling raw-frame `.jsonl` files. Outcomes were checked against raw
 final results; the classifier adapter explicitly maps the helper's
 `contentOrigin` to `outcome()`'s `answerOrigin` so a BotConnection apology is
 not counted as a model answer. Requests were agent-less, temporary chats, the

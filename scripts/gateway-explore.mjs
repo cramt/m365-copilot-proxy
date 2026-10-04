@@ -19,14 +19,9 @@ const TENANT = "fa7f56d8-49c4-4327-b816-9a0eeaa273df";
 const ENV = `Default-${TENANT}`;
 const GW = "https://powervamg.eu-il105.gateway.prod.island.powerapps.com";
 
-const ROOT = process.cwd();
-const pwMod = await import(
-  `${ROOT}/node_modules/.pnpm/playwright@1.58.2/node_modules/playwright/index.js`
-);
+const pwMod = await import("playwright");
 const chromium = pwMod.chromium ?? pwMod.default?.chromium;
-const { TOTP } = await import(
-  `${ROOT}/node_modules/.pnpm/otpauth@9.5.0/node_modules/otpauth/dist/otpauth.esm.js`
-);
+const { TOTP } = await import("otpauth");
 
 const browser = await chromium.launch({
   headless: true,

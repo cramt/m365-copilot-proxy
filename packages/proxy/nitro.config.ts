@@ -32,7 +32,6 @@ export default defineNitroConfig({
     },
   },
   externals: {
-    inline: ["jsonwebtoken"],
     // pnpm2nix serves node_modules from the read-only Nix store. Nitro's
     // node-externals plugin copyFile's each external into
     // .output/server/node_modules/<pkg>/ preserving the source mode

@@ -427,8 +427,8 @@ describe("defaultFramingForModel", () => {
 describe("Sonnet reasoning framing", () => {
   it("uses user-voice relay without a forged system wrapper", () => {
     const framing = defaultFramingForModel("claude-sonnet-think-deeper");
+    if (!framing) throw new Error("Expected framing to be defined");
     expect(framing).toBe("relay");
-    if (!framing) throw new Error("Expected relay framing");
     expect(defaultFramingForTone("Claude_Sonnet_Reasoning")).toBe("relay");
     expect(transcriptStyleForVariant(framing)).toEqual({
       framingTag: null,

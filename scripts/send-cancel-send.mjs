@@ -21,8 +21,7 @@ import { join } from "node:path";
 import { getToken, decodeJwt } from "../packages/core/dist/index.mjs";
 
 const RS = "\x1E";
-const ROOT = process.cwd();
-const wsMod = await import(`${ROOT}/node_modules/.pnpm/ws@8.20.0/node_modules/ws/wrapper.mjs`);
+const wsMod = await import("ws");
 const WebSocket = wsMod.default ?? wsMod.WebSocket;
 
 const args = process.argv.slice(2);

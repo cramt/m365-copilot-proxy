@@ -168,8 +168,11 @@ tool-calling capability.
 
 ## Evidence and interpretation
 
-- Earlier and current results were saved in machine-local temporary run directories and were not committed.
-- The current run included 12 sibling raw-frame `.jsonl` files. Classifications were checked against
+- Earlier saved results:
+  `/var/folders/dy/cmh5cgm90xq3r0pk5mr9sbvc0000gp/T/m365-model-sweep-jNOQK3/results.json`.
+- Current saved results:
+  `/var/folders/dy/cmh5cgm90xq3r0pk5mr9sbvc0000gp/T/m365-selfid-sweep-VCXCi8/results.json`,
+  with 12 sibling raw-frame `.jsonl` files. Classifications were checked against
   the raw final results, mapping the helper's `contentOrigin` to the
   classifier's `answerOrigin` to avoid counting BotConnection apologies as
   model answers.

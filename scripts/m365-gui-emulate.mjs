@@ -19,14 +19,9 @@ if (!creds) {
   console.log("no secrets");
   process.exit(1);
 }
-const ROOT = process.cwd();
-const pwMod = await import(
-  `${ROOT}/node_modules/.pnpm/playwright@1.58.2/node_modules/playwright/index.js`
-);
+const pwMod = await import("playwright");
 const chromium = pwMod.chromium ?? pwMod.default?.chromium;
-const { TOTP } = await import(
-  `${ROOT}/node_modules/.pnpm/otpauth@9.5.0/node_modules/otpauth/dist/otpauth.esm.js`
-);
+const { TOTP } = await import("otpauth");
 
 const TASK =
   "Edit config.json so the port is 8080 instead of 3000. Leave every other field unchanged.";

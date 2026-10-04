@@ -37,14 +37,9 @@ if (process.argv.includes("--sidebar")) {
     process.exit(1);
   }
   mkdirSync(OUT, { recursive: true });
-  const ROOT = process.cwd();
-  const pwMod = await import(
-    `${ROOT}/node_modules/.pnpm/playwright@1.58.2/node_modules/playwright/index.js`
-  );
+  const pwMod = await import("playwright");
   const chromium = pwMod.chromium ?? pwMod.default?.chromium;
-  const { TOTP } = await import(
-    `${ROOT}/node_modules/.pnpm/otpauth@9.5.0/node_modules/otpauth/dist/otpauth.esm.js`
-  );
+  const { TOTP } = await import("otpauth");
 
   const browser = await chromium.launch({
     headless: true,

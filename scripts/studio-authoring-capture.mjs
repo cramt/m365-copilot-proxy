@@ -16,10 +16,7 @@ import { join } from "node:path";
 const OUT = join(process.cwd(), "scripts", "studio-capture-out");
 mkdirSync(OUT, { recursive: true });
 
-const ROOT = process.cwd();
-const pwMod = await import(
-  `${ROOT}/node_modules/.pnpm/playwright@1.58.2/node_modules/playwright/index.js`
-);
+const pwMod = await import("playwright");
 const chromium = pwMod.chromium ?? pwMod.default?.chromium;
 
 function jwt(auth) {
