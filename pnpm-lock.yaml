@@ -231,18 +231,6 @@ importers:
         specifier: ^8.18.1
         version: 8.18.2
 
-  packages/openclaw-plugin:
-    dependencies:
-      '@m365-copilot/core':
-        specifier: workspace:*
-        version: link:../core
-      '@m365-copilot/proxy-lib':
-        specifier: workspace:*
-        version: link:../proxy-lib
-      srvx:
-        specifier: ^0.8.0
-        version: 0.8.16
-
   packages/proxy:
     dependencies:
       '@m365-copilot/core':
@@ -2871,11 +2859,6 @@ packages:
   statuses@2.0.2:
     resolution: {integrity: sha512-DvEy55V3DB7uknRo+4iOGT5fP1slR8wQohVdknigZPMpMstaKJQWhwiYBACJE3Ul2pTnATihhBYnRhZQHGBiRw==}
     engines: {node: '>= 0.8'}
-
-  srvx@0.8.16:
-    resolution: {integrity: sha512-hmcGW4CgroeSmzgF1Ihwgl+Ths0JqAJ7HwjP2X7e3JzY7u4IydLMcdnlqGQiQGUswz+PO9oh/KtCpOISIvs9QQ==}
-    engines: {node: '>=20.16.0'}
-    hasBin: true
 
   std-env@4.3.0:
     resolution: {integrity: sha512-OtU/EgQ1kIm5KwqQpBC6ZEMXrZRui11w8zgfTWp8cdO9B8OaPsbA8bTHO2P+HNo1VlUTGMVBwPhydu6poeXiag==}
@@ -5669,8 +5652,6 @@ snapshots:
   standard-as-callback@2.1.0: {}
 
   statuses@2.0.2: {}
-
-  srvx@0.8.16: {}
 
   std-env@4.3.0: {}
 
