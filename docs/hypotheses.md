@@ -3812,7 +3812,6 @@ comparison p = 6×10⁻¹⁰ (relay 60/60 either way).
 ### H24 — New Luna, Astra, Sol 6.1, and Sonnet 5.5 routes (open, 2026-10-04)
 **Hypothesis:** Candidate `Gpt_6_{Luna,Astra}{,_Chat,_Reasoning}` and `Gpt_6_1_Sol{,_Chat,_Reasoning}` tones may be registered and serve their named models; the existing `Claude_Sonnet` tone may now serve Sonnet 5.5 under the paid scenario. **Falsification:** validator rejection, BotConnection dead route on both licensed scenarios, or a live response that consistently identifies as another model. A paid-scenario `InvalidCopilotLicense` on this account is inconclusive, not falsification. **Probe:** `scripts/new-model-tone-probe.mjs`, sequential agent-less turns with both scenario/license pairs, raw frames, final result/error code, `contentOrigin`, latency and reply; stop on `PerUserThrottled`. Run self-ID only for live cells, then agent compatibility only for verified models. Self-ID is evidence, not proof. **Evidence:** pending; record output directory and sample counts here after each run.
 
-
 ### H25 — Sonnet reasoning cannot see local Pi files under baseline (supported, 2026-10-04)
 
 **Hypothesis:** The `<system>`-tagged baseline framing makes `claude-sonnet-think-deeper`
@@ -3845,4 +3844,4 @@ real-Pi **read 1/1, edit 1/1, multistep 1/1**, with 120-second spacing between
 fresh conversations. Its log recorded `finish=tool_calls` and no throttled
 turns. Evidence: `/tmp/m365-sonnet-default-proxy.log`; task output directories
 `tmp.LacKmkzi9m`, `tmp.TJNijqdrjT`, and `tmp.jxVIHGMAuc` under the
-Pi harness temporary directory. **Usual Pi configuration:** a fresh `scripts/pi-local.sh -p` invocation against the rebuilt :4201 proxy, with its normal context/extensions enabled and the same model, read the exact first heading of `.plans/claude-sonnet-think-deeper-relay.md` from the repository (1/1). The proxy logged `finish=tool_calls` followed by `finish=stop`; this verifies local file access in that configuration, not long-run reliability. Existing long-running Pi conversations may retain earlier context and should be restarted before judging the new default.
+Pi harness temporary directory. **Usual Pi configuration:** a fresh `scripts/pi-local.sh -p` invocation against the rebuilt :4201 proxy, with its normal context/extensions enabled and the same model, read the exact first heading of `.plans/claude-sonnet-think-deeper-relay.md` from a local file (1/1); `.plans/` is ignored and this file is not tracked. The proxy logged `finish=tool_calls` followed by `finish=stop`; this verifies local file access in that configuration, not long-run reliability. Existing long-running Pi conversations may retain earlier context and should be restarted before judging the new default.

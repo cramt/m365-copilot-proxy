@@ -277,10 +277,10 @@ sample size and evidence in hypotheses §23 before changing the provisional defa
 
 - **Hypothesis:** Luna, Astra, Sol 6.1, or a newer Sonnet route is live and serves the named model rather than a silent fallback.
 - **Prerequisite:** `pnpm build`; use a rested, licensed account for paid-scenario conclusions.
-- **Liveness:** `M365_NO_INTERACTIVE=1 node scripts/new-model-tone-probe.mjs --tones=Gpt_6_Luna,Gpt_6_Luna_Chat --cooldown-ms=20000` (replace `--tones` with selected candidates; both scenarios by default).
+- **Liveness:** `M365_NO_INTERACTIVE=1 node scripts/new-model-tone-probe.mjs --tones=Gpt_6_Luna,Gpt_6_Luna_Chat --cooldown-ms=300000` (replace `--tones` with selected candidates; both scenarios by default).
 - **Identity:** repeat only LIVE tones with `--phase=self-id --tones=<comma-separated-live-tones>`. For Sonnet, use `--tones=Claude_Sonnet` and compare included with paid.
 - **Read:** `scripts/new-model-tone-out/<timestamp>/results.json` and per-cell raw `.jsonl` frames. `DeepLeo` plus final `Success` is liveness, not model identity; `BotConnection` is not liveness. `InvalidCopilotLicense` is inconclusive for paid availability. Stop on `PerUserThrottled`; never run sweeps concurrently.
-- **Cost:** one fresh conversation per tone/scenario cell, with 20 seconds between cells. Do not run the full candidate matrix until a small smoke sweep confirms the instrument.
+- **Cost:** one fresh conversation per tone/scenario cell, with the default five-minute cooldown between cells. Do not run the full candidate matrix until a small smoke sweep confirms the instrument.
 
 
 ## E-SR1 — Sonnet reasoning local-tool framing (H25)

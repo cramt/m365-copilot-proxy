@@ -57,8 +57,8 @@ Each agent session reuses the same M365 conversation (same `sessionId` + `conver
 
 ### Prerequisites
 
-- Node.js 24+
-- pnpm 10+
+- Node.js >=22.13.0
+- pnpm 12 (the workspace specifies pnpm 12.8.1)
 - An M365 account with Copilot access
 - A way to sign in, either:
   - **TOTP-based MFA with the base32 secret in hand** — the automated login types the
@@ -72,7 +72,7 @@ Each agent session reuses the same M365 conversation (same `sessionId` + `conver
 ### 1. Install
 
 ```sh
-git clone https://github.com/cramt/m365-copilot-proxy
+git clone --branch async-m365 git@github.com:noobie-bob/m365-copilot-proxy.git
 cd m365-copilot-proxy
 pnpm install
 pnpm build
@@ -80,7 +80,13 @@ pnpm build
 
 ### 2. Configure credentials
 
-Create `~/.config/m365-proxy/secrets.json`:
+If upgrading from a checkout that used `~/.config/opencode-m365/`, copy any
+existing `secrets.json` and `msal-cache.json` you need to
+`~/.config/m365-proxy/` before starting. This migration is not automatic.
+The token cache contains sensitive credentials and must stay out of Git;
+`secrets.json` is only needed for automated browser login.
+
+Create `~/.config/m365-proxy/secrets.json` for automated login:
 
 ```json
 {
@@ -164,7 +170,11 @@ Contributed by [@EatonWu](https://github.com/EatonWu). Two honest caveats:
 
 #### First run
 
-On first run, the system does an automated browser login (via Playwright/Chromium) to get OAuth tokens. After that, tokens refresh silently from the MSAL cache.
+On first run, the proxy tries the MSAL cache, then `M365_REFRESH_TOKEN` if
+set, then browser login if needed. After successful authentication, tokens
+refresh silently from the cache. A headless host needs a usable cache, a
+refresh token, or supported automated login; interactive approval requires
+a display.
 
 ### 3. Use with pi (or any OpenAI-compatible agent)
 
@@ -246,9 +256,15 @@ limited (`m365_throttled`, `priority_access_exhausted`), 502 upstream failure (`
 `upstream_empty_response`, `upstream_error`). Set `M365_PROXY_API_KEY` to require
 `Authorization: Bearer <key>` on `/v1/*`.
 
-The dashboard (`/`) and `/actions/*` accept only loopback socket peers; remote
-requests get 403 `dashboard_local_only`, even with a valid API key. IPv4 and IPv6
-loopback are supported, and forwarded headers do not override the peer address.
+The local dashboard at `http://127.0.0.1:4141/` shows request counts, estimated
+usage, latency, active sessions, model health, and last-observed account throttling.
+It can ping one model or check the advertised models; these actions start real M365
+conversations, so use them sparingly. Request history is stored in
+`~/.config/m365-proxy/metrics.sqlite` across restarts; active sessions are
+process-local. The dashboard (`/`) and `/actions/*` accept only loopback socket
+peers; remote requests get 403 `dashboard_local_only`, even with a valid API key.
+IPv4 and IPv6 loopback are supported; forwarded headers do not override
+the peer address.
 Do not forward these routes through a remote-facing reverse proxy.
 
 #### Temporary chats
@@ -548,6 +564,7 @@ Three token scopes are acquired:
 | `M365_LOGIN_LOCALE` / `M365_LOGIN_TIMEZONE` | Browser locale and timezone presented during login (defaults `en-GB` / `Europe/Copenhagen`). These are part of the anti-bot-scoring fingerprint ([§11 F25](docs/hypotheses.md)) — set them to match your own machine if AAD starts treating your automated login as a bot. |
 | `M365_FORCE_AGENT` | Override which tool requests carry the Copilot Studio tool agent. `1` attaches it to every tool request (and turns off the `gpt-6-sol` fallback below); `0` never attaches it. Unset, the proxy decides per model: GPT-5.x and `m365-copilot` take it, Claude and `gpt-6-think-deeper` don't, and `gpt-6-sol` takes it only on a premium account, which the proxy learns from the first request. On a non-premium account `0` saves that one ~3 s probe turn per proxy start. |
 | `M365_SCENARIO` / `M365_LICENSE_TYPE` | Override the entitlement the WebSocket is opened under (defaults: `OfficeWebIncludedCopilot` / `Starter`, switching to `OfficeWebPaidCopilot` / `Premium` for the entitlement-gated models — `claude-opus`, `gpt-6-think-deeper` and `claude-sonnet-5`). `scenario` is what gates the model list (and picks Sonnet 4.6 vs 5 for the `Claude_Sonnet` tone); `licenseType` rides along and unlocks nothing by itself. |
+| `M365_REFRESH_TOKEN` | Optional refresh-token fallback when silent cache acquisition fails; treat it as a credential and keep it out of Git. A successful exchange updates the MSAL cache. |
 | `M365_CACHE_FILE` | Override MSAL token cache location |
 | `M365_SECRETS_FILE` | Override credentials file location |
 | `M365_PROXY_API_KEY` | When set, `/v1/*` requires `Authorization: Bearer <key>` (401 `invalid_api_key` otherwise). `/health` stays open. The dashboard and `/actions/*` are always restricted to loopback socket peers, independently of the API key. |
@@ -604,12 +621,20 @@ All stored in `~/.config/m365-proxy/`:
 | `msal-cache.json` | MSAL token cache (auto-managed) |
 | `agent-id.json` | Cached Copilot Studio agent ID |
 | `debug.log` | Debug log (when `M365_DEBUG=1`) |
+| `metrics.sqlite` | Persistent request and model-health metrics (SQLite WAL mode) |
 
 ## Development
+
+Scripts under `scripts/` import `ws`, `playwright`, and `otpauth` by package name
+rather than using version-specific pnpm paths. These packages are workspace-root
+development dependencies, so run `pnpm install` before using the probes. Docker
+is needed for the benchmark's sandbox, not for running the proxy.
 
 ```sh
 pnpm install
 pnpm build            # Build all packages
+pnpm start            # Start built proxy on 127.0.0.1:4141
+pnpm typecheck        # TypeScript 7 type check (typecheck:ts6 also available)
 pnpm lint             # Biome lint (no writes)
 pnpm lint:fix         # Apply safe Biome lint fixes
 pnpm format:check     # Check formatting (no writes)
@@ -622,14 +647,9 @@ pnpm run test:unit    # Run vitest unit tests (no auth/network)
 pnpm run test:live    # Run live integration tests against M365
 ```
 
-Biome owns formatting and everyday linting; ESLint adds plugin checks without
-competing formatting rules. The stricter ESLint pass is opt-in while existing
-lint findings are addressed. Adding the tooling does not reformat existing files.
-Both tools exclude build output and generated probe results.
-
-The repository is not yet lint/format-clean: the initial scans found 12 Biome
-lint errors, 103 files needing formatting, and 542 ESLint findings. These checks
-report existing debt; source cleanup and the formatting rollout are separate work.
+Biome owns formatting and everyday linting; ESLint adds type-aware, import,
+and Vitest checks. Build output and generated probe results are excluded. Run
+`pnpm format:check`, `pnpm lint:all`, and `pnpm typecheck` before submitting changes.
 
 Builds use stable TypeScript 7.0.2 and tsdown 0.23.0's native declaration generator.
 The `@typescript/native-preview` alias points to stable TypeScript 7, not a nightly,

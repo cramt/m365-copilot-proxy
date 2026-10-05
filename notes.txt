@@ -1,9 +1,0 @@
-curl -sS \
-    -X POST http://localhost:4141/v1/chat/completions \
-    -H 'Content-Type: application/json' \
-    --data-raw '
-        {
-            "model":"gpt-5.5-think-deeper",
-            "messages":[{"role":"user","content":"Write a short haiku about debugging."}],
-            "stream":false
-        }'
