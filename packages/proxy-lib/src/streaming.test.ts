@@ -700,3 +700,81 @@ describe("Priority access (Opus 5.5, Sonnet 5.5): OutOfCredits, remembering it, 
     expect((await send("claude-opus", "opus task")).status).toBe(200);
   });
 });
+
+describe("Claude Code and Codex behind copilot-api", () => {
+  const CLAUDE_CODE_UA = "claude-cli/2.1.286 (external, sdk-cli)";
+  const bashTool = [{ type: "function", function: { name: "Bash", parameters: { type: "object", properties: { command: { type: "string" } } } } }];
+
+  /** One streaming request; returns the content text, the error chunks and the finish reason. */
+  async function streamAs(userAgent: string, prompt: string) {
+    const body = ChatCompletionRequest.parse({
+      model: "claude-sonnet", stream: true, messages: [{ role: "user", content: prompt }],
+    });
+    const res = await handleChatCompletion(body, new SessionPool(), { userAgent });
+    expect(res.status).toBe(200);
+    let content = "";
+    const errors: any[] = [];
+    let finish: string | null = null;
+    for (const line of (await res.text()).split("\n")) {
+      if (!line.startsWith("data: ") || line === "data: [DONE]") continue;
+      const chunk = JSON.parse(line.slice(6));
+      if (chunk.error) errors.push(chunk.error);
+      content += chunk.choices?.[0]?.delta?.content ?? "";
+      finish = chunk.choices?.[0]?.finish_reason ?? finish;
+    }
+    return { content, errors, finish };
+  }
+
+  it("ends a failed streaming turn with the reason as text, so the harness doesn't retry it", async () => {
+    scripted.queue = [];
+    scripted.deltas = [];
+    scripted.fullText = "";
+    scripted.result = { value: "Throttled", errorCode: "PerUserThrottled", message: "Try again later." };
+    const { content, errors, finish } = await streamAs(CLAUDE_CODE_UA, "throttled for the harness");
+    scripted.result = null;
+    expect(errors).toHaveLength(0);
+    expect(content).toContain("[m365-proxy: m365_throttled]");
+    expect(content).toContain("Try again later.");
+    expect(finish).toBe("stop");
+  });
+
+  it("keeps the error chunk for other clients", async () => {
+    scripted.queue = [];
+    scripted.result = { value: "Throttled", errorCode: "PerUserThrottled", message: "Try again later." };
+    const { content, errors } = await streamAs("OpenAI/JS 5.1.0", "throttled for pi");
+    scripted.result = null;
+    expect(content).toBe("");
+    expect(errors).toHaveLength(1);
+    expect(errors[0].code).toBe("m365_throttled");
+  });
+
+  it("gives two sessions that open with the same message their own conversations (prompt_cache_key)", async () => {
+    const pool = new SessionPool();
+    const ask = (key: string) => handleChatCompletion(ChatCompletionRequest.parse({
+      model: "claude-sonnet", prompt_cache_key: key, messages: [{ role: "user", content: "same first message" }],
+    }), pool);
+    scripted.queue = [{ fullText: "one" }, { fullText: "two" }, { fullText: "three" }];
+    scripted.texts = [];
+    await ask("session-a");
+    await ask("session-b");
+    await ask("session-a"); // same session again: no new message, so it continues
+    scripted.queue = [];
+    expect(pool.size).toBe(2);
+    expect(scripted.texts[1]).toContain("same first message");
+    expect(scripted.texts[2]).toBe("Please continue.");
+  });
+
+  it("drops copilot-api's JavaScript tool tips from the system prompt", async () => {
+    scripted.queue = [{ fullText: "```bash\nls\n```" }];
+    scripted.texts = [];
+    const system = "You are Codex.\n\n# Tool Call Tips\n- Do NOT call `exec_command` directly; that tool does not exist. Use `functions__exec` to run commands instead.";
+    const res = await handleChatCompletion(ChatCompletionRequest.parse({
+      model: "claude-sonnet", tools: bashTool,
+      messages: [{ role: "system", content: system }, { role: "user", content: "list the files, tips test" }],
+    }), new SessionPool());
+    expect(res.status).toBe(200);
+    expect(scripted.texts[0]).toContain("You are Codex.");
+    expect(scripted.texts[0]).not.toContain("Tool Call Tips");
+    expect(scripted.texts[0]).not.toContain("functions__exec");
+  });
+});

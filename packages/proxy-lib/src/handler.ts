@@ -41,6 +41,7 @@ import {
   type CapturedImage,
 } from "@m365-copilot/core";
 import { ChatCompletionRequest } from "./schemas.js";
+import { streamErrorsAsText, streamErrorText, stripGatewayToolTipsFromMessages } from "./harness.js";
 import type { z } from "zod/v4";
 
 const log = createLogger("handler");
@@ -165,12 +166,13 @@ export class SessionPool {
 
   /**
    * Resolve the conversation state for an incoming request.
-   * Fingerprint is the hash of the first user message — same first user message = same conversation.
+   * Fingerprint is the hash of the first user message — same first user message = same conversation —
+   * scoped to the client's session key when it sends one (prompt_cache_key / user).
    */
-  resolve(messages: ParsedMessage[]): ConversationState {
+  resolve(messages: ParsedMessage[], sessionKey?: string): ConversationState {
     this.evictStale();
 
-    const fingerprint = this.fingerprint(messages);
+    const fingerprint = this.fingerprint(messages, sessionKey);
     const existing = this.conversations.get(fingerprint);
 
     if (existing) {
@@ -197,10 +199,14 @@ export class SessionPool {
     return state;
   }
 
-  private fingerprint(messages: ParsedMessage[]): string {
+  // Codex starts every session in a repo with the same environment message, and
+  // two Claude Code sessions can open with the same prompt: without the session
+  // key they'd share one M365 conversation. Subagents share the parent's session
+  // key, so the first message still has to be part of it.
+  private fingerprint(messages: ParsedMessage[], sessionKey?: string): string {
     const firstUser = messages.find(m => m.role === "user");
     const text = firstUser ? getMessageContent(firstUser) : "";
-    return simpleHash(text);
+    return simpleHash(sessionKey ? `${sessionKey}\u0000${text}` : text);
   }
 
   private evictStale() {
@@ -265,11 +271,13 @@ export function formatDeltaMessages(messages: ParsedMessage[], history: ParsedMe
  * The SessionPool routes each conversation to its own ModelSession.
  */
 export async function handleChatCompletion(
-  body: ChatBody,
+  request: ChatBody,
   pool: SessionPool,
-  opts: { signal?: AbortSignal } = {},
+  opts: { signal?: AbortSignal; userAgent?: string | null } = {},
 ): Promise<Response> {
-  const conv = pool.resolve(body.messages);
+  // copilot-api's Codex tool tips contradict the shell routing (see harness.ts).
+  const body: ChatBody = { ...request, messages: stripGatewayToolTipsFromMessages(request.messages) };
+  const conv = pool.resolve(body.messages, body.prompt_cache_key ?? body.user);
   const { session } = conv;
   const hasTools = body.tools && body.tools.length > 0 && body.tool_choice !== "none";
   const requestedModel = body.model;
@@ -769,6 +777,7 @@ export async function handleChatCompletion(
 
   // --- Render: JSON (non-stream) or an early-flushed SSE stream (stream) ---
   const includeUsage = !!body.stream_options?.include_usage;
+  const errorsAsText = streamErrorsAsText(opts.userAgent);
   const usage = () => buildUsage(lastThrottle, lastContentOrigin, lastMessageType, lastScores, lastTurnCount, lastMetering);
 
   if (!body.stream) {
@@ -848,8 +857,16 @@ export async function handleChatCompletion(
             if (parsed?.code) code = parsed.code;
           } catch {}
           const retryAfter = p.resp.headers.get("Retry-After");
-          // HTTP 200 is already committed, so surface the failure as an in-stream error chunk.
-          send({ ...base, error: { message, type, ...(code ? { code } : {}), ...(retryAfter ? { retry_after: Number(retryAfter) } : {}) } });
+          if (errorsAsText) {
+            // An agent harness behind a gateway can't read an error chunk and
+            // would retry into fresh conversations: end the turn with the reason.
+            const reason = streamErrorText({ message, type, code, retryAfter: retryAfter ? Number(retryAfter) : undefined });
+            send({ ...base, choices: [{ index: 0, delta: { content: (sent ? "\n\n" : "") + reason }, finish_reason: null }] });
+            send({ ...base, choices: [{ index: 0, delta: {}, finish_reason: "stop" }], ...(includeUsage ? { usage: usage() } : {}) });
+          } else {
+            // HTTP 200 is already committed, so surface the failure as an in-stream error chunk.
+            send({ ...base, error: { message, type, ...(code ? { code } : {}), ...(retryAfter ? { retry_after: Number(retryAfter) } : {}) } });
+          }
         } else if (p.kind === "tools") {
           p.toolCalls.forEach((tc, i) => {
             log.debug(`Tool call: ${tc.function.name} ${trunc(tc.function.arguments, 200)}`);
