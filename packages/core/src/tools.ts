@@ -8,6 +8,7 @@ import {
   parseFencedToolCalls,
   renderFencedCall,
   transcriptStyleForVariant,
+  unwrapCodeModeShellScript,
 } from "./fenced.js";
 
 const log = createLogger("tools");
@@ -121,7 +122,8 @@ function toolCallSummary(rawArgs: string): string {
     args.command ?? args.cmd ?? args.script ?? args.path ?? args.file ??
     args.filename ?? args.query ?? Object.values(args).find((v) => typeof v === "string");
   if (typeof primary !== "string") return "";
-  return primary.replace(/\s+/g, " ").replace(/"/g, "'").trim().slice(0, 100);
+  const command = unwrapCodeModeShellScript(primary) ?? primary;
+  return command.replace(/\s+/g, " ").replace(/"/g, "'").trim().slice(0, 100);
 }
 
 /**
