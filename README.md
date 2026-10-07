@@ -241,6 +241,17 @@ the Copilot history sidebar while multi-turn context still works for the live
 conversation. Set `M365_SAVE_HISTORY=1` before starting the proxy only if you
 deliberately want proxy chats saved in Copilot history.
 
+### 5a. Use with Claude Code or Codex
+
+Neither speaks this API directly: Claude Code only speaks Anthropic Messages, and Codex
+only the Responses API. Put [copilot-api](https://github.com/caozhiyuan/copilot-api) in
+front of the proxy as a translator. Run the proxy on another port (`m365-proxy 4143`) and
+add it to copilot-api as an `openai-compatible` provider. Then point Claude Code
+(`ANTHROPIC_BASE_URL`) or Codex (`wire_api = "responses"`) at copilot-api, and give
+Claude Code a lean toolset (`--tools "Bash,Read,Edit,Write"`). This is experimental and
+not yet tried against live M365. Full setup, what the proxy does for these clients, and
+the known limits are in [docs/claude-code-codex.md](docs/claude-code-codex.md).
+
 ### 6. Run on NixOS (systemd service)
 
 The proxy is a [Nitro](https://nitro.build/) service. The flake exposes a package
@@ -585,6 +596,7 @@ Three token scopes are acquired:
 | `M365_DUMP_FRAMES` | Set to `1` to write every WebSocket frame (both directions) to `~/.config/opencode-m365/frames/<requestId>.ndjson`. For offline diffing of new M365 fields. |
 | `M365_FRAME_DIR` | Frame dump directory, relative to `~/.config/opencode-m365/` (default `frames`; an absolute path is used as is). `M365_FRAME_DIR=my/frames` dumps to `~/.config/opencode-m365/my/frames/`. |
 | `M365_ALLOW_MULTI_TOOL` | Allow the model to emit multiple tool calls per turn (default: only the first is kept) |
+| `M365_STREAM_ERROR_MODE` | How a streaming request that fails after its HTTP 200 is reported: `chunk` (an OpenAI-style `error` chunk) or `text` (the reason as the assistant's message, with `finish_reason: "stop"`). Unset, Claude Code and Codex user-agents get `text` and every other client gets `chunk`. Through copilot-api, an error chunk made Claude Code retry the turn ten times, each retry opening fresh M365 conversations ([docs/claude-code-codex.md](docs/claude-code-codex.md)). |
 | `M365_INJECT_REPLY_TOOL` | Set to `1` to inject a synthetic `reply(text)` tool. Forces every turn to be a tool call, including pure-prose answers. Cleaner contract for the model, +1 tool to the prompt (watch the Disengaged threshold). Confirmed 5/5 compliance on June 9 2026 ([hypotheses §1.1](docs/hypotheses.md)). |
 | `M365_NO_CONFAB_RETRY` / `M365_CONFAB_RETRIES` | M365's chat model sometimes produces prose instead of a tool call when it should act — either confabulating an inability ("I can't access the files, please paste them") **or** claiming a completion it never did ("I've replaced the README", with no tool call). By default the proxy detects both and re-prompts forcefully **in the same conversation** (`M365_CONFAB_RETRIES`, default `1`) to force a real action. Set `M365_NO_CONFAB_RETRY=1` to disable. |
 | `M365_NO_BACKOFF` (alias `M365_NO_AUTO_REAUTH`) | Set to `1` to disable degradation backoff. By default, when empty/throttled responses span several **distinct conversations** in a short window (the thread-rate-throttle signature, [F13](docs/hypotheses.md)), the proxy **paces subsequent turns** (a jittered delay before starting new backend conversations) to let the account self-heal. This replaced the old auto-reauth: a fresh login does **not** clear this throttle (it's `oid`-keyed — [§11 H-R1](docs/hypotheses.md)) and raised our detection profile. A single long pi thread never trips the trigger. |

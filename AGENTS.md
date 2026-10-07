@@ -286,6 +286,14 @@ pnpm test:live      # M365_LIVE=1; live tests that hit real M365 (uses quota)
   an empty `edits:`, which used to arrive as `edits: []` — 44 of its 47 pi `edit` calls, each a wasted
   round trip (#50). `parseYamlBlockValue` in `fenced.ts` reads the YAML subset models write; keep both
   paths. The bench can't catch a regression here (no array-typed tools), so test with real pi's `edit`.
+- **Claude Code and Codex arrive through copilot-api, as `claude-cli/…` / `codex…` user-agents.**
+  Codex's Code Mode `exec` (`functions__exec` there) runs JavaScript, not a shell: `findShellTool`
+  keeps it as the last resort and every shell fence routed to it becomes a nested
+  `tools.exec_command` call (`codeModeShellScript`) — don't route fences to it raw or drop the
+  wrapper. For those user-agents a stream that fails after its 200 ends as assistant text
+  (`M365_STREAM_ERROR_MODE`): copilot-api can't parse the error chunk, and Claude Code retried
+  the turn ten times, each retry opening fresh conversations. Claude Code's `Bash` is Git Bash on
+  Windows, so it gets no PowerShell note. See docs/claude-code-codex.md, docs/hypotheses.md §30.
 - **Account degradation is THREAD-rate, not message-count** (docs/hypotheses.md §9 F13).
   Microsoft throttles *conversations started*, not messages sent — the per-conversation
   counter resets each thread. A bench that opens one fresh conversation per task burns the

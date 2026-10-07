@@ -4599,3 +4599,77 @@ serve GPT-6 Sol under a new name, the way it serves the previous model for Opus 
 serves the same model as the paid scenario is still open: an honest arm on the paid scenario
 (premium, agent-less, about 3 budget units a task) that went to the sandbox would falsify "same model";
 one that didn't wouldn't settle it.
+
+---
+
+## 30. Oct 7 2026 — Claude Code and Codex through copilot-api (real CLIs and gateway, no M365 traffic)
+
+**Question.** What does it take to drive the proxy from Claude Code and Codex? Neither speaks Chat
+Completions — Claude Code only Anthropic Messages, Codex only the Responses API since it dropped
+`wire_api = "chat"` (Feb 2026, openai/codex#7782) — so they need a translator. copilot-api's
+multi-provider fork (`@jeffreycao/copilot-api` 2.6.23) adapts both onto any `openai-compatible`
+provider, i.e. onto this proxy unchanged.
+
+**Design.** Quota-free. Claude Code 2.1.286 and Codex 0.157.0-alpha.9 on Windows, pointed at (a) a mock
+of the Anthropic/Responses APIs that records the requests, (b) copilot-api with a provider `m365` whose
+upstream is a recording mock, and (c) copilot-api in front of the real proxy-lib handler with only
+`ModelSession.run` faked (`scripts/gateway-fake-m365.mjs`). The proxy's own formatter and parser were
+also run offline on the captured requests. Prompts: "Reply with the single word hi.", "Say hello from
+the shell.". n=1 per cell: these are protocol facts, not model behaviour. Setup and fixes:
+[claude-code-codex.md](claude-code-codex.md).
+
+### F73 — the harnesses' first prompts are big: 4–27 tools, 31k–71k characters to M365 🟡
+| request | tools | tool definitions | system | first turn the proxy builds |
+|---|---|---|---|---|
+| Claude Code default (`--safe-mode`) | 27 | 89.7k chars | 14.5k | — |
+| Claude Code `--tools Bash,Read,Edit,Write` | 4 | 17.4k (Bash's description alone 10.1k) | 13.6k | 31.4k (`claude-sonnet`, relay_batch) |
+| Codex, fallback metadata | 12 | 18.3k | 41.1k | 53.0k |
+| Codex, copilot-api catalog (Code Mode) | 9 | 19.7k | 53.1k | 71.1k |
+
+Default Claude Code is far past the ~12-tool Disengage range ([api §9](m365-copilot-api.md#the-disengaged-filter));
+lean Claude Code has pi's tool count. Size alone doesn't trigger Disengaged (F10); whether these
+prompts' *shape* does is H30a.
+
+### F74 — through copilot-api the loop broke in three places; fixed in the proxy 🟢
+1. Codex's shells, `exec_command` (unified exec) and `shell_command`, weren't recognised: a ```` ```bash ````
+   reply produced no tool call. Now routed (`SHELL_TOOL_NAME`).
+2. copilot-api serves every non-GPT model to Codex in Code Mode (`tool_mode: code_mode_only`). The only
+   shell-like tool, `functions__exec`, runs **JavaScript**, and the proxy's single-`input` fallback sent it
+   raw bash. The gateway also appends "Tool Call Tips" saying `exec_command` doesn't exist. Now the tool
+   is presented as a shell, each fence is wrapped as a nested `tools.exec_command` call — Codex ran it and
+   returned the command's output, exit code 0 — and the tips are stripped.
+3. On Windows `hostPlatformNote` told the model Claude Code's `Bash` runs PowerShell; Claude Code's own
+   description says it "runs Git Bash (POSIX sh), not cmd.exe or PowerShell". Now no note for a Git Bash
+   tool, and ```` ```powershell ```` goes to Claude Code's `PowerShell` tool when it has one.
+
+Also keyed sessions on `prompt_cache_key` (copilot-api sends Claude Code's and Codex's session id):
+Codex opens every session in a repo with the same environment message, which merged sessions.
+
+### F75 — an error chunk after the 200 turned one Disengage into ~22 M365 turns 🟢
+copilot-api can't parse the proxy's in-stream `error` chunk. Claude Code got "API Error: 500 Unexpected
+token 'd'…" and retried 10 times in ~150 s (`CLAUDE_CODE_MAX_RETRIES` defaults to 10), and each retry of
+a Disengaged turn runs the F22 retry in a fresh conversation. Now, for Claude Code and Codex user-agents,
+the reason goes out as assistant text with `finish_reason: "stop"` (`M365_STREAM_ERROR_MODE`): Claude Code
+finished in 7 s with `[m365-proxy: disengaged] …`, 2 M365 turns in all (fake-M365 run, default retries).
+
+### F76 — search survives `web_search = "disabled"` 🟡 (routing verified with mocks, M365's output not)
+Codex's hosted `web_search` gets a 400 from copilot-api for `openai-compatible` providers. What works:
+Codex standalone search (`web.run`, executed by Codex through copilot-api's `/v1/alpha/search`, which
+needs a `codex`/Copilot login or an `openai-responses` search provider), and Claude Code `WebSearch`
+(routed to such a provider, it gets structured links; with `messageApiWebSearchModel: ""` it reaches the
+proxy as tool-less chat, where the agent-less turn carries the Bing plugin). M365 marks in-turn citations
+with private-use markers (`\uE200cite\uE202turnNsearchM\uE201`) and the proxy drops `sourceAttributions`,
+so search results need resolving before a harness can use them (H30b).
+
+### Open
+- **H30a** — the lean Claude Code (4 tools, 31k chars) and Codex (53–71k chars, written for GPT) first
+  prompts disengage no more often than pi's on the agent-less Claude tones. **Falsify:** a paced run of
+  `claude -p` / `codex exec` over the bench tasks on a rested account, with Disengaged above pi's rate;
+  watch `x_m365_dea_score`.
+- **H30b** — an agent-less turn with Bing returns usable sources: titles and URLs in `sourceAttributions`,
+  with the text's markers indexing them in order. **Probe:** one search prompt with `M365_DUMP_FRAMES=1`
+  (the never-run H8.9 toggle probe fits alongside). Unblocks a search-only `/v1/responses` for both
+  clients.
+- **H30c** — Claude Code's side requests (compaction, `WebFetch` summaries, `WebSearch` sub-requests,
+  subagents) are most of a session's new conversations (F13). **Probe:** count conversations per real
+  session; if they dominate, pool tool-less one-shot requests into one conversation per session key.
