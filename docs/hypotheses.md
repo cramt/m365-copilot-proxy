@@ -4665,11 +4665,34 @@ so search results need resolving before a harness can use them (H30b).
 - **H30a** — the lean Claude Code (4 tools, 31k chars) and Codex (53–71k chars, written for GPT) first
   prompts disengage no more often than pi's on the agent-less Claude tones. **Falsify:** a paced run of
   `claude -p` / `codex exec` over the bench tasks on a rested account, with Disengaged above pi's rate;
-  watch `x_m365_dea_score`.
+  watch `x_m365_dea_score`. **Kit:** `scripts/harness-check.mjs` (the proxy now writes each turn's scores
+  to the debug log, since the gateway drops `usage` extensions). Not yet run: it needs a signed-in account.
 - **H30b** — an agent-less turn with Bing returns usable sources: titles and URLs in `sourceAttributions`,
   with the text's markers indexing them in order. **Probe:** one search prompt with `M365_DUMP_FRAMES=1`
   (the never-run H8.9 toggle probe fits alongside). Unblocks a search-only `/v1/responses` for both
-  clients.
+  clients. **Kit:** `scripts/search-citations-probe.mjs` (`--from-dump` re-reads an existing dump). Not
+  yet run.
 - **H30c** — Claude Code's side requests (compaction, `WebFetch` summaries, `WebSearch` sub-requests,
   subagents) are most of a session's new conversations (F13). **Probe:** count conversations per real
   session; if they dominate, pool tool-less one-shot requests into one conversation per session key.
+  Headless structure measured (F77); live counts pending.
+
+### F77 — a headless session costs one conversation, plus one per web search and per subagent 🟡 (structure only, fake M365)
+`scripts/harness-check.mjs` drove Claude Code 2.1.286 (`-p`) and Codex 0.157 (`exec`) through copilot-api
+into the proxy, with only the M365 turn faked (`scripts/gateway-fake-m365.mjs`). Conversations are the
+distinct `cid`s in the proxy's `[model] run:` lines.
+
+| run | M365 conversations | M365 turns |
+|---|---|---|
+| Claude Code, plain task (`fix-bug`, `find-needle`, `edit-config`) | 1 | 2 |
+| Claude Code, one `WebSearch` call | 2 — the search sub-request is a tool-less conversation of its own | 3 |
+| Claude Code, one subagent | 2 — the subagent's own | 6: the subagent's 2, plus a main turn for the async "[SYSTEM NOTIFICATION …]" its completion sends |
+| Codex `exec`, plain task | 1 | 2 |
+
+Headless Claude Code made no other requests, with or without the quiet settings
+(`DISABLE_NON_ESSENTIAL_MODEL_CALLS` etc.), and Codex `exec` sent no task-title request. Claude Code
+2.1.286 sends `x-claude-code-session-id` but **not** `x-claude-code-request-class`, so side requests can
+only be told apart by their first message. Not covered: interactive sessions (titles, prompt suggestions,
+recaps; no TTY here) and compaction. What's left of H30c needs live sessions: how often the model searches
+or spawns a subagent, and what interactive mode adds. Also seen: Codex 0.157's `workspace-write` sandbox
+refuses every command on Windows ("blocked by policy", even `echo`).

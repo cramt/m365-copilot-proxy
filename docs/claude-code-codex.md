@@ -167,12 +167,11 @@ Disabling Codex's hosted `web_search` doesn't rule out search:
 - **Not tried against live M365.** These harnesses' first prompts are big, so Disengaged
   is the open risk. The first turn the proxy builds is about 31k characters for lean
   Claude Code and 53k–71k for Codex (fallback tools vs Code Mode).
-- **Thread budget ([F13](hypotheses.md)).** Each of these opens a new M365 conversation:
-  - every subagent;
-  - every compaction;
-  - every `WebFetch` summary and `WebSearch` sub-request.
-
-  The settings above turn off the avoidable ones.
+- **Thread budget ([F13](hypotheses.md)).** A headless session opens one M365
+  conversation, plus one per `WebSearch` call and one per subagent
+  ([F77](hypotheses.md)). Compaction and `WebFetch` summaries open more, and so may
+  interactive-mode extras such as titles, prompt suggestions and recaps; those haven't
+  been measured. The settings above turn off the avoidable ones.
 - **One tool call per turn, and about 3k output tokens per turn.** A large `Write` or
   heredoc gets cut off. Codex's `apply_patch` isn't used; edits go through the shell.
 
@@ -189,3 +188,53 @@ codex exec "Say hello from the shell."
 The fake answers with a ```` ```bash ```` block, then `done` once the tool result
 arrives. Each prompt the proxy would have sent is written to `gateway-fake-m365-out/`.
 `FAKE_MODE=disengaged` makes every turn Disengage, to check the error path.
+`scripts/harness-check.mjs --cooldown=0` (below) also runs against the fake.
+
+## Running the open questions live (hypotheses §30: H30a–c)
+
+These need a signed-in account and spend real conversations: about 12 in total, spaced
+out (F13). Run them one at a time.
+
+1. **Start the proxy** with a debug log and frame dumps.
+   `M365_ENABLE_INTERACTIVE_APPROVAL=1` opens a browser for a one-time sign-in when no
+   token is cached:
+
+   ```sh
+   M365_DEBUG=1 M365_DUMP_FRAMES=1 M365_ENABLE_INTERACTIVE_APPROVAL=1 m365-proxy 4143
+   ```
+
+   In PowerShell, set them first (`$env:M365_DEBUG='1'`, and so on).
+
+2. **Start copilot-api** with the provider block above. For Claude Code's `WebSearch`,
+   also set `"messageApiWebSearchModel": ""`, so search sub-requests reach the proxy
+   (Bing).
+3. **H30b: what a Bing-grounded answer looks like** (1 conversation):
+
+   ```sh
+   node scripts/search-citations-probe.mjs --proxy=http://127.0.0.1:4143
+   ```
+
+   It reports the queries M365 ran, its `sourceAttributions` (count, keys, first
+   entries), and how the answer cites them (private-use `turnNsearchM` markers, `[^n^]`,
+   Markdown links). `--from-dump=<frames/…ndjson>` re-reads a dump without spending a
+   turn.
+4. **H30a + H30c: real harness loops** (6 conversations, 90 s apart):
+
+   ```sh
+   node scripts/harness-check.mjs --harness=claude,codex --tasks=fix-bug,find-needle,edit-config
+   ```
+
+   Per run you get:
+   - the outcome, from a verifier;
+   - M365 turns and conversations, Disengaged turns and the highest `dea_violation`
+     score, all from the proxy's debug log;
+   - every request the harness made, from a pass-through shim.
+
+   Each task runs in a throwaway temp directory on this machine. On Windows Codex runs
+   unsandboxed there, because its `workspace-write` sandbox refuses every command. A
+   throttled run stops the loop.
+5. **H30c: what searches and subagents cost** (Claude Code; about 4 conversations):
+
+   ```sh
+   node scripts/harness-check.mjs --harness=claude --tasks=web-search,subagent
+   ```
