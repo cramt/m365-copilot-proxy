@@ -1,4 +1,5 @@
 import WebSocket from "ws";
+import type { ImageAnnotation } from "./image-input.js";
 import { appendFileSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
 import {
@@ -236,6 +237,8 @@ export interface ChatTurnOptions {
    *  optionsSets + the GenerateGraphicArt allowedMessageType; the generated
    *  images surface on `stream.images`. Agent-less only. */
   generateImages?: boolean;
+  /** Uploaded images this turn's message points at (image-input.ts). */
+  images?: ImageAnnotation[];
 }
 
 export interface CopilotSessionOptions {
@@ -302,6 +305,7 @@ export class CopilotSession {
     const isFirst = this._turnCount === 0;
     this._turnCount++;
     const wantImages = opts?.generateImages ?? false;
+    const images = opts?.images ?? [];
 
     log.info(`Chat turn ${this._turnCount - 1}: model=${model}, isFirst=${isFirst}, text=${JSON.stringify(trunc(text, 200))}`);
 
@@ -684,6 +688,7 @@ export class CopilotSession {
                 experienceType: "Default",
                 adaptiveCards: [] as any[],
                 clientPreferences: {},
+                ...(images.length ? { messageAnnotations: images } : {}),
               },
               ...(agentId
                 ? {

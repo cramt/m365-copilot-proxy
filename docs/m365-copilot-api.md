@@ -149,6 +149,22 @@ Key fields inside `arguments[0]` (full shape in `session.ts::sendChat`):
 
 `invocationId` is always `"0"` even across reconnects — each turn is a fresh WebSocket.
 
+### Images in a turn (vision)
+
+The web client uploads a pasted image first, then points the chat message at it:
+
+1. `POST https://substrate.office.com/m365Copilot/UploadFile`, form-encoded, with the chat token:
+   `scenario=UploadImage`, `conversationId=<the conversation's id>`, `FileBase64=data:image/png;base64,…`,
+   `optionsSets=cwcgptvsan`, `optionsSets=flux_v3_gptv_enable_upload_multi_image_in_turn_wo_ch`; headers
+   `X-Scenario: OfficeWebIncludedCopilot`, `X-Variants: feature.EnableImageSupportInUploadFile`, the
+   `m365.cloud.microsoft` Origin/Referer. The JSON reply carries a `docId`.
+2. The chat invocation's `message.messageAnnotations: [{ id: <docId>, messageAnnotationType: "ImageFile",
+   messageAnnotationMetadata: { "@type": "File", annotationType: "File", fileType: "png", fileName } }]`.
+
+Nothing else is needed: no GPT-V `optionsSets` on the turn, and it works with the tool agent attached
+(hypotheses §33 F86). `core/src/image-input.ts`; the handler sends the OpenAI `image_url` (data URL)
+parts of the messages a turn carries.
+
 ### The mandatory Metrics frame (`type: 1`, `target: "Metrics"`)
 ```json
 {

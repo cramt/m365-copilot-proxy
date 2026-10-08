@@ -16,9 +16,11 @@ const scripted: {
   models: string[];
   /** The `useAgent` argument of every run() call, in order. */
   agentFlags: Array<boolean | undefined>;
+  /** The image data URLs of every run() call, in order. */
+  images: string[][];
   /** How many times the handler rotated to a fresh conversation. */
   newConversations: number;
-} = { deltas: [], runs: 0, texts: [], queue: [], agentFlags: [], newConversations: 0, models: [] };
+} = { deltas: [], runs: 0, texts: [], queue: [], agentFlags: [], newConversations: 0, models: [], images: [] };
 
 vi.mock("@m365-copilot/core", async (importActual) => {
   const actual = await importActual<typeof import("@m365-copilot/core")>();
@@ -28,8 +30,9 @@ vi.mock("@m365-copilot/core", async (importActual) => {
     reset() {}
     newConversation() { this.conversationId = "conv-test-2"; this.turnCount = 0; scripted.newConversations++; }
     async refreshAgent() { return false; }
-    async run(text: string, model?: string, _signal?: AbortSignal, useAgent?: boolean) {
+    async run(text: string, model?: string, _signal?: AbortSignal, useAgent?: boolean, images: string[] = []) {
       scripted.models.push(model ?? "");
+      scripted.images.push(images);
       this.turnCount++; // like the real session: later requests go down the delta path
       scripted.runs++;
       scripted.texts.push(text);
@@ -698,5 +701,42 @@ describe("Priority access (Opus 5.5, Sonnet 5.5): OutOfCredits, remembering it, 
     expect(scripted.models).toEqual([]);
     scripted.queue = [CALL];
     expect((await send("claude-opus", "opus task")).status).toBe(200);
+  });
+});
+
+describe("image input (#39)", () => {
+  const PNG = "data:image/png;base64,iVBORw0KGgo=";
+  const tools = [{ type: "function", function: { name: "read", parameters: { type: "object", properties: { path: { type: "string" } } } } }];
+
+  it("sends a read image with the turn that carries its tool result, and only that turn", async () => {
+    scripted.result = null;
+    scripted.texts = [];
+    scripted.images = [];
+    scripted.queue = [{ fullText: "```read\npath: chart.png\n```" }, { fullText: "The title is Lot 7." }];
+    const pool = new SessionPool();
+    const messages: any[] = [{ role: "user", content: `what does chart.png say? ${Math.random()}` }];
+    const ask = async () => (await (await handleChatCompletion(ChatCompletionRequest.parse({ model: "gpt-5.6-think-deeper", stream: false, tools, messages }), pool)).json()).choices[0].message;
+    const call = (await ask()).tool_calls[0];
+    // pi's shape for a model with image input: the tool result, then the image in a user message.
+    messages.push({ role: "assistant", content: null, tool_calls: [call] });
+    messages.push({ role: "tool", tool_call_id: call.id, content: "Read image file [image/png]" });
+    messages.push({ role: "user", content: [{ type: "text", text: "Attached image(s) from tool result:" }, { type: "image_url", image_url: { url: PNG } }] });
+    expect((await ask()).content).toBe("The title is Lot 7.");
+    expect(scripted.images).toEqual([[], [PNG]]);
+    expect(scripted.texts[1]).toContain("Attached image(s) from tool result:");
+    scripted.queue = [];
+  });
+
+  it("sends the images of the whole history with a full prompt", async () => {
+    scripted.result = null;
+    scripted.images = [];
+    scripted.queue = [{ fullText: "A red square." }];
+    const body = ChatCompletionRequest.parse({
+      model: "gpt-5.6-think-deeper", stream: false,
+      messages: [{ role: "user", content: [{ type: "text", text: `what is this? ${Math.random()}` }, { type: "image_url", image_url: { url: PNG, detail: "auto" } }] }],
+    });
+    await handleChatCompletion(body, new SessionPool());
+    expect(scripted.images).toEqual([[PNG]]);
+    scripted.queue = [];
   });
 });

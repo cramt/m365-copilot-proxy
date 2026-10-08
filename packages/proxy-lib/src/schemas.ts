@@ -36,6 +36,8 @@ export const ChatMessage = z.object({
       z.object({
         type: z.string(),
         text: z.string().optional(),
+        // OpenAI image parts (pi sends a read image as a data URL): kept for image input.
+        image_url: z.object({ url: z.string() }).passthrough().optional(),
       }),
     ),
   ]).nullable().optional(),

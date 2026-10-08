@@ -200,6 +200,10 @@ Point [pi](https://pi.dev/) at it via `~/.pi/agent/models.json`:
 > `apiKey` is a placeholder. The proxy binds to localhost and validates no
 > credential — the field exists only because the OpenAI client schema requires it.
 
+To let the model see images — a screenshot, a chart the agent drew, a PNG it `read`s — add
+`"input": ["text", "image"]` to each model entry. pi then sends them as `image_url` parts and the proxy
+uploads them to M365 the way the web client does.
+
 Then run pi (use `gpt-5.5-think-deeper` — the reliable tool-calling model — and keep the
 toolset lean; M365 "disengages" on very large tool payloads, see
 [docs/m365-copilot-api.md](docs/m365-copilot-api.md#the-disengaged-filter)):

@@ -37,7 +37,7 @@ export interface ToolDef {
 
 export interface Message {
   role: string;
-  content?: string | Array<{ type: string; text?: string }> | null;
+  content?: string | Array<{ type: string; text?: string; image_url?: { url: string } }> | null;
   tool_calls?: Array<{
     id: string;
     function: { name: string; arguments: string };
