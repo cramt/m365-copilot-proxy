@@ -1,5 +1,5 @@
-import { describe, it, expect } from "vitest";
-import { buildCopilotWebSocketUrl, cursorMessageId, foldStreamText, TurnTextComposer } from "./session.js";
+import { describe, it, expect, afterEach } from "vitest";
+import { buildCopilotWebSocketHeaders, buildCopilotWebSocketUrl, cursorMessageId, foldStreamText, TurnTextComposer } from "./session.js";
 import { MessageUpdate } from "./schemas.js";
 
 /** Replay a sequence of raw M365 frames (deltas as {d}, snapshots as {s}) through
@@ -131,6 +131,19 @@ describe("temporary-chat WebSocket URL", () => {
     const url = new URL(buildCopilotWebSocketUrl("oid-1", "tid-1", params));
 
     expect(url.searchParams.has("disableMemory")).toBe(false);
+  });
+});
+
+describe("Chathub WebSocket headers", () => {
+  afterEach(() => { delete process.env.M365_NO_SESSION_ROUTING; });
+
+  it("pins the conversation to one backend by its ConversationId", () => {
+    expect(buildCopilotWebSocketHeaders("conversation-1")["X-RoutingParameter-SessionKey"]).toBe("conversation-1");
+  });
+
+  it("leaves the routing key out under M365_NO_SESSION_ROUTING", () => {
+    process.env.M365_NO_SESSION_ROUTING = "1";
+    expect(buildCopilotWebSocketHeaders("conversation-1")).not.toHaveProperty("X-RoutingParameter-SessionKey");
   });
 });
 

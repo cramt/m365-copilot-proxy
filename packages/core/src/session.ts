@@ -267,6 +267,30 @@ export function buildCopilotWebSocketUrl(
 }
 
 /**
+ * Headers for the Chathub WebSocket upgrade.
+ *
+ * `X-RoutingParameter-SessionKey` pins every turn of a conversation to one
+ * backend. Each turn is a new connection, and without the key the Substrate
+ * front end spreads them over pods in two regions (`x-calculatedbetarget`:
+ * 4–6 distinct in 6 handshakes on one ConversationId, Switzerland North and
+ * Sweden Central), which keep separate copies of the conversation. The model
+ * then answers from whichever copy the turn landed on: in real pi runs 53% of
+ * turns ran on an older copy, missing the model's own earlier calls and their
+ * results (docs/hypotheses.md F85). With the key: 1 backend in 6. The query-string form
+ * doesn't pin. M365_NO_SESSION_ROUTING=1 leaves it out.
+ */
+export function buildCopilotWebSocketHeaders(conversationId: string): Record<string, string> {
+  return {
+    "Origin": "https://m365.cloud.microsoft",
+    "User-Agent": "Mozilla/5.0 (X11; Linux x86_64; rv:148.0) Gecko/20100101 Firefox/148.0",
+    "Accept-Language": "en-US,en;q=0.9",
+    "Cache-Control": "no-cache",
+    "Pragma": "no-cache",
+    ...(process.env.M365_NO_SESSION_ROUTING ? {} : { "X-RoutingParameter-SessionKey": conversationId }),
+  };
+}
+
+/**
  * A persistent conversation session with M365 Copilot.
  * Reuses the same sessionId/conversationId across turns,
  * reconnecting the WebSocket for each message.
@@ -339,6 +363,7 @@ export class CopilotSession {
     const wsUrl = buildCopilotWebSocketUrl(claims.oid, claims.tid, params);
     const agentId = this.agentId;
     const sessionId = this.sessionId;
+    const conversationId = this.conversationId;
     const nativeActions = this.nativeActions;
 
     return new Promise((resolve, reject) => {
@@ -512,15 +537,7 @@ export class CopilotSession {
         },
       };
 
-      const ws = new WebSocket(wsUrl, {
-        headers: {
-          "Origin": "https://m365.cloud.microsoft",
-          "User-Agent": "Mozilla/5.0 (X11; Linux x86_64; rv:148.0) Gecko/20100101 Firefox/148.0",
-          "Accept-Language": "en-US,en;q=0.9",
-          "Cache-Control": "no-cache",
-          "Pragma": "no-cache",
-        },
-      });
+      const ws = new WebSocket(wsUrl, { headers: buildCopilotWebSocketHeaders(conversationId) });
 
       let handshakeDone = false;
       let stopped = false;

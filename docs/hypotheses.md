@@ -67,6 +67,9 @@ than "we eyeballed one run." See §M (Methods) for the experimental rig.
 - §29 — agent-less GPT-6.1 Sol vs GPT-6 Sol: the same solves and turns under every framing, but only
   GPT-6.1 Sol keeps out of its sandbox under the user-voice ones (relay_batch 0/40 tasks vs 6/20, honest
   3/40 vs 17/20); the included scenario's GPT-6.1 Sol isn't GPT-6 Sol renamed (F72, bears on H27a)
+- §32 — one conversation, two backends (Oct 4 2026): each turn's new connection landed on a random
+  backend, the regions kept separate copies of the conversation, and about half the turns ran on a
+  partial history; `X-RoutingParameter-SessionKey` pins a conversation to one backend (F85)
 
 ---
 
@@ -2753,6 +2756,9 @@ N with no idea what turns 1..N-1 said.
 Two turns on one temporary conversation: turn 1 supplies a codeword, turn 2 asks for it back.
 Turn 2 answered `plum-harbor-77` verbatim. Context is retained on the live `ConversationId`.
 n=1, but the failure mode would be total rather than stochastic, so one clean sample settles it.
+(Oct 4: it was stochastic after all, for a different reason. Turns of a conversation forked across
+backends, saved or temporary alike, and every fork kept turn 1, which is all this check asked
+about. See §32 F85.)
 
 ### F29 — the temporary thread is genuinely absent from history 🟢
 
@@ -4866,3 +4872,55 @@ executing"). Re-read by `contentType: Code`: F61's bench, relay vs relay_batch, 
 10 vs 3 (not reported). Together 11 vs 9, so relay_batch added no sandbox turns, and none of them cost a
 run; the decision stands. Every other archive on the three accounts (GPT-6, GPT-6 Sol, GPT-6.1 Sol,
 Sonnet 5) reads the same under both rules.
+
+---
+
+## 32. Oct 4 2026 — one conversation, two backends: turns forked until `X-RoutingParameter-SessionKey` pinned them
+
+### F85 — each turn landed on a random backend, and the conversation forked under the model 🟢
+**Discovery** (Windows / pi, `gpt-5.6-think-deeper`, long sessions of three consecutive requests). The
+chain of thought kept naming a "mismatch" between the model's call and the `<tool_response>` it got —
+"they pasted a command line interface output instead of the expected file content" — and the model
+read `todo.mjs` four times in one step. The final `type:2` item carries the server's own count of
+the conversation's user messages (`turnCount`, `throttling.numUserMessagesInConversation`). Over
+the 17 turns of that step it ran 1,2,3,2,4,5,3,6,4,5,6,7,7,8,8,9,9: the turns were landing on two
+diverging copies of the conversation that shared only the first turn.
+
+**Scale** (`scripts/fork-scan.mjs` over the proxy debug logs of Oct 2–4 on one account; turns
+joined across files by ConversationId): 77 of 116 conversations with 3+ turns forked, and 455 of 852
+turns ran on an older copy; in the long sessions 9 of 10 and 86% of turns. On off-thread turns the
+model repeated a tool call it had already made for the same request 21% of the time (1% on the full
+thread) and reasoned about mismatched responses 10% of the time (1%).
+
+**Probe** (`scripts/fork-probe.mjs`, `gpt-5.6-think-deeper` with the agent; 6 turns each). Every
+message carries a fresh word and asks for all the words so far, so the reply shows what the model can
+see:
+
+| arm | conversations forked | turns off the thread | replies missing a word |
+|---|---|---|---|
+| temporary chat (the default) | 2/3 | 7/18 | 7/18 |
+| saved chat | 3/3 | 11/18 | 11/18 |
+| temporary chat + routing key | **0/4** | **0/24** | **0/24** |
+
+The replies list exactly the words of their copy (turn 4: "willow cobalt", missing turns 2–3; turn 6:
+"willow biscuit maple violet", missing 4–5). Saved chat forks too, so `disableMemory=1` is not the
+cause, and F28's two-turn check could not have seen this: every fork here keeps turn 1.
+
+**Mechanism.** Handshake-only connections (no chat message, so no quota and no thread) on one
+ConversationId: `x-calculatedbetarget` named 4–6 different backends in 6 connections, pods in
+Switzerland North and Sweden Central, and no cookie came back. With the header
+`X-RoutingParameter-SessionKey: <ConversationId>`: 1 backend in 6, twice (a different one per
+conversation). The same key as a query parameter does not pin; neither does `X-AnchorMailbox` (OID or
+UPN) or a fixed `chatsessionid`. Inferred: each region keeps its own copy of a live conversation.
+**Fixed:** the proxy sends the header with the conversation id on every turn
+(`buildCopilotWebSocketHeaders`; `M365_NO_SESSION_ROUTING=1` leaves it out).
+
+**Validated in real pi** (the same long-session test, on a build with the header plus the pending
+Windows fixes of #44, `relay` framing; 6 sessions, 125 turns): no forks (0/6 sessions, 0/125 turns);
+18/18 steps passed; every follow-up summarised its own request; no "mismatch" reasoning and no call
+repeated within a request. 5.9 tool calls and 48 s per step, against 8.4–12.8 and 58–92 s on forked
+conversations; the run did not trip the throttle.
+
+**What this re-opens.** Before the fix, every multi-turn measurement ran with about half its turns on a
+partial history. A/B comparisons stay fair (their arms forked alike), but absolute numbers — turns per
+task, give-up rates, follow-ups that drift back to the first request — are worth re-measuring.
