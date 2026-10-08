@@ -802,7 +802,14 @@ export async function handleChatCompletion(
       const send = (obj: unknown) => controller.enqueue(enc.encode(`data: ${JSON.stringify(obj)}\n\n`));
       const base = { id: completionId, object: "chat.completion.chunk", created, model };
       send({ ...base, choices: [{ index: 0, delta: { role: "assistant" }, finish_reason: null }] });
-      const hb = setInterval(() => { try { controller.enqueue(enc.encode(": keepalive\n\n")); } catch {} }, 15000);
+      // Keepalive: a REAL empty-delta chunk, not an SSE comment. Agents that track
+      // stream liveness by data chunks (e.g. Hermes: comments don't reset its
+      // `last_chunk_time`, so a silent turn shows "N s without stream output" and can
+      // trip its stale watchdog) see this as activity. No content is added — an empty
+      // delta contributes nothing to the assembled message.
+      const hb = setInterval(() => {
+        try { send({ ...base, choices: [{ index: 0, delta: {}, finish_reason: null }] }); } catch {}
+      }, 15000);
 
       // Live token passthrough (non-tool only). Track exactly what we've sent so the
       // final render emits only the not-yet-streamed remainder. session.ts guarantees

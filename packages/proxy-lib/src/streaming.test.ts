@@ -18,7 +18,9 @@ const scripted: {
   agentFlags: Array<boolean | undefined>;
   /** How many times the handler rotated to a fresh conversation. */
   newConversations: number;
-} = { deltas: [], runs: 0, texts: [], queue: [], agentFlags: [], newConversations: 0, models: [] };
+  /** Held open to keep a turn silent while a test advances the clock (heartbeat tests). */
+  gate: Promise<void> | null;
+} = { deltas: [], runs: 0, texts: [], queue: [], agentFlags: [], newConversations: 0, models: [], gate: null };
 
 vi.mock("@m365-copilot/core", async (importActual) => {
   const actual = await importActual<typeof import("@m365-copilot/core")>();
@@ -29,6 +31,7 @@ vi.mock("@m365-copilot/core", async (importActual) => {
     newConversation() { this.conversationId = "conv-test-2"; this.turnCount = 0; scripted.newConversations++; }
     async refreshAgent() { return false; }
     async run(text: string, model?: string, _signal?: AbortSignal, useAgent?: boolean) {
+      if (scripted.gate) await scripted.gate;
       scripted.models.push(model ?? "");
       this.turnCount++; // like the real session: later requests go down the delta path
       scripted.runs++;
@@ -125,6 +128,51 @@ describe("incremental streaming (non-tool path)", () => {
     expect(contents.join("")).toBe("Hello world");
     // No duplicated prefix.
     expect(contents.join("").match(/Hello/g)?.length).toBe(1);
+  });
+});
+
+describe("keepalive on a silent turn (tool turns are buffered, so the stream can be quiet for minutes)", () => {
+  it("sends a data chunk, not an SSE comment, so a client's last-chunk clock keeps ticking", async () => {
+    // A stream carrying only comments looks alive at the socket but dead to a client that
+    // measures liveness by data chunks: it warns "no stream output" and can trip its stale
+    // watchdog, reconnecting (and re-sending the turn) mid-flight.
+    scripted.deltas = ["listo"];
+    scripted.fullText = "listo";
+    let release!: () => void;
+    scripted.gate = new Promise<void>((r) => { release = r; });
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
+    try {
+      const body = ChatCompletionRequest.parse({
+        model: "m365-copilot",
+        stream: true,
+        messages: [{ role: "user", content: "hello" }],
+      });
+      const pending = handleChatCompletion(body, new SessionPool()).then((res) => res.text());
+      await vi.advanceTimersByTimeAsync(16_000); // the turn has said nothing yet
+      release();
+      const text = await pending;
+
+      // At least one heartbeat, and it is a no-op data chunk (empty delta, no finish
+      // marker). A client that resets its liveness clock on data chunks sees the turn
+      // as live; the comment this replaced (`: keepalive`) it does not see at all.
+      const beats = text
+        .split("\n")
+        .filter((l) => l.startsWith("data: ") && l !== "data: [DONE]")
+        .map((l) => JSON.parse(l.slice(6)))
+        .filter((c) => c.choices?.[0]?.finish_reason === null && Object.keys(c.choices[0].delta ?? {}).length === 0);
+      expect(beats.length).toBeGreaterThan(0);
+
+      // The heartbeat is a no-op: the turn's own text is still emitted exactly once.
+      const contents = text
+        .split("\n")
+        .filter((l) => l.startsWith("data: ") && l !== "data: [DONE]")
+        .map((l) => JSON.parse(l.slice(6)).choices?.[0]?.delta?.content)
+        .filter((c) => typeof c === "string" && c.length > 0);
+      expect(contents.join("")).toBe("listo");
+    } finally {
+      scripted.gate = null;
+      vi.useRealTimers();
+    }
   });
 });
 
