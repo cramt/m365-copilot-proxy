@@ -830,6 +830,7 @@ describe("GPT-6 Sol: agent on premium, learned fallback on non-premium (#23)", (
     expect(scripted.newConversations).toBe(1);
     // The retry is the whole request, not a "Please continue." into nothing.
     expect(scripted.texts[1]).toContain("list files");
+    expect(scripted.texts[1]).toContain("Python code interpreter at /mnt/data");
     expect(scripted.texts[1]).toContain("```bash");
   });
 
@@ -1160,7 +1161,7 @@ describe("Opus 4.5 on an account that can't serve it (§24)", () => {
     });
     const res = await respond(body);
     expect(res.status).toBe(502);
-    const err = (await res.json()).error;
+    const err = asObject(asObject(await responseJson(res)).error);
     expect(err.code).toBe("model_route_unavailable");
     expect(err.message).toContain("premium");
     // Agent-less is a dead route too, so there is nothing to fall back to.
@@ -1177,7 +1178,7 @@ describe("Opus 4.5 on an account that can't serve it (§24)", () => {
     });
     const res = await respond(body);
     expect(res.status).toBe(502);
-    expect((await res.json()).error.type).toBe("upstream_empty_response");
+    expect(asObject(asObject(await responseJson(res)).error).type).toBe("upstream_empty_response");
   });
 });
 
@@ -1212,7 +1213,7 @@ describe("Priority access (Opus 5.5, Sonnet 5.5): OutOfCredits, remembering it, 
   it("surfaces the Opus allowances left in usage", async () => {
     scripted.queue = [CALL];
     const res = await send();
-    const usage = (await res.json()).usage;
+    const usage = asObject(asObject(await responseJson(res)).usage);
     expect(usage.x_m365_opus_daily_remaining).toBe(12);
     expect(usage.x_m365_opus_weekly_remaining).toBe(30);
   });
@@ -1221,7 +1222,7 @@ describe("Priority access (Opus 5.5, Sonnet 5.5): OutOfCredits, remembering it, 
     scripted.queue = [REFUSAL];
     const res = await send();
     expect(res.status).toBe(429);
-    const err = (await res.json()).error;
+    const err = asObject(asObject(await responseJson(res)).error);
     expect(err.code).toBe("priority_access_exhausted");
     expect(err.param).toBe("week");
     expect(Number(res.headers.get("Retry-After"))).toBeGreaterThan(0);
@@ -1244,13 +1245,14 @@ describe("Priority access (Opus 5.5, Sonnet 5.5): OutOfCredits, remembering it, 
     scripted.queue = [REFUSAL, { fullText: "```bash\nls\n```" }];
     const res = await send();
     expect(res.status).toBe(200);
-    const json = await res.json();
-    expect(json.choices[0].message.tool_calls).toHaveLength(1);
+    const json = asObject(await responseJson(res));
+    expect(objectAt(asArray(json.choices)[0], "message").tool_calls).toHaveLength(1);
     expect(json.model).toBe("claude-opus-4.5"); // says who answered
     expect(scripted.models).toEqual(["claude-opus", "claude-opus-4.5"]);
     expect(scripted.newConversations).toBe(1);
     expect(scripted.agentFlags).toEqual([true, true]);
     expect(scripted.texts[1]).toContain("list files"); // the whole request, not a delta
+    expect(scripted.texts[1]).toContain("/home/claude");
   });
 
   it("…and routes the next requests straight to the fallback until the reset", async () => {
@@ -1311,7 +1313,7 @@ describe("Priority access (Opus 5.5, Sonnet 5.5): OutOfCredits, remembering it, 
 
   it("surfaces Sonnet 5.5's allowances in usage, next to Opus's", async () => {
     scripted.queue = [{ fullText: "```bash\nls\n```", metering: { ClaudeOpusQueryDaily: 12, ClaudeOpusQuery75: 30, ClaudeSonnet55QueryDaily: 79, ClaudeSonnet55QueryWeekly: 149 } }];
-    const usage = (await (await send("claude-sonnet-5.5")).json()).usage;
+    const usage = asObject(asObject(await responseJson(await send("claude-sonnet-5.5"))).usage);
     expect(usage.x_m365_sonnet55_daily_remaining).toBe(79);
     expect(usage.x_m365_sonnet55_weekly_remaining).toBe(149);
     expect(usage.x_m365_opus_daily_remaining).toBe(12);
@@ -1321,7 +1323,7 @@ describe("Priority access (Opus 5.5, Sonnet 5.5): OutOfCredits, remembering it, 
     scripted.queue = [SONNET_REFUSAL];
     const res = await send("claude-sonnet-5.5");
     expect(res.status).toBe(429);
-    expect((await res.json()).error.param).toBe("day");
+    expect(asObject(asObject(await responseJson(res)).error).param).toBe("day");
     // Sonnet 5.5 is answered locally until the reset…
     expect((await send("claude-sonnet-5.5", "another task")).status).toBe(429);
     expect(scripted.models).toEqual([]);
@@ -1339,7 +1341,7 @@ describe("Priority access (Opus 5.5, Sonnet 5.5): OutOfCredits, remembering it, 
     scripted.queue = [SONNET_REFUSAL, { fullText: "```bash\nls\n```" }];
     const res = await send("claude-sonnet-5.5");
     expect(res.status).toBe(200);
-    expect((await res.json()).model).toBe("claude-sonnet-5");
+    expect(asObject(await responseJson(res)).model).toBe("claude-sonnet-5");
     expect(scripted.models).toEqual(["claude-sonnet-5.5", "claude-sonnet-5"]);
     expect(scripted.agentFlags).toEqual([false, false]);
   });

@@ -607,6 +607,7 @@ export async function handleChatCompletion(
           body.tool_choice,
           session.conversationId,
           framingVariant,
+          { tone },
         );
         originalText = text;
         log.info(
@@ -642,7 +643,7 @@ export async function handleChatCompletion(
             defaultFramingForModel(model, { agentLess: !!hasTools && !useToolAgent }),
           );
           session.newConversation();
-          text = formatMessages(body.messages, body.tools, body.tool_choice, session.conversationId, framingVariant);
+          text = formatMessages(body.messages, body.tools, body.tool_choice, session.conversationId, framingVariant, { tone });
           originalText = text;
           attempt--;
           continue;

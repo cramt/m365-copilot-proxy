@@ -194,7 +194,7 @@ describe("native call closer leaking into a fence (Opus)", () => {
   const SCRIPT = "#!/bin/bash\nwc -l < data.txt | tr -d ' ' > count.txt";
   function argsOf(text: string) {
     const { calls, leftover } = parseFencedToolCalls(text, specs);
-    return { calls, leftover, args: calls[0] ? JSON.parse(calls[0].function.arguments) : null };
+    return { calls, leftover, args: calls[0] ? parseJsonObject(calls[0].function.arguments) : {} };
   }
 
   it("keeps </invoke> out of the file when the fence is closed too", () => {
@@ -794,7 +794,7 @@ describe("array and object params written as a YAML block (#50)", () => {
   const argsOf = (text: string) => {
     const { calls } = parseFencedToolCalls(text, piSpecs);
     expect(calls).toHaveLength(1);
-    return JSON.parse(calls[0].function.arguments);
+    return parseJsonObject(calls[0].function.arguments);
   };
 
   it("reads Sonnet 4.6's block list, verbatim from real pi (44 of its 47 edits were lost)", () => {
