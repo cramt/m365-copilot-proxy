@@ -1,7 +1,13 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, afterEach } from "vitest";
 import {
+  activePriorityAccessExhaustion,
   couldBePriorityAccessPrefix,
+  notePriorityAccessExhausted,
+  meteredAllowance,
+  parseMetering,
   parsePriorityAccessExhaustion,
+  priorityAccessExhaustionOf,
+  resetPriorityAccessState,
   secondsUntilReset,
 } from "./priority-access.js";
 
@@ -114,5 +120,97 @@ describe("couldBePriorityAccessPrefix (stream-head gate)", () => {
   it("stays held once the full refusal opener has matched", () => {
     expect(couldBePriorityAccessPrefix(DAILY)).toBe(true);
     expect(couldBePriorityAccessPrefix(WEEKLY)).toBe(true);
+  });
+});
+
+// The final item's throttling block of a paid-scenario Opus turn, verbatim
+// (2026-10-05 00:01Z, the first Opus 5.5 turn after the weekly reset; §24 F55).
+const METERING = {
+  DeepResearch: { remainingAllowance: 100 },
+  ClaudeOpusQuery: { remainingAllowance: 100 },
+  ClaudeOpusQuery75: { remainingAllowance: 74 },
+  ClaudeOpusQueryDev: { remainingAllowance: 5 },
+  ClaudeOpusQueryC1: { remainingAllowance: 0 },
+  ClaudeOpusQueryDaily: { remainingAllowance: 39 },
+  ClaudeOpusQueryHourlyDev: { remainingAllowance: 2 },
+  ClaudeOpusQueryWeeklyWord: { remainingAllowance: 75 },
+  ClaudeOpusQueryDailyWord: { remainingAllowance: 40 },
+};
+
+describe("parseMetering / meteredAllowance", () => {
+  it("flattens the metering map and picks out the Opus daily and weekly allowances", () => {
+    const m = parseMetering(METERING)!;
+    expect(m.ClaudeOpusQuery75).toBe(74);
+    expect(m.DeepResearch).toBe(100);
+    expect(meteredAllowance(m, "opus")).toEqual({ daily: 39, weekly: 74 });
+  });
+
+  it("picks out Sonnet 5.5's allowances, apart from Opus's (§26)", () => {
+    // Read off a Sonnet 5.5 turn on 2026-10-06, after its first turn of the week.
+    const m = parseMetering({
+      ...METERING,
+      ClaudeSonnet55QueryDaily: { remainingAllowance: 79 },
+      ClaudeSonnet55QueryWeekly: { remainingAllowance: 149 },
+    })!;
+    expect(meteredAllowance(m, "sonnet-5.5")).toEqual({ daily: 79, weekly: 149 });
+    expect(meteredAllowance(m, "opus")).toEqual({ daily: 39, weekly: 74 });
+    expect(meteredAllowance(parseMetering(METERING), "sonnet-5.5")).toBeNull();
+  });
+
+  it("returns null when there is nothing to read (included scenario: no metering)", () => {
+    expect(parseMetering(undefined)).toBeNull();
+    expect(parseMetering({})).toBeNull();
+    expect(parseMetering({ X: { remainingAllowance: "3" } })).toBeNull();
+    expect(meteredAllowance(null, "opus")).toBeNull();
+    expect(meteredAllowance({ DeepResearch: 100 }, "opus")).toBeNull();
+  });
+});
+
+describe("priorityAccessExhaustionOf (result + text)", () => {
+  it("reads the OutOfCredits result's message", () => {
+    const r = priorityAccessExhaustionOf({ value: "OutOfCredits", message: WEEKLY }, "", WED)!;
+    expect(r.window).toBe("week");
+    expect(r.resetsAt.toISOString()).toBe("2026-09-21T00:00:00.000Z");
+  });
+
+  it("trusts OutOfCredits even if the refusal is ever reworded", () => {
+    const r = priorityAccessExhaustionOf({ value: "OutOfCredits", message: "Opus is unavailable until tomorrow." }, "", WED)!;
+    expect(r.window).toBe("day");
+    expect(r.resetsAt.toISOString()).toBe("2026-09-17T00:00:00.000Z");
+    expect(priorityAccessExhaustionOf({ value: "OutOfCredits", message: "back on Monday" }, "", WED)!.window).toBe("week");
+  });
+
+  it("still catches the text alone, and ignores ordinary turns", () => {
+    expect(priorityAccessExhaustionOf({ value: "Success" }, DAILY, WED)!.window).toBe("day");
+    expect(priorityAccessExhaustionOf({ value: "Success" }, "Done.", WED)).toBeNull();
+    expect(priorityAccessExhaustionOf(null, null, WED)).toBeNull();
+  });
+});
+
+describe("remembering an exhaustion until its reset", () => {
+  afterEach(() => resetPriorityAccessState());
+
+  it("is active until the reset, then forgotten", () => {
+    const e = parsePriorityAccessExhaustion(DAILY, WED)!;
+    notePriorityAccessExhausted("opus", e, WED);
+    expect(activePriorityAccessExhaustion("opus", new Date("2026-09-16T23:59:00Z"))).toBe(e);
+    expect(activePriorityAccessExhaustion("opus", new Date("2026-09-17T00:00:01Z"))).toBeNull();
+  });
+
+  it("keeps the later reset when the weekly wall follows the daily one", () => {
+    const day = parsePriorityAccessExhaustion(DAILY, WED)!;
+    const week = parsePriorityAccessExhaustion(WEEKLY, WED)!;
+    notePriorityAccessExhausted("opus", week, WED);
+    notePriorityAccessExhausted("opus", day, WED);
+    expect(activePriorityAccessExhaustion("opus", new Date("2026-09-18T00:00:00Z"))?.window).toBe("week");
+  });
+
+  it("keeps each budget's wall to itself — Opus running out says nothing about Sonnet 5.5", () => {
+    const e = parsePriorityAccessExhaustion(DAILY, WED)!;
+    notePriorityAccessExhausted("opus", e, WED);
+    expect(activePriorityAccessExhaustion("sonnet-5.5", WED)).toBeNull();
+    expect(activePriorityAccessExhaustion("gpt-6-sol", WED)).toBeNull();
+    notePriorityAccessExhausted("gpt-6-sol", e, WED);
+    expect(activePriorityAccessExhaustion("gpt-6-sol", WED)).toBe(e);
   });
 });

@@ -1,8 +1,9 @@
-// Priority-access exhaustion (the Opus daily / weekly cap).
+// Priority-access exhaustion (the Opus 5.5 and Sonnet 5.5 daily / weekly caps).
 //
-// Opus is metered separately from everything else on this API. When the budget
-// runs out M365 does NOT throttle, disengage, or return empty — it answers the
-// turn with a plain-text refusal on an ordinary bot message, verbatim:
+// Opus 5.5 and Sonnet 5.5 are metered separately from everything else on this
+// API. When a budget runs out M365 does NOT throttle, disengage, or return
+// empty — it answers the turn with a plain-text refusal on an ordinary bot
+// message, verbatim (Opus):
 //
 //   "You've used your available priority access to the Opus model for today.
 //    You can choose another available model or wait until tomorrow to use the
@@ -111,4 +112,100 @@ export function secondsUntilReset(
   now: Date = new Date(),
 ): number {
   return Math.max(1, Math.ceil((exhaustion.resetsAt.getTime() - now.getTime()) / 1000));
+}
+
+// --- What the wire says (docs/hypotheses.md §24 F55) -------------------------
+//
+// Besides the refusal text, M365 states the exhaustion and the allowances
+// outright. The refusal turn's final item carries `result: {value:
+// "OutOfCredits", message: <the refusal text>, creditScenario: "TotalTurn"}`,
+// and every turn on the paid scenario carries `throttling.metering`, a map of
+// `{<budget>: {remainingAllowance: n}}`. Each turn of a metered model takes one
+// from its daily and its weekly allowance, whatever its size. Included-scenario
+// turns carry no `metering` (Opus 4.5 and Sonnet 4.6 aren't metered).
+
+/** A separately metered model's priority-access budget. */
+export type MeteredBudget = "opus" | "sonnet-5.5";
+
+/**
+ * Where each budget sits in `throttling.metering`, and what to call it.
+ * - Opus 5.5: `ClaudeOpusQuery75` is the weekly allowance (75, from the Monday
+ *   reset) and `ClaudeOpusQueryDaily` the daily one (40) (§24 F55).
+ * - Sonnet 5.5: `ClaudeSonnet55QueryDaily` (80) and `ClaudeSonnet55QueryWeekly`
+ *   (150), read 79/149 after the first turn (§26). Sonnet 5 lowers neither.
+ */
+export const METERED_BUDGETS: Readonly<Record<MeteredBudget, { label: string; usageKey: string; daily: string; weekly: string }>> = {
+  opus: { label: "Opus", usageKey: "opus", daily: "ClaudeOpusQueryDaily", weekly: "ClaudeOpusQuery75" },
+  "sonnet-5.5": { label: "Sonnet 5.5", usageKey: "sonnet55", daily: "ClaudeSonnet55QueryDaily", weekly: "ClaudeSonnet55QueryWeekly" },
+};
+
+/** `throttling.metering` as `{budget: remainingAllowance}`; null when absent or empty. */
+export function parseMetering(raw: unknown): Record<string, number> | null {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
+  const out: Record<string, number> = {};
+  for (const [k, v] of Object.entries(raw as Record<string, unknown>)) {
+    const n = (v as { remainingAllowance?: unknown } | null)?.remainingAllowance;
+    if (typeof n === "number" && Number.isFinite(n)) out[k] = n;
+  }
+  return Object.keys(out).length ? out : null;
+}
+
+/** One budget's allowances in a metering map, when it has them. */
+export function meteredAllowance(
+  metering: Record<string, number> | null | undefined,
+  budget: MeteredBudget,
+): { daily?: number; weekly?: number } | null {
+  if (!metering) return null;
+  const daily = metering[METERED_BUDGETS[budget].daily];
+  const weekly = metering[METERED_BUDGETS[budget].weekly];
+  if (daily === undefined && weekly === undefined) return null;
+  return { ...(daily !== undefined ? { daily } : {}), ...(weekly !== undefined ? { weekly } : {}) };
+}
+
+/**
+ * The exhaustion a turn reports, from its final `result` and/or its text.
+ * `OutOfCredits` is authoritative even if the refusal is ever reworded; the
+ * text alone still counts (older builds, and the result is missing on some
+ * paths). Null for an ordinary turn.
+ */
+export function priorityAccessExhaustionOf(
+  result: { value: string; message?: string } | null | undefined,
+  text: string | null | undefined,
+  now: Date = new Date(),
+): PriorityAccessExhaustion | null {
+  const fromText = parsePriorityAccessExhaustion(result?.message, now) ?? parsePriorityAccessExhaustion(text, now);
+  if (fromText) return fromText;
+  if (result?.value !== "OutOfCredits") return null;
+  const message = (result.message ?? text ?? "").trim() || "OutOfCredits";
+  const window: PriorityAccessWindow = /\bweek|monday/i.test(message) ? "week" : "day";
+  return { window, resetsAt: window === "week" ? nextUtcMonday(now) : nextUtcMidnight(now), message };
+}
+
+// --- Remembering it ----------------------------------------------------------
+//
+// Once a metered turn has been refused, every further turn on that budget until
+// the reset is refused too. Each of those refusals still starts an M365 turn,
+// often in a fresh conversation — the thread budget the account throttles on
+// (F13) — so the proxy answers them itself until the reset. One process serves
+// one account, so this is per-account knowledge. Kept per budget: an Opus wall
+// says nothing about Sonnet 5.5's. A model not known to be metered that gets an
+// `OutOfCredits` anyway is remembered under its model ID.
+const exhaustions = new Map<string, PriorityAccessExhaustion>();
+
+/** Record that the budget under `key` (a MeteredBudget, or a model ID) ran out. */
+export function notePriorityAccessExhausted(key: string, e: PriorityAccessExhaustion, now: Date = new Date()): void {
+  const known = exhaustions.get(key);
+  if (!known || e.resetsAt > known.resetsAt || known.resetsAt <= now) exhaustions.set(key, e);
+}
+
+/** The recorded exhaustion under `key`, while it lasts; null once its reset has passed. */
+export function activePriorityAccessExhaustion(key: string, now: Date = new Date()): PriorityAccessExhaustion | null {
+  const known = exhaustions.get(key);
+  if (known && known.resetsAt <= now) exhaustions.delete(key);
+  return exhaustions.get(key) ?? null;
+}
+
+/** Forget it. For tests. */
+export function resetPriorityAccessState(): void {
+  exhaustions.clear();
 }

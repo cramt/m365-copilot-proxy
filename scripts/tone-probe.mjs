@@ -21,8 +21,9 @@
 // as a property of the CONNECTION, not of the tone.
 //
 // Usage: M365_NO_INTERACTIVE=1 CHROMIUM_PATH=$(which chromium) node scripts/tone-probe.mjs
-// Cost: 1 message per cell. Opus cells spend the scarce priority-access budget
-// (see docs §15) — drop them from the list when sweeping something else.
+// Cost: 1 message per cell. Opus and Sonnet 5.5 cells spend their scarce
+// priority-access budgets (see docs §15, §26) — drop them from the list when
+// sweeping something else.
 
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
@@ -57,21 +58,23 @@ const TONES = [
     ...PAID,
   },
   { tone: "Gpt_6_Chat", note: "REJECTED outright — validator error, not the 5.6 deflection" },
-  // One tone, TWO models: Sonnet 4.6 on included, Sonnet 5 on paid (2026-09-28,
-  // docs §21). Both cells read LIVE with this `pong` prompt — LIVE says a model
-  // answered, not which one; a self-ID prompt is what tells them apart.
+  // One tone, TWO models: Sonnet 4.6 on included, Sonnet 5.5 on paid (it was
+  // Sonnet 5 until 2026-10-06, docs §26). Sonnet 5 moved to `Claude_Sonnet_5`,
+  // which is Sonnet 4.6 on included. All cells read LIVE with this `pong`
+  // prompt — LIVE says a model answered, not which one; a self-ID prompt is
+  // what tells them apart.
   { tone: "Claude_Sonnet", note: "included scenario: Claude Sonnet 4.6", ...INCLUDED },
-  {
-    tone: "Claude_Sonnet",
-    note: "PAID scenario: Claude Sonnet 5 (model ID claude-sonnet-5)",
-    ...PAID,
-  },
+  { tone: "Claude_Sonnet", note: "PAID scenario: Claude Sonnet 5.5 (model ID claude-sonnet-5.5) — spends its priority access", ...PAID },
+  { tone: "Claude_Sonnet_5", note: "PAID scenario: Claude Sonnet 5 (model ID claude-sonnet-5)", ...PAID },
   { tone: "Anthropic_Claude", note: "speculative Claude" },
   { tone: "Claude_Reasoning", note: "accepted but actually GPT-5 — don't use" },
 
   // Opus, both entitlements, so the scenario effect is measured not assumed.
-  { tone: "Claude_Opus", note: "included scenario: expect the BotConnection apology", ...INCLUDED },
-  { tone: "Claude_Opus", note: "PAID scenario: expect DeepLeo + a real answer", ...PAID },
+  // Agent-less (this probe) the included cell is dead on every account; Opus
+  // 4.5 (`claude-opus-4.5`) lives there only WITH the agent, on a premium
+  // account — agent-tone-probe.mjs is the probe for that (§24).
+  { tone: "Claude_Opus", note: "included scenario: expect the BotConnection apology (Opus 4.5 needs the agent)", ...INCLUDED },
+  { tone: "Claude_Opus", note: "PAID scenario: expect DeepLeo + Opus 5.5 (spends priority access)", ...PAID },
 
   // GPT-6, likewise paired. Entitlement-gated exactly like Opus but NOT
   // separately metered, so these two cells are cheap — they spend one ordinary
@@ -94,6 +97,12 @@ const TONES = [
     ...INCLUDED,
   },
   { tone: "Gpt_6_Sol_Chat", note: "unmapped: self-IDs as the GPT-5 chat model", ...INCLUDED },
+
+  // GPT-6.1 Sol ("GPT-6.1 Sol" in the web client, §27). Same shape as GPT-6
+  // Sol: LIVE on the included scenario on every account. The paid scenario
+  // serves it on a premium account too but spends the GPT61Sol priority-access
+  // budget (40/day, 75/week), so there's no paid cell here.
+  { tone: "Gpt_61_Sol_Reasoning", note: "gpt-6.1-sol — included scenario: expect DeepLeo on every account", ...INCLUDED },
 
   // Claude_Fable: present in the real web client's tone list (§12.6 decompile)
   // alongside Claude_Sonnet, so it is a registered route rather than a guess.

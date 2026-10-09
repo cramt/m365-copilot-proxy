@@ -236,6 +236,9 @@ importers:
         specifier: ^4.3.6
         version: 4.6.5
     devDependencies:
+      '@types/node':
+        specifier: ^22.0.0
+        version: 22.20.5
       '@types/ws':
         specifier: ^8.18.1
         version: 8.18.2
@@ -264,6 +267,10 @@ importers:
       zod:
         specifier: ^4.3.6
         version: 4.6.5
+    devDependencies:
+      '@types/node':
+        specifier: ^22.0.0
+        version: 22.20.5
 
 packages:
 

@@ -7,6 +7,7 @@
 //
 //   node scripts/bench/analyze-arms.mjs <archive-dir>... [--rows]
 //        [--compare 'relay,default@agent-less' 'demo_only@agent-less']...
+//        [--turns 'relay@agent' 'relay_batch@agent']...
 //
 // Several dirs pool together, e.g. one sweep per account; labels keep the dir.
 //
@@ -22,9 +23,12 @@
 //   path      `agent` or `agent-less`: whether the LAST request carried the tool
 //             agent, i.e. the path that served the result (a dead-route fallback
 //             to agent-less counts as agent-less, and is flagged `fb`)
-//   sandbox   turns with a "Coding and executing" Progress frame: the model ran
-//             commands in its own remote sandbox. Don't count
-//             `contentOrigin: CodeGenerator` instead; most such turns lack it.
+//   sandbox   turns with a `contentType: "Code"` Progress frame: the model ran
+//             code in its own remote sandbox. The text varies by model —
+//             "Coding and executing" (GPT-6, Sonnet 5), "Analysing" / "Analysis"
+//             (Sonnet 4.6's code interpreter, which the old text-only match
+//             missed: hypotheses §30). Don't count `contentOrigin: CodeGenerator`
+//             instead; most such turns lack it.
 //   diseng / jb  turns with a Disengaged message / a JailBreakClassifier origin
 // If the number of conversations doesn't match the number of tasks, the arm's
 // wire totals still print but its rows get path `?`.
@@ -33,12 +37,23 @@
 // infrastructure: its error is a transport failure or a throttle (WebSocket /
 // connection / 429 / m365_throttled); or its conversation logged a network-level
 // WS error or a Throttled turn; or it timed out in an arm whose log shows network
-// failures elsewhere (a stalled connect leaves no error of its own). A solved
+// failures elsewhere (a stalled connect leaves no error of its own); or it hit
+// the Opus priority-access wall (a priority_access_exhausted error, or an
+// OutOfCredits turn in its conversation — `quota`). A solved
 // task is always valid. Plain client timeouts in a healthy arm stay failures.
 //
 // --compare A B: Fisher's exact test (two-sided) on solved/valid between two
-// selections. A selection is ARM[,ARM...][@agent|@agent-less], e.g. `relay,default`
-// pools the two arm names; `@agent-less` keeps only tasks served agent-less.
+// selections. A selection is ARM[,ARM...][+KEY=VAL...][@agent|@agent-less], e.g.
+// `relay,default` pools the two arm names; `+M365_FRAMING_VARIANT=relay` keeps
+// arms whose phase env holds that setting (how a pi arm's framing is told
+// apart); `@agent-less` keeps only tasks served agent-less.
+//
+// --turns A B: M365 turns per valid task in each selection (a dead-route
+// fallback's dead agent turn left out), the change from A to B, and a
+// task-stratified permutation test on it (two-sided): labels are shuffled within
+// each task (a pi run's task is its pi task), so a selection that happened to
+// run more of the long tasks can't win on the mix. Also the Disengaged,
+// jailbreak and sandbox turns per selection.
 import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
 import { basename, join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -157,16 +172,11 @@ function piRows(dir, a) {
 
 // --- wire --------------------------------------------------------------------
 
-const emptyWire = () => ({
-  runs: [],
-  cids: new Set(),
-  corr: [],
-  fallback: 0,
-  internalError: 0,
-  throttled: 0,
-  wsError: 0,
-  disengagedRetry: 0,
-});
+const emptyWire = () => ({ runs: [], cids: new Set(), corr: [], fallback: 0, internalError: 0, throttled: 0, outOfCredits: 0, wsError: 0, disengagedRetry: 0 });
+// The Opus priority-access wall (§24 F55): the turn's final result is OutOfCredits.
+// Older proxies didn't recognise it (the refusal text isn't streamed) and returned
+// "empty response" instead, so read the turn result, not only the client's error.
+const QUOTA = /priority_access_exhausted|priority access to/i;
 
 /** Split an arm's debug log into conversations (see the header). */
 export function conversations(log) {
@@ -195,6 +205,7 @@ export function conversations(log) {
     } else if (line.includes("Agent route dead")) cur.fallback++;
     else if (line.includes("Turn result: InternalError")) cur.internalError++;
     else if (/Upstream Throttled|Turn result: Throttled/.test(line)) cur.throttled++;
+    else if (line.includes("Turn result: OutOfCredits")) cur.outOfCredits++;
     else if (NETWORK_WS_ERROR.test(line)) cur.wsError++;
     else if (line.includes("Upstream Disengaged")) cur.disengagedRetry++;
   }
@@ -202,14 +213,14 @@ export function conversations(log) {
 }
 
 /** Per-turn frame verdicts, keyed by clientCorrelationId (= frame file name). */
-function frameFlags(framesDir) {
+export function frameFlags(framesDir) {
   const flags = new Map();
   if (!existsSync(framesDir) || !statSync(framesDir).isDirectory()) return flags;
   for (const f of readdirSync(framesDir)) {
     if (!f.endsWith(".ndjson")) continue;
     const t = readFileSync(join(framesDir, f), "utf8");
     flags.set(f.slice(0, -7), {
-      sandbox: t.includes("Coding and executing"),
+      sandbox: t.includes('"contentType":"Code"') || t.includes("Coding and executing"),
       disengaged: t.includes('"messageType":"Disengaged"'),
       jailbreak: t.includes("JailBreakClassifier"),
     });
@@ -225,18 +236,7 @@ export function analyzeArm(a) {
   const convs = existsSync(logFile) ? conversations(readFileSync(logFile, "utf8")) : [];
   const frames = frameFlags(join(a.dir, `${a.label}-frames`));
   const mapped = convs.length === rows.length;
-  const wire = {
-    turns: 0,
-    agent: 0,
-    agentless: 0,
-    sandbox: 0,
-    disengaged: 0,
-    jailbreak: 0,
-    internalError: 0,
-    fallback: 0,
-    wsError: 0,
-    throttled: 0,
-  };
+  const wire = { turns: 0, agent: 0, agentless: 0, sandbox: 0, disengaged: 0, jailbreak: 0, internalError: 0, fallback: 0, wsError: 0, throttled: 0, outOfCredits: 0 };
   convs.forEach((c, i) => {
     const turnFlags = c.corr.map((id) => frames.get(id)).filter(Boolean);
     const w = {
@@ -246,10 +246,8 @@ export function analyzeArm(a) {
       sandbox: turnFlags.filter((x) => x.sandbox).length,
       disengaged: turnFlags.filter((x) => x.disengaged).length,
       jailbreak: turnFlags.filter((x) => x.jailbreak).length,
-      internalError: c.internalError,
-      fallback: c.fallback,
-      wsError: c.wsError,
-      throttled: c.throttled,
+      internalError: c.internalError, fallback: c.fallback, wsError: c.wsError, throttled: c.throttled,
+      outOfCredits: c.outOfCredits,
     };
     for (const k of Object.keys(wire)) wire[k] += w[k];
     if (mapped) {
@@ -260,19 +258,13 @@ export function analyzeArm(a) {
   for (const r of rows) {
     r.path ??= "?";
     const w = r.wire;
-    r.invalid = r.solved
-      ? null
-      : TRANSPORT.test(r.error)
-        ? /429|throttl/i.test(r.error)
-          ? "throttled"
-          : "transport"
-        : w?.throttled
-          ? "throttled"
-          : w?.wsError
-            ? "transport"
-            : wire.wsError && /timeout|timed out/i.test(r.error)
-              ? "transport?"
-              : null;
+    r.invalid = r.solved ? null
+      : QUOTA.test(r.error) || w?.outOfCredits ? "quota"
+      : TRANSPORT.test(r.error) ? (/429|throttl/i.test(r.error) ? "throttled" : "transport")
+      : w?.throttled ? "throttled"
+      : w?.wsError ? "transport"
+      : wire.wsError && /timeout|timed out/i.test(r.error) ? "transport?"
+      : null;
   }
   return { ...a, rows, wire, mapped, convs: convs.length, hasLog: existsSync(logFile) };
 }
@@ -314,19 +306,65 @@ export function fisherExact(a, b, c, d) {
   return Math.min(1, sum);
 }
 
-/** Valid tasks matching a selection like `relay,default@agent-less`. */
+/** Valid tasks matching a selection like `relay,default+M365_FORCE_AGENT=0@agent-less`. */
 export function select(arms, spec) {
-  const [names, path] = spec.split("@");
-  const want = new Set(
-    names
-      .split(",")
-      .map((s) => s.trim())
-      .filter(Boolean),
-  );
-  return arms
-    .filter((a) => want.has(a.arm))
-    .flatMap((a) => a.rows)
-    .filter((r) => !r.invalid && (!path || r.path === path));
+  const [head, path] = spec.split("@");
+  const [names, ...envs] = head.split("+");
+  const want = new Set(names.split(",").map((s) => s.trim()).filter(Boolean));
+  const hasEnv = (a) => envs.every((kv) => (a.env || "").split(/\s+/).includes(kv.trim()));
+  return arms.filter((a) => want.has(a.arm) && hasEnv(a)).flatMap((a) => a.rows).filter((r) => !r.invalid && (!path || r.path === path));
+}
+
+/** M365 turns a task took, less the dead agent turn of a fallback; null if unmapped. */
+export const turnsOf = (r) => (r.wire ? r.wire.turns - r.wire.fallback : null);
+
+// mulberry32: a seeded PRNG, so a reported p-value can be reproduced.
+function rng(seed) {
+  let a = seed >>> 0;
+  return () => {
+    a = (a + 0x6d2b79f5) >>> 0;
+    let t = a;
+    t = Math.imul(t ^ (t >>> 15), t | 1);
+    t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+/** Two-sided permutation test on mean(ys) − mean(xs), labels shuffled within
+ *  each task. xs, ys: [{ task, turns }]; `fix-bug#3` counts as task `fix-bug`.
+ *  Returns (hits + 1) / (iters + 1). */
+export function stratifiedPermutation(xs, ys, { iters = 100_000, seed = 1 } = {}) {
+  const strata = new Map();
+  for (const [inY, rows] of [[false, xs], [true, ys]]) {
+    for (const r of rows) {
+      const k = r.task.replace(/#\d+$/, "");
+      if (!strata.has(k)) strata.set(k, { vals: [], ny: 0 });
+      const s = strata.get(k);
+      s.vals.push(r.turns);
+      if (inY) s.ny++;
+    }
+  }
+  const nx = xs.length, ny = ys.length;
+  if (!nx || !ny) return 1;
+  const total = [...xs, ...ys].reduce((s, r) => s + r.turns, 0);
+  const diff = (sumY) => sumY / ny - (total - sumY) / nx;
+  const observed = Math.abs(diff(ys.reduce((s, r) => s + r.turns, 0)));
+  const groups = [...strata.values()];
+  const rand = rng(seed);
+  let hits = 0;
+  for (let i = 0; i < iters; i++) {
+    let sumY = 0;
+    for (const { vals, ny: k } of groups) {
+      // A partial Fisher–Yates draws this stratum's ys.
+      for (let j = 0; j < k; j++) {
+        const m = j + Math.floor(rand() * (vals.length - j));
+        [vals[j], vals[m]] = [vals[m], vals[j]];
+        sumY += vals[j];
+      }
+    }
+    if (Math.abs(diff(sumY)) >= observed - 1e-9) hits++;
+  }
+  return (hits + 1) / (iters + 1);
 }
 
 // --- report ------------------------------------------------------------------
@@ -344,17 +382,14 @@ const pathOf = (rows) => {
 };
 const fmtP = (p) => (p >= 0.001 ? p.toFixed(3) : p.toExponential(1));
 
-function report(arms, { rows: showRows, compares }) {
-  console.log(
-    `${pad("arm", 16)} ${pad("path", 13)} ${lpad("solved", 7)} ${lpad("inv", 4)} | ${["turns", "agent", "noagt", "sandbx", "diseng", "jb", "IE", "fb", "ws", "thr"].map((h) => lpad(h, 7)).join("")} | label`,
-  );
+function report(arms, { rows: showRows, compares, turnCompares }) {
+  const armName = (a) => (a.env ? `${a.arm} [${a.env}]` : a.arm);
+  const armWidth = Math.max(16, ...arms.map((a) => armName(a).length));
+  console.log(`${pad("arm", armWidth)} ${pad("path", 13)} ${lpad("solved", 7)} ${lpad("inv", 4)} | ${["turns", "agent", "noagt", "sandbx", "diseng", "jb", "IE", "fb", "ws", "thr"].map((h) => lpad(h, 7)).join("")} | label`);
   for (const a of arms) {
     const w = a.wire;
     const inv = a.rows.filter((r) => r.invalid).length;
-    const armName = a.env ? `${a.arm} [${a.env}]` : a.arm;
-    console.log(
-      `${pad(armName, 16)} ${pad(pathOf(a.rows), 13)} ${lpad(score(a.rows), 7)} ${lpad(inv || "", 4)} | ${[w.turns, w.agent, w.agentless, w.sandbox, w.disengaged, w.jailbreak, w.internalError, w.fallback, w.wsError, w.throttled].map((x) => lpad(x || "·", 7)).join("")} | ${basename(a.dir)}/${a.label}${!a.hasLog ? "  (no debug log)" : a.mapped ? "" : `  (rows↔log mismatch: ${a.rows.length} tasks, ${a.convs} conversations)`}`,
-    );
+    console.log(`${pad(armName(a), armWidth)} ${pad(pathOf(a.rows), 13)} ${lpad(score(a.rows), 7)} ${lpad(inv || "", 4)} | ${[w.turns, w.agent, w.agentless, w.sandbox, w.disengaged, w.jailbreak, w.internalError, w.fallback, w.wsError, w.throttled].map((x) => lpad(x || "·", 7)).join("")} | ${basename(a.dir)}/${a.label}${!a.hasLog ? "  (no debug log)" : a.mapped ? "" : `  (rows↔log mismatch: ${a.rows.length} tasks, ${a.convs} conversations)`}`);
     if (showRows) {
       for (const r of a.rows) {
         const w = r.wire;
@@ -403,36 +438,34 @@ function report(arms, { rows: showRows, compares }) {
       `\ncompare  ${x}: ${as}/${A.length}   vs   ${y}: ${bs}/${B.length}   Fisher two-sided p = ${fmtP(fisherExact(as, A.length - as, bs, B.length - bs))}`,
     );
   }
+
+  for (const [x, y] of turnCompares) {
+    const [A, B] = [x, y].map((s) => select(arms, s).filter((r) => r.wire).map((r) => ({ ...r, turns: turnsOf(r) })));
+    const sum = (rs, f) => rs.reduce((s, r) => s + f(r), 0);
+    const mean = (rs) => (rs.length ? sum(rs, (r) => r.turns) / rs.length : NaN);
+    const events = (rs) => ["sandbox", "disengaged", "jailbreak"].map((k) => sum(rs, (r) => r.wire[k])).join("/");
+    const [ma, mb] = [mean(A), mean(B)];
+    const delta = `${mb >= ma ? "+" : "−"}${Math.round((Math.abs(mb - ma) / ma) * 100)}%`;
+    console.log(`\nturns  ${x}: ${ma.toFixed(2)} per task (${A.length})   vs   ${y}: ${mb.toFixed(2)} (${B.length})   ${delta}   task-stratified permutation p = ${fmtP(stratifiedPermutation(A, B))}`);
+    console.log(`       sandbox/diseng/jb turns: ${events(A)}   vs   ${events(B)}`);
+  }
 }
 
 function main(argv) {
-  const dirs = [],
-    compares = [];
+  const dirs = [], compares = [], turnCompares = [];
   let rows = false;
   for (let i = 0; i < argv.length; i++) {
     if (argv[i] === "--rows") rows = true;
-    else if (argv[i] === "--compare") {
-      compares.push([argv[i + 1], argv[i + 2]]);
-      i += 2;
-    } else if (argv[i] === "-h" || argv[i] === "--help") {
-      console.log(readFileSync(new URL(import.meta.url), "utf8").split("\nimport ")[0]);
-      return;
-    } else dirs.push(resolve(argv[i]));
+    else if (argv[i] === "--compare") { compares.push([argv[i + 1], argv[i + 2]]); i += 2; }
+    else if (argv[i] === "--turns") { turnCompares.push([argv[i + 1], argv[i + 2]]); i += 2; }
+    else if (argv[i] === "-h" || argv[i] === "--help") { console.log(readFileSync(new URL(import.meta.url), "utf8").split("\nimport ")[0]); return; }
+    else dirs.push(resolve(argv[i]));
   }
-  if (!dirs.length) {
-    console.error("usage: analyze-arms.mjs <archive-dir>... [--rows] [--compare A B]...");
-    process.exit(1);
-  }
-  if (compares.some((c) => !c[0] || !c[1])) {
-    console.error("--compare needs two selections");
-    process.exit(1);
-  }
+  if (!dirs.length) { console.error("usage: analyze-arms.mjs <archive-dir>... [--rows] [--compare A B]... [--turns A B]..."); process.exit(1); }
+  if ([...compares, ...turnCompares].some((c) => !c[0] || !c[1])) { console.error("--compare and --turns need two selections"); process.exit(1); }
   const arms = dirs.flatMap(discoverArms).map(analyzeArm);
-  if (!arms.length) {
-    console.error(`no arms found in ${dirs.join(", ")}`);
-    process.exit(1);
-  }
-  report(arms, { rows, compares });
+  if (!arms.length) { console.error(`no arms found in ${dirs.join(", ")}`); process.exit(1); }
+  report(arms, { rows, compares, turnCompares });
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href)

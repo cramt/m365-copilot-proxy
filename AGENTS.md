@@ -138,11 +138,13 @@ pnpm test:live      # M365_LIVE=1; live tests that hit real M365 (uses quota)
 ## Running against real M365 (important)
 
 - **Run inside the Nix dev shell**: `nix develop --command bash -c '...'`. It provides
-  `CHROMIUM_PATH` (a system Chromium); Playwright's bundled one is broken on NixOS.
+  `CHROMIUM_PATH` (a system Chromium; Playwright's bundled one is broken on NixOS), pi, python3
+  and curl. Run the bench scripts in it too: `nix develop --command bash scripts/bench/phase-sweep.sh`.
 - Auth uses `~/.config/m365-proxy/secrets.json` (email/password/mfaSecret) +
   `msal-cache.json`. **This checkout uses the `m365-proxy` data dir.** Move existing
   credentials from the previous directory before starting.
-- Set `M365_DEBUG=1` to log to `~/.config/m365-proxy/debug.log`. There is **no
+- Set `M365_DEBUG=1` to log to `~/.config/m365-proxy/debug.log` (`M365_LOG_FILE` renames it and
+  `M365_FRAME_DIR` moves the `M365_DUMP_FRAMES` dumps, both relative to that directory). There is **no
   interactive login** — auth is silent-refresh → automated (secrets.json) → fail loudly.
   A headless host / second PC never opens a browser tab or hangs on a paste-the-URL prompt.
 - **Mind the quota**: ~600 messages **per conversation**, plus account-level throttling.
@@ -185,41 +187,105 @@ pnpm test:live      # M365_LIVE=1; live tests that hit real M365 (uses quota)
   pi works and heavy harnesses (opencode) don't. The proxy also enforces one tool call per
   turn and strips M365's invented `{confidence}`/`{final}` JSON (`M365_ALLOW_MULTI_TOOL` to opt out).
 - **`claude-opus` is entitlement-gated and separately metered.** The WS `scenario` decides which
-  models will serve: Opus is a dead route on `OfficeWebIncludedCopilot` and a real model on
-  `OfficeWebPaidCopilot` (`getScenarioForModel`, derived per-turn from the model ID).
-  `licenseType: Premium` pairs with it but unlocks nothing alone. Opus also has a small
-  priority-access budget that **refuses in content, not in a status field** ("You've used your
-  available priority access…"), so it reads as a successful turn — `parsePriorityAccessExhaustion`
-  catches it and the proxy 429s. Resets midnight UTC (weekly: Monday). Don't burn it on sweeps.
-  See docs/hypotheses.md §15.
-- **Entitlement-gated ≠ metered.** `gpt-6-think-deeper` (`Gpt_6_Reasoning`) needs the same paid
-  scenario as Opus but carries **no** priority-access budget and throttles like everything else,
+  models will serve: agent-less, Opus is a dead route on `OfficeWebIncludedCopilot` and a real model
+  (Opus 5.5) on `OfficeWebPaidCopilot` (`getScenarioForModel`, derived per-turn from the model ID).
+  `licenseType: Premium` pairs with it but unlocks nothing alone. Opus 5.5 also has a small
+  priority-access budget — 75/week (`ClaudeOpusQuery75`) and 40/day (`ClaudeOpusQueryDaily`), **one unit
+  per turn whatever the prompt size** — so a leaner framing saves nothing; only fewer turns do
+  (the proxy's own retries count too). The refusal is **not streamed**: it is only in the final
+  item (`result.value: "OutOfCredits"`, `result.message`), so a stream reader sees an empty turn —
+  read the result (`priorityAccessExhaustionOf`), not the text. The proxy 429s, remembers the wall
+  until the reset (midnight UTC; weekly: Monday) and, with `M365_OPUS_FALLBACK_MODEL=claude-opus-4.5`,
+  serves Opus 4.5 instead. Every paid turn carries `throttling.metering` (surfaced in `usage`).
+  **Sonnet 5.5 has the same kind of budget, its own** (80/day `ClaudeSonnet55QueryDaily`, 150/week
+  `ClaudeSonnet55QueryWeekly` — which has reset daily, not on Monday, §30; `M365_SONNET_FALLBACK_MODEL`). Budgets live in `METERED_BUDGETS`
+  (`priority-access.ts`) and `meteredBudgetOf()` maps a model to one; walls are remembered per budget.
+  A new `*Query*` key in `metering` is how a new metered model shows up — add a budget, don't hard-code Opus.
+  Don't burn it on sweeps. See docs/hypotheses.md §15, §24 F55, F59 (issue #18), §26.
+- **`claude-opus-4.5` is the same tone on the included scenario — reachable only through the tool
+  agent, only on a premium account, and unmetered.** Agent-less it is the dead route everywhere, so
+  `modelRequiresAgent` attaches the agent even to tool-less requests, and there is no agent-less
+  fallback (it is NOT in `PREMIUM_ONLY_AGENT_TONES`). Routing is the mirror of Sonnet 5.5: the tone is
+  paid and the model ID opts back into the included scenario (`INCLUDED_SCENARIO_MODELS`, plus
+  `opus-4-5`-style strings). Its system prompt calls it "Claude Opus 5"; trust its "Opus 4.5" and
+  its `ChainOfThoughtSummary`, not the name in the prompt. Both Opus models carry the agent on tool
+  requests (`AGENT_CLAUDE_TONES`) and default to `relay_batch`: every framing solves on Opus 4.5,
+  so rank framings by Disengaged turns and turns per task, not the solve rate — the `<system>`-tagged
+  ones tripped the jailbreak classifier on a third of tasks (§24 F56), and relay_batch's "put as much
+  as you can into one block" cut turns per task 37% (F60), which is what Opus 5.5's budget counts. Opus sometimes ends a tool fence with its native call
+  markup (`</invoke>`, `</parameter>`…); the parser strips it (F57), don't "simplify" that away. Only a premium account can
+  bench it. See docs/hypotheses.md §24.
+- **Entitlement-gated ≠ metered.** `gpt-6-think-deeper` (`Gpt_6_Reasoning`) and `claude-sonnet-5`
+  (`Claude_Sonnet_5`) need the same paid
+  scenario as Opus but carry **no** priority-access budget and throttle like everything else,
   so `PAID_SCENARIO_TONES` is about reaching a model, not about what it costs. Don't key metering
-  or framing decisions off that set — the quota detector reads the refusal text and the framing
-  default is per-tone (Opus `minimal` for its budget, GPT-6 `relay` for its sandbox — see the
-  agent bullet below). See docs/hypotheses.md §17, §22.
-- **One tone can be two models — `Claude_Sonnet` is Sonnet 4.6 (included) and Sonnet 5 (paid).**
+  or framing decisions off that set — metering is `meteredBudgetOf()`, the quota detector reads
+  `OutOfCredits`, and the framing
+  default is per-model (Opus `relay_batch` for its turn-counted budget and the jailbreak classifier,
+  §24 F56/F60; GPT-6 a user-voice relay for its sandbox, batched since §25 — see the agent bullet
+  below). See docs/hypotheses.md §17, §22, §25.
+- **One tone can be two models — `Claude_Sonnet` is Sonnet 4.6 (included) and Sonnet 5.5 (paid);
+  `Claude_Sonnet_5` is Sonnet 4.6 (included) and Sonnet 5 (paid).** Microsoft swapped the paid
+  `Claude_Sonnet` from Sonnet 5 to 5.5 on 2026-10-06 and moved Sonnet 5 to the new tone, unannounced
+  (self-ID + a new `metering` key gave it away), so re-run the self-ID probes now and then.
   So routing follows the **model ID** (`getScenarioForModel`, `PAID_SCENARIO_MODELS`), and so does
   the framing default (`defaultFramingForModel`). Never add `Claude_Sonnet` to
-  `PAID_SCENARIO_TONES` — that silently turns `claude-sonnet` into Sonnet 5. A liveness probe can't
-  see this (both are `DeepLeo`); only self-ID can. See docs/hypotheses.md §21, #37.
-- **Sonnet 5 has its own tools in a remote sandbox and reads `<system>` tags as an injection.**
+  `PAID_SCENARIO_TONES` — that silently turns `claude-sonnet` into Sonnet 5.5 (and spends its
+  budget). `Claude_Sonnet_5` is in that set because nothing maps it for 4.6. A liveness probe can't
+  see this (all are `DeepLeo`); only self-ID can. See docs/hypotheses.md §21, §26, #37.
+- **Sonnet 5 has its own tools in a remote sandbox (Sonnet 5.5 too) and reads `<system>` tags as an injection.**
   Nothing client-side disables `bash_tool`/`create_file` (`/home/claude`), and a `<system>` block in
   the user turn makes it disregard the framing and work there ("no such file"). Its default is the
-  user-voice `relay` framing (45/50 vs 6/40; 5/5 in real pi) — and Sonnet 4.6's too (78/90 vs
-  47/76). Don't move `Claude_Sonnet` back to a `<system>`-tagged variant, and don't wrap the note
+  user-voice `relay` framing (45/50 vs 6/40; 5/5 in real pi). Sonnet 4.6 beat baseline with relay too
+  (78/90 vs 47/76) and now defaults to `relay_batch` (same solves, −21% turns in real pi, §25 F62);
+  batching saved Sonnet 5 only 6% in pi, so `SONNET_5_DEFAULT_FRAMING` keeps it on relay (F63) — the
+  one place the Sonnets differ; Sonnet 5.5 (same `/home/claude` sandbox, §26) inherits relay via
+  `SONNET_5_5_DEFAULT_FRAMING`, unbenched. `relay_batch` is plain relay when the toolset has no shell: asked
+  for a script it couldn't run, Sonnet 4.6 claimed it had only its sandbox tools (§25 H25b) — and
+  `proxy-verify --tools` is shell-less. Don't move `Claude_Sonnet` back to a `<system>`-tagged variant, and don't wrap the note
   in `<user>` tags either: tags are just text to it, and the variant that did (`relay_inline`,
   removed) scored 1/20 (§21 F43).
   **Read its `ChainOfThoughtSummary` frames** (`M365_DUMP_FRAMES=1`) — they say why it refused.
-- **Not every tone serves with the tool agent — `toneUsesToolAgent()` decides, per exact tone.**
-  Claude tones and `Gpt_6_Reasoning` go agent-less even with tools. With the agent attached GPT-6 is
+- **Not every tone serves with the tool agent — `toneUsesToolAgent()` decides, per exact tone**
+  (`M365_FORCE_AGENT=1`/`0` overrides it either way).
+  Claude tones (except `Claude_Opus`, see above) and `Gpt_6_Reasoning` go agent-less even with tools.
+  The Sonnets were benched with the agent on a premium account (§30 F75): it removes their sandbox, but
+  Sonnet 5 then refuses the harness and Sonnet 4.6 spends a turn more per pi run — don't add them. With the agent attached GPT-6 is
   a dead route on every account (`result: InternalError`; the proxy used to 502 on it, #41), and
   Claude is dead on non-premium accounts. Add a tone to `AGENTLESS_TOOL_TONES` only after
   `scripts/agent-tone-probe.mjs` says so. Agent-less also means M365's code interpreter is on, and under `baseline` GPT-6
-  worked there instead of acting (0/30); its default is `relay` (30/30; 5/5 in real pi). See docs/hypotheses.md §22.
+  worked there instead of acting (0/30); relay fixed that (30/30; 5/5 in real pi), and its default is now
+  `relay_batch` (20/20 at a third fewer turns, 10/10 in real pi). See docs/hypotheses.md §22, §25.
+- **Some tones take the agent only on a premium account — and nothing on the token says which
+  account this is.** `Gpt_6_Sol_Reasoning` (`gpt-6-sol`) serves with the agent on a premium account
+  and is the dead route (`InternalError`) on a non-premium one. It is in `PREMIUM_ONLY_AGENT_TONES`:
+  the first tool request carries the agent, and the handler turns a no-content `InternalError` into
+  "this account isn't premium" (`noteAgentRouteDead`, process-lifetime) and re-sends agent-less —
+  unless the agent already answered for that tone (`noteAgentRouteAlive`): premium accounts emit the
+  same `InternalError` as a rare transient (§23 F52). Run
+  `agent-tone-probe.mjs` on **both** kinds of account before classifying a new tone. Agent-less, GPT-6
+  Sol has its own sandbox that `M365_NO_CODE_INTERPRETER` does not remove; only the user-voice framings
+  get it to solve (60/60 vs ≤6/10), though it still looks into the sandbox on some tasks, harmlessly.
+  relay wins with the agent too (30/30), and its default is now
+  `relay_batch` on both paths (−32% turns, 60/60 + 40/40 bench, 30/30 real pi). F61 kept it on relay over 4 vs 2
+  sandbox turns; the retest found 13 vs 15, so one small gap is not a reason to hold a default back
+  — rerun it. See docs/hypotheses.md §23, §28.
+  `Gpt_61_Sol_Reasoning` (`gpt-6.1-sol`) splits the same way and is also routed on the included scenario:
+  its paid scenario serves too but spends a `GPT61Sol*` budget (40/day, 75/week), so don't add it to
+  `PAID_SCENARIO_TONES`. Its default is `relay_batch` too: it didn't add sandbox
+  turns, and it cut turns 17–47% at 40/40 bench, 30/30 real pi. See docs/hypotheses.md §27.
+  Agent-less the two are the same to the bench (same solves and turns, framing by framing), except
+  that GPT-6.1 Sol stays out of its sandbox when the user-voice note says to (relay_batch: 0 of 80
+  tasks and pi runs) and GPT-6 Sol looks in on about a quarter of them (25 of 100) — harmless, but a
+  fingerprint: the included scenario's GPT-6.1 Sol isn't GPT-6 Sol renamed (§29 F72).
 - **A turn can hold several bot messages; assemble text per message.** Each new message's head
   arrives only as a snapshot with a `cursor`; folding everything into one string drops it (it ate
   a fence's backticks). `TurnTextComposer` in `session.ts` — don't "simplify" it away. #29.
+- **Array/object tool params come back in two shapes; the parser reads both.** The tools block shows
+  `edits: <edits>`. Opus writes inline JSON (`edits: [{…}]`); Sonnet 4.6 writes a YAML block list under
+  an empty `edits:`, which used to arrive as `edits: []` — 44 of its 47 pi `edit` calls, each a wasted
+  round trip (#50). `parseYamlBlockValue` in `fenced.ts` reads the YAML subset models write; keep both
+  paths. The bench can't catch a regression here (no array-typed tools), so test with real pi's `edit`.
 - **Account degradation is THREAD-rate, not message-count** (docs/hypotheses.md §9 F13).
   Microsoft throttles *conversations started*, not messages sent — the per-conversation
   counter resets each thread. A bench that opens one fresh conversation per task burns the
@@ -228,9 +294,12 @@ pnpm test:live      # M365_LIVE=1; live tests that hit real M365 (uses quota)
   filter (check: no `messageType:"Disengaged"` → it's throttle). **It is explicit on the wire:**
   the final `type:2` item says `result.value:"Throttled"`, `errorCode:"PerUserThrottled"`, and
   the proxy now returns 429 `m365_throttled` without retrying (#35). ~190 fresh threads in a
-  day tripped it on the premium account. **A fresh login (move
-  `msal-cache.json` aside, restart → new tokens) clears it.** Space experiment runs; don't
-  loop new conversations.
+  day tripped it on the premium account. The bench and phase-sweep stop at the first throttled
+  task, and `TASK_GAP` paces bench tasks. **A fresh login does NOT clear it:** the throttle is
+  keyed on the account's `oid`, which a new token keeps (API doc §2/§7, hypotheses §11 H-R1 —
+  F13's "fresh login clears it" was n=1 and confounded with a rest). It lifts with idle time,
+  which is why the proxy's degradation backoff replaced the old auto-reauth. Space experiment
+  runs; don't loop new conversations.
 - The `nativeclient` OAuth redirect bounces to `/common/wrongplace`; the auth code is
   scraped from the navigation request, not a settled URL.
 

@@ -7,7 +7,20 @@
 //
 // Usage:
 //   node scripts/bench/run.mjs --base-url http://localhost:4141/v1 --model m365-copilot \
-//       [--label magic-json] [--tasks fizzbuzz,fix-bug] [--max-turns 12] [--repeat 1]
+//       [--label magic-json] [--tasks fizzbuzz,fix-bug] [--max-turns 12] [--repeat 1] \
+//       [--task-gap 30] [--no-stop-on-throttle]
+//
+// The account throttles (`PerUserThrottled`) once it has spent more turns than a
+// bucket of ~100, refilled at ~1.6 a minute, allows (hypotheses §24 F58).
+// With M365_AVOID_THROTTLING=1 the bench waits before every task until the
+// proxy's debug logs say the bucket can cover a whole task (--max-turns) plus a
+// reserve — see turn-budget.mjs; it needs the proxy to run with M365_DEBUG=1,
+// which phase-sweep does. Off by default. --task-gap S adds a fixed S seconds
+// between tasks. Once a task comes back throttled (HTTP 429 m365_throttled) the
+// run stops: every later task would fail the same way and keep the throttle alive.
+// It prints "[bench] THROTTLED" and exits 3; the scorecard covers the tasks run.
+// An Opus priority-access 429 (priority_access_exhausted) stops it the same
+// way, as "[bench] PRIORITY ACCESS EXHAUSTED", exit 4.
 //
 // ⚠ Executes MODEL-GENERATED shell in a temp dir (model-driven RCE by design).
 //   Tasks are benign; still, run on a throwaway box if paranoid.
@@ -19,6 +32,7 @@ import { join, dirname } from "node:path";
 import { tmpdir } from "node:os";
 import { execSync, spawnSync } from "node:child_process";
 import { TASKS } from "./tasks.mjs";
+import { waitForBudget } from "./turn-budget.mjs";
 
 const args = process.argv.slice(2);
 const opt = (k, d) => {
@@ -36,6 +50,12 @@ if (!Number.isFinite(THREAD_COOLDOWN_MS) || THREAD_COOLDOWN_MS < 0)
 const PICK = opt("--tasks", "");
 const tasks = PICK ? TASKS.filter((t) => PICK.split(",").includes(t.name)) : TASKS;
 const IMAGE = opt("--image", "python:3-slim");
+const TASK_GAP_MS = Number(opt("--task-gap", "0")) * 1000;
+const STOP_ON_THROTTLE = !args.includes("--no-stop-on-throttle");
+const THROTTLED = /HTTP 429|m365_throttled/;
+// The Opus priority-access wall is a 429 too, but a different one: it lifts at
+// midnight UTC (weekly: Monday), not after a rest, and only for that model.
+const PRIORITY_EXHAUSTED = /priority_access_exhausted|priority access to/i;
 
 // --- Docker sandbox: model-generated commands run in a --network none container
 // with ONLY the task dir mounted, as the host uid (so file ops stay owner-clean).
@@ -328,18 +348,27 @@ async function runTask(task) {
 }
 
 // --- run ---
-console.log(
-  `[bench] label=${LABEL} model=${MODEL} base=${BASE} tasks=${tasks.map((t) => t.name).join(",")} repeat=${REPEAT}`,
-);
+console.log(`[bench] label=${LABEL} model=${MODEL} base=${BASE} tasks=${tasks.map(t=>t.name).join(",")} repeat=${REPEAT}${TASK_GAP_MS ? ` task-gap=${TASK_GAP_MS / 1000}s` : ""}`);
 const rows = [];
-for (let rep = 0; rep < REPEAT; rep++) {
+let throttled = false;
+let exhausted = false;
+run: for (let rep = 0; rep < REPEAT; rep++) {
   for (const task of tasks) {
+    if (rows.length > 0) await new Promise(rr => setTimeout(rr, Math.max(1500, TASK_GAP_MS)));
+    await waitForBudget({ need: MAX_TURNS, label: "bench" });
     const r = await runTask(task);
     rows.push({ ...r, rep });
-    console.log(
-      `  ${r.task.padEnd(14)} ${r.outcome.padEnd(14)} tools=${r.toolTurns} msgs=${r.msgs} ${Math.round(r.elapsedMs / 1000)}s ${r.error ? `(${r.error.slice(0, 50)})` : ""} ${r.solved ? "" : `answer=${JSON.stringify(r.finalAnswer)}`}`,
-    );
-    await new Promise((rr) => setTimeout(rr, THREAD_COOLDOWN_MS));
+    console.log(`  ${r.task.padEnd(14)} ${r.outcome.padEnd(14)} tools=${r.toolTurns} msgs=${r.msgs} ${Math.round(r.elapsedMs/1000)}s ${r.error ? "(" + r.error.slice(0,50) + ")" : ""} ${r.solved ? "" : "answer=" + JSON.stringify(r.finalAnswer)}`);
+    if (STOP_ON_THROTTLE && r.error && PRIORITY_EXHAUSTED.test(r.error)) {
+      exhausted = true;
+      console.log(`[bench] PRIORITY ACCESS EXHAUSTED — stopping after ${rows.length} task(s); the model's budget is used up until the reset`);
+      break run;
+    }
+    if (STOP_ON_THROTTLE && r.error && THROTTLED.test(r.error)) {
+      throttled = true;
+      console.log(`[bench] THROTTLED — stopping after ${rows.length} task(s); the rest would only fail the same way and keep the throttle alive`);
+      break run;
+    }
   }
 }
 
@@ -359,25 +388,7 @@ console.log(
     .join(" ")}`,
 );
 console.log(`[bench] avg tool-calls/task: ${avgTools}  |  M365 messages spent: ${totalMsgs}`);
-writeFileSync(
-  join(OUT, `${LABEL}-${TS}.json`),
-  JSON.stringify(
-    {
-      label: LABEL,
-      model: MODEL,
-      base: BASE,
-      ts: TS,
-      pct,
-      solved,
-      total: rows.length,
-      byOutcome,
-      avgTools,
-      totalMsgs,
-      system: SYSTEM,
-      rows,
-    },
-    null,
-    2,
-  ),
-);
+writeFileSync(join(OUT, `${LABEL}-${TS}.json`), JSON.stringify({ label: LABEL, model: MODEL, base: BASE, ts: TS, pct, solved, total: rows.length, byOutcome, avgTools, totalMsgs, throttled, exhausted, system: SYSTEM, rows }, null, 2));
 console.log(`[bench] → scripts/bench/out/${LABEL}-${TS}.json`);
+if (throttled) process.exit(3);
+if (exhausted) process.exit(4);

@@ -314,7 +314,7 @@ without NixOS: `nix run github:cramt/m365-copilot-proxy -- 4141`.
 
 ## Available models
 
-The current `/v1/models` catalog exposes 21 included model IDs: the 20 responders
+The current `/v1/models` catalogue exposes 21 included model IDs: the 20 responders
 from the saved 2026-10-02 sweep, plus the upstream-verified `gpt-6-sol`. Edit `EXPOSED_MODELS` in
 [packages/core/src/copilot.ts](packages/core/src/copilot.ts) to change discovery:
 Claude chat entries that failed upstream, and paid entries refused
@@ -326,8 +326,9 @@ the tool task. Evidence: [findings/models.md](findings/models.md).
 
 | Model ID | M365 Tone | Description |
 |---|---|---|
-| `gpt-6-think-deeper` | Gpt_6_Reasoning | GPT-6 reasoning. **Needs a paid/premium Copilot seat** (see below); 30/30 on the bench (agent-less, `relay` framing) |
-| `gpt-6-sol` | Gpt_6_Sol_Reasoning | GPT-6 Sol ("GPT 6.0 Sol" in the web UI). **Works on every account**, no paid seat needed; uses the tool agent only on a premium account (see below). With the `relay` framing: 30/30 on the bench with the agent, 60/60 without, 21/21 driving real pi |
+| `gpt-6-think-deeper` | Gpt_6_Reasoning | GPT-6 reasoning. **Needs a paid/premium Copilot seat** (see below); 30/30 on the bench (agent-less, `relay` framing). Defaults to `relay_batch`: 20/20 at 2.1 turns per task (relay: 3.2), 10/10 driving real pi |
+| `gpt-6-sol` | Gpt_6_Sol_Reasoning | GPT-6 Sol ("GPT 6.0 Sol" in the web UI). **Works on every account**, no paid seat needed; uses the tool agent only on a premium account (see below). Defaults to `relay_batch`: 40/40 on the bench with the agent, 60/60 without, 30/30 driving real pi, at 2.1 turns per bench task either way |
+| `gpt-6.1-sol` | Gpt_61_Sol_Reasoning | GPT-6.1 Sol ("GPT-6.1 Sol" in the web UI). **Works on every account**, and uses the tool agent only on a premium account, like `gpt-6-sol`. Defaults to `relay_batch`: 40/40 on the bench, 30/30 driving real pi, at 2.7 turns per bench task with the agent and 2.2 without, and without the agent it keeps out of its sandbox, which `gpt-6-sol` doesn't always (see below) |
 | `gpt-5.6-think-deeper` | Gpt_5_6_Reasoning | GPT-5.6 reasoning — 27/30 on the bench, tied with `gpt-5.5-think-deeper` |
 | `gpt-5.6` / `gpt-5.6-quick` | Gpt_5_6_Chat | GPT-5.6 fast ("GPT 5.6 Quick response" in the web UI). **Weak at tool calling** — 7/30 on the bench (see below) |
 | `gpt-5.5-think-deeper` | Gpt_5_5_Reasoning | **Recommended default for agents/tool-calling** — 26/30 on the bench |
@@ -335,10 +336,18 @@ the tool task. Evidence: [findings/models.md](findings/models.md).
 | `m365-copilot` / `auto` | magic | Auto-routing — high-variance at tool-calling (confabulates; see below) |
 | `quick` | Gpt_5_5_Chat | Alias of `gpt-5.5` (its old `Gpt_Quick` tone was retired — see below) |
 | `think-deeper` | Gpt_5_5_Reasoning | Alias of `gpt-5.5-think-deeper` (its old `Gpt_Reasoning` tone was retired) |
-| `claude-sonnet-think-deeper` | Claude_Sonnet_Reasoning | Included Claude reasoning; responded in the sweep, but local tool calling remains unverified |
-| `gpt-5.4` / `gpt-5.4-think-deeper` / `gpt-5.4-quick` | Gpt_5_4_* | GPT-5.4 |
-| `gpt-5.3` / `gpt-5.3-quick` / `gpt-5.3-think-deeper` | Gpt_5_3_* | GPT-5.3 |
-| `gpt-5.2` / `gpt-5.2-quick` / `gpt-5.2-think-deeper` | Gpt_5_2_* | GPT-5.2 |
+| `claude` / `claude-sonnet` / `claude-sonnet-4.6` | Claude_Sonnet | Real Anthropic Claude Sonnet 4.6 (agent-less path) — 78/90 on the bench with the `relay` framing (47/76 with `baseline`). Defaults to `relay_batch`: 40/40, and 21% fewer turns driving real pi (20/20). `claude-sonnet-4.5` is kept as an alias |
+| `claude-sonnet-5.5` | Claude_Sonnet (paid scenario) | Claude Sonnet 5.5. **Needs a paid/premium Copilot seat** — same tone as above, the scenario picks the model — and has a separate quota: 80 turns a day, 150 a week (see below). Defaults to `relay`, inherited from Sonnet 5 (not benchmarked yet) |
+| `claude-sonnet-5` | Claude_Sonnet_5 (paid scenario) | Claude Sonnet 5. **Needs a paid/premium Copilot seat**; no separate quota. 27/30 on the bench with the `relay` framing (6/40 with `baseline`; see below) |
+| `claude-sonnet-think-deeper` | Claude_Sonnet_Reasoning | Included Claude reasoning; responded in the sweep; local tool calling was verified in the paired real-Pi checks (H25) |
+| `claude-opus` / `claude-opus-5.5` | Claude_Opus (paid scenario) | Claude Opus 5.5. **Needs a paid/premium Copilot seat** and has a small separate quota: 40 turns a day (see below). 10/10 on the bench with `relay`; defaults to `relay_batch`. `claude-opus-5` is kept as an alias |
+| `claude-opus-4.5` | Claude_Opus (included scenario, tool agent) | Claude Opus 4.5. **Premium accounts only**, but **no** priority-access quota. With its default `relay_batch` framing: 20/20 on the bench at 2.3 turns per task, 10/10 driving real pi |
+| `gpt-5.4` / `gpt-5.4-quick` | Gpt_5_4_* | GPT-5.4 |
+| `gpt-5.3` / `gpt-5.3-think-deeper` | Gpt_5_3_* | GPT-5.3 |
+| `gpt-5.2` / `gpt-5.2-think-deeper` | Gpt_5_2_* | GPT-5.2 |
+| `gpt-5.4-think-deeper` | Gpt_5_4_Reasoning | GPT-5.4 reasoning |
+| `gpt-5.3-quick` | Gpt_5_3_Chat | GPT-5.3 chat |
+| `gpt-5.2-quick` | Gpt_5_2_Chat | GPT-5.2 chat |
 
 Bench scores are 10 tasks × 3 reps with the confab-retry **off** (`M365_NO_CONFAB_RETRY=1`), so
 every first-try give-up counts, including ones the proxy's retry would normally recover
@@ -396,12 +405,14 @@ entitlement gate; it does not imply a budget. GPT-6 has no priority-access allow
 throttled by the same per-conversation cap and thread-rate governor as every other model, so
 none of the Opus advice about rationing turns applies.
 
-**Tool calls go without the tool agent, and with the `relay` framing.** With the Copilot Studio
+**Tool calls go without the tool agent, and with a `relay` framing.** With the Copilot Studio
 tool agent attached, `Gpt_6_Reasoning` doesn't serve at all (a canned apology, on every account),
 so the proxy sends GPT-6 tool requests agent-less, as it does Claude's (#41). Agent-less, under the
 `baseline` framing GPT-6 worked in M365's own code interpreter instead of calling your tools:
-0/30 on the bench. Under `relay` it scored **30/30** (confab-retry off, 2026-10-01), and 5/5 driving real pi. Both are the
-defaults now; `M365_FORCE_AGENT=1` and `M365_FRAMING_VARIANT` still override them.
+0/30 on the bench. Under `relay` it scored **30/30** (confab-retry off, 2026-10-01), and 5/5 driving
+real pi. The default is now `relay_batch`, which asks it to put as much as it can into each block:
+20/20 on the bench at 2.1 turns per task against relay's 3.2, and 10/10 through real pi at 3 turns
+per run (hypotheses §25). `M365_FORCE_AGENT=1` and `M365_FRAMING_VARIANT` still override both.
 `gpt-5.5-think-deeper` remains the recommended default and the no-model fallback, because it needs
 no entitlement: making GPT-6 the default would hand most seats a model they can't reach.
 
@@ -424,53 +435,122 @@ the proxy treats that as a transient and retries instead of dropping the agent.
 **Without the agent it has a sandbox of its own.** It runs `bash` in a remote machine (`/mnt/data`,
 `/home/oai`), finds none of your files there, and asks you to upload them, or hands back a Teams link
 to a file it made. Turning off M365's code interpreter (`M365_NO_CODE_INTERPRETER=1`) doesn't stop
-it. The `relay` framing does: on the bench it solved 60/60 agent-less, against 0–6/10 for every
-other framing, and 30/30 with the agent (the others 3–9/10). Through real pi it solved 21/21 runs
-across both kinds of account. `relay` is the default on both paths.
-Details: [hypotheses §23](docs/hypotheses.md).
+it. The user-voice `relay` framing does: on the bench it solved 60/60 agent-less, against 0–6/10 for
+every other framing, and 30/30 with the agent (the others 3–9/10). Its batching variant,
+`relay_batch`, is the default on both paths: it keeps relay's wording and asks for one script per
+turn, which cut the turns by a third on the bench (60/60 agent-less, 40/40 with the agent) and by a
+fifth to a quarter in real pi (30/30 runs). It doesn't send GPT-6 Sol to its sandbox any more often
+than `relay` (an earlier, smaller run suggested it did; the retest found no difference). Details:
+[hypotheses §23, §28](docs/hypotheses.md).
 
-### Sonnet 5 (`claude-sonnet-5`) — its own sandbox, and the `relay` framing
+### GPT-6.1 Sol (`gpt-6.1-sol`) — GPT-6 Sol's routing, and the `relay_batch` framing
 
-`Claude_Sonnet` is Sonnet 4.6 on the included scenario and **Sonnet 5** on the paid one, so
-`claude-sonnet-5` needs a paid/premium seat, like Opus. It is not separately metered.
+The web client calls it **"GPT-6.1 Sol"**; the tone is `Gpt_61_Sol_Reasoning`, and like GPT-6 Sol it
+identifies itself as the GPT-6 reasoning model. It is routed exactly like `gpt-6-sol`: the default
+included scenario, which serves it on premium and non-premium accounts alike, and the tool agent
+only on a premium account, which the proxy learns from the first tool request (see above).
+
+**It has a separate allowance, which the proxy doesn't use.** The paid scenario serves it too, but
+every paid turn spends a GPT-6.1 Sol allowance of 40 turns a day and 75 a week, the size of Opus
+5.5's; included turns spend nothing, and a non-premium account can't use the paid scenario at all.
+So the proxy stays on the included one. Whether the paid scenario serves a newer model behind the
+same name is still open: the model can't tell you, since its self-description is M365's.
+
+**It defaults to `relay_batch` on both paths.** Without the agent it has a sandbox like GPT-6 Sol's,
+and the framings that put the instructions in a `<system>` block send it there: `baseline` solved
+0/20 and `minimal` 2/20. The framings written as the user's own request kept it out entirely. As with
+GPT-6 Sol, it went to the sandbox no more often under `relay_batch` than under `relay` (never, on the
+bench), so here the turn saving decides: 40/40 on the bench against relay's 39/40 at 17% fewer turns
+with the agent and 36% fewer without, and 30/30 runs driving real pi at 29% and 47% fewer turns (about
+4 and 3 per run). Details: [hypotheses §27](docs/hypotheses.md).
+
+**Without the agent it matches GPT-6 Sol on the bench, but stays out of its sandbox.** Side by side
+on both non-premium accounts, the two solved the same tasks at the same turns under every framing:
+`relay_batch` and `honest` everything (about 2.1 and 2.9 turns per task), `baseline` and `minimal`
+nothing. The difference is the sandbox: told by the user's note that it's the wrong machine, GPT-6.1
+Sol never went into it under `relay_batch` (0 of 80 bench tasks and pi runs so far), where GPT-6 Sol
+still looks around in it on about a quarter of tasks — harmless, but on a non-premium account
+`gpt-6.1-sol` is the tidier of the two. It also shows the included scenario's GPT-6.1 Sol isn't GPT-6
+Sol under a new name. Details: [hypotheses §29](docs/hypotheses.md).
+
+### Sonnet 5 and 5.5 (`claude-sonnet-5`, `claude-sonnet-5.5`) — their own sandbox, and the `relay` framing
+
+`Claude_Sonnet` is Sonnet 4.6 on the included scenario and **Sonnet 5.5** on the paid one, and
+Sonnet 5 has its own tone, `Claude_Sonnet_5`, which is likewise Sonnet 4.6 unless the scenario is
+paid. So both need a paid/premium seat, like Opus. Microsoft made that switch on 2026-10-06: before
+it, the paid `Claude_Sonnet` was Sonnet 5, which is why `claude-sonnet-5` now maps to the new tone.
+
+**Sonnet 5.5 is metered: 80 turns a day, 150 a week**, separately from Opus, one per turn (in a
+coding loop, one per tool call). The proxy handles it like the Opus quota below:
+`usage.x_m365_sonnet55_daily_remaining` / `x_m365_sonnet55_weekly_remaining` on every response, a
+429 once it's used up, and an opt-in fallback, `M365_SONNET_FALLBACK_MODEL` (e.g. `claude-sonnet-5`,
+which isn't metered). Sonnet 5 has no such quota.
 
 Sonnet 5 arrives with **its own tools** (`bash_tool`, `create_file`, …) running in a remote
 sandbox (`/home/claude`) that cannot see your files, and it reads the proxy's usual
 `<system>`-tagged tool framing as a prompt injection — so with that framing it inspects its own
-empty sandbox and reports that your files don't exist (6/40 on the bench). The proxy therefore
-gives both Sonnet models a different default framing, `relay`: a plain note asking it to guide you through your
-terminal one command at a time, which also tells it the sandbox is the wrong machine. That
-scores **27/30** on the bench (from 5/30) and solved **5/5** fix-bug runs through real pi.
-Sonnet 4.6 uses `relay` too (78/90 vs 47/76). Override with `M365_FRAMING_VARIANT` as usual.
-Details: hypotheses §21.
+empty sandbox and reports that your files don't exist (6/40 on the bench). Sonnet 5.5 has the same
+sandbox. The proxy therefore gives every Sonnet model a user-voice framing instead. Sonnet 5's
+default is `relay`: a plain note
+asking it to guide you through your terminal one command at a time, which also tells it the sandbox
+is the wrong machine. That scores **27/30** on the bench (from 5/30) and solved **5/5** fix-bug runs
+through real pi. Sonnet 4.6 beat `baseline` with it too (78/90 vs 47/76), and now defaults to
+`relay_batch`, the same note asking it to put as much as it can into each block: same solves, 21%
+fewer turns through real pi (39/39). On Sonnet 5 that saved only 6% in pi, so it stays on `relay`.
+Sonnet 5.5 starts on `relay` too, until it has been benchmarked.
+Override with `M365_FRAMING_VARIANT` as usual. Details: hypotheses §21, §25, §26.
 
-### Opus (`claude-opus`) — entitlement + a separate, small quota
+### Opus (`claude-opus`, `claude-opus-4.5`) — two models, one with a small quota
 
-The model behind this tone is **Claude Opus 5**. It performs very well here, with two things
-to know before you point an agent at it.
+The `Claude_Opus` tone serves two models, picked by the `scenario` the WebSocket is opened with:
 
-**It needs the paid scenario.** M365 gates the model list on the `scenario` sent with the
-WebSocket connection. On the default `OfficeWebIncludedCopilot` the Opus tone is accepted but
-never reaches a model — it returns a canned apology, which is why earlier notes in this repo
-recorded Opus as a dead tone. The proxy now sends `scenario=OfficeWebPaidCopilot` (with the
-`licenseType=Premium` that pairs with it) automatically whenever the resolved tone is
-`Claude_Opus`; every model except `gpt-6-think-deeper` and `claude-sonnet-5` keeps the included scenario. This is an
-**entitlement, not a bypass** — your account has to actually hold paid/premium Copilot access, and `licenseType`
-alone unlocks nothing. Override either with `M365_SCENARIO` / `M365_LICENSE_TYPE`.
+| Model ID | Model | Scenario | Who can use it | Quota |
+|---|---|---|---|---|
+| `claude-opus` (`claude-opus-5.5`, `claude-opus-5`) | Claude Opus 5.5 | `OfficeWebPaidCopilot` | paid/premium seat | small priority-access quota |
+| `claude-opus-4.5` | Claude Opus 4.5 | `OfficeWebIncludedCopilot`, tool agent attached | premium account | none beyond the usual throttling |
 
-**It is metered separately, and the proxy spends it fast.** Opus draws on a "priority access"
-budget distinct from the ~600-message conversation cap. When it runs out, M365 replies with
-text rather than an error — *"You've used your available priority access to the Opus model for
-today…"* (or *"…for the week"*). Left alone that reads to an agent as the model's answer, so the
-proxy detects both wordings and returns **HTTP 429** (`code: priority_access_exhausted`) with a
-`Retry-After`. **Both budgets reset at midnight UTC**; the weekly one on Monday.
+The proxy picks the scenario from the model ID, so nothing has to be configured. This is an
+**entitlement, not a bypass**: without a paid/premium seat neither model serves. `claude-opus`
+then gets a licence-refusal message, and `claude-opus-4.5` a 502 saying it's premium-only. `licenseType`
+alone unlocks nothing; override either with `M365_SCENARIO` / `M365_LICENSE_TYPE`.
 
-Because agentic turns prepend a tool-framing block, driving Opus through a proxy burns that
-budget faster than chatting with it by hand. Opus therefore defaults to the lean `minimal`
-framing (~82% smaller than the default `baseline`, which exists to force M365's chat-tuned GPT
-path to act and which Opus doesn't need). Whether the budget counts tokens or messages is
-**not verified** — if it's per-message this saves latency rather than quota. Set
-`M365_FRAMING_VARIANT=baseline` to opt out. See [docs/hypotheses.md §15](docs/hypotheses.md).
+**`claude-opus-4.5` only works through the Copilot Studio tool agent**, so the proxy attaches the
+agent to every request on it, tools or not. Without the agent the route returns a canned apology on
+every account, which is why earlier notes in this repo recorded Opus on the included scenario as
+dead. It may introduce itself as "Claude Opus 5": that's what its system prompt says, and the model
+itself mostly answers "Opus 4.5" (see hypotheses §24).
+
+**`claude-opus` is metered separately: 40 turns a day, 75 a week.** Opus 5.5 draws on a "priority
+access" budget distinct from the ~600-message conversation cap, and **every M365 turn costs one,
+whatever its size**. In an agent loop every tool call is a turn, so one coding task costs 3–5 and a
+day's budget is gone after about ten tasks. That's what [issue #18](https://github.com/cramt/m365-copilot-proxy/issues/18)
+ran into; a shorter prompt doesn't help. Both budgets reset at **midnight UTC**, the weekly one on Monday.
+
+What the proxy does about it:
+- **Shows the budget:** every `claude-opus` response carries `usage.x_m365_opus_daily_remaining` and
+  `usage.x_m365_opus_weekly_remaining`.
+- **Says when it's used up:** M365 ends the turn with a refusal (*"You've used your available priority
+  access to the Opus model for today…"*), which the proxy turns into **HTTP 429**
+  (`code: priority_access_exhausted`, `param: day|week`) with a `Retry-After` to the reset — on the
+  streaming path an `error` chunk with the same fields. It then answers further `claude-opus`
+  requests itself until the reset, without spending M365 turns on more refusals.
+- **Can fall back to Opus 4.5:** with `M365_OPUS_FALLBACK_MODEL=claude-opus-4.5`, a `claude-opus`
+  request that hits the wall is sent to `claude-opus-4.5` instead (unmetered, premium accounts only),
+  and so is every later one until the reset. The response's `model` field says which model answered.
+- **Spends fewer turns:** the `relay_batch` framing (below) asks the model to do as much as it can
+  per tool call, and avoids the jailbreak-filter retries that cost `claude-opus`'s old default framing
+  a wasted turn on about 40% of tasks.
+
+**Both use the tool agent and the `relay_batch` framing.** On the bench Opus 4.5 solved nearly every
+task whatever the framing, so two other things decided it. M365's jailbreak classifier: the proxy's
+older `<system>`-tagged framings tripped it on a third of the tasks (each one a wasted turn and a
+retry in a fresh conversation), the user-voice `relay` framings on none. And turns:
+`relay_batch` asks the model to put as much as it can into each command block, which took Opus 4.5
+from 3.65 to 2.30 turns per bench task (20/20 either way) and from 6 to 3.5 turns per real-pi run
+(10/10 either way) — on Opus 5.5 that's ~17 tasks a day instead of ~11. The cost to watch is a
+block that acts before it has seen any output; in pi every edit still came after a read. Opus 5.5
+went 10/10 on the bench with `relay`; it hasn't been benched with `relay_batch` yet.
+Override with `M365_FRAMING_VARIANT` as usual. Details: [hypotheses §24](docs/hypotheses.md).
 
 ## Image generation
 
@@ -546,9 +626,11 @@ Three token scopes are acquired:
 | Variable | Description |
 |---|---|
 | `M365_DEBUG` | Set to `1` to enable debug logging to `~/.config/m365-proxy/debug.log` (truncated payloads) |
+| `M365_LOG_FILE` | Debug log name, relative to `~/.config/m365-proxy/` (default `debug.log`; an absolute path is used as is). `M365_LOG_FILE=my/log.log` logs to `~/.config/m365-proxy/my/log.log`. |
 | `M365_TRACE` | Set to `1` for full, untruncated debug logging (every WS frame/prompt/response) — implies `M365_DEBUG`. For reverse engineering. |
 | `M365_LOG_STDOUT` | Set to `1` to mirror debug lines to the proxy's stdout as well as the log file, so you can watch a run without tailing it in a second terminal. Needs `M365_DEBUG` or `M365_TRACE` — on its own it logs nothing. |
 | `M365_DUMP_FRAMES` | Set to `1` to write every WebSocket frame (both directions) to `~/.config/m365-proxy/frames/<requestId>.ndjson`. For offline diffing of new M365 fields. |
+| `M365_FRAME_DIR` | Frame dump directory, relative to `~/.config/m365-proxy/` (default `frames`; an absolute path is used as is). `M365_FRAME_DIR=my/frames` dumps to `~/.config/m365-proxy/my/frames/`. |
 | `M365_ALLOW_MULTI_TOOL` | Allow the model to emit multiple tool calls per turn (default: only the first is kept) |
 | `M365_DISABLE_AGENT` | Set to `1` to skip Copilot Studio agent resolution and attachment, including when `M365_FORCE_AGENT=1`. A publish 403 mentioning extensibility is also cached as unavailable until the proxy restarts, without deleting/recreating the bot. |
 | `M365_TOOL_ALLOWLIST` | Unset: include shell, read, write/create, edit and search tools in the prompt. Set to `all` to retain every tool, or a comma-separated list of exact tool names. Zero matches fall back to all tools; a named `tool_choice` is always retained. Responses are still parsed against the full request toolset. |
@@ -562,9 +644,10 @@ Three token scopes are acquired:
 | `M365_NO_INTERACTIVE` | Set to `1` to hard-disable any visible browser login, overriding the flag above. For systemd/CI hosts where a window must never open. |
 | `M365_INTERACTIVE_TIMEOUT_MS` | How long to wait for you to finish the interactive sign-in (default `600000`, i.e. 10 minutes). |
 | `M365_LOGIN_LOCALE` / `M365_LOGIN_TIMEZONE` | Browser locale and timezone presented during login (defaults `en-GB` / `Europe/Copenhagen`). These are part of the anti-bot-scoring fingerprint ([§11 F25](docs/hypotheses.md)) — set them to match your own machine if AAD starts treating your automated login as a bot. |
-| `M365_FORCE_AGENT` | Override which tool requests carry the Copilot Studio tool agent. `1` attaches it to every tool request (and turns off the `gpt-6-sol` fallback below); `0` never attaches it. Unset, the proxy decides per model: GPT-5.x and `m365-copilot` take it, Claude and `gpt-6-think-deeper` don't, and `gpt-6-sol` takes it only on a premium account, which the proxy learns from the first request. On a non-premium account `0` saves that one ~3 s probe turn per proxy start. |
-| `M365_SCENARIO` / `M365_LICENSE_TYPE` | Override the entitlement the WebSocket is opened under (defaults: `OfficeWebIncludedCopilot` / `Starter`, switching to `OfficeWebPaidCopilot` / `Premium` for the entitlement-gated models — `claude-opus`, `gpt-6-think-deeper` and `claude-sonnet-5`). `scenario` is what gates the model list (and picks Sonnet 4.6 vs 5 for the `Claude_Sonnet` tone); `licenseType` rides along and unlocks nothing by itself. |
-| `M365_REFRESH_TOKEN` | Optional refresh-token fallback when silent cache acquisition fails; treat it as a credential and keep it out of Git. A successful exchange updates the MSAL cache. |
+| `M365_FORCE_AGENT` | Override which tool requests carry the Copilot Studio tool agent. `1` attaches it to every tool request (and turns off the GPT-6 Sol fallback below); `0` never attaches it. Unset, the proxy decides per model: GPT-5.x, `m365-copilot` and both Opus models take it, the other Claude models and `gpt-6-think-deeper` don't, and `gpt-6-sol` / `gpt-6.1-sol` take it only on a premium account, which the proxy learns from the first request. `claude-opus-4.5` carries it on tool-less requests too, since that's its only route (`0` turns that off as well). On a non-premium account `0` saves the probe turn (~3 s) per GPT-6 Sol model per proxy start. |
+| `M365_OPUS_FALLBACK_MODEL` | Model to serve `claude-opus` (Opus 5.5) requests with once its priority-access budget is used up, instead of returning a 429 — typically `claude-opus-4.5`, which isn't metered (premium accounts only). Applies until the budget resets; the response's `model` field names the model that answered. Unset by default. |
+| `M365_SONNET_FALLBACK_MODEL` | The same for `claude-sonnet-5.5` (Sonnet 5.5) once its priority-access budget is used up — e.g. `claude-sonnet-5` (unmetered) or `claude-sonnet` (Sonnet 4.6, any account). A fallback naming a metered model is ignored. Unset by default. |
+| `M365_SCENARIO` / `M365_LICENSE_TYPE` | Override the entitlement the WebSocket is opened under (defaults: `OfficeWebIncludedCopilot` / `Starter`, switching to `OfficeWebPaidCopilot` / `Premium` for the entitlement-gated models — `claude-opus`, `gpt-6-think-deeper`, `claude-sonnet-5` and `claude-sonnet-5.5`; `claude-opus-4.5` and `gpt-6.1-sol` stay on the included one). `scenario` is what gates the model list (and picks Sonnet 4.6 vs 5.5 for the `Claude_Sonnet` tone, Sonnet 4.6 vs 5 for `Claude_Sonnet_5`, Opus 4.5 vs 5.5 for `Claude_Opus`); `licenseType` rides along and unlocks nothing by itself. Forcing the paid scenario on `gpt-6.1-sol` spends its separate GPT-6.1 Sol allowance (40 turns a day, 75 a week), which the proxy doesn't track. |
 | `M365_CACHE_FILE` | Override MSAL token cache location |
 | `M365_SECRETS_FILE` | Override credentials file location |
 | `M365_PROXY_API_KEY` | When set, `/v1/*` requires `Authorization: Bearer <key>` (401 `invalid_api_key` otherwise). `/health` stays open. The dashboard and `/actions/*` are always restricted to loopback socket peers, independently of the API key. |
@@ -620,7 +703,8 @@ All stored in `~/.config/m365-proxy/`:
 | `secrets.json` | Login credentials (email, password, mfaSecret) |
 | `msal-cache.json` | MSAL token cache (auto-managed) |
 | `agent-id.json` | Cached Copilot Studio agent ID |
-| `debug.log` | Debug log (when `M365_DEBUG=1`) |
+| `debug.log` | Debug log (when `M365_DEBUG=1`; renamed by `M365_LOG_FILE`) |
+| `frames/` | WebSocket frame dumps (when `M365_DUMP_FRAMES=1`; moved by `M365_FRAME_DIR`) |
 | `metrics.sqlite` | Persistent request and model-health metrics (SQLite WAL mode) |
 
 ## Development
@@ -664,7 +748,8 @@ both toolchains working side by side until the plugins support TypeScript 7's AP
 - Tool calling is emulated (prompt injection + a Copilot Studio agent), not native function calling — robust with the agent, unreliable without it
 - The `think-deeper` / `*_Reasoning` models take 10-30s per response
 - Hard quota of ~600 messages **per conversation** (mitigated by session reuse + delta sends)
-- `claude-opus` needs a paid/premium seat and has its own small priority-access quota that resets at midnight UTC (weekly on Monday); exhaustion surfaces as a 429, not as a model answer
+- `claude-opus` needs a paid/premium seat and has its own small priority-access quota (40 turns a day, 75 a week; every tool call is a turn) that resets at midnight UTC (weekly on Monday); exhaustion surfaces as a 429, or as a switch to `M365_OPUS_FALLBACK_MODEL`. `claude-opus-4.5` needs a premium account too, but has no such quota
+- `claude-sonnet-5.5` needs a paid/premium seat and has a priority-access quota of its own (80 turns a day, 150 a week), handled the same way (`M365_SONNET_FALLBACK_MODEL`). `claude-sonnet-5` needs the seat but has no quota
 - Streaming: **tool-less** responses stream incrementally (deltas forwarded as they arrive). **Tool-calling** turns are still buffered server-side — the raw text has to be parsed for tool-call fences before it can be emitted — so those arrive as a single chunk at the end (with an immediate HTTP 200 + heartbeats so the client never times out waiting)
 
 ## License

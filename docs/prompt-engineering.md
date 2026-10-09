@@ -49,7 +49,8 @@ These are what actually move compliance. In rough order of importance:
 ## Claude Sonnet: don't *cage* it, don't *label* things `<system>`
 
 Everything above was learned on models with no tools of their own. Sonnet 5 (`Claude_Sonnet` on
-the paid scenario) **has** real ones, in a remote sandbox, so the question is not "will it act"
+the paid scenario at the time, `Claude_Sonnet_5` since 2026-10-06 — Sonnet 5.5 has the same sandbox,
+hyp §26) **has** real ones, in a remote sandbox, so the question is not "will it act"
 but "on which machine" — and our framing decides that. Conclusive (hyp §21, p = 3×10⁻¹³):
 
 - **A `<system>` block inside the user turn reads as a forged system prompt.** Its reasoning says
@@ -72,6 +73,14 @@ but "on which machine" — and our framing decides that. Conclusive (hyp §21, p
 - **Sonnet 4.6 has the same reflex, weaker.** It rarely refuses, but says "this appears to be a
   system-level automated agent prompt embedded in a user message" and then hedges. `relay` is its
   default too: 78/90 vs baseline's 47/76 (p = 3×10⁻⁴, hyp §21 F42).
+- **The tool agent takes the sandbox away, and that isn't a fix** (hyp §30, premium account). With
+  the agent no Sonnet works in its own sandbox, and Sonnet 4.6 solves under every framing (99% vs
+  82% agent-less over 17 framings; the gap is all in the `<system>`-tagged ones). But Sonnet 5 then
+  reads the agent's enterprise tools in its context against the harness and disowns it ("I'm
+  Microsoft 365 Copilot, and I don't have access to a shell…"; 10/20 vs 19/20), and Sonnet 4.6
+  stops batching in real pi: it reaches for pi's `edit` and checks in a call of its own, one turn
+  more per run. Under the shipped user-voice framings, agent-less already solves 193/200, so
+  the Sonnets stay agent-less.
 
 ## GPT-6 / GPT-6 Sol: `relay` is not just a Claude fix
 
@@ -85,6 +94,51 @@ premium account) there's no sandbox, but the cage framings still lose to relay (
 the model confabulates "I can't access your working directory from this chat", even after a
 successful `cat`. relay removes the question: the user runs the commands, so the model needs no
 belief about its own access. **Lesson:** for any new reasoning tone, put `relay` in the first sweep.
+GPT-6 and GPT-6 Sol now run the batching relay (`relay_batch`, below): a third fewer turns. For
+GPT-6 Sol that took a second look: agent-less, its first run sent it to its sandbox on 4 turns against
+relay's 2 (hyp §25 F61), the retest on 40 tasks per framing found 13 against 15 (hyp §28 F71), and
+pooled the two are level (17 and 17 in 60 tasks). GPT-6.1 Sol
+(hyp §27) repeats GPT-6 Sol's pattern (agent-less baseline 0/20, minimal 2/20, every user-voice framing
+19–20/20) and runs `relay_batch` too (no sandbox turn under it; 40/40 bench, 30/30 real pi, 17–47% fewer
+turns). **Lesson:** don't hold a default back on a gap of a few rare events; rerun with more tasks.
+Side by side agent-less (hyp §29 F72), GPT-6.1 Sol and GPT-6 Sol solve and spend turns alike under
+every framing, so the framing results carry over between them; what differs is whether the model
+obeys the note: under relay_batch GPT-6.1 Sol went into its sandbox on 0/40 tasks (0/80 with the
+earlier bench and pi), GPT-6 Sol on 6/20 (25/100 overall), and under `honest` 3/40 vs
+17/20. The user-voice note is what makes both solve; how literally a model takes it is per model, and
+doesn't cost solves either way.
+
+## Claude Opus: when every framing solves, count the Disengages
+
+Opus 4.5 (`claude-opus-4.5`, with the tool agent) solved ~100% of the bench under every framing
+tried — so the solve rate couldn't rank them. The jailbreak classifier could: the `<system>`-tagged
+rule framings tripped it on 20 of 60 tasks (`minimal` 12/30, `baseline` 8/30), relay and `softened`
+on 0 of 80 (p = 5×10⁻⁹; hyp §24 F56), always on "find the secret" / "edit the config" prompts. The
+proxy's retry rescues those, but each one is a dead turn plus a fresh conversation — thread budget,
+and on metered Opus 5.5 possibly a priority-access unit. Two smaller lessons from the same sweep:
+- **A framing without `<system>` tags needs to stay clear of the classifier by itself.** The retry
+  swaps only `<system>`-tagged framings for `softened`; `retag` and `terse_user` were retried as
+  themselves, disengaged again and failed (4 tasks). relay never needed the retry.
+- **A shorter prompt doesn't save Opus quota.** `minimal` was the default for that reason; the
+  budget counts turns (hyp §24 F55). Choose for fewer turns and fewer Disengages instead.
+relay over softened (tied on the bench) because it carries no `<system>` tags, which Sonnet 5 reads
+as an injection; Opus 5.5, which shares the default, went 10/10 with it (hyp §24 F59). **Lesson:** when
+the solve rate saturates, rank framings by Disengaged turns and turns per task.
+
+**Turns per task is a framing lever too** (hyp §24 F60). Opus 5.5's budget is per turn, so it matters
+there. Asking for batching works: "Each round trip takes me a while, so put as much as you can into one
+block" (`relay_batch`) took Opus 4.5 from 3.65 to 2.30 turns per bench task at 20/20 solved.
+Real pi agreed: 3.5 turns per run vs 6.0, 10/10 each. It is the
+Opus default (both models). The cost to watch: a batched block acts before it has seen any output —
+in pi every edit still came after a read.
+
+**It carries to other models unevenly — measure in real pi, not only on the bench** (hyp §25). The
+bench's turn savings: GPT-6 and GPT-6 Sol −33%, Sonnet 4.6 −14%, Sonnet 5 −15%. In pi: GPT-6 Sol −19%
+with the agent and −25% without (hyp §28), Sonnet 4.6 −21%, Sonnet 5 only −6% (relay already reads,
+fixes and checks in ~5 turns). Savings come from tasks
+one script can finish; fix-bug and config edits barely move. **And batching needs a shell:** with a
+read-only toolset, "a script can look at the files…" made Sonnet 4.6 announce it had only its own
+sandbox tools (3/7 vs relay 6/6, H25b), so `relay_batch` is plain relay when there is no shell tool.
 
 ## What does NOT work (confirmed dead-ends — don't re-litigate)
 
@@ -138,30 +192,28 @@ registered in `packages/core/src/fenced.ts` (`FRAMING_VARIANTS`) and selected pe
 Current strategies: `baseline` (shipped default, unchanged), `minimal`, `recency`,
 `fewshot`, `proof_demand`, `persona`, `react`, `negative`, `terse`, `softened`, `demo_only`,
 `session_facts`, `reply_tool` (synthetic `reply()` tool; also `M365_INJECT_REPLY_TOOL=1`), and the
-Claude Sonnet set: `retag`, `honest`, `terse_user`, `relay`, plus the experimental
+Claude Sonnet set: `retag`, `honest`, `terse_user`, `relay`, `relay_batch`, plus the experimental
 `dual_env`, `dual_env_sys`, `dual_env_protocol`. A variant can also change
 the transcript's **tags** (`transcriptStyleForVariant`): the Claude Sonnet set never emits `<system>`;
 the harness's own system prompt becomes `<harness_system_prompt>`.
 
 **The default is model-aware** (`defaultFramingForModel`, falling back to `defaultFramingForTone`).
-`Claude_Sonnet` — Sonnet 4.6 and Sonnet 5 — `Claude_Sonnet_Reasoning`, `Gpt_6_Reasoning`, and `Gpt_6_Sol_Reasoning` → `relay` (above). `baseline` is a cage built for
-M365's chat-tuned GPT path — most of its length goes on forcing a model that would rather
-narrate into acting. `Claude_Opus` doesn't need that and is metered by a small
-priority-access budget (docs/hypotheses.md §15), so it defaults to `minimal`: 684 chars vs
-`baseline`'s 3,894 on a 2-tool request (~82% smaller), keeping shell-routing and the
-anti-confabulation clause while dropping the strict-rules wall. GPT-6 also uses `relay`
-(30/30 agent-less, hypotheses §22 F47). As of 2026-10-02, the handler resolves agent
-availability before choosing framing: **other agent-less GPT tones provisionally use
-`relay`**, pending the §23 sweep; their agent-backed defaults remain `baseline`.
-`claude-sonnet-think-deeper` now defaults to `relay`: paired real-Pi read and edit checks
-found baseline 0/2 and relay 2/2; a second, order-reversed read pair was baseline 0/1
-and relay 1/1. Against the rebuilt proxy with no framing override, read, edit, and
-multistep passed 3/3. These small samples establish the failure mechanism, not a
-long-run reliability rate. `M365_FRAMING_*` still wins. `relay`, `honest`, and the dual-environment variants now describe the sandbox
-by tone: GPT's Python code interpreter at `/mnt/data` and web search, or Claude's tools
-at `/home/claude` / `/mnt/user-data`.
-Caveat worth repeating: it is unproven that the Opus budget is token-weighted, so read this
-as prompt hygiene for a model that doesn't need the cage — not as a measured quota saving.
+`Claude_Opus` (Opus 4.5 and 5.5), `Claude_Sonnet` (as Sonnet 4.6), `Gpt_6_Reasoning`,
+`Gpt_6_Sol_Reasoning` (hyp §28) and
+`Gpt_61_Sol_Reasoning` (GPT-6.1 Sol, hyp §27) → `relay_batch`; Sonnet 5 (`claude-sonnet-5`, its own `Claude_Sonnet_5` tone since 2026-10-06) and
+Sonnet 5.5 (`claude-sonnet-5.5`, `Claude_Sonnet` on the paid scenario, keyed on the model ID;
+inherits Sonnet 5's relay, hyp §26) → `relay` — though on the bench relay_batch cut its turns by a
+third (3.35 → 2.20, 40/40, both paths, hyp §30); real pi decides, ~90 budget units. `claude-sonnet-think-deeper` defaults to `relay` after paired real-Pi read and edit checks
+(baseline 0/2, relay 2/2, with an order-reversed read pair baseline 0/1, relay 1/1;
+see H25). Agent-less GPT tones without another model-specific default provisionally
+use `relay`; their agent-backed defaults remain `baseline`. Other models keep their
+existing defaults, so no GPT-5.x bench number moves, and
+`M365_FRAMING_*` still wins. Opus used to default to `minimal`, to spend less of its priority-access
+budget by sending a shorter prompt; that budget counts turns, not tokens (docs/hypotheses.md §24
+F55), so it saved nothing — see the Opus section below for why relay_batch replaced it.
+
+`relay`, `honest`, and the dual-environment variants describe the remote sandbox by tone:
+GPT's Python interpreter at `/mnt/data`, or Claude's tools at `/home/claude`.
 
 **Run a sweep** (persistent proxy + control file; sequential, generously spaced):
 
@@ -174,7 +226,7 @@ COOLDOWN=45 BLOCK_COOLDOWN=60 bash scripts/bench/sweep2.sh
 node scripts/bench/analyze-sweep.mjs s2
 ```
 
-For the full 10-task bench per arm, with a fresh proxy per phase (so a phase can also change
+For the full 10-task bench per arm, with a fresh proxy per arm (so a phase can also change
 the proxy's env: agent off, code interpreter off) and real-pi arms, use `phase-sweep.sh`, then
 read the archive back with `analyze-arms.mjs`. It reports per arm which path served each task,
 sandbox and Disengaged turns, and drops tasks lost to the network or a throttle
@@ -186,14 +238,13 @@ MODEL=gpt-6-sol TAG=mysweep PHASES='A:baseline,relay,demo_only|B@M365_FORCE_AGEN
 nix develop --command node scripts/bench/analyze-arms.mjs ~/.config/opencode-m365/sweeps/mysweep --compare relay demo_only
 ```
 
-The older single-proxy route also archives each arm's debug log + frame dumps for
+The older single-phase route also archives each arm's debug log + frame dumps for
 forensics — read the `ChainOfThoughtSummary` frames, they say *why* a framing was refused:
 
 ```sh
-M365_FRAMING_FILE=/tmp/m365-framing M365_DUMP_FRAMES=1 M365_DEBUG=1 M365_NO_CONFAB_RETRY=1 \
-  node packages/proxy/bin/m365-proxy.mjs 4141 &
-# `default` = empty control file = the model's shipped default; arms may repeat
-ARMS="default retag relay default" MODEL=claude-sonnet-5 TAG=mysweep bash scripts/bench/sonnet5-sweep.sh
+# starts a proxy per arm; `default` = the model's shipped default; arms may repeat
+M365_NO_CONFAB_RETRY=1 ARMS="default retag relay default" MODEL=claude-sonnet-5 TAG=mysweep \
+  bash scripts/bench/sonnet5-sweep.sh
 ```
 
 ## Results

@@ -3,6 +3,7 @@ import {
   deriveFencedSpec,
   renderFencedCall,
   parseFencedToolCalls,
+  findFirstToolFence,
   buildSpecMap,
   formatFencedToolDefinitions,
   findShellTool,
@@ -187,6 +188,103 @@ describe("parseFencedToolCalls", () => {
   });
 });
 
+// Opus ends some fenced calls with its native function-call closer (docs §24 F56).
+// These are the replies it actually sent on the count-lines task, verbatim.
+describe("native call closer leaking into a fence (Opus)", () => {
+  const SCRIPT = "#!/bin/bash\nwc -l < data.txt | tr -d ' ' > count.txt";
+  function argsOf(text: string) {
+    const { calls, leftover } = parseFencedToolCalls(text, specs);
+    return { calls, leftover, args: calls[0] ? parseJsonObject(calls[0].function.arguments) : {} };
+  }
+
+  it("keeps </invoke> out of the file when the fence is closed too", () => {
+    const { args } = argsOf(`\`\`\`write_file\npath: count.sh\n\n${SCRIPT}\n</invoke>\n\`\`\``);
+    expect(args).toEqual({ path: "count.sh", content: SCRIPT });
+  });
+
+  it("…and with a stray zero-width line before the closing fence", () => {
+    const { args } = argsOf(`\`\`\`write_file\npath: count.sh\n\n${SCRIPT}\n</invoke>\n\u200c\n\`\`\``);
+    expect(args).toEqual({ path: "count.sh", content: SCRIPT });
+  });
+
+  it("accepts a fence that </invoke> ends instead of ```, stray symbol and all", () => {
+    const { calls, args, leftover } = argsOf(`\`\`\`write_file\npath: count.sh\n\n${SCRIPT}\n</invoke>\n∂`);
+    expect(calls).toHaveLength(1);
+    expect(args).toEqual({ path: "count.sh", content: SCRIPT });
+    expect(leftover.trim()).toBe("");
+  });
+
+  it("accepts a fence that the tool's own closing tag ends", () => {
+    const { args } = argsOf(`\`\`\`write_file\npath: count.sh\n\n${SCRIPT}\n</write_file>`);
+    expect(args).toEqual({ path: "count.sh", content: SCRIPT });
+  });
+
+  it("drops native <parameter> lines after the closer, unclosed fence (opus45-r5c relay)", () => {
+    const script = "#!/usr/bin/env bash\nwc -l < data.txt | tr -d ' ' > count.txt";
+    const { calls, args } = argsOf(`\`\`\`write_file\npath: count.sh\n\n${script}\n</invoke>\n<parameter name="path">count.sh</parameter>`);
+    expect(calls).toHaveLength(1);
+    expect(args).toEqual({ path: "count.sh", content: script });
+  });
+
+  it("…and inside a closed fence", () => {
+    const { args } = argsOf(`\`\`\`write_file\npath: count.sh\n\n${SCRIPT}\n</invoke>\n<parameter name="path">count.sh</parameter>\n</function_calls>\n\`\`\``);
+    expect(args).toEqual({ path: "count.sh", content: SCRIPT });
+  });
+
+  it("drops </parameter> lines BEFORE the closer too — they'd run as shell (opus45-r5c retag)", () => {
+    const command = "cat > count.sh <<'EOF'\n#!/bin/bash\nwc -l < data.txt | tr -d ' \\t' > count.txt\nEOF\nchmod +x count.sh\n./count.sh\ncat -A count.txt";
+    const { calls, args } = argsOf(`\`\`\`bash\n${command}\n</parameter>\n</invoke>\n</function_calls>`);
+    expect(calls).toHaveLength(1);
+    expect(args).toEqual({ command });
+  });
+
+  it("drops a bare trailing </parameter> — it was written into count.sh 3 times (round 1, r3)", () => {
+    const { args } = argsOf(`\`\`\`write_file\npath: count.sh\n\n${SCRIPT}\n</parameter>\n\`\`\``);
+    expect(args).toEqual({ path: "count.sh", content: SCRIPT });
+    const bash = argsOf("```bash\nchmod +x count.sh\ncat count.sh\n</parameter>\n```").args;
+    expect(bash).toEqual({ command: "chmod +x count.sh\ncat count.sh" });
+  });
+
+  it("keeps native-looking markup that real content follows", () => {
+    const { args } = argsOf("```write_file\npath: x.xml\n\n<a>\n</parameter>\n<b/>\n```");
+    expect(args.content).toBe("<a>\n</parameter>\n<b/>");
+  });
+
+  it("keeps a closer that real content follows", () => {
+    const content = "<x>\n</invoke>\necho done";
+    const { args } = argsOf(`\`\`\`write_file\npath: x.sh\n\n${content}\n\`\`\``);
+    expect(args.content).toBe(content);
+    expect(argsOf(`\`\`\`write_file\npath: x.sh\n\n${content}`).calls).toHaveLength(0);
+  });
+
+  it("keeps prose before an unclosed call as leftover", () => {
+    const { calls, leftover } = argsOf("Writing the script now.\n```bash\nls\n</invoke>");
+    expect(calls).toHaveLength(1);
+    expect(leftover.trim()).toBe("Writing the script now.");
+  });
+
+  it("does not accept an unclosed fence with no end marker — it may be truncated", () => {
+    expect(argsOf(`\`\`\`write_file\npath: count.sh\n\n${SCRIPT}`).calls).toHaveLength(0);
+  });
+
+  it("only strips a closer on the LAST line, never one inside the content", () => {
+    const content = "<a>\n</invoke>\n</a>";
+    const { args } = argsOf(`\`\`\`write_file\npath: x.xml\n\n${content}\n\`\`\``);
+    expect(args.content).toBe(content);
+  });
+
+  it("does not take another tool's closing tag as a closer", () => {
+    const content = "<p>\n</read_file>";
+    const { args } = argsOf(`\`\`\`write_file\npath: x.html\n\n${content}\n\`\`\``);
+    expect(args.content).toBe(content);
+  });
+
+  it("finds the unclosed call for findFirstToolFence too", () => {
+    const text = `\`\`\`bash\nls\n</invoke>`;
+    expect(findFirstToolFence(text, specs)).toEqual({ start: 0, end: text.length });
+  });
+});
+
 describe("shell routing (Tier 1)", () => {
   const runCommand: ToolDef = {
     type: "function",
@@ -350,13 +448,34 @@ describe("defaultFramingForTone", () => {
       expect(defaultFramingForTone(tone, { agentLess: true })).toBe("relay");
       expect(defaultFramingForTone(tone, { agentLess: false })).toBeUndefined();
     }
-    expect(defaultFramingForTone("Claude_Opus", { agentLess: true })).toBe("minimal");
+    expect(defaultFramingForTone("Claude_Opus", { agentLess: true })).toBe("relay_batch");
     expect(defaultFramingForTone("Claude_Sonnet_Reasoning", { agentLess: true })).toBe("relay");
     expect(defaultFramingForModel("gpt-5.5-think-deeper", { agentLess: true })).toBe("relay");
   });
 
-  it("gives Opus the lean framing (it doesn't need the anti-narration cage, and its budget is small)", () => {
-    expect(defaultFramingForTone("Claude_Opus")).toBe("minimal");
+  it("gives both Opus models relay_batch — no jailbreak trips, and fewest turns (§24 F56, F60)", () => {
+    // minimal 12/30 and baseline 8/30 tasks Disengaged, the user-voice relays 0.
+    // relay_batch: 2.30 turns per bench task vs relay's 3.65 — and Opus 5.5's
+    // budget counts turns (F55). `minimal`'s shorter prompt saved nothing.
+    expect(defaultFramingForTone("Claude_Opus")).toBe("relay_batch");
+    for (const id of ["claude-opus", "claude-opus-5.5", "claude-opus-4.5", "claude-opus-4-5-20251101", "claude-opus-5[1m]"]) {
+      expect(defaultFramingForModel(id)).toBe("relay_batch");
+    }
+  });
+
+  it("asks for batching in relay_batch, and keeps relay's sandbox note and user voice", () => {
+    const out = formatFencedToolDefinitions([bash, readFile], "relay_batch");
+    expect(out).toContain("put as much as you can into one block");
+    expect(out).not.toContain("one command at a time");
+    expect(out).toMatch(/sandbox/);
+    expect(transcriptStyleForVariant("relay_batch").framingTag).toBeNull();
+  });
+
+  it("asks for batching only when there's a shell to batch in — otherwise it is relay (§25 H25b)", () => {
+    // Shell-less, "a script can look at the files…" read as a request only its
+    // own sandbox could meet: Sonnet 4.6 3/7 vs relay 6/6.
+    expect(formatFencedToolDefinitions([readFile], "relay_batch")).toBe(formatFencedToolDefinitions([readFile], "relay"));
+    expect(formatFencedToolDefinitions([bash, readFile], "relay_batch")).not.toBe(formatFencedToolDefinitions([bash, readFile], "relay"));
   });
 
   it("leaves unrelated tones on the bench-tuned baseline", () => {
@@ -365,28 +484,44 @@ describe("defaultFramingForTone", () => {
     }
   });
 
-  it("gives the Claude_Sonnet tone (4.6 and 5) the <system>-free relay framing", () => {
-    // Both Sonnets read the <system>-tagged baseline as an injected prompt (§21).
-    expect(defaultFramingForTone("Claude_Sonnet")).toBe("relay");
+  it("gives the Claude_Sonnet tone the <system>-free relay_batch (Sonnet 4.6, §25 F62)", () => {
+    // Both Sonnets read the <system>-tagged baseline as an injected prompt (§21);
+    // batching cut Sonnet 4.6's turns 14% on the bench and 21% in real pi.
+    expect(defaultFramingForTone("Claude_Sonnet")).toBe("relay_batch");
   });
 
-  it("gives GPT-6 relay — it runs agent-less, next to M365's code interpreter (#41)", () => {
-    // Not because it is paid-gated (Opus is gated too and gets `minimal`): GPT-6
+  it("gives the Claude_Sonnet_5 tone relay — Sonnet 5's own default (§25 F63)", () => {
+    expect(defaultFramingForTone("Claude_Sonnet_5")).toBe("relay");
+  });
+
+  it("gives GPT-6 relay_batch — it runs agent-less, next to M365's code interpreter (#41)", () => {
+    // Not because it is paid-gated (Opus 5.5 is gated too): GPT-6
     // never served with the tool agent, and agent-less under baseline it worked
     // in the code interpreter instead of acting — 0/30 vs relay 30/30 (docs §22 F47).
-    expect(defaultFramingForTone("Gpt_6_Reasoning")).toBe("relay");
-    expect(defaultFramingForModel("gpt-6-think-deeper")).toBe("relay");
+    // relay_batch keeps relay's user voice and cuts its turns by a third (§25 F61).
+    expect(defaultFramingForTone("Gpt_6_Reasoning")).toBe("relay_batch");
+    expect(defaultFramingForModel("gpt-6-think-deeper")).toBe("relay_batch");
   });
 
-  it("gives GPT-6 Sol relay on both of its paths, agent and agent-less (#23)", () => {
+  it("gives GPT-6 Sol relay_batch on both of its paths, agent and agent-less (#23, docs §28)", () => {
     // One default for both: agent-less (non-premium) it has its own sandbox and
-    // only relay kept it out (60/60 vs ≤6/10); with the agent (premium) relay
-    // 30/30 vs 3–9/10 for the rest (docs §23).
-    expect(defaultFramingForTone("Gpt_6_Sol_Reasoning")).toBe("relay");
-    expect(defaultFramingForModel("gpt-6-sol")).toBe("relay");
+    // only the user-voice relay kept it out (60/60 vs ≤6/10); with the agent
+    // (premium) relay 30/30 vs 3–9/10 for the rest (docs §23). relay_batch keeps
+    // that voice, cuts turns by a third, and on the retest didn't send it to the
+    // sandbox any more often than relay (§28; F61's 4 vs 2 was noise).
+    expect(defaultFramingForTone("Gpt_6_Sol_Reasoning")).toBe("relay_batch");
+    expect(defaultFramingForModel("gpt-6-sol")).toBe("relay_batch");
   });
 
-  it("is materially shorter than baseline for the same toolset", () => {
+  it("gives GPT-6.1 Sol relay_batch on both of its paths (docs §27, §29)", () => {
+    // Only the user-voice framings keep it out of its sandbox agent-less, as with
+    // GPT-6 Sol, and relay_batch never sent it there (0 of 80 tasks and pi runs)
+    // and saved turns on both paths, bench and real pi alike.
+    expect(defaultFramingForTone("Gpt_61_Sol_Reasoning")).toBe("relay_batch");
+    expect(defaultFramingForModel("gpt-6.1-sol")).toBe("relay_batch");
+  });
+
+  it("keeps the minimal variant materially shorter than baseline (not a default any more, still selectable)", () => {
     const lean = formatFencedToolDefinitions([bash, readFile], "minimal");
     const baseline = formatFencedToolDefinitions([bash, readFile], "baseline");
     expect(lean.length).toBeLessThan(baseline.length / 2);
@@ -397,28 +532,30 @@ describe("defaultFramingForTone", () => {
 });
 
 describe("defaultFramingForModel", () => {
-  // `Claude_Sonnet` is Sonnet 4.6 on the included scenario and Sonnet 5 on the
-  // paid one, so the tone alone can't choose Sonnet 5's framing.
-  it("gives Sonnet 5 the relay framing, including unmapped Sonnet 5 strings", () => {
+  // `Claude_Sonnet` is Sonnet 4.6 on the included scenario and Sonnet 5.5 on
+  // the paid one, so the tone alone can't choose Sonnet 5.5's framing.
+  it("keeps Sonnet 5 on relay, including unmapped Sonnet 5 strings", () => {
+    // Batching saved 15% of Sonnet 5's bench turns but only 6% in real pi (§25 F63).
     for (const id of ["claude-sonnet-5", "claude-sonnet-5[1m]"]) {
       expect(defaultFramingForModel(id)).toBe("relay");
     }
   });
 
-  it("gives Sonnet 4.6 relay too — and every unmapped claude-* string that lands on its tone", () => {
-    for (const id of [
-      "claude-sonnet",
-      "claude-sonnet-4.6",
-      "claude-sonnet-4.5",
-      "claude",
-      "claude-haiku-9",
-    ]) {
+  it("gives Sonnet 5.5 relay, not its tone's relay_batch — it has Sonnet 5's sandbox (§26)", () => {
+    for (const id of ["claude-sonnet-5.5", "claude-sonnet-5-5-20261001"]) {
       expect(defaultFramingForModel(id)).toBe("relay");
     }
   });
 
+  it("gives Sonnet 4.6 relay_batch — and every unmapped claude-* string that lands on its tone", () => {
+    for (const id of ["claude-sonnet", "claude-sonnet-4.6", "claude-sonnet-4.5", "claude", "claude-haiku-9"]) {
+      expect(defaultFramingForModel(id)).toBe("relay_batch");
+    }
+  });
+
   it("falls through to the tone default for everything else", () => {
-    expect(defaultFramingForModel("claude-opus")).toBe("minimal");
+    expect(defaultFramingForModel("claude-opus")).toBe("relay_batch");
+    expect(defaultFramingForModel("claude-sonnet-think-deeper")).toBe("relay");
     expect(defaultFramingForModel("m365-copilot")).toBeUndefined();
     expect(defaultFramingForModel("gpt-5.5-think-deeper")).toBeUndefined();
   });
@@ -629,5 +766,87 @@ describe("header value coercion (strict-harness schema conformance)", () => {
 
   it("leaves untyped and string params untouched", () => {
     expect(parse("path: 123").path).toBe("123");
+  });
+});
+
+describe("array and object params written as a YAML block (#50)", () => {
+  // pi's `edit` tool: the tools block shows it as `edits: <edits>`.
+  const piEdit: ToolDef = {
+    type: "function",
+    function: {
+      name: "edit",
+      description: "Edit a single file using exact text replacement.",
+      parameters: {
+        type: "object",
+        properties: {
+          path: { type: "string" },
+          edits: { type: "array", items: { type: "object", properties: { oldText: { type: "string" }, newText: { type: "string" } } } },
+        },
+        required: ["path", "edits"],
+      },
+    },
+  };
+  const opts: ToolDef = {
+    type: "function",
+    function: { name: "configure", parameters: { type: "object", properties: { target: { type: "string" }, options: { type: "object" } } } },
+  };
+  const piSpecs = buildSpecMap([piEdit, opts, bash]);
+  const argsOf = (text: string) => {
+    const { calls } = parseFencedToolCalls(text, piSpecs);
+    expect(calls).toHaveLength(1);
+    return parseJsonObject(calls[0].function.arguments);
+  };
+
+  it("reads Sonnet 4.6's block list, verbatim from real pi (44 of its 47 edits were lost)", () => {
+    const args = argsOf('```edit\npath: /tmp/pi-task-mi5OyW/mathutil.py\nedits:\n  - oldText: "    return sum(nums) / len(nums) + 1"\n    newText: "    return sum(nums) / len(nums)"\n```');
+    expect(args).toEqual({
+      path: "/tmp/pi-task-mi5OyW/mathutil.py",
+      edits: [{ oldText: "    return sum(nums) / len(nums) + 1", newText: "    return sum(nums) / len(nums)" }],
+    });
+  });
+
+  it("still reads the inline JSON Opus writes", () => {
+    const args = argsOf('```edit\npath: calc.py\nedits: [{"oldText": "    return a - b", "newText": "    return a + b"}]\n```');
+    expect(args.edits).toEqual([{ oldText: "    return a - b", newText: "    return a + b" }]);
+  });
+
+  it("reads single-quoted text with quotes and colons inside, and several items", () => {
+    const args = argsOf(`\`\`\`edit\npath: calc.py\nedits:\n  - oldText: '"quotient": a - b,'\n    newText: '"quotient": a / b,'\n  - oldText: 'it''s'\n    newText: "say \\"hi\\"\\tthere"\n\`\`\``);
+    expect(args.edits).toEqual([
+      { oldText: '"quotient": a - b,', newText: '"quotient": a / b,' },
+      { oldText: "it's", newText: 'say "hi"\tthere' },
+    ]);
+  });
+
+  it("reads multi-line text as | and |- block scalars", () => {
+    const args = argsOf("```edit\npath: calc.py\nedits:\n  - oldText: |\n      def add(a, b):\n          return a - b\n    newText: |-\n      def add(a, b):\n\n          return a + b\n```");
+    expect(args.edits).toEqual([
+      { oldText: "def add(a, b):\n    return a - b\n", newText: "def add(a, b):\n\n    return a + b" },
+    ]);
+  });
+
+  it("reads a list whose dashes sit at the key's own column", () => {
+    const args = argsOf("```edit\npath: a.py\nedits:\n- oldText: x = 1\n  newText: x = 2\n```");
+    expect(args.edits).toEqual([{ oldText: "x = 1", newText: "x = 2" }]);
+  });
+
+  it("keeps mapping values as text — no YAML booleans or numbers", () => {
+    const args = argsOf("```edit\npath: a.txt\nedits:\n  - oldText: 3000\n    newText: true\n```");
+    expect(args.edits).toEqual([{ oldText: "3000", newText: "true" }]);
+  });
+
+  it("reads an object-typed param as a mapping, and carries on with the header after it", () => {
+    const args = argsOf("```configure\noptions:\n  mode: fast\n  retries: 3\ntarget: prod\n```");
+    expect(args).toEqual({ options: { mode: "fast", retries: "3" }, target: "prod" });
+  });
+
+  it("falls back to the old reading when the block isn't YAML it can read", () => {
+    const args = argsOf("```edit\npath: a.py\nedits:\n  - oldText: x\n        newText: misaligned\n```");
+    expect(args.edits).toEqual([]);
+  });
+
+  it("leaves a string param's indented lines alone, as before", () => {
+    const args = argsOf("```bash\n  echo indented\n```");
+    expect(args.command).toBe("  echo indented");
   });
 });
