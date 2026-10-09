@@ -11,5 +11,12 @@
     "declaration": true,
     "declarationMap": true,
     "sourceMap": true
-  }
+  },
+  "exclude": [
+    "**/node_modules",
+    "**/dist",
+    "**/.output",
+    "**/.nitro",
+    "packages/proxy"
+  ]
 }

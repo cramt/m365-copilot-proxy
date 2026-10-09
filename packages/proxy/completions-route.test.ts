@@ -84,13 +84,13 @@ describe("streaming completion metrics", () => {
     mockStream();
     const response = await (route as (event: object) => Promise<Response>)({});
     expect(await response.text()).toBe("data: [DONE]\n\n");
-    expect(mocks.recordCompletionMetric).toHaveBeenCalledExactlyOnceWith({
+    expect(mocks.recordCompletionMetric).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({
       stream: true,
       statusCode: 200,
       finishReason: "stop",
       messageType: "Answer",
       responseBytes: Buffer.byteLength("data: [DONE]\n\n"),
-    });
+    }));
   });
 
   it("records an in-stream error rather than a successful HTTP 200", async () => {

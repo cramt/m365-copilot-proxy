@@ -8,6 +8,12 @@
 # pi runs model-generated commands on the HOST in a throwaway /tmp dir (benign task).
 # Run it inside the repo's Nix dev shell, which provides pi, python3 and curl:
 #   N=10 nix develop --command bash scripts/bench/pi-reliability.sh
+#
+# Throttle pacing, as in run.mjs, only with M365_AVOID_THROTTLING=1: before each
+# run it waits until the proxy's debug logs say the account can afford PACE_NEED
+# (12) turns plus a reserve (turn-budget.mjs; the proxy needs M365_DEBUG=1).
+# A run that comes back throttled is recorded as THROTTLED and ends the
+# loop ("[pi-rel] THROTTLED", exit 3): every later run would only keep it alive.
 set -u
 cd "$(dirname "$0")/../.." || exit 1
 
@@ -16,11 +22,12 @@ PORT="${PORT:-4141}"
 MODEL="${MODEL:-m365-copilot}"
 COOLDOWN="${COOLDOWN:-60}"
 TIMEOUT="${TIMEOUT:-240}"
+PACE_NEED="${PACE_NEED:-12}"
 BASE="http://localhost:${PORT}/v1"
 CSV="${CSV:-/tmp/m365-pi-reliability.csv}"
 TASK="${TASK:-fix-bug}"   # fix-bug (find+fix) | multi (2-file bug) | edit-config (F17 "change X->Y" shape)
 
-for t in pi python3 curl; do
+for t in pi python3 curl node; do
   command -v "$t" >/dev/null || { echo "[pi-rel] $t isn't on PATH — run this inside the repo's dev shell: nix develop --command bash scripts/bench/pi-reliability.sh"; exit 1; }
 done
 # The model's commands and the verifier both run this python3. PYBIN overrides it.
@@ -32,6 +39,7 @@ curl -s -m3 "http://localhost:${PORT}/health" >/dev/null || { echo "[pi-rel] pro
 echo "[pi-rel] N=$N model=$MODEL base=$BASE python3=$PYBIN cooldown=${COOLDOWN}s"
 
 for i in $(seq 1 "$N"); do
+  node scripts/bench/turn-budget.mjs wait --need "$PACE_NEED" --label pi-rel
   D="$(mktemp -d /tmp/pi-task-XXXXXX)"
   if [ "$TASK" = edit-config ]; then
     printf '{\n  "name": "app",\n  "port": 3000,\n  "debug": false\n}\n' > "$D/config.json"
@@ -67,6 +75,7 @@ EOF
     "$PYBIN/python3" "$D/check.py" 2>/dev/null | grep -qx OK && ok=1 || ok=0
   fi
   if [ "$ok" = 1 ]; then outcome=SOLVED
+  elif grep -qiE 'PerUserThrottled|m365_throttled' "$D/pi.out" 2>/dev/null; then outcome=THROTTLED
   elif grep -qi 'disengag' "$D/pi.out" 2>/dev/null; then outcome=DISENGAGED
   else outcome=FAIL; fi
   el=$(( $(date +%s) - t0 ))
@@ -74,6 +83,11 @@ EOF
   echo "  [pi-rel] run $i/$N -> $outcome (${el}s)"
   # keep the dir on FAIL for diagnosis; clean on success
   [ "$outcome" = SOLVED ] && rm -rf "$D" || echo "    (kept $D for diagnosis: pi.out)"
+  if [ "$outcome" = THROTTLED ]; then
+    echo "[pi-rel] THROTTLED — stopping after run $i; the rest would only fail the same way and keep the throttle alive"
+    echo "[pi-rel] === $(tail -n+2 "$CSV" | awk -F, '$3=="SOLVED"{s++}END{print s+0"/"NR" SOLVED"}') ==="
+    exit 3
+  fi
   [ "$i" -lt "$N" ] && sleep "$COOLDOWN"
 done
 echo "[pi-rel] === $(tail -n+2 "$CSV" | awk -F, '$3=="SOLVED"{s++}END{print s+0"/"NR" SOLVED"}') ==="

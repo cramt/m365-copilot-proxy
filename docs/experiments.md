@@ -184,12 +184,15 @@ All run with `scripts/_probe-chat.mjs` overrides; no license needed.
 
 ## E. Claude Sonnet 5 (paid scenario — §21)
 
+Sonnet 5 is the `Claude_Sonnet_5` tone since 2026-10-06; `Claude_Sonnet` on the paid scenario is now
+Sonnet 5.5, which has the same sandbox and a metered budget (80/day) — §26.
+
 ### E-S1 — What gates Sonnet 5's own sandbox tools? (F36)
 - **Hypothesis:** some client-side field turns `bash_tool`/`create_file` off. Falsified so far for
   optionsSets, plugins, variants and `allowedMessageTypes`; next candidates: `gptDefinitions`,
   `clientOverrides.capabilities`, a different `clientInfo.clientPlatform`.
 - **Run:** `node scripts/sonnet5-native-tools-probe.mjs pwd-proxy,pwd-none,pwd-bare,pwd-noprogress`
-  (add a cell per candidate). **Read:** `native tool calls: N` and whether the reply says
+  (add a cell per candidate; `TONE=Claude_Sonnet` probes Sonnet 5.5 and spends its budget). **Read:** `native tool calls: N` and whether the reply says
   `/home/claude`. **Cost:** 1 fresh thread per cell — needs a paid seat.
 
 ### E-S2 — Framing sweep for Sonnet 5 (F37, F43)
@@ -199,9 +202,8 @@ All run with `scripts/_probe-chat.mjs` overrides; no license needed.
   opens. Needs two single-change variants registered in `fenced.ts`: (a) relay with the harness
   block moved first, note still untagged; (b) the `<user>`-tagged note + task first, harness block
   after. Predicted: (a) fails like relay_inline, (b) works like relay.
-- **Run:** proxy with `M365_FRAMING_FILE`, then
-  `ARMS="<a> default <b> <a>" TAG=s5c bash scripts/bench/sonnet5-sweep.sh`, alternating so each
-  variant has a concurrent relay control.
+- **Run:** `ARMS="<a> default <b> <a>" TAG=s5c bash scripts/bench/sonnet5-sweep.sh` (it starts
+  a proxy per arm), alternating so each variant has a concurrent relay control.
   (`scripts/bench/phase-sweep.sh` now does the proxy and archiving too, and
   `scripts/bench/analyze-arms.mjs` reads the result back; see scripts/bench/README.md.)
   **Read:** SOLVED per arm, then `ChainOfThoughtSummary` frames in the archived

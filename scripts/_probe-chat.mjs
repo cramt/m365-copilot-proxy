@@ -9,7 +9,7 @@
 //   disengaged,                          // saw messageType:"Disengaged"
 //   messageTypes, contentOrigin,         // control-frame metadata
 //   scores: { BotOffense, dea_violation, ... },
-//   throttle: { current, max } | null,
+//   throttle: { current, max, metering } | null,   // metering: paid scenario only
 //   serviceVersion, turnCount,
 //   elapsedMs, frameCount, error
 // }
@@ -305,11 +305,13 @@ export function oneTurn(o) {
           const it = item ?? (Array.isArray(args) ? args[0]?.item : null);
           if (it) {
             if (Array.isArray(it.messages)) for (const m of it.messages) ingestBotMessage(m);
-            if (it.throttling)
+            if (it.throttling) {
               throttle = {
                 current: it.throttling.numUserMessagesInConversation,
                 max: it.throttling.maxNumUserMessagesInConversation,
+                metering: it.throttling.metering ?? null,
               };
+            }
             if (it.result?.serviceVersion) serviceVersion = it.result.serviceVersion;
             if (typeof it.turnCount === "number") turnCount = it.turnCount;
             if (

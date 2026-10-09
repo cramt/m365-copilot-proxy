@@ -11,15 +11,13 @@ const scripted: {
   /** Text of every run() call, in order. */
   texts: string[];
   /** Per-call overrides, consumed front-first (e.g. a Disengaged turn, then an answer). */
-  queue: Array<{
-    fullText: string;
-    messageType?: string | null;
-    result?: { value: string; errorCode?: string };
-  }>;
-  /** The `useAgent` argument of every run() call, in order. */
-  agentFlags: Array<boolean | undefined>;
+  queue: Array<{ fullText: string; messageType?: string | null; result?: { value: string; errorCode?: string; message?: string }; metering?: Record<string, number> }>;
   agentId?: string | null;
   resolutions: number;
+  /** The model argument of every run() call, in order. */
+  models: string[];
+  /** The `useAgent` argument of every run() call, in order. */
+  agentFlags: Array<boolean | undefined>;
   /** How many times the handler rotated to a fresh conversation. */
   newConversations: number;
 } = {
@@ -27,6 +25,7 @@ const scripted: {
   runs: 0,
   texts: [],
   queue: [],
+  models: [],
   agentFlags: [],
   resolutions: 0,
   newConversations: 0,
@@ -51,7 +50,8 @@ vi.mock("@m365-copilot/core", async (importActual) => {
       scripted.resolutions++;
       return Promise.resolve(scripted.agentId === undefined ? "agent-test" : scripted.agentId);
     }
-    run(text: string, _model?: string, _signal?: AbortSignal, useAgent?: boolean) {
+    run(text: string, model?: string, _signal?: AbortSignal, useAgent?: boolean) {
+      scripted.models.push(model ?? "");
       this.turnCount++; // like the real session: later requests go down the delta path
       scripted.runs++;
       scripted.texts.push(text);
@@ -63,6 +63,7 @@ vi.mock("@m365-copilot/core", async (importActual) => {
         fullText: full,
         hasContent: full.length > 0,
         result: next?.result ?? scripted.result ?? { value: "Success" },
+        metering: next?.metering ?? null,
         images: [],
         throttle: { current: 1, max: 600 },
         contentOrigin: "Claude",
@@ -89,7 +90,7 @@ vi.mock("@m365-copilot/core", async (importActual) => {
 });
 
 const { handleChatCompletion, SessionPool, ChatCompletionRequest } = await import("./index.js");
-const { noteRequestOutcome, resetAgentRoutes } = await import("@m365-copilot/core");
+const { noteRequestOutcome, resetAgentRoutes, resetPriorityAccessState } = await import("@m365-copilot/core");
 type JsonObject = Record<string, unknown>;
 type RequestMessage = ReturnType<typeof ChatCompletionRequest.parse>["messages"][number];
 type ToolCall = {
@@ -271,6 +272,25 @@ describe("exact-reply system guard", () => {
     expect(scripted.texts[1]).toContain("<system>\nUse concise prose.\n</system>");
   });
 });
+
+
+// The proxy remembers a priority-access wall for the process (until the reset);
+// don't let one test's refusal 429 the next test's Opus request.
+afterEach(() => resetPriorityAccessState());
+
+/** One request on a fresh pool with a fake clock: an empty upstream turn makes
+ *  the handler wait 2 s before each quick retry, and that wait is the handler's
+ *  own pacing, not what these tests check. */
+async function respond(body: ReturnType<typeof ChatCompletionRequest.parse>): Promise<Response> {
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+  try {
+    const pending = handleChatCompletion(body, new SessionPool());
+    await vi.runAllTimersAsync();
+    return await pending;
+  } finally {
+    vi.useRealTimers();
+  }
+}
 
 /** Drive one streaming request and collect the ordered content-delta strings. */
 async function streamContents(deltas: string[], fullText?: string): Promise<string[]> {
@@ -457,6 +477,13 @@ describe("the only-the-first-call-ran note", () => {
   it("adds nothing when the whole reply ran", async () => {
     const sent = await converse(["```bash\nls\n```", "Done."]);
     expect(sent[1]).not.toContain("(Note:");
+  });
+
+  it("names the tool on a follow-up turn, though the tool message carries no name (#50)", async () => {
+    // Like pi: the result names its call only by tool_call_id.
+    const sent = await converse(["```bash\nls\n```", "Done."]);
+    expect(sent[1]).toMatch(/<tool_response name="bash" call_id="[^"]+">\nreal output 0\n<\/tool_response>/);
+    expect(sent[1]).not.toContain('name="unknown"');
   });
 });
 
@@ -652,8 +679,19 @@ describe("Disengage retry keeps a model's <system>-free framing", () => {
   it("retries Sonnet 5 with relay again, never a <system>-tagged framing", async () => {
     const retry = await disengageThenAnswer("claude-sonnet-5");
     expect(retry).not.toContain("<system>");
-    expect(retry).toContain("guide me through this from my terminal");
+    expect(retry).toContain("guide me through this from my terminal, one command at a time");
+    expect(retry).not.toContain("put as much as you can into one block");
   });
+
+  it("sends Opus, Sonnet 4.6 and GPT-6 relay_batch on the first try and keeps it on the retry (§24, §25)", async () => {
+    for (const model of ["claude-opus-4.5", "claude-opus", "claude-sonnet", "gpt-6-think-deeper"]) {
+      const retry = await disengageThenAnswer(model);
+      expect(scripted.texts[0]).toContain("put as much as you can into one block");
+      expect(scripted.texts[0]).not.toContain("<system>");
+      expect(retry).toContain("put as much as you can into one block");
+    }
+  });
+
 
   it("still retries the <system>-tagged defaults with softened (F22)", async () => {
     const retry = await disengageThenAnswer("gpt-5.5-think-deeper");
@@ -706,13 +744,24 @@ describe("which requests carry the tool agent (#41)", () => {
     expect(await agentFlagFor("m365-copilot")).toBe(true);
   });
 
-  it("still sends Claude tool requests without it", async () => {
+  it("still sends Claude Sonnet tool requests without it", async () => {
     expect(await agentFlagFor("claude-sonnet")).toBe(false);
-    expect(await agentFlagFor("claude-opus-5[1m]")).toBe(false);
+    expect(await agentFlagFor("claude-sonnet-5")).toBe(false);
+  });
+
+  it("sends both Opus models' tool requests with it (§24)", async () => {
+    expect(await agentFlagFor("claude-opus")).toBe(true);
+    expect(await agentFlagFor("claude-opus-5[1m]")).toBe(true);
+    expect(await agentFlagFor("claude-opus-4.5")).toBe(true);
   });
 
   it("never attaches it to a request without tools", async () => {
     expect(await agentFlagFor("gpt-5.5-think-deeper", false)).toBe(false);
+    expect(await agentFlagFor("claude-opus", false)).toBe(false);
+  });
+
+  it("…except for Opus 4.5, which isn't served without it", async () => {
+    expect(await agentFlagFor("claude-opus-4.5", false)).toBe(true);
   });
 
   it("lets M365_FORCE_AGENT=1 put it back", async () => {
@@ -753,7 +802,7 @@ describe("GPT-6 Sol: agent on premium, learned fallback on non-premium (#23)", (
         { role: "user", content: `list files ${Math.random()}` },
       ],
     });
-    return handleChatCompletion(body, new SessionPool());
+    return respond(body);
   }
 
   afterEach(() => {
@@ -1090,4 +1139,217 @@ describe("OpenAI response shape", () => {
       expect(streamHasToolCalls).toBe(false);
     },
   );
+});
+
+describe("Opus 4.5 on an account that can't serve it (§24)", () => {
+  const DEAD = { fullText: "", result: { value: "InternalError" } };
+
+  afterEach(() => {
+    resetAgentRoutes();
+    scripted.queue = [];
+  });
+
+  it("says the model is premium-only instead of 'empty response', and never goes agent-less", async () => {
+    scripted.result = null;
+    scripted.agentFlags = [];
+    scripted.newConversations = 0;
+    scripted.queue = [DEAD, DEAD, DEAD];
+    const body = ChatCompletionRequest.parse({
+      model: "claude-opus-4.5", stream: false,
+      messages: [{ role: "user", content: `hello ${Math.random()}` }],
+    });
+    const res = await respond(body);
+    expect(res.status).toBe(502);
+    const err = (await res.json()).error;
+    expect(err.code).toBe("model_route_unavailable");
+    expect(err.message).toContain("premium");
+    // Agent-less is a dead route too, so there is nothing to fall back to.
+    expect(scripted.agentFlags).toEqual([true, true, true]);
+    expect(scripted.newConversations).toBe(0);
+  });
+
+  it("keeps the generic message for other models' empty InternalErrors", async () => {
+    scripted.result = null;
+    scripted.queue = [DEAD, DEAD, DEAD];
+    const body = ChatCompletionRequest.parse({
+      model: "claude-opus", stream: false,
+      messages: [{ role: "user", content: `hello ${Math.random()}` }],
+    });
+    const res = await respond(body);
+    expect(res.status).toBe(502);
+    expect((await res.json()).error.type).toBe("upstream_empty_response");
+  });
+});
+
+describe("Priority access (Opus 5.5, Sonnet 5.5): OutOfCredits, remembering it, metering, the opt-in fallback (#18)", () => {
+  const tools = [{ type: "function", function: { name: "bash", parameters: { type: "object", properties: { command: { type: "string" } } } } }];
+  const WEEKLY = "You\u2019ve used your available priority access to the Opus model for the week. You can choose another available model or wait until Monday to use the Opus model again.";
+  const REFUSAL = { fullText: WEEKLY, result: { value: "OutOfCredits", message: WEEKLY } };
+  const CALL = { fullText: "```bash\nls\n```", metering: { ClaudeOpusQueryDaily: 12, ClaudeOpusQuery75: 30 } };
+
+  async function send(model = "claude-opus", content = `list files ${Math.random()}`, stream = false) {
+    scripted.result = null;
+    scripted.texts = [];
+    scripted.models = [];
+    scripted.agentFlags = [];
+    scripted.newConversations = 0;
+    const body = ChatCompletionRequest.parse({
+      model, stream, tools,
+      messages: [{ role: "system", content: "sys" }, { role: "user", content }],
+    });
+    return handleChatCompletion(body, pool);
+  }
+  let pool = new SessionPool();
+
+  afterEach(() => {
+    resetPriorityAccessState();
+    scripted.queue = [];
+    delete process.env.M365_OPUS_FALLBACK_MODEL;
+    delete process.env.M365_SONNET_FALLBACK_MODEL;
+    pool = new SessionPool();
+  });
+
+  it("surfaces the Opus allowances left in usage", async () => {
+    scripted.queue = [CALL];
+    const res = await send();
+    const usage = (await res.json()).usage;
+    expect(usage.x_m365_opus_daily_remaining).toBe(12);
+    expect(usage.x_m365_opus_weekly_remaining).toBe(30);
+  });
+
+  it("429s an OutOfCredits turn with the weekly reset", async () => {
+    scripted.queue = [REFUSAL];
+    const res = await send();
+    expect(res.status).toBe(429);
+    const err = (await res.json()).error;
+    expect(err.code).toBe("priority_access_exhausted");
+    expect(err.param).toBe("week");
+    expect(Number(res.headers.get("Retry-After"))).toBeGreaterThan(0);
+  });
+
+  it("then answers later metered Opus requests itself, without an M365 turn", async () => {
+    scripted.queue = [REFUSAL];
+    await send();
+    const res = await send("claude-opus", "another task");
+    expect(res.status).toBe(429);
+    expect(scripted.models).toEqual([]); // nothing sent upstream
+    // Opus 4.5 isn't metered, so it is unaffected.
+    scripted.queue = [CALL];
+    expect((await send("claude-opus-4.5", "third task")).status).toBe(200);
+    expect(scripted.models).toEqual(["claude-opus-4.5"]);
+  });
+
+  it("with M365_OPUS_FALLBACK_MODEL, re-sends the whole request to it in a fresh conversation", async () => {
+    process.env.M365_OPUS_FALLBACK_MODEL = "claude-opus-4.5";
+    scripted.queue = [REFUSAL, { fullText: "```bash\nls\n```" }];
+    const res = await send();
+    expect(res.status).toBe(200);
+    const json = await res.json();
+    expect(json.choices[0].message.tool_calls).toHaveLength(1);
+    expect(json.model).toBe("claude-opus-4.5"); // says who answered
+    expect(scripted.models).toEqual(["claude-opus", "claude-opus-4.5"]);
+    expect(scripted.newConversations).toBe(1);
+    expect(scripted.agentFlags).toEqual([true, true]);
+    expect(scripted.texts[1]).toContain("list files"); // the whole request, not a delta
+  });
+
+  it("…and routes the next requests straight to the fallback until the reset", async () => {
+    process.env.M365_OPUS_FALLBACK_MODEL = "claude-opus-4.5";
+    scripted.queue = [REFUSAL, { fullText: "```bash\nls\n```" }];
+    await send();
+    scripted.queue = [{ fullText: "```bash\npwd\n```" }];
+    const res = await send("claude-opus", "another task");
+    expect(res.status).toBe(200);
+    expect(scripted.models).toEqual(["claude-opus-4.5"]);
+  });
+
+  it("starts a fresh conversation when an ongoing Opus 5.5 conversation moves to the fallback", async () => {
+    scripted.queue = [CALL];
+    await send("claude-opus", "long task");          // turn 1 served by Opus 5.5
+    process.env.M365_OPUS_FALLBACK_MODEL = "claude-opus-4.5";
+    scripted.queue = [REFUSAL, { fullText: "Done." }];
+    // the client continues the same conversation with a tool result
+    scripted.texts = []; scripted.models = []; scripted.newConversations = 0;
+    const body = ChatCompletionRequest.parse({
+      model: "claude-opus", stream: false, tools,
+      messages: [
+        { role: "system", content: "sys" }, { role: "user", content: "long task" },
+        { role: "assistant", content: null, tool_calls: [{ id: "c1", type: "function", function: { name: "bash", arguments: "{\"command\":\"ls\"}" } }] },
+        { role: "tool", tool_call_id: "c1", content: "a.txt" },
+      ],
+    });
+    const res = await handleChatCompletion(body, pool);
+    expect(res.status).toBe(200);
+    expect(scripted.models).toEqual(["claude-opus", "claude-opus-4.5"]);
+    expect(scripted.texts[1]).toContain("long task");   // full history for the new model
+    expect(scripted.texts[1]).toContain("a.txt");
+  });
+
+  it("never falls back for an unmetered model's refusal text", async () => {
+    process.env.M365_OPUS_FALLBACK_MODEL = "claude-opus-4.5";
+    scripted.queue = [{ fullText: WEEKLY }];
+    const res = await send("gpt-5.5-think-deeper");
+    expect(res.status).toBe(429);
+    expect(scripted.models).toEqual(["gpt-5.5-think-deeper"]);
+  });
+
+  it("falls back on the streaming path too, without leaking the refusal", async () => {
+    process.env.M365_OPUS_FALLBACK_MODEL = "claude-opus-4.5";
+    scripted.queue = [REFUSAL, { fullText: "Hello from 4.5" }];
+    scripted.result = null; scripted.models = [];
+    const body = ChatCompletionRequest.parse({ model: "claude-opus", stream: true, messages: [{ role: "user", content: `hi ${Math.random()}` }] });
+    const res = await handleChatCompletion(body, pool);
+    const text = await res.text();
+    expect(text).toContain("Hello from 4.5");
+    expect(text).not.toContain("priority access");
+    expect(scripted.models).toEqual(["claude-opus", "claude-opus-4.5"]);
+  });
+
+  // Sonnet 5.5 has a budget of its own (§26): ClaudeSonnet55QueryDaily/Weekly.
+  const SONNET_DAILY = "You\u2019ve used your available priority access to the Sonnet model for today. You can choose another available model or wait until tomorrow to use the Sonnet model again.";
+  const SONNET_REFUSAL = { fullText: SONNET_DAILY, result: { value: "OutOfCredits", message: SONNET_DAILY } };
+
+  it("surfaces Sonnet 5.5's allowances in usage, next to Opus's", async () => {
+    scripted.queue = [{ fullText: "```bash\nls\n```", metering: { ClaudeOpusQueryDaily: 12, ClaudeOpusQuery75: 30, ClaudeSonnet55QueryDaily: 79, ClaudeSonnet55QueryWeekly: 149 } }];
+    const usage = (await (await send("claude-sonnet-5.5")).json()).usage;
+    expect(usage.x_m365_sonnet55_daily_remaining).toBe(79);
+    expect(usage.x_m365_sonnet55_weekly_remaining).toBe(149);
+    expect(usage.x_m365_opus_daily_remaining).toBe(12);
+  });
+
+  it("keeps the Sonnet 5.5 and Opus walls apart", async () => {
+    scripted.queue = [SONNET_REFUSAL];
+    const res = await send("claude-sonnet-5.5");
+    expect(res.status).toBe(429);
+    expect((await res.json()).error.param).toBe("day");
+    // Sonnet 5.5 is answered locally until the reset…
+    expect((await send("claude-sonnet-5.5", "another task")).status).toBe(429);
+    expect(scripted.models).toEqual([]);
+    // …while Opus 5.5, Sonnet 5 and Sonnet 4.6 still go upstream.
+    for (const model of ["claude-opus", "claude-sonnet-5", "claude-sonnet"]) {
+      scripted.queue = [CALL];
+      expect((await send(model, `task for ${model}`)).status).toBe(200);
+      expect(scripted.models).toEqual([model]);
+    }
+  });
+
+  it("with M365_SONNET_FALLBACK_MODEL, re-sends a Sonnet 5.5 request to it", async () => {
+    process.env.M365_SONNET_FALLBACK_MODEL = "claude-sonnet-5";
+    process.env.M365_OPUS_FALLBACK_MODEL = "claude-opus-4.5"; // the other budget's, unused here
+    scripted.queue = [SONNET_REFUSAL, { fullText: "```bash\nls\n```" }];
+    const res = await send("claude-sonnet-5.5");
+    expect(res.status).toBe(200);
+    expect((await res.json()).model).toBe("claude-sonnet-5");
+    expect(scripted.models).toEqual(["claude-sonnet-5.5", "claude-sonnet-5"]);
+    expect(scripted.agentFlags).toEqual([false, false]);
+  });
+
+  it("remembers an unexpected OutOfCredits under that model alone", async () => {
+    scripted.queue = [{ fullText: "Out of credits.", result: { value: "OutOfCredits", message: "Out of credits." } }];
+    expect((await send("gpt-6-sol")).status).toBe(429);
+    expect((await send("gpt-6-sol", "again")).status).toBe(429);
+    expect(scripted.models).toEqual([]);
+    scripted.queue = [CALL];
+    expect((await send("claude-opus", "opus task")).status).toBe(200);
+  });
 });

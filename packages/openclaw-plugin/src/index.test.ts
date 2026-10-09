@@ -64,12 +64,19 @@ describe("generateOpenClawConfig", () => {
     expect(models.find((m) => m.id === "gpt-6-think-deeper")?.reasoning).toBe(true);
     // A reasoning tone even though its ID has no `-think-deeper` suffix (#23).
     expect(models.find((m) => m.id === "gpt-6-sol")?.reasoning).toBe(true);
+    expect(models.find((m) => m.id === "gpt-6.1-sol")).toMatchObject({ name: "GPT-6.1 Sol", reasoning: true });
     expect(models.find((m) => m.id === "gpt-5.6-think-deeper")?.reasoning).toBe(true);
     // Gpt_5_6_Chat is a chat tone, not a reasoning one — it must not inherit
     // its sibling's `reasoning` flag just because the version number matches.
     expect(models.find((m) => m.id === "gpt-5.6-quick")?.reasoning).toBe(false);
     expect(models.find((m) => m.id === "think-deeper")?.reasoning).toBe(true);
     expect(models.find((m) => m.id === "quick")?.reasoning).toBe(false);
+  });
+
+  it("names the two Opus models apart — one tone, two models (§24)", () => {
+    const models = generateOpenClawConfig().models.providers.m365.models;
+    expect(models.find((m) => m.id === "claude-opus")?.name).toBe("Claude Opus 5.5");
+    expect(models.find((m) => m.id === "claude-opus-4.5")?.name).toMatch(/^Claude Opus 4\.5/);
   });
 });
 
