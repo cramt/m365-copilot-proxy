@@ -88,7 +88,7 @@ export function findLogs(dirs, sinceMs, depth = 3) {
     try { st = statSync(p); } catch { return; }
     if (st.isFile()) { if ((d === 0 || LOG_FILE.test(basename(p))) && st.mtimeMs >= sinceMs) out.push(p); return; }
     if (!st.isDirectory() || d > depth) return;
-    let names = [];
+    let names;
     try { names = readdirSync(p); } catch { return; }
     for (const n of names) if (!SKIP_DIR.test(n)) walk(join(p, n), d + 1);
   };

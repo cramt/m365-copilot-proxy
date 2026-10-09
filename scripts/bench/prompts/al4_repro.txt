@@ -1,0 +1,1 @@
+Provide a reproduction script for this task: the exact commands that set everything up and produce the result, as a single ```bash block running in the current directory. Prefer heredocs (`cat > file <<'EOF'`) to write files and `python3`/`sed` to process them. You'll see the script's output; add another block if the first didn't finish, then confirm in one line.

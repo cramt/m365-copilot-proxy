@@ -3,20 +3,48 @@
   "private": true,
   "license": "MIT",
   "type": "module",
+  "engines": {
+    "node": ">=22.13.0"
+  },
   "scripts": {
     "dev": "pnpm --filter @m365-copilot/proxy dev",
+    "start": "pnpm --filter @m365-copilot/proxy start",
     "build": "pnpm -r build",
     "proxy": "node packages/proxy/bin/m365-proxy.mjs",
     "pi": "bash scripts/pi-local.sh",
+    "typecheck": "tsc --noEmit",
+    "typecheck:ts7": "tsc --noEmit",
+    "typecheck:ts6": "tsc6 --noEmit",
+    "lint": "biome lint .",
+    "lint:fix": "biome lint --write .",
+    "lint:eslint": "eslint .",
+    "lint:all": "pnpm lint && pnpm lint:eslint",
+    "format": "biome format --write .",
+    "format:check": "biome format .",
+    "check": "biome check .",
     "test": "pnpm test:unit",
-    "test:unit": "pnpm build && npx vitest run",
-    "test:live": "pnpm build && M365_LIVE=1 npx vitest run"
+    "test:unit": "pnpm build && vitest run",
+    "test:live": "pnpm build && M365_LIVE=1 vitest run",
+    "test:all": "pnpm test:unit && pnpm test:live"
   },
-  "packageManager": "pnpm@10.32.1",
+  "packageManager": "pnpm@12.8.1",
   "devDependencies": {
-    "tsdown": "^0.21.5",
-    "tsx": "^4.21.0",
-    "typescript": "^6.0.2",
-    "vitest": "^4.1.2"
+    "@biomejs/biome": "2.5.15",
+    "@eslint/js": "^10.0.1",
+    "@types/node": "^22.20.5",
+    "@typescript/native-preview": "npm:typescript@^7.0.2",
+    "@vitest/eslint-plugin": "^1.6.27",
+    "eslint": "^10.12.0",
+    "eslint-import-resolver-typescript": "^4.4.5",
+    "eslint-plugin-import-x": "^4.17.1",
+    "globals": "^17.13.0",
+    "otpauth": "^9.5.2",
+    "playwright": "^1.63.0",
+    "tsdown": "^0.23.0",
+    "tsx": "^4.23.15",
+    "typescript": "npm:@typescript/typescript6@^6.0.2",
+    "typescript-eslint": "^8.71.0",
+    "vitest": "^5.0.3",
+    "ws": "^8.22.0"
   }
 }

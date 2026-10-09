@@ -49,6 +49,8 @@ export interface BackoffOptions {
 export interface BackoffController {
   /** Record one request outcome. `empty` = throttle-shaped empty response. */
   note: (empty: boolean, conversationId: string) => void;
+  noteThrottle: () => void;
+  retryAfterSeconds: () => number;
   /** Await a paced slot before starting a backend turn. Resolves immediately when
    *  healthy; during backoff it sleeps a jittered delay. Returns ms slept. */
   waitForSlot: () => Promise<number>;
@@ -71,6 +73,16 @@ export function createBackoffController(opts: BackoffOptions): BackoffController
   let backoffUntil = -Infinity;
   let level = 0; // escalation level; resets on a clean response
 
+  const enterBackoff = (distinctConversations: number) => {
+    const timestamp = now();
+    if (timestamp < backoffUntil) return;
+    level += 1;
+    const cooldownMs = Math.min(baseCooldownMs * 2 ** (level - 1), maxCooldownMs);
+    backoffUntil = timestamp + cooldownMs;
+    empties = [];
+    opts.onTrigger?.({ distinctConversations, cooldownMs, level });
+  };
+
   return {
     note(empty, conversationId) {
       const t = now();
@@ -90,13 +102,15 @@ export function createBackoffController(opts: BackoffOptions): BackoffController
       if (distinct < threshold) return;
       // Already backing off within the current window — don't re-arm/escalate until it
       // elapses, so a burst of empties doesn't stack the delay unboundedly.
-      if (t < backoffUntil) return;
+      enterBackoff(distinct);
+    },
 
-      level += 1;
-      const cooldownMs = Math.min(baseCooldownMs * 2 ** (level - 1), maxCooldownMs);
-      backoffUntil = t + cooldownMs;
-      empties = [];
-      opts.onTrigger?.({ distinctConversations: distinct, cooldownMs, level });
+    noteThrottle() {
+      enterBackoff(1);
+    },
+
+    retryAfterSeconds() {
+      return Math.max(0, Math.ceil((backoffUntil - now()) / 1000));
     },
 
     async waitForSlot() {
@@ -114,19 +128,20 @@ export function createBackoffController(opts: BackoffOptions): BackoffController
   };
 }
 
-const disabled = () =>
-  !!(process.env.M365_NO_BACKOFF ?? process.env.M365_NO_AUTO_REAUTH); // legacy alias
+const disabled = () => !!(process.env.M365_NO_BACKOFF ?? process.env.M365_NO_AUTO_REAUTH); // legacy alias
 
 const defaultController = createBackoffController({
   windowMs: Number(process.env.M365_BACKOFF_WINDOW_MS ?? 120_000),
-  threshold: Number(process.env.M365_BACKOFF_THRESHOLD ?? process.env.M365_REAUTH_EMPTY_THRESHOLD ?? 3),
+  threshold: Number(
+    process.env.M365_BACKOFF_THRESHOLD ?? process.env.M365_REAUTH_EMPTY_THRESHOLD ?? 3,
+  ),
   baseCooldownMs: Number(process.env.M365_BACKOFF_BASE_MS ?? 90_000),
   maxCooldownMs: Number(process.env.M365_BACKOFF_MAX_MS ?? 600_000),
   onTrigger: ({ distinctConversations, cooldownMs, level }) =>
     log.info(
-      `Degradation backoff (level ${level}): ${distinctConversations} empty responses across distinct ` +
-      `conversations — pacing new turns for ~${Math.round(cooldownMs / 1000)}s to let the account self-heal ` +
-      `(H-R1: a re-login would NOT clear this and would raise our detection profile). Disable with M365_NO_BACKOFF=1.`,
+      `Degradation backoff (level ${level}): throttle-shaped failures in ${distinctConversations} ` +
+        `conversation(s) — pacing new turns for ~${Math.round(cooldownMs / 1000)}s to let the account self-heal ` +
+        `(H-R1: a re-login would NOT clear this and would raise our detection profile). Disable with M365_NO_BACKOFF=1.`,
     ),
 });
 
@@ -136,12 +151,22 @@ export function noteRequestOutcome(empty: boolean, conversationId: string): void
   defaultController.note(empty, conversationId);
 }
 
+export function noteUpstreamThrottle(): void {
+  if (disabled()) return;
+  defaultController.noteThrottle();
+}
+
+export function getDegradationRetryAfterSeconds(): number {
+  return disabled() ? 0 : defaultController.retryAfterSeconds();
+}
+
 /** Await a paced slot before a backend turn (self-imposed rate limit while degraded).
  *  Resolves immediately when healthy or when backoff is disabled. */
 export async function awaitDegradationBackoff(): Promise<void> {
   if (disabled()) return;
   const slept = await defaultController.waitForSlot();
-  if (slept > 0) log.info(`Backoff: paced this turn by ${Math.round(slept / 1000)}s (account degraded)`);
+  if (slept > 0)
+    log.info(`Backoff: paced this turn by ${Math.round(slept / 1000)}s (account degraded)`);
 }
 
 /** Whether the global policy is currently backing off. */

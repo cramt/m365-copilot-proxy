@@ -12,6 +12,8 @@ import {
   defaultFramingForTone,
   defaultFramingForModel,
   transcriptStyleForVariant,
+  FRAMING_VARIANT_NAMES,
+  sandboxDescription,
 } from "./fenced.js";
 import type { ToolDef } from "./tools.js";
 
@@ -20,7 +22,11 @@ const bash: ToolDef = {
   function: {
     name: "bash",
     description: "Run a shell command.",
-    parameters: { type: "object", properties: { command: { type: "string" } }, required: ["command"] },
+    parameters: {
+      type: "object",
+      properties: { command: { type: "string" } },
+      required: ["command"],
+    },
   },
 };
 const readFile: ToolDef = {
@@ -59,6 +65,18 @@ const editFile: ToolDef = {
 const ALL = [bash, readFile, writeFile, editFile];
 const specs = buildSpecMap(ALL);
 
+function isJsonObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function parseJsonObject(json: string): Record<string, unknown> {
+  const value: unknown = JSON.parse(json);
+  if (!isJsonObject(value)) {
+    throw new TypeError("Expected tool arguments to be a JSON object");
+  }
+  return value;
+}
+
 describe("deriveFencedSpec", () => {
   it("maps a single-param tool's param to the body", () => {
     const s = deriveFencedSpec(readFile);
@@ -87,20 +105,27 @@ describe("renderFencedCall", () => {
   });
 
   it("renders header + body separated by a blank line", () => {
-    const out = renderFencedCall(deriveFencedSpec(writeFile), { path: "a.py", content: "print(1)" });
+    const out = renderFencedCall(deriveFencedSpec(writeFile), {
+      path: "a.py",
+      content: "print(1)",
+    });
     expect(out).toBe("```write_file\npath: a.py\n\nprint(1)\n```");
   });
 
   it("renders an edit as SEARCH/REPLACE", () => {
     const out = renderFencedCall(deriveFencedSpec(editFile), { path: "a.py", old: "x", new: "y" });
-    expect(out).toBe("```edit_file\npath: a.py\n<<<<<<< SEARCH\nx\n=======\ny\n>>>>>>> REPLACE\n```");
+    expect(out).toBe(
+      "```edit_file\npath: a.py\n<<<<<<< SEARCH\nx\n=======\ny\n>>>>>>> REPLACE\n```",
+    );
   });
 });
 
 describe("parseFencedToolCalls", () => {
   function argsOf(text: string, n = 0) {
     const { calls } = parseFencedToolCalls(text, specs);
-    return { calls, args: calls[n] ? JSON.parse(calls[n].function.arguments) : null };
+    const call = calls[n];
+    if (!call) throw new Error(`Expected tool call at index ${n}`);
+    return { calls, args: parseJsonObject(call.function.arguments) };
   }
 
   it("parses a body-only bash call", () => {
@@ -169,7 +194,7 @@ describe("native call closer leaking into a fence (Opus)", () => {
   const SCRIPT = "#!/bin/bash\nwc -l < data.txt | tr -d ' ' > count.txt";
   function argsOf(text: string) {
     const { calls, leftover } = parseFencedToolCalls(text, specs);
-    return { calls, leftover, args: calls[0] ? JSON.parse(calls[0].function.arguments) : null };
+    return { calls, leftover, args: calls[0] ? parseJsonObject(calls[0].function.arguments) : {} };
   }
 
   it("keeps </invoke> out of the file when the fence is closed too", () => {
@@ -266,7 +291,11 @@ describe("shell routing (Tier 1)", () => {
     function: {
       name: "run_command",
       description: "Run a shell command.",
-      parameters: { type: "object", properties: { command: { type: "string" } }, required: ["command"] },
+      parameters: {
+        type: "object",
+        properties: { command: { type: "string" } },
+        required: ["command"],
+      },
     },
   };
 
@@ -276,18 +305,44 @@ describe("shell routing (Tier 1)", () => {
     expect(findShellTool([readFile, writeFile])).toBeUndefined();
   });
 
+  it("routes shell fences to VS Code's multi-parameter run_in_terminal tool", () => {
+    const terminal: ToolDef = {
+      type: "function",
+      function: {
+        name: "run_in_terminal",
+        parameters: {
+          properties: {
+            command: { type: "string" },
+            explanation: { type: "string" },
+            isBackground: { type: "boolean" },
+          },
+        },
+      },
+    };
+    expect(findShellTool([readFile, terminal])).toBe(terminal);
+    const calls = parseFencedToolCalls("```bash\nls -la\n```", buildSpecMap([terminal])).calls;
+    expect(calls[0].function.name).toBe("run_in_terminal");
+    expect(parseJsonObject(calls[0].function.arguments)).toEqual({ command: "ls -la" });
+  });
+
   it("routes a ```bash block to a differently-named shell tool", () => {
     const specs = buildSpecMap([runCommand, readFile]);
     const { calls } = parseFencedToolCalls("```bash\nsed -i 's/a/b/' f.py\n```", specs);
     expect(calls).toHaveLength(1);
     expect(calls[0].function.name).toBe("run_command");
-    expect(JSON.parse(calls[0].function.arguments)).toEqual({ command: "sed -i 's/a/b/' f.py" });
+    expect(parseJsonObject(calls[0].function.arguments)).toEqual({
+      command: "sed -i 's/a/b/' f.py",
+    });
   });
 
   it("routes ```sh and ```shell aliases too", () => {
     const specs = buildSpecMap([runCommand]);
-    expect(parseFencedToolCalls("```sh\nls\n```", specs).calls[0]?.function.name).toBe("run_command");
-    expect(parseFencedToolCalls("```shell\nls\n```", specs).calls[0]?.function.name).toBe("run_command");
+    expect(parseFencedToolCalls("```sh\nls\n```", specs).calls[0]?.function.name).toBe(
+      "run_command",
+    );
+    expect(parseFencedToolCalls("```shell\nls\n```", specs).calls[0]?.function.name).toBe(
+      "run_command",
+    );
   });
 
   it("routes leaked container.* runtime aliases to the harness shell tool", () => {
@@ -295,7 +350,7 @@ describe("shell routing (Tier 1)", () => {
     const { calls } = parseFencedToolCalls("```container.exec\nls -la\n```", specs);
     expect(calls).toHaveLength(1);
     expect(calls[0].function.name).toBe("run_command");
-    expect(JSON.parse(calls[0].function.arguments)).toEqual({ command: "ls -la" });
+    expect(parseJsonObject(calls[0].function.arguments)).toEqual({ command: "ls -la" });
   });
 
   it("leaves a dotted/hyphenated info-string that is not a tool in prose", () => {
@@ -313,7 +368,9 @@ describe("shell routing (Tier 1)", () => {
 
   it("injects shell-first framing only when a shell tool is present", () => {
     expect(formatFencedToolDefinitions([bash, readFile])).toContain("WRITING A SHELL SCRIPT");
-    expect(formatFencedToolDefinitions([readFile, writeFile])).not.toContain("WRITING A SHELL SCRIPT");
+    expect(formatFencedToolDefinitions([readFile, writeFile])).not.toContain(
+      "WRITING A SHELL SCRIPT",
+    );
   });
 
   // #7: these were silently demoted to prose, so a model correctly told to use
@@ -321,10 +378,10 @@ describe("shell routing (Tier 1)", () => {
   it("routes Windows shell fences to the harness shell tool", () => {
     const specs = buildSpecMap([runCommand]);
     for (const lang of ["powershell", "pwsh", "ps1", "cmd", "bat", "batch"]) {
-      const { calls } = parseFencedToolCalls("```" + lang + "\nGet-ChildItem\n```", specs);
+      const { calls } = parseFencedToolCalls(`\`\`\`${lang}\nGet-ChildItem\n\`\`\``, specs);
       expect(calls, `${lang} should route`).toHaveLength(1);
       expect(calls[0].function.name).toBe("run_command");
-      expect(JSON.parse(calls[0].function.arguments)).toEqual({ command: "Get-ChildItem" });
+      expect(parseJsonObject(calls[0].function.arguments)).toEqual({ command: "Get-ChildItem" });
     }
   });
 });
@@ -361,7 +418,11 @@ describe("hostPlatformNote", () => {
       function: {
         name: "run_terminal_cmd",
         description: "Run a command.",
-        parameters: { type: "object", properties: { command: { type: "string" } }, required: ["command"] },
+        parameters: {
+          type: "object",
+          properties: { command: { type: "string" } },
+          required: ["command"],
+        },
       },
     };
     expect(hostPlatformNote(shell, "win32")).toContain("`run_terminal_cmd`");
@@ -382,6 +443,16 @@ describe("formatFencedToolDefinitions", () => {
 });
 
 describe("defaultFramingForTone", () => {
+  it("uses provisional relay for agent-less GPT while preserving agent-backed defaults", () => {
+    for (const tone of ["magic", "Gpt_5_5_Chat", "Gpt_5_5_Reasoning"]) {
+      expect(defaultFramingForTone(tone, { agentLess: true })).toBe("relay");
+      expect(defaultFramingForTone(tone, { agentLess: false })).toBeUndefined();
+    }
+    expect(defaultFramingForTone("Claude_Opus", { agentLess: true })).toBe("relay_batch");
+    expect(defaultFramingForTone("Claude_Sonnet_Reasoning", { agentLess: true })).toBe("relay");
+    expect(defaultFramingForModel("gpt-5.5-think-deeper", { agentLess: true })).toBe("relay");
+  });
+
   it("gives both Opus models relay_batch — no jailbreak trips, and fewest turns (§24 F56, F60)", () => {
     // minimal 12/30 and baseline 8/30 tasks Disengaged, the user-voice relays 0.
     // relay_batch: 2.30 turns per bench task vs relay's 3.65 — and Opus 5.5's
@@ -407,8 +478,8 @@ describe("defaultFramingForTone", () => {
     expect(formatFencedToolDefinitions([bash, readFile], "relay_batch")).not.toBe(formatFencedToolDefinitions([bash, readFile], "relay"));
   });
 
-  it("leaves every other tone on the bench-tuned baseline", () => {
-    for (const tone of ["magic", "Claude_Sonnet_Reasoning", "Gpt_5_5_Reasoning", undefined]) {
+  it("leaves unrelated tones on the bench-tuned baseline", () => {
+    for (const tone of ["magic", "Gpt_5_5_Reasoning", undefined]) {
       expect(defaultFramingForTone(tone)).toBeUndefined();
     }
   });
@@ -484,23 +555,119 @@ describe("defaultFramingForModel", () => {
 
   it("falls through to the tone default for everything else", () => {
     expect(defaultFramingForModel("claude-opus")).toBe("relay_batch");
-    expect(defaultFramingForModel("claude-sonnet-think-deeper")).toBeUndefined(); // unmeasured: stays baseline
+    expect(defaultFramingForModel("claude-sonnet-think-deeper")).toBe("relay");
     expect(defaultFramingForModel("m365-copilot")).toBeUndefined();
     expect(defaultFramingForModel("gpt-5.5-think-deeper")).toBeUndefined();
   });
 });
 
+describe("Sonnet reasoning framing", () => {
+  it("uses user-voice relay without a forged system wrapper", () => {
+    const framing = defaultFramingForModel("claude-sonnet-think-deeper");
+    if (!framing) throw new Error("Expected framing to be defined");
+    expect(framing).toBe("relay");
+    expect(defaultFramingForTone("Claude_Sonnet_Reasoning")).toBe("relay");
+    expect(transcriptStyleForVariant(framing)).toEqual({
+      framingTag: null,
+      systemTag: "harness_system_prompt",
+    });
+    const prompt = formatFencedToolDefinitions(ALL, framing, { tone: "Claude_Sonnet_Reasoning" });
+    expect(prompt).toContain("one command at a time");
+    expect(prompt).toContain("```bash");
+    expect(prompt).not.toContain("<system>");
+  });
+
+  it("allows an explicit baseline override", () => {
+    const previous = process.env.M365_FRAMING_VARIANT;
+    try {
+      process.env.M365_FRAMING_VARIANT = "baseline";
+      expect(currentFramingVariant(defaultFramingForModel("claude-sonnet-think-deeper"))).toBe(
+        "baseline",
+      );
+    } finally {
+      if (previous === undefined) delete process.env.M365_FRAMING_VARIANT;
+      else process.env.M365_FRAMING_VARIANT = previous;
+    }
+  });
+});
+
 describe("transcriptStyleForVariant", () => {
   it("keeps the historical <system> tags for every pre-existing variant", () => {
-    for (const v of ["baseline", "minimal", "softened", "recency", "fewshot", "session_facts", "nonexistent"]) {
+    for (const v of [
+      "baseline",
+      "minimal",
+      "softened",
+      "recency",
+      "fewshot",
+      "session_facts",
+      "nonexistent",
+    ]) {
       expect(transcriptStyleForVariant(v)).toEqual({ framingTag: "system", systemTag: "system" });
     }
   });
 
   it("drops the framing wrapper for user-voice variants and relabels harness prompts", () => {
-    for (const v of ["relay", "honest", "terse_user"]) {
-      expect(transcriptStyleForVariant(v)).toEqual({ framingTag: null, systemTag: "harness_system_prompt" });
+    for (const v of ["relay", "honest", "terse_user", "dual_env", "dual_env_protocol"]) {
+      expect(transcriptStyleForVariant(v)).toEqual({
+        framingTag: null,
+        systemTag: "harness_system_prompt",
+      });
     }
+  });
+
+  it("isolates the system wrapper in dual_env_sys", () => {
+    expect(transcriptStyleForVariant("dual_env_sys")).toEqual({
+      framingTag: "system",
+      systemTag: "system",
+    });
+    expect(formatFencedToolDefinitions(ALL, "dual_env_sys", { tone: "Gpt_5_5_Reasoning" })).toBe(
+      formatFencedToolDefinitions(ALL, "dual_env", { tone: "Gpt_5_5_Reasoning" }),
+    );
+  });
+});
+
+describe("tone-aware sandbox framing", () => {
+  it("registers every dual-environment candidate", () => {
+    expect(FRAMING_VARIANT_NAMES).toEqual(
+      expect.arrayContaining(["dual_env", "dual_env_sys", "dual_env_protocol"]),
+    );
+  });
+
+  it.each(["relay", "honest", "dual_env", "dual_env_sys", "dual_env_protocol"])(
+    "describes GPT's sandbox in %s",
+    (variant: string | undefined) => {
+      const prompt = formatFencedToolDefinitions(ALL, variant, { tone: "Gpt_5_5_Reasoning" });
+      expect(prompt).toContain("Python code interpreter");
+      expect(prompt).toContain("/mnt/data");
+      expect(prompt).toContain("web search");
+      expect(prompt).not.toContain("bash_tool");
+      expect(prompt).not.toContain("/home/claude");
+    },
+  );
+
+  it.each(["relay", "honest", "dual_env", "dual_env_sys", "dual_env_protocol"])(
+    "describes Claude's sandbox in %s",
+    (variant: string | undefined) => {
+      const prompt = formatFencedToolDefinitions(ALL, variant, { tone: "Claude_Sonnet_Reasoning" });
+      expect(prompt).toContain("bash_tool");
+      expect(prompt).toContain("/home/claude");
+      expect(prompt).not.toContain("Python code interpreter");
+    },
+  );
+
+  it.each(["dual_env", "dual_env_sys", "dual_env_protocol"])(
+    "allows scratch work but keeps project work local in %s",
+    (variant: string | undefined) => {
+      const prompt = formatFencedToolDefinitions(ALL, variant, { tone: "Gpt_5_5_Reasoning" });
+      expect(prompt).toMatch(/scratch/i);
+      expect(prompt).toContain("B");
+      expect(prompt).toContain("<tool_response");
+      expect(prompt).toContain("```bash");
+    },
+  );
+
+  it("defaults sandbox-only callers to the existing Claude description", () => {
+    expect(sandboxDescription()).toContain("/home/claude");
   });
 });
 
@@ -546,13 +713,19 @@ describe("header value coercion (strict-harness schema conformance)", () => {
   };
   const specs = buildSpecMap([typed]);
   const parse = (inner: string) => {
-    const r = parseFencedToolCalls("```read_file\n" + inner + "\n```", specs);
-    return JSON.parse(r.calls[0].function.arguments);
+    const r = parseFencedToolCalls(`\`\`\`read_file\n${inner}\n\`\`\``, specs);
+    return parseJsonObject(r.calls[0].function.arguments);
   };
 
   it("coerces well-formed values to their declared types", () => {
-    expect(parse('path: /tmp/a.txt\noffset: 10\nratio: 0.5\nrecursive: true\nglobs: ["*.ts"]')).toEqual({
-      path: "/tmp/a.txt", offset: 10, ratio: 0.5, recursive: true, globs: ["*.ts"],
+    expect(
+      parse('path: /tmp/a.txt\noffset: 10\nratio: 0.5\nrecursive: true\nglobs: ["*.ts"]'),
+    ).toEqual({
+      path: "/tmp/a.txt",
+      offset: 10,
+      ratio: 0.5,
+      recursive: true,
+      globs: ["*.ts"],
     });
   });
 
@@ -621,7 +794,7 @@ describe("array and object params written as a YAML block (#50)", () => {
   const argsOf = (text: string) => {
     const { calls } = parseFencedToolCalls(text, piSpecs);
     expect(calls).toHaveLength(1);
-    return JSON.parse(calls[0].function.arguments);
+    return parseJsonObject(calls[0].function.arguments);
   };
 
   it("reads Sonnet 4.6's block list, verbatim from real pi (44 of its 47 edits were lost)", () => {

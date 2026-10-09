@@ -2,7 +2,7 @@ import { appendFileSync, mkdirSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { homedir } from "node:os";
 
-const CONFIG_DIR = join(homedir(), ".config", "opencode-m365");
+const CONFIG_DIR = join(homedir(), ".config", "m365-proxy");
 // M365_LOG_FILE and M365_FRAME_DIR are relative to CONFIG_DIR (an absolute path
 // is taken as is), so a bench sweep can point each proxy straight into its archive.
 const LOG_FILE = resolve(CONFIG_DIR, process.env.M365_LOG_FILE || "debug.log");
@@ -15,7 +15,7 @@ export const FRAME_DIR = resolve(CONFIG_DIR, process.env.M365_FRAME_DIR || "fram
 // engineering. M365_DEBUG keeps the lighter, truncated logging.
 const trace = !!process.env.M365_TRACE;
 const enabled = !!process.env.M365_DEBUG || trace;
-// Tailing ~/.config/opencode-m365/debug.log in a second terminal is the usual
+// Tailing ~/.config/m365-proxy/debug.log in a second terminal is the usual
 // way to watch a run; this mirrors the same lines to the proxy's own stdout so
 // one terminal is enough. Safe here because the proxy speaks HTTP — stdout is
 // not a protocol channel.

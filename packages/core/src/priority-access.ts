@@ -49,7 +49,7 @@ function nextUtcMidnight(from: Date): Date {
 
 /** Next Monday 00:00 UTC strictly after `from`. */
 function nextUtcMonday(from: Date): Date {
-  const daysUntilMonday = ((8 - from.getUTCDay()) % 7) || 7; // Sun=0 → 1, Mon=1 → 7
+  const daysUntilMonday = (8 - from.getUTCDay()) % 7 || 7; // Sun=0 → 1, Mon=1 → 7
   return new Date(
     Date.UTC(from.getUTCFullYear(), from.getUTCMonth(), from.getUTCDate() + daysUntilMonday),
   );

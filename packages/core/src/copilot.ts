@@ -21,20 +21,20 @@ import type { MeteredBudget } from "./priority-access.js";
 const MODEL_TONES: Record<string, string> = {
   // Default
   "m365-copilot": "magic",
-  "auto": "magic",
+  auto: "magic",
 
   // Generic modes. No unversioned tone survives: `Gpt_Quick`, `Gpt_Chat` and
   // `Gpt_Reasoning` are all REJECTED, so these pin to a versioned tone.
   // GPT-5.5 over GPT-5.6, deliberately (bench, confab-retry off, §19): 5.5
   // wins the chat half (16/30 vs 7/30) and the reasoning half is a tie (26/30
   // vs 27/30, p=1.0). Don't re-point them to 5.6 on the reasoning numbers.
-  "quick": "Gpt_5_5_Chat",
+  quick: "Gpt_5_5_Chat",
   "think-deeper": "Gpt_5_5_Reasoning",
 
   // Claude (real Anthropic models, confirmed via self-id) — chat + reasoning.
   // On the included scenario `Claude_Sonnet` is now Sonnet 4.6 (it was 4.5);
   // `claude-sonnet-4.5` stays as a legacy alias so existing configs keep working.
-  "claude": "Claude_Sonnet",
+  claude: "Claude_Sonnet",
   "claude-sonnet": "Claude_Sonnet",
   "claude-sonnet-4.5": "Claude_Sonnet",
   "claude-sonnet-4.6": "Claude_Sonnet",
@@ -295,9 +295,7 @@ export function isOpus45Model(model: string): boolean {
 //
 // Listed by exact tone. Check a new tone with `scripts/agent-tone-probe.mjs`
 // on BOTH kinds of account before deciding which side it belongs on.
-export const AGENTLESS_TOOL_TONES: ReadonlySet<string> = new Set([
-  "Gpt_6_Reasoning",
-]);
+export const AGENTLESS_TOOL_TONES: ReadonlySet<string> = new Set(["Gpt_6_Reasoning"]);
 
 /**
  * Claude tones that DO take the tool agent; every other `Claude_*` tone goes
@@ -497,15 +495,68 @@ export function priorityAccessFallbackModel(budget: MeteredBudget): string | nul
   return v;
 }
 
+// Advertised catalog for this account; routing above remains compatible with
+// explicit model IDs. Evidence: findings/models.md (2026-10-02).
+const EXPOSED_MODELS: readonly string[] = [
+  // Included GPT routes that responded; local tool support is not established.
+  "m365-copilot",
+  "auto",
+  "quick",
+  "think-deeper",
+  "gpt-5.5",
+  "gpt-5.5-quick",
+  "gpt-5.5-think-deeper",
+  "gpt-5.6",
+  "gpt-5.6-quick",
+  "gpt-5.6-think-deeper",
+  "gpt-6-sol",
+  "gpt-5.4",
+  "gpt-5.4-think-deeper",
+  "gpt-5.4-quick",
+  "gpt-5.3",
+  "gpt-5.3-quick",
+  "gpt-5.3-think-deeper",
+  "gpt-5.2",
+  "gpt-5.2-quick",
+  "gpt-5.2-think-deeper",
+
+  // Included Claude reasoning responded; local tool support is unverified.
+  "claude-sonnet-think-deeper",
+
+  // Included Claude chat routes failed upstream on this account.
+  // "claude",
+  // "claude-sonnet",
+  // "claude-sonnet-4.5",
+  // "claude-sonnet-4.6",
+
+  // Known paid routes; this account returned InvalidCopilotLicense.
+  // "claude-sonnet-5",
+  // "claude-opus",
+  // "claude-opus-5",
+  // "gpt-6-think-deeper",
+
+  // Unverified version; resolves to the same paid route as Sonnet 5.
+  // "claude-sonnet-5.5",
+];
+
 export function getAvailableModels(): string[] {
-  return Object.keys(MODEL_TONES);
+  return [...EXPOSED_MODELS];
 }
 
 export function decodeJwt(token: string) {
   const payload = token.split(".")[1];
   const padded = payload + "=".repeat((4 - (payload.length % 4)) % 4);
-  const raw = JSON.parse(Buffer.from(padded, "base64").toString());
+  const raw: unknown = JSON.parse(Buffer.from(padded, "base64").toString());
   return JwtClaims.parse(raw);
+}
+
+export interface CapturedImage {
+  referenceUrls: string[];
+  fileToken?: string;
+  pollUrl?: string;
+  size?: string;
+  orientation?: string;
+  status?: number;
 }
 
 /**
@@ -513,24 +564,9 @@ export function decodeJwt(token: string) {
  * `CopilotSession.chat` (session.ts); async-iterate it for delta text and read
  * the getters for the turn's diagnostic metadata after it completes.
  */
-/** One generated image, as carried on a GraphicArt frame (§14). URLs point at
- *  designerapp.officeapps.live.com and need the designerappservice token to
- *  fetch — see `fetchImageBytes` / `generateImage`. */
-export interface CapturedImage {
-  referenceUrls: string[];
-  fileToken?: string;
-  pollUrl?: string;
-  size?: string;
-  orientation?: string;
-  /** Server status; 2 = ready (observed). */
-  status?: number;
-}
-
 export interface CopilotStream {
   [Symbol.asyncIterator](): AsyncIterator<string>;
   fullText: string;
-  /** Generated images captured this turn (empty unless image gen was requested
-   *  and the server returned a GraphicArt frame). */
   images: CapturedImage[];
   /** True if the server returned content (deltas or full text) */
   hasContent: boolean;

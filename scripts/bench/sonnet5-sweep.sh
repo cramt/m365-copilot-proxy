@@ -25,9 +25,10 @@ REPEAT="${REPEAT:-1}"
 TASKS="${TASKS:-}"
 COOLDOWN="${COOLDOWN:-45}"
 TAG="${TAG:-s5}"
-CFG="${CFG:-$HOME/.config/opencode-m365}"
+CONTROL="${CONTROL:-/tmp/m365-framing}"
+CFG="${CFG:-$HOME/.config/m365-proxy}"
 ARCHIVE="${ARCHIVE:-$CFG/s5-sweep}"
-# The proxy resolves M365_LOG_FILE / M365_FRAME_DIR against ~/.config/opencode-m365, not the cwd.
+# The proxy resolves M365_LOG_FILE / M365_FRAME_DIR against ~/.config/m365-proxy, not the cwd.
 [[ "$ARCHIVE" == /* ]] || ARCHIVE="$PWD/$ARCHIVE"
 PROXY_CMD="${PROXY_CMD:-node packages/proxy/bin/m365-proxy.mjs}"
 SUMMARY="$ARCHIVE/summary-$TAG.txt"

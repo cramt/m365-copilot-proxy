@@ -20,23 +20,27 @@ PIHOME="$ROOT/.pi-local"
 mkdir -p "$PIHOME/.pi/agent"
 
 # Model list mirrors the proxy's MODEL_TONES (getAvailableModels) so Ctrl+P
-# cycling works. baseUrl points at the local proxy.
+# Make a curl request to v1/models and read and create the model list
+response=$(curl -fsS "$BASE/models")
+models_list=$(printf '%s\n' "$response" |
+  jq '[.data[] | {id: .id, name: .id}]')
+
 cat > "$PIHOME/.pi/agent/models.json" <<EOF
-{"providers":{"m365":{"api":"openai-completions","apiKey":"not-needed","baseUrl":"$BASE","compat":{"supportsDeveloperRole":false,"supportsReasoningEffort":false,"supportsUsageInStreaming":false},"models":[
-  {"id":"m365-copilot","name":"M365 Copilot (default / magic)"},
-  {"id":"auto","name":"Auto (magic)"},
-  {"id":"quick","name":"Quick"},
-  {"id":"think-deeper","name":"Think Deeper (reasoning)"},
-  {"id":"gpt-5.4","name":"GPT-5.4 (reasoning)"},
-  {"id":"gpt-5.4-think-deeper","name":"GPT-5.4 Think Deeper"},
-  {"id":"gpt-5.4-quick","name":"GPT-5.4 Quick"},
-  {"id":"gpt-5.3","name":"GPT-5.3 Quick"},
-  {"id":"gpt-5.3-quick","name":"GPT-5.3 Quick"},
-  {"id":"gpt-5.3-think-deeper","name":"GPT-5.3 Think Deeper"},
-  {"id":"gpt-5.2","name":"GPT-5.2 Quick"},
-  {"id":"gpt-5.2-quick","name":"GPT-5.2 Quick"},
-  {"id":"gpt-5.2-think-deeper","name":"GPT-5.2 Think Deeper"}
-]}}}
+{
+  "providers": {
+    "m365": {
+      "api": "openai-completions",
+      "apiKey": "not-needed",
+      "baseUrl": "$BASE",
+      "compat": {
+        "supportsDeveloperRole": false,
+        "supportsReasoningEffort": false,
+        "supportsUsageInStreaming": false
+      },
+      "models": $models_list
+    }
+  }
+}
 EOF
 
 cat > "$PIHOME/.pi/agent/settings.json" <<EOF

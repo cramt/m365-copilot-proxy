@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { homedir } from "node:os";
 import { join } from "node:path";
 
-const CONFIG_DIR = join(homedir(), ".config", "opencode-m365");
+const CONFIG_DIR = join(homedir(), ".config", "m365-proxy");
 
 /** log.ts reads the env once, at load, like the proxy does at startup. */
 async function load(env: Record<string, string | undefined>) {

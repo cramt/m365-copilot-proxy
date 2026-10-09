@@ -27,7 +27,7 @@
 //
 // Output: console scorecard + scripts/bench/out/<label>-<ts>.json
 
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync, existsSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { tmpdir } from "node:os";
 import { execSync, spawnSync } from "node:child_process";
@@ -35,14 +35,20 @@ import { TASKS } from "./tasks.mjs";
 import { waitForBudget } from "./turn-budget.mjs";
 
 const args = process.argv.slice(2);
-const opt = (k, d) => { const i = args.indexOf(k); return i >= 0 && args[i + 1] ? args[i + 1] : d; };
+const opt = (k, d) => {
+  const i = args.indexOf(k);
+  return i >= 0 && args[i + 1] ? args[i + 1] : d;
+};
 const BASE = opt("--base-url", "http://localhost:4141/v1").replace(/\/$/, "");
 const MODEL = opt("--model", "m365-copilot");
 const LABEL = opt("--label", MODEL);
 const MAX_TURNS = Number(opt("--max-turns", "12"));
 const REPEAT = Number(opt("--repeat", "1"));
+const THREAD_COOLDOWN_MS = Number(process.env.BENCH_THREAD_COOLDOWN_S ?? 1.5) * 1000;
+if (!Number.isFinite(THREAD_COOLDOWN_MS) || THREAD_COOLDOWN_MS < 0)
+  throw new Error("Invalid BENCH_THREAD_COOLDOWN_S");
 const PICK = opt("--tasks", "");
-const tasks = PICK ? TASKS.filter(t => PICK.split(",").includes(t.name)) : TASKS;
+const tasks = PICK ? TASKS.filter((t) => PICK.split(",").includes(t.name)) : TASKS;
 const IMAGE = opt("--image", "python:3-slim");
 const TASK_GAP_MS = Number(opt("--task-gap", "0")) * 1000;
 const STOP_ON_THROTTLE = !args.includes("--no-stop-on-throttle");
@@ -57,12 +63,25 @@ const PRIORITY_EXHAUSTED = /priority_access_exhausted|priority access to/i;
 const UID = execSync("id -u").toString().trim();
 const GID = execSync("id -g").toString().trim();
 function startContainer(sandbox) {
-  return execSync(`docker run -d --rm --network none --user ${UID}:${GID} -e HOME=/tmp -v ${sandbox}:/work -w /work ${IMAGE} sleep 1800`, { encoding: "utf8" }).trim();
+  return execSync(
+    `docker run -d --rm --network none --user ${UID}:${GID} -e HOME=/tmp -v ${sandbox}:/work -w /work ${IMAGE} sleep 1800`,
+    { encoding: "utf8" },
+  ).trim();
 }
 function dexec(cid, cmd, timeoutMs = 30000) {
-  return spawnSync("docker", ["exec", "-w", "/work", cid, "bash", "-lc", cmd], { timeout: timeoutMs, encoding: "utf8", maxBuffer: 4 * 1024 * 1024 });
+  return spawnSync("docker", ["exec", "-w", "/work", cid, "bash", "-lc", cmd], {
+    timeout: timeoutMs,
+    encoding: "utf8",
+    maxBuffer: 4 * 1024 * 1024,
+  });
 }
-function rmContainer(cid) { try { execSync(`docker rm -f ${cid}`, { stdio: "ignore" }); } catch {} }
+function rmContainer(cid) {
+  try {
+    execSync(`docker rm -f ${cid}`, { stdio: "ignore" });
+  } catch {
+    // Container cleanup is best-effort; preserve the task result.
+  }
+}
 
 const TS = new Date().toISOString().replace(/[:.]/g, "-");
 const OUT = join(process.cwd(), "scripts", "bench", "out");
@@ -71,39 +90,96 @@ mkdirSync(OUT, { recursive: true });
 // Per-request harness system prompt. Default is the neutral baseline; override via
 // BENCH_SYSTEM (or --system <file>) to sweep prompt-framing hypotheses without an
 // agent rebuild. Keep it constant within a run; vary it across labeled runs.
-const DEFAULT_SYSTEM = "You are an autonomous coding agent working in a real shell. Use the provided tools to actually do the task against the live filesystem. Do not ask questions. When the task is fully complete, reply with a one-line confirmation.";
+const DEFAULT_SYSTEM =
+  "You are an autonomous coding agent working in a real shell. Use the provided tools to actually do the task against the live filesystem. Do not ask questions. When the task is fully complete, reply with a one-line confirmation.";
 const SYSTEM_FILE = opt("--system", "");
 const SEED = process.env.BENCH_SEED ?? ""; // "", "ls", or "cat" — context-seed level
-const SYSTEM = SYSTEM_FILE ? readFileSync(SYSTEM_FILE, "utf8").trim()
+const SYSTEM = SYSTEM_FILE
+  ? readFileSync(SYSTEM_FILE, "utf8").trim()
   : (process.env.BENCH_SYSTEM ?? DEFAULT_SYSTEM);
 
 // --- OpenAI tools the agent is given ---
 const ALL_TOOLS = [
-  { type: "function", function: { name: "bash", description: "Run a shell command in the working directory and get stdout/stderr.", parameters: { type: "object", properties: { command: { type: "string" } }, required: ["command"] } } },
-  { type: "function", function: { name: "read_file", description: "Read a file's contents.", parameters: { type: "object", properties: { path: { type: "string" } }, required: ["path"] } } },
-  { type: "function", function: { name: "write_file", description: "Write (create/overwrite) a file with the given contents.", parameters: { type: "object", properties: { path: { type: "string" }, content: { type: "string" } }, required: ["path", "content"] } } },
-  { type: "function", function: { name: "edit_file", description: "Replace the first occurrence of `old` with `new` in a file.", parameters: { type: "object", properties: { path: { type: "string" }, old: { type: "string" }, new: { type: "string" } }, required: ["path", "old", "new"] } } },
+  {
+    type: "function",
+    function: {
+      name: "bash",
+      description: "Run a shell command in the working directory and get stdout/stderr.",
+      parameters: {
+        type: "object",
+        properties: { command: { type: "string" } },
+        required: ["command"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "read_file",
+      description: "Read a file's contents.",
+      parameters: { type: "object", properties: { path: { type: "string" } }, required: ["path"] },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "write_file",
+      description: "Write (create/overwrite) a file with the given contents.",
+      parameters: {
+        type: "object",
+        properties: { path: { type: "string" }, content: { type: "string" } },
+        required: ["path", "content"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "edit_file",
+      description: "Replace the first occurrence of `old` with `new` in a file.",
+      parameters: {
+        type: "object",
+        properties: { path: { type: "string" }, old: { type: "string" }, new: { type: "string" } },
+        required: ["path", "old", "new"],
+      },
+    },
+  },
 ];
-const TOOLSET = opt("--tool-set", "");  // e.g. "bash" to test a lean payload
-const TOOLS = TOOLSET ? ALL_TOOLS.filter(t => TOOLSET.split(",").includes(t.function.name)) : ALL_TOOLS;
+const TOOLSET = opt("--tool-set", ""); // e.g. "bash" to test a lean payload
+const TOOLS = TOOLSET
+  ? ALL_TOOLS.filter((t) => TOOLSET.split(",").includes(t.function.name))
+  : ALL_TOOLS;
 
 function execTool(name, a, sandbox, cid) {
   try {
     if (name === "bash") {
       const r = dexec(cid, a.command ?? "");
-      const out = `exit=${r.status ?? "timeout/null"}\n${(r.stdout || "")}${r.stderr ? "\n[stderr]\n" + r.stderr : ""}`;
+      const out = `exit=${r.status ?? "timeout/null"}\n${r.stdout || ""}${r.stderr ? `\n[stderr]\n${r.stderr}` : ""}`;
       return out.slice(0, 4000);
     }
-    const safe = (p) => { const full = join(sandbox, p ?? ""); if (!full.startsWith(sandbox)) throw new Error("path escapes sandbox"); return full; };
+    const safe = (p) => {
+      const full = join(sandbox, p ?? "");
+      if (!full.startsWith(sandbox)) throw new Error("path escapes sandbox");
+      return full;
+    };
     if (name === "read_file") return readFileSync(safe(a.path), "utf8").slice(0, 6000);
-    if (name === "write_file") { const f = safe(a.path); mkdirSync(dirname(f), { recursive: true }); writeFileSync(f, a.content ?? ""); return `wrote ${a.path} (${(a.content || "").length} bytes)`; }
+    if (name === "write_file") {
+      const f = safe(a.path);
+      mkdirSync(dirname(f), { recursive: true });
+      writeFileSync(f, a.content ?? "");
+      return `wrote ${a.path} (${(a.content || "").length} bytes)`;
+    }
     if (name === "edit_file") {
-      const f = safe(a.path); const cur = readFileSync(f, "utf8");
+      const f = safe(a.path);
+      const cur = readFileSync(f, "utf8");
       if (!cur.includes(a.old)) return `ERROR: 'old' string not found in ${a.path}`;
-      writeFileSync(f, cur.replace(a.old, a.new)); return `edited ${a.path}`;
+      writeFileSync(f, cur.replace(a.old, a.new));
+      return `edited ${a.path}`;
     }
     return `ERROR: unknown tool ${name}`;
-  } catch (e) { return `ERROR: ${e.message}`; }
+  } catch (e) {
+    return `ERROR: ${e.message}`;
+  }
 }
 
 // Per-request HTTP timeout (default 5 min). A hung/throttled turn returns a
@@ -113,11 +189,15 @@ const HTTP_TIMEOUT_MS = Number(process.env.BENCH_HTTP_TIMEOUT_MS ?? 300000);
 async function chat(messages) {
   try {
     const res = await fetch(`${BASE}/chat/completions`, {
-      method: "POST", headers: { "Content-Type": "application/json", "Authorization": "Bearer bench" },
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: "Bearer bench" },
       body: JSON.stringify({ model: MODEL, messages, tools: TOOLS, stream: false }),
       signal: AbortSignal.timeout(HTTP_TIMEOUT_MS),
     });
-    if (!res.ok) { const t = await res.text(); return { error: `HTTP ${res.status}: ${t.slice(0, 200)}` }; }
+    if (!res.ok) {
+      const t = await res.text();
+      return { error: `HTTP ${res.status}: ${t.slice(0, 200)}` };
+    }
     return res.json();
   } catch (e) {
     // Never let a transport error (timeout, reset, throttle-hang) crash the whole
@@ -129,21 +209,39 @@ async function chat(messages) {
 function setupSandbox(task) {
   const dir = mkdtempSync(join(tmpdir(), `bench-${task.name}-`));
   for (const [rel, content] of Object.entries(task.files ?? {})) {
-    const f = join(dir, rel); mkdirSync(dirname(f), { recursive: true }); writeFileSync(f, content);
+    const f = join(dir, rel);
+    mkdirSync(dirname(f), { recursive: true });
+    writeFileSync(f, content);
   }
   return dir;
 }
 
-function verify(task, sandbox, cid, finalAnswer) {
+function verify(task, cid, finalAnswer) {
   if (task.expectAnswer) return (finalAnswer || "").includes(task.expectAnswer);
-  if (task.verifyCmd) { const r = dexec(cid, task.verifyCmd); return r.status === 0; }
+  if (task.verifyCmd) {
+    const r = dexec(cid, task.verifyCmd);
+    return r.status === 0;
+  }
   return false;
 }
 
 async function runTask(task) {
   const sandbox = setupSandbox(task);
   let cid;
-  try { cid = startContainer(sandbox); } catch (e) { return { task: task.name, solved: false, outcome: "ERROR", toolTurns: 0, msgs: 0, elapsedMs: 0, error: "container start failed: " + e.message, finalAnswer: "" }; }
+  try {
+    cid = startContainer(sandbox);
+  } catch (e) {
+    return {
+      task: task.name,
+      solved: false,
+      outcome: "ERROR",
+      toolTurns: 0,
+      msgs: 0,
+      elapsedMs: 0,
+      error: `container start failed: ${e.message}`,
+      finalAnswer: "",
+    };
+  }
   const runId = `${Date.now().toString(36)}-${Math.floor(performance.now())}`;
   const messages = [
     { role: "system", content: SYSTEM },
@@ -156,31 +254,60 @@ async function runTask(task) {
   // confabulation "the directory is empty / commands return nothing"). `ls` seeds
   // just the directory tree; `cat` also seeds every file's contents.
   if (SEED === "ls" || SEED === "cat") {
-    const cmd = SEED === "cat"
-      ? "ls -laR; echo '--- FILE CONTENTS ---'; for f in $(find . -type f); do echo \"### $f\"; cat \"$f\"; done"
-      : "ls -laR";
+    const cmd =
+      SEED === "cat"
+        ? 'ls -laR; echo \'--- FILE CONTENTS ---\'; for f in $(find . -type f); do echo "### $f"; cat "$f"; done'
+        : "ls -laR";
     const seedOut = execTool("bash", { command: cmd }, sandbox, cid);
     const callId = `seed_${runId}`;
-    messages.push({
-      role: "assistant",
-      content: null,
-      tool_calls: [{ id: callId, type: "function", function: { name: "bash", arguments: JSON.stringify({ command: cmd }) } }],
-    });
-    messages.push({ role: "tool", tool_call_id: callId, content: seedOut });
+    messages.push(
+      {
+        role: "assistant",
+        content: null,
+        tool_calls: [
+          {
+            id: callId,
+            type: "function",
+            function: { name: "bash", arguments: JSON.stringify({ command: cmd }) },
+          },
+        ],
+      },
+      { role: "tool", tool_call_id: callId, content: seedOut },
+    );
   }
-  let toolTurns = 0, proseTurns = 0, msgs = 0, finalAnswer = null, endReason = "maxturns", error = null;
+  let toolTurns = 0,
+    msgs = 0,
+    finalAnswer = null,
+    endReason = "maxturns",
+    error = null;
+  let maxDeaScore = null;
   const t0 = Date.now();
 
   for (let turn = 0; turn < MAX_TURNS; turn++) {
     const resp = await chat(messages);
     msgs++;
-    if (resp.error) { error = resp.error; endReason = "error"; break; }
+    const deaScore = resp.usage?.x_m365_dea_score;
+    if (typeof deaScore === "number") maxDeaScore = Math.max(maxDeaScore ?? 0, deaScore);
+    if (resp.error) {
+      error = resp.error;
+      endReason = "error";
+      break;
+    }
     const m = resp.choices?.[0]?.message;
-    if (!m) { error = "no message"; endReason = "error"; break; }
+    if (!m) {
+      error = "no message";
+      endReason = "error";
+      break;
+    }
     if (m.tool_calls?.length) {
       messages.push({ role: "assistant", content: m.content ?? null, tool_calls: m.tool_calls });
       for (const tc of m.tool_calls) {
-        let a = {}; try { a = JSON.parse(tc.function.arguments || "{}"); } catch {}
+        let a;
+        try {
+          a = JSON.parse(tc.function.arguments || "{}");
+        } catch {
+          a = {};
+        }
         const result = execTool(tc.function.name, a, sandbox, cid);
         messages.push({ role: "tool", tool_call_id: tc.id, content: result });
         toolTurns++;
@@ -190,14 +317,34 @@ async function runTask(task) {
       endReason = "prose";
       break;
     }
-    await new Promise(r => setTimeout(r, 800)); // gentle pacing
+    await new Promise((r) => setTimeout(r, 800)); // gentle pacing
   }
 
-  const solved = verify(task, sandbox, cid, finalAnswer);
+  const solved = verify(task, cid, finalAnswer);
   rmContainer(cid);
-  try { rmSync(sandbox, { recursive: true, force: true }); } catch {}
-  const outcome = solved ? "SOLVED" : error ? `ERROR` : endReason === "prose" ? "GAVE_UP_PROSE" : "MAX_TURNS";
-  return { task: task.name, solved, outcome, toolTurns, msgs, elapsedMs: Date.now() - t0, error, finalAnswer: (finalAnswer || "").slice(0, 120) };
+  try {
+    rmSync(sandbox, { recursive: true, force: true });
+  } catch {
+    // Sandbox cleanup is best-effort and must not mask the task result.
+  }
+  const outcome = solved
+    ? "SOLVED"
+    : error
+      ? `ERROR`
+      : endReason === "prose"
+        ? "GAVE_UP_PROSE"
+        : "MAX_TURNS";
+  return {
+    task: task.name,
+    solved,
+    outcome,
+    toolTurns,
+    msgs,
+    elapsedMs: Date.now() - t0,
+    error,
+    maxDeaScore,
+    finalAnswer: (finalAnswer || "").slice(0, 120),
+  };
 }
 
 // --- run ---
@@ -225,14 +372,21 @@ run: for (let rep = 0; rep < REPEAT; rep++) {
   }
 }
 
-const solved = rows.filter(r => r.solved).length;
+const solved = rows.filter((r) => r.solved).length;
 const pct = Math.round((solved / rows.length) * 100);
-const byOutcome = rows.reduce((m, r) => ((m[r.outcome] = (m[r.outcome] || 0) + 1), m), {});
+const byOutcome = rows.reduce((counts, row) => {
+  counts[row.outcome] = (counts[row.outcome] || 0) + 1;
+  return counts;
+}, {});
 const avgTools = (rows.reduce((s, r) => s + r.toolTurns, 0) / rows.length).toFixed(1);
 const totalMsgs = rows.reduce((s, r) => s + r.msgs, 0);
 
 console.log(`\n[bench] === SCORECARD: ${LABEL} ===`);
-console.log(`[bench] SOLVED ${solved}/${rows.length} (${pct}%)  |  outcomes: ${Object.entries(byOutcome).map(([k,v])=>`${k}=${v}`).join(" ")}`);
+console.log(
+  `[bench] SOLVED ${solved}/${rows.length} (${pct}%)  |  outcomes: ${Object.entries(byOutcome)
+    .map(([k, v]) => `${k}=${v}`)
+    .join(" ")}`,
+);
 console.log(`[bench] avg tool-calls/task: ${avgTools}  |  M365 messages spent: ${totalMsgs}`);
 writeFileSync(join(OUT, `${LABEL}-${TS}.json`), JSON.stringify({ label: LABEL, model: MODEL, base: BASE, ts: TS, pct, solved, total: rows.length, byOutcome, avgTools, totalMsgs, throttled, exhausted, system: SYSTEM, rows }, null, 2));
 console.log(`[bench] → scripts/bench/out/${LABEL}-${TS}.json`);

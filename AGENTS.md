@@ -104,10 +104,8 @@ hypothesis that teaches us something.
   real agentic coding tasks objectively, executing every tool call in a
   `--network none` Docker sandbox. To compare *any* lever (tool format, model/tone,
   prompt, optionsSets) run it with a `--label` and diff the scorecards in
-  `scripts/bench/out/`. "Best" is a pass-rate number, not an opinion. For a framing or
-  proxy-env sweep use `scripts/bench/phase-sweep.sh`, and read it back with
-  `scripts/bench/analyze-arms.mjs`, which also says what happened on the wire (agent path,
-  sandbox, Disengaged) and drops tasks lost to the network. See `scripts/bench/README.md`.
+  `scripts/bench/out/`. "Best" is a pass-rate number, not an opinion. See
+  `scripts/bench/README.md`.
 - Prefer empirical evidence — what the real first-party client sends/receives
   (capture it with Playwright), what the bench scores — over schema guesses.
 
@@ -142,10 +140,10 @@ pnpm test:live      # M365_LIVE=1; live tests that hit real M365 (uses quota)
 - **Run inside the Nix dev shell**: `nix develop --command bash -c '...'`. It provides
   `CHROMIUM_PATH` (a system Chromium; Playwright's bundled one is broken on NixOS), pi, python3
   and curl. Run the bench scripts in it too: `nix develop --command bash scripts/bench/phase-sweep.sh`.
-- Auth uses `~/.config/opencode-m365/secrets.json` (email/password/mfaSecret) +
-  `msal-cache.json`. **This data dir keeps the legacy `opencode-m365` name** — do not
-  rename it or you orphan working credentials.
-- Set `M365_DEBUG=1` to log to `~/.config/opencode-m365/debug.log` (`M365_LOG_FILE` renames it and
+- Auth uses `~/.config/m365-proxy/secrets.json` (email/password/mfaSecret) +
+  `msal-cache.json`. **This checkout uses the `m365-proxy` data dir.** Move existing
+  credentials from the previous directory before starting.
+- Set `M365_DEBUG=1` to log to `~/.config/m365-proxy/debug.log` (`M365_LOG_FILE` renames it and
   `M365_FRAME_DIR` moves the `M365_DUMP_FRAMES` dumps, both relative to that directory). There is **no
   interactive login** — auth is silent-refresh → automated (secrets.json) → fail loudly.
   A headless host / second PC never opens a browser tab or hangs on a paste-the-URL prompt.

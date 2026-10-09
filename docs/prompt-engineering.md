@@ -192,8 +192,8 @@ registered in `packages/core/src/fenced.ts` (`FRAMING_VARIANTS`) and selected pe
 Current strategies: `baseline` (shipped default, unchanged), `minimal`, `recency`,
 `fewshot`, `proof_demand`, `persona`, `react`, `negative`, `terse`, `softened`, `demo_only`,
 `session_facts`, `reply_tool` (synthetic `reply()` tool; also `M365_INJECT_REPLY_TOOL=1`), and the
-Claude Sonnet set: `retag`, `honest`, `terse_user`, `relay`, and the turn-saving `relay_batch`
-(hyp §24 F60, §25). A variant can also change
+Claude Sonnet set: `retag`, `honest`, `terse_user`, `relay`, `relay_batch`, plus the experimental
+`dual_env`, `dual_env_sys`, `dual_env_protocol`. A variant can also change
 the transcript's **tags** (`transcriptStyleForVariant`): the Claude Sonnet set never emits `<system>`;
 the harness's own system prompt becomes `<harness_system_prompt>`.
 
@@ -203,11 +203,17 @@ the harness's own system prompt becomes `<harness_system_prompt>`.
 `Gpt_61_Sol_Reasoning` (GPT-6.1 Sol, hyp §27) → `relay_batch`; Sonnet 5 (`claude-sonnet-5`, its own `Claude_Sonnet_5` tone since 2026-10-06) and
 Sonnet 5.5 (`claude-sonnet-5.5`, `Claude_Sonnet` on the paid scenario, keyed on the model ID;
 inherits Sonnet 5's relay, hyp §26) → `relay` — though on the bench relay_batch cut its turns by a
-third (3.35 → 2.20, 40/40, both paths, hyp §30); real pi decides, ~90 budget units. **Every other model keeps `baseline` byte-for-byte** (including
-`claude-sonnet-think-deeper`, unmeasured under relay), so no GPT-5.x bench number moves, and
+third (3.35 → 2.20, 40/40, both paths, hyp §30); real pi decides, ~90 budget units. `claude-sonnet-think-deeper` defaults to `relay` after paired real-Pi read and edit checks
+(baseline 0/2, relay 2/2, with an order-reversed read pair baseline 0/1, relay 1/1;
+see H25). Agent-less GPT tones without another model-specific default provisionally
+use `relay`; their agent-backed defaults remain `baseline`. Other models keep their
+existing defaults, so no GPT-5.x bench number moves, and
 `M365_FRAMING_*` still wins. Opus used to default to `minimal`, to spend less of its priority-access
 budget by sending a shorter prompt; that budget counts turns, not tokens (docs/hypotheses.md §24
 F55), so it saved nothing — see the Opus section below for why relay_batch replaced it.
+
+`relay`, `honest`, and the dual-environment variants describe the remote sandbox by tone:
+GPT's Python interpreter at `/mnt/data`, or Claude's tools at `/home/claude`.
 
 **Run a sweep** (persistent proxy + control file; sequential, generously spaced):
 
@@ -242,6 +248,25 @@ M365_NO_CONFAB_RETRY=1 ARMS="default retag relay default" MODEL=claude-sonnet-5 
 ```
 
 ## Results
+
+### Oct 2-3 2026 - agent-less dual-environment comparison (pi pending)
+
+| Framing | Current-account pi result | Status |
+|---|---|---|
+| `baseline`, GPT-5.5 reasoning | 2/5 | User-supplied pre-change baseline, `/tmp/m365-e2e/pi-e2e.sh` |
+| `relay`, GPT-5.5 reasoning | Not measured | Provisional agent-less default; GPT-6's results do not establish a GPT-5.5 win |
+| `honest`, `dual_env`, `dual_env_sys`, `dual_env_protocol` | Not measured | Registered candidates; real pi confirmation still pending |
+
+The dual-environment candidates permit scratch work in the remote sandbox, while project
+inspection, mutations and tests go through harness tool blocks. `dual_env_sys` uses the
+same text as `dual_env` with a `<system>` wrapper; `dual_env_protocol` uses a two-machine
+table and a worked two-turn exchange. Recipe: experiments E-D1; notebook: hypotheses §23.
+
+Oct 3's overlapping bench runs used a shared framing control file and reused labels
+across models, then encountered explicit account throttling. The corrected analyzer
+separates models (GPT-5.6's nominal arms both solved 9/9), but shared per-turn framing
+prevents a controlled comparison. No winner or default change follows from that run;
+full partial results and limitations are in hypotheses §23.
 
 ### June 24 2026 — 10-strategy framing sweep — ⏳ IN PROGRESS
 

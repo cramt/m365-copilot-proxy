@@ -1,9 +1,32 @@
+import process from "node:process";
 import { type ModelSessionOptions, getAvailableModels } from "@m365-copilot/core";
 import { ChatCompletionRequest } from "./schemas.js";
 import { SessionPool, handleChatCompletion } from "./handler.js";
+import {
+  OPENAI_ROUTES,
+  configuredApiKey,
+  invalidRequestError,
+  isAuthorized,
+  openAIError,
+  routeNotFound,
+  unauthorizedError,
+} from "./openai.js";
 
 export { SessionPool, handleChatCompletion } from "./handler.js";
+export type { ActiveConversationSnapshot, SessionUsageSnapshot } from "./handler.js";
 export { ChatCompletionRequest, ChatMessage, ToolCall, ToolDefinition } from "./schemas.js";
+export {
+  OPENAI_ROUTES,
+  configuredApiKey,
+  estimatePromptTokens,
+  estimateTokens,
+  invalidRequestError,
+  isAuthorized,
+  openAIError,
+  routeNotFound,
+  unauthorizedError,
+  type OpenAIErrorBody,
+} from "./openai.js";
 
 // Re-export tool utilities from core
 export {
@@ -31,27 +54,66 @@ export const HEALTH_PAYLOAD = { status: "ok" } as const;
 // cap generation far below what a coding turn needs. Advertise a roomy 1M window +
 // 1M output (in line with modern large-context models) so nothing client-side clips.
 // Override via env.
-const CONTEXT_WINDOW_TOKENS = Number(process.env.M365_CONTEXT_WINDOW) || 1_000_000;
-const MAX_OUTPUT_TOKENS = Number(process.env.M365_MAX_OUTPUT_TOKENS) || 1_000_000;
+function readEnvironmentVariable(name: string): string | undefined {
+  const runtimeProcess: unknown = process;
+  if (typeof runtimeProcess !== "object" || runtimeProcess === null) return undefined;
+
+  const runtimeEnvironment: unknown = Reflect.get(runtimeProcess, "env");
+  if (typeof runtimeEnvironment !== "object" || runtimeEnvironment === null) return undefined;
+
+  const value: unknown = Reflect.get(runtimeEnvironment, name);
+  return typeof value === "string" ? value : undefined;
+}
+
+const CONTEXT_WINDOW_TOKENS = Number(readEnvironmentVariable("M365_CONTEXT_WINDOW")) || 1_000_000;
+const MAX_OUTPUT_TOKENS = Number(readEnvironmentVariable("M365_MAX_OUTPUT_TOKENS")) || 1_000_000;
 
 /** Build the OpenAI-compatible `GET /v1/models` payload. */
 export function buildModelsPayload() {
   const created = Math.floor(Date.now() / 1000);
   return {
     object: "list",
-    data: getAvailableModels().map((id) => ({
-      id,
-      object: "model",
-      created,
-      owned_by: "microsoft",
-      // Non-standard but widely-read by OpenAI-compatible harnesses. Several
-      // aliases because clients disagree on the key name. Unknown keys are
-      // ignored by strict clients.
-      context_window: CONTEXT_WINDOW_TOKENS,
-      max_context_length: CONTEXT_WINDOW_TOKENS,
-      max_input_tokens: CONTEXT_WINDOW_TOKENS,
-      max_output_tokens: MAX_OUTPUT_TOKENS,
-    })),
+    data: getAvailableModels().map((id) => modelEntry(id, created)),
+  };
+}
+
+/** The `GET /v1/models/{id}` payload, or null for an unknown ID. */
+export function buildModelEntry(id: string) {
+  return getAvailableModels().includes(id) ? modelEntry(id, Math.floor(Date.now() / 1000)) : null;
+}
+
+/** `decodeURIComponent` that leaves malformed escapes as-is instead of throwing. */
+export function safeDecode(segment: string): string {
+  try {
+    return decodeURIComponent(segment);
+  } catch {
+    return segment;
+  }
+}
+
+/** 404 `model_not_found` in OpenAI's shape. */
+export function modelNotFoundError(id: string): Response {
+  return openAIError(404, {
+    message: `The model '${id}' does not exist`,
+    type: "invalid_request_error",
+    param: "model",
+    code: "model_not_found",
+  });
+}
+
+function modelEntry(id: string, created: number) {
+  return {
+    id,
+    object: "model",
+    created,
+    owned_by: "microsoft",
+    // Non-standard but widely-read by OpenAI-compatible harnesses. Several
+    // aliases because clients disagree on the key name. Unknown keys are
+    // ignored by strict clients.
+    context_window: CONTEXT_WINDOW_TOKENS,
+    max_context_length: CONTEXT_WINDOW_TOKENS,
+    max_input_tokens: CONTEXT_WINDOW_TOKENS,
+    max_output_tokens: MAX_OUTPUT_TOKENS,
   };
 }
 
@@ -88,8 +150,13 @@ export interface FetchApp {
  * This is the embeddable entry point used by the tests, `proxy-verify`, and the
  * openclaw-plugin. The standalone server is the Nitro app in `@m365-copilot/proxy`,
  * whose routes reuse the same `handleChatCompletion` / `buildModelsPayload` helpers.
+ *
+ * `apiKey` (default: `M365_PROXY_API_KEY`) requires `Authorization: Bearer <key>` on `/v1/*`.
  */
-export function createApp(sessionOptions: ModelSessionOptions = {}): FetchApp {
+export function createApp(
+  sessionOptions: ModelSessionOptions = {},
+  apiKey: string | null = configuredApiKey(),
+): FetchApp {
   const pool = new SessionPool(sessionOptions);
 
   async function fetch(req: Request): Promise<Response> {
@@ -100,6 +167,14 @@ export function createApp(sessionOptions: ModelSessionOptions = {}): FetchApp {
       return withCors(new Response(null, { status: 204 }));
     }
 
+    if (
+      apiKey &&
+      pathname.startsWith("/v1/") &&
+      !isAuthorized(req.headers.get("authorization"), apiKey)
+    ) {
+      return withCors(unauthorizedError());
+    }
+
     if (method === "GET" && pathname === "/health") {
       return withCors(json(200, HEALTH_PAYLOAD));
     }
@@ -108,22 +183,25 @@ export function createApp(sessionOptions: ModelSessionOptions = {}): FetchApp {
       return withCors(json(200, buildModelsPayload()));
     }
 
+    const modelMatch = method === "GET" ? /^\/v1\/models\/([^/]+)$/.exec(pathname) : null;
+    if (modelMatch) {
+      const id = safeDecode(modelMatch[1]);
+      const entry = buildModelEntry(id);
+      return withCors(entry ? json(200, entry) : modelNotFoundError(id));
+    }
+
     if (method === "POST" && pathname === "/v1/chat/completions") {
       let body: ReturnType<typeof ChatCompletionRequest.parse>;
       try {
         body = ChatCompletionRequest.parse(await req.json());
-      } catch (err: any) {
-        return withCors(
-          json(400, { error: { message: err.message, type: "invalid_request_error" } }),
-        );
+      } catch (err) {
+        return withCors(invalidRequestError(err));
       }
       // req.signal aborts when the client disconnects → cancels the M365 turn.
       return withCors(await handleChatCompletion(body, pool, { signal: req.signal }));
     }
 
-    return withCors(
-      json(404, { error: { message: "Not found", type: "invalid_request_error" } }),
-    );
+    return withCors(routeNotFound(method, pathname, OPENAI_ROUTES));
   }
 
   return { fetch };

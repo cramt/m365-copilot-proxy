@@ -46,7 +46,9 @@ You are running on a Linux host with python3, node, and standard POSIX utilities
 function filler(n) {
   const lines = [];
   for (let i = 0; i < n; i++) {
-    lines.push(`- Guideline ${i + 1}: when in doubt, inspect before acting, verify before reporting, and prefer the smallest change that satisfies the task while preserving existing behavior and conventions.`);
+    lines.push(
+      `- Guideline ${i + 1}: when in doubt, inspect before acting, verify before reporting, and prefer the smallest change that satisfies the task while preserving existing behavior and conventions.`,
+    );
   }
   return `## Additional operating guidelines\n${lines.join("\n")}`;
 }
