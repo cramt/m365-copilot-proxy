@@ -74,6 +74,17 @@ We use `@azure/msal-node` `PublicClientApplication` with PKCE. The token cache i
 >
 > **Observed token scopes** (the Sydney token already carries these): `CopilotPlatform{Content.Process,Files.ReadWrite(All),Mail.Read(.Shared),Presence.Read(.All),Sites.Read.All,Teams.ReadWrite.All,User.Read,License...,ProtectionScopes...,DataLossPrevention...}` + `M365Chat.Read` + `sydney.readwrite`. So the auth we hold already has the entitlements behind Files/Mail/Sites/Teams/Presence — the foundation for any Graph "Work" grounding (hypotheses §8 H8.11).
 
+### Current authentication implementation
+
+Visible browser fallback is enabled unless `M365_NO_INTERACTIVE=1`; set that
+variable on headless hosts. The legacy `M365_ENABLE_INTERACTIVE_APPROVAL`
+opt-in is not enforced. `M365_BROWSER_PROFILE`, `M365_LOGIN_UA`,
+`M365_LOGIN_LOCALE`, `M365_LOGIN_TIMEZONE` and
+`M365_INTERACTIVE_TIMEOUT_MS` are not consumed by the current implementation.
+Interactive code capture currently uses a fixed five-minute timeout.
+Forced browser reauthentication preserves cached accounts if replacement login
+fails; it does not clear identity-keyed account throttling.
+
 ### The `nativeclient` redirect gotcha (this one cost hours)
 The `nativeclient` redirect URI is designed to be **intercepted by an embedded native host** (WebView2 etc.) *before the page loads*. A real browser instead follows the redirect one hop further and lands on **`https://login.microsoftonline.com/common/wrongplace`** ("This is not the right page"). So:
 
@@ -746,3 +757,21 @@ already in memory.
 *If a future reader finds any of this is now wrong: M365 Copilot is an undocumented,
 first-party-only surface and Microsoft changes it freely. Re-capture a real session
 from `m365.cloud.microsoft` (browser devtools → WS frames) and diff against the above.*
+
+### WebSocket incident diagnostics
+
+Enable `M365_DEBUG=1` on the proxy process to record diagnostics in
+`~/.config/m365-proxy/debug.log`. `M365_LOG_FILE` overrides the destination;
+relative paths resolve under that configuration directory.
+`M365_LOG_STDOUT=1` additionally mirrors enabled logs to the proxy terminal.
+
+WebSocket errors, SignalR close/completion errors and socket closure records
+include request, session and conversation IDs. Closure records include the
+WebSocket close code, handshake/send state, answer length and available quota.
+Final-response previews are debug output, bounded to 1,000 characters unless
+`M365_TRACE` is enabled. Logs can contain private prompts and responses:
+protect them and redact sensitive content before sharing.
+
+These diagnostics do not add automatic recovery or establish the cause of a
+generic server-close error. Capture logs during the failing request; older
+captures cannot establish the cause of a later incident.

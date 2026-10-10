@@ -23,6 +23,8 @@ vi.mock("./metrics", () => ({
 let route: () => Promise<Response>;
 
 beforeAll(async () => {
+  // Re-import the route with this suite's mocks when workers are reused.
+  vi.resetModules();
   vi.stubGlobal("defineEventHandler", (handler: typeof route) => handler);
   route = (await import("./routes/actions/check-models.post")).default as typeof route;
 });

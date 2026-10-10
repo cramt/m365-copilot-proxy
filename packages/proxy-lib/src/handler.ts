@@ -529,9 +529,9 @@ async function runChatCompletion(
     return priorityAccessResponse(knownExhaustion, requestedModel);
   }
   let model = fallbackModel ?? requestedModel;
-  if (fallbackModel)
+  if (fallbackModel && knownExhaustion && requestedBudget)
     log.info(
-      `Priority access exhausted until ${knownExhaustion!.resetsAt.toISOString()} — serving ${requestedModel} with ${fallbackModel} (${PRIORITY_ACCESS_FALLBACK_ENV[requestedBudget!]})`,
+      `Priority access exhausted until ${knownExhaustion.resetsAt.toISOString()} — serving ${requestedModel} with ${fallbackModel} (${PRIORITY_ACCESS_FALLBACK_ENV[requestedBudget]})`,
     );
   // Set when the framing must travel with this turn's delta (see the end of the delta branch).
   let reframe = false;
@@ -817,13 +817,14 @@ async function runChatCompletion(
           notePriorityAccessExhausted(budget ?? model, exhausted);
         const fallback =
           budget && !priorityFallbackDone ? priorityAccessFallbackModel(budget) : null;
-        if (fallback) {
+        if (fallback && budget) {
           priorityFallbackDone = true;
           log.info(
-            `Priority access exhausted (${exhausted.window}) — re-sending to ${fallback} (${PRIORITY_ACCESS_FALLBACK_ENV[budget!]}) in a fresh conversation`,
+            `Priority access exhausted (${exhausted.window}) — re-sending to ${fallback} (${PRIORITY_ACCESS_FALLBACK_ENV[budget]}) in a fresh conversation`,
           );
           model = fallback;
           tone = getToneForModel(model);
+          framingContext.tone = tone;
           useToolAgent =
             getEnvironmentVariable("M365_DISABLE_AGENT") !== "1" &&
             requestUsesAgent(model, !!hasTools);
@@ -851,7 +852,26 @@ async function runChatCompletion(
         return { error: priorityAccessResponse(exhausted, model) };
       }
 
-      // Render only after throttle and priority-access refusals have been handled.
+      // Canonical named failures take precedence over accompanying text/images.
+      // Preserve the learned premium-agent InternalError retry only for empty turns.
+      const failure = copilotStream.result;
+      const retryableAgentFailure =
+        failure?.value === "InternalError" &&
+        useToolAgent &&
+        isAgentRouteAlive(tone) &&
+        !copilotStream.hasContent &&
+        fullText.length === 0;
+      if (failure && failure.value !== "Success" && !retryableAgentFailure) {
+        log.info(
+          `Upstream ${failure.value}${failure.errorCode ? `/${failure.errorCode}` : ""} — failing fast (no retry)`,
+        );
+        if (useToolAgent && modelRequiresAgent(model) && failure.value === "InternalError") {
+          return finish({ error: premiumOnlyModelResponse(model) });
+        }
+        return finish({ error: upstreamResultResponse(failure) });
+      }
+
+      // Render only after canonical upstream failures have been handled.
       // An image-only turn is content and must not enter the empty-response retry.
       try {
         const imageMarkdown = await renderImagesMarkdown(copilotStream.images ?? []);
@@ -918,33 +938,6 @@ async function runChatCompletion(
             type: "disengaged",
           }),
         });
-      }
-
-      // M365 named the failure (ForbiddenRequest/InvalidCopilotLicense, InternalError…):
-      // "Please continue." retries only spend turns on the same answer, so pass it through.
-      // Except F52: InternalError on an agent route that has answered is a premium transient.
-      const failure = copilotStream.result;
-      if (
-        failure &&
-        failure.value !== "Success" &&
-        !(failure.value === "InternalError" && useToolAgent && isAgentRouteAlive(tone))
-      ) {
-        if (useToolAgent && !agentRefreshed) {
-          agentRefreshed = true;
-          if (await session.refreshAgent()) {
-            log.info("Agent re-resolved after a failed turn, resending original prompt");
-            text = originalText;
-            continue;
-          }
-        }
-        log.info(
-          `Upstream ${failure.value}${failure.errorCode ? `/${failure.errorCode}` : ""} — failing fast (no retry)`,
-        );
-        if (useToolAgent && modelRequiresAgent(model) && failure.value === "InternalError") {
-          return { error: premiumOnlyModelResponse(model) };
-        }
-        noteRequestOutcome(false, convId); // an explicit answer, not the throttle signature
-        return finish({ error: upstreamResultResponse(failure) });
       }
 
       // Empty response. Only an at-limit throttle warrants treating this as rate
@@ -1242,13 +1235,13 @@ async function runChatCompletion(
     if (p.kind === "tools") {
       const message = legacy
         ? {
-          role: "assistant",
-          content: null,
-          function_call: {
-            name: p.toolCalls[0].function.name,
-            arguments: p.toolCalls[0].function.arguments,
-          },
-        }
+            role: "assistant",
+            content: null,
+            function_call: {
+              name: p.toolCalls[0].function.name,
+              arguments: p.toolCalls[0].function.arguments,
+            },
+          }
         : { role: "assistant", content: null, tool_calls: p.toolCalls };
       return withProxyHeaders(
         jsonResponse(200, {
@@ -1305,7 +1298,7 @@ async function runChatCompletion(
           const hb = setInterval(() => {
             try {
               controller.enqueue(enc.encode(": keepalive\n\n"));
-            } catch { }
+            } catch {}
           }, 15000);
 
           // Live token passthrough (non-tool only). Track exactly what we've sent so the
@@ -1324,21 +1317,21 @@ async function runChatCompletion(
             hasTools || forcedExactReply
               ? undefined
               : (delta: string) => {
-                if (!delta) return;
-                if (gated) {
-                  head += delta;
-                  if (couldBePriorityAccessPrefix(head)) return; // still undecided — keep buffering
-                  gated = false;
-                  delta = head; // release everything held so far, in order
-                }
-                sent += delta;
-                try {
-                  send({
-                    ...base,
-                    choices: [{ index: 0, delta: { content: delta }, finish_reason: null }],
-                  });
-                } catch { }
-              };
+                  if (!delta) return;
+                  if (gated) {
+                    head += delta;
+                    if (couldBePriorityAccessPrefix(head)) return; // still undecided — keep buffering
+                    gated = false;
+                    delta = head; // release everything held so far, in order
+                  }
+                  sent += delta;
+                  try {
+                    send({
+                      ...base,
+                      choices: [{ index: 0, delta: { content: delta }, finish_reason: null }],
+                    });
+                  } catch {}
+                };
 
           let p: Produced;
           try {
@@ -1378,7 +1371,7 @@ async function runChatCompletion(
                     code = parsedError.code;
                   if (typeof parsedError.param === "string") param = parsedError.param;
                 }
-              } catch { }
+              } catch {}
               streamError = { message, type };
               const retryAfter = p.resp.headers.get("Retry-After");
               // HTTP 200 is already committed, so surface the failure as an in-stream error chunk.
@@ -1466,16 +1459,28 @@ async function runChatCompletion(
           } catch {
             // client likely disconnected mid-emit — nothing more to do
           } finally {
-            withProxyHeaders(streamingResponse, finishReason);
+            // Diagnostic headers must never prevent queue release or stream closure.
+            try {
+              withProxyHeaders(streamingResponse, finishReason);
+            } catch {
+              // Headers may be immutable or already committed by the transport.
+            }
             try {
               opts.onComplete?.(streamingResponse, streamError);
-            } catch (err: unknown) {
-              log.info(`Completion observer failed: ${getErrorMessage(err)}`);
+            } catch {
+              // The queue wrapper releases before invoking the external observer.
             }
             try {
               controller.enqueue(enc.encode("data: [DONE]\n\n"));
-              controller.close();
-            } catch { }
+            } catch {
+              // A cancelled reader cannot receive the final marker.
+            } finally {
+              try {
+                controller.close();
+              } catch {
+                // The reader may already have cancelled or errored.
+              }
+            }
           }
         },
       }),

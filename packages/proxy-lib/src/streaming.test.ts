@@ -55,7 +55,7 @@ vi.mock("@m365-copilot/core", async (importActual) => {
     turnCount = 0;
     sessionId = "session-test";
     conversationId = "conv-test";
-    reset() { }
+    reset() {}
     newConversation() {
       this.conversationId = "conv-test-2";
       this.turnCount = 0;
@@ -118,6 +118,8 @@ vi.mock("@m365-copilot/core", async (importActual) => {
   };
 });
 
+// Bind freshly imported modules to this suite's registered mocks.
+vi.resetModules();
 const { handleChatCompletion, SessionPool, ChatCompletionRequest } = await import("./index.js");
 const {
   noteRequestOutcome,
@@ -312,7 +314,30 @@ describe("exact-reply system guard", () => {
 
 // The proxy remembers a priority-access wall for the process (until the reset);
 // don't let one test's refusal 429 the next test's Opus request.
-afterEach(() => resetPriorityAccessState());
+beforeEach(() => {
+  resetAgentRoutes();
+  resetPriorityAccessState();
+  scripted.deltas = [];
+  scripted.fullText = undefined;
+  scripted.images = [];
+  scripted.result = null;
+  scripted.runs = 0;
+  scripted.texts = [];
+  scripted.queue = [];
+  scripted.agentId = undefined;
+  scripted.resolutions = 0;
+  scripted.models = [];
+  scripted.agentFlags = [];
+  scripted.newConversations = 0;
+  scripted.throttle = null;
+  scripted.slowTurns = false;
+  scripted.inFlight = 0;
+  scripted.maxInFlight = 0;
+});
+afterEach(() => {
+  resetAgentRoutes();
+  resetPriorityAccessState();
+});
 
 /** One request on a fresh pool with a fake clock: an empty upstream turn makes
  *  the handler wait 2 s before each quick retry, and that wait is the handler's

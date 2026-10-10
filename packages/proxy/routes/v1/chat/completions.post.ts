@@ -6,6 +6,14 @@ import {
 import { pool } from "../../../server-pool";
 import { logCompletionStatus, recordCompletionMetric, syncActiveSessions } from "../../../metrics";
 
+function bestEffortMetrics(operation: () => void): void {
+  try {
+    operation();
+  } catch {
+    // Observability failures must not reject a valid response or skip cleanup.
+  }
+}
+
 function isJsonObject(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
@@ -61,39 +69,43 @@ export default defineEventHandler(async (event) => {
     const endedAt = Date.now();
     const latencyMs = endedAt - startedAt;
     const responseBytes = Buffer.byteLength(await response.clone().text(), "utf8");
-    logCompletionStatus({
-      requestId,
-      model: "invalid",
-      stream: false,
-      statusCode: response.status,
-      latencyMs,
-      sessionId: null,
-      conversationId: null,
-      usage: null,
-      finishReason: null,
-      messageType: null,
-      errorType: "invalid_request_error",
-      errorMessage,
-    });
-    recordCompletionMetric({
-      requestId,
-      startedAt,
-      endedAt,
-      latencyMs,
-      statusCode: response.status,
-      model: "invalid",
-      stream: false,
-      sessionId: null,
-      conversationId: null,
-      usage: null,
-      finishReason: null,
-      messageType: null,
-      requestBodyBytes,
-      responseBytes,
-      errorType: "invalid_request_error",
-      errorMessage,
-    });
-    syncActiveSessions(pool.getActiveConversations());
+    bestEffortMetrics(() =>
+      logCompletionStatus({
+        requestId,
+        model: "invalid",
+        stream: false,
+        statusCode: response.status,
+        latencyMs,
+        sessionId: null,
+        conversationId: null,
+        usage: null,
+        finishReason: null,
+        messageType: null,
+        errorType: "invalid_request_error",
+        errorMessage,
+      }),
+    );
+    bestEffortMetrics(() =>
+      recordCompletionMetric({
+        requestId,
+        startedAt,
+        endedAt,
+        latencyMs,
+        statusCode: response.status,
+        model: "invalid",
+        stream: false,
+        sessionId: null,
+        conversationId: null,
+        usage: null,
+        finishReason: null,
+        messageType: null,
+        requestBodyBytes,
+        responseBytes,
+        errorType: "invalid_request_error",
+        errorMessage,
+      }),
+    );
+    bestEffortMetrics(() => syncActiveSessions(pool.getActiveConversations()));
     return response;
   }
 
@@ -188,39 +200,43 @@ export default defineEventHandler(async (event) => {
       responseBytes = 0;
     }
 
-    logCompletionStatus({
-      requestId,
-      model: modelFinal,
-      stream: streamHeader,
-      statusCode: response.status,
-      latencyMs,
-      sessionId,
-      conversationId,
-      usage: usedUsage,
-      finishReason: finish,
-      messageType: messageTypeFinal,
-      errorType,
-      errorMessage,
-    });
-    recordCompletionMetric({
-      requestId,
-      startedAt,
-      endedAt,
-      latencyMs,
-      statusCode: response.status,
-      model: modelFinal,
-      stream: streamHeader,
-      sessionId,
-      conversationId,
-      usage: usedUsage,
-      finishReason: finish,
-      messageType: messageTypeFinal,
-      requestBodyBytes,
-      responseBytes,
-      errorType,
-      errorMessage,
-    });
-    syncActiveSessions(pool.getActiveConversations());
+    bestEffortMetrics(() =>
+      logCompletionStatus({
+        requestId,
+        model: modelFinal,
+        stream: streamHeader,
+        statusCode: response.status,
+        latencyMs,
+        sessionId,
+        conversationId,
+        usage: usedUsage,
+        finishReason: finish,
+        messageType: messageTypeFinal,
+        errorType,
+        errorMessage,
+      }),
+    );
+    bestEffortMetrics(() =>
+      recordCompletionMetric({
+        requestId,
+        startedAt,
+        endedAt,
+        latencyMs,
+        statusCode: response.status,
+        model: modelFinal,
+        stream: streamHeader,
+        sessionId,
+        conversationId,
+        usage: usedUsage,
+        finishReason: finish,
+        messageType: messageTypeFinal,
+        requestBodyBytes,
+        responseBytes,
+        errorType,
+        errorMessage,
+      }),
+    );
+    bestEffortMetrics(() => syncActiveSessions(pool.getActiveConversations()));
   }
 
   if (
@@ -236,13 +252,21 @@ export default defineEventHandler(async (event) => {
           controller.enqueue(chunk);
         },
         async flush() {
-          await recordResponse(responseBytes);
+          try {
+            await recordResponse(responseBytes);
+          } catch {
+            // Metadata parsing/recording is best-effort after successful streaming.
+          }
         },
       }),
     );
     return new Response(measuredStream, { status: response.status, headers: response.headers });
   }
 
-  await recordResponse();
+  try {
+    await recordResponse();
+  } catch {
+    // A metrics/metadata failure must not replace the upstream response.
+  }
   return response;
 });

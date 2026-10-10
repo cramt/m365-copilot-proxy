@@ -120,6 +120,7 @@ type HealthRow = {
   latency_ms: number | null;
   status_code: number;
   request_id: string;
+  error_type: string | null;
 };
 
 interface SessionUsageUpdate {
@@ -435,7 +436,8 @@ class MetricsStore {
         rm.ended_at,
         rm.latency_ms,
         rm.status_code,
-        rm.request_id
+        rm.request_id,
+        rm.error_type
       FROM request_metrics rm
       JOIN (
         SELECT
@@ -494,7 +496,7 @@ class MetricsStore {
       })),
       modelHealth: healthRows.map((row) => ({
         model: row.model,
-        ok: row.status_code >= 200 && row.status_code < 400,
+        ok: row.status_code >= 200 && row.status_code < 400 && row.error_type === null,
         checkedAt: row.ended_at ?? null,
         latencyMs: row.latency_ms ?? null,
         statusCode: row.status_code ?? null,

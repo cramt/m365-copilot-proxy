@@ -24,6 +24,8 @@ vi.mock("./metrics", () => ({
 let route: unknown;
 
 beforeAll(async () => {
+  // Re-import the route with this suite's mocks when workers are reused.
+  vi.resetModules();
   vi.stubGlobal("defineEventHandler", (handler: (event: object) => Promise<Response>) => handler);
   vi.stubGlobal("readBody", () =>
     Promise.resolve({
@@ -36,7 +38,20 @@ beforeAll(async () => {
 });
 
 afterAll(() => vi.unstubAllGlobals());
-beforeEach(() => vi.clearAllMocks());
+beforeEach(() => {
+  mocks.handleChatCompletion.mockReset();
+  mocks.recordCompletionMetric.mockReset();
+  mocks.logCompletionStatus.mockReset();
+  mocks.syncActiveSessions.mockReset();
+  // Restore the streaming request after tests that install a JSON request.
+  vi.stubGlobal("readBody", () =>
+    Promise.resolve({
+      model: "test-model",
+      stream: true,
+      messages: [{ role: "user", content: "test" }],
+    }),
+  );
+});
 
 function mockStream(error?: { type: string; message: string }) {
   mocks.handleChatCompletion.mockImplementation(

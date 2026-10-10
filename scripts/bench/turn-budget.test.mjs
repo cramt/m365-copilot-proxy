@@ -92,7 +92,7 @@ describe("turn-budget", () => {
   it("reads further back until it finds where the bucket was last full", () => {
     const dir = mkdtempSync(join(tmpdir(), "turn-budget-"));
     const evs = [...turns(70, T0, 8_500), ...turns(672, T0 + 10 * 60_000, 37_500)];
-    writeFileSync(join(dir, "s-debug.log"), evs.map((e, i) => turnLine(e.t, i)).join("\n") + "\n");
+    writeFileSync(join(dir, "s-debug.log"), `${evs.map((e, i) => turnLine(e.t, i)).join("\n")}\n`);
     const st = budgetStatus(T0 + 7 * 3_600_000, { ...cfg, maxWindowMin: 4320, dirs: [dir] });
     expect(st.settled).toBe(true);
     expect(st.windowMin).toBe(1440);
@@ -127,7 +127,7 @@ describe("turn-budget", () => {
     // 90 turns over the 90 s before T0: the bucket is at ~12, short of 12 + 20.
     writeFileSync(
       join(dir, "x-debug.log"),
-      Array.from({ length: 90 }, (_, i) => turnLine(T0 - 90_000 + i * 1000, i)).join("\n") + "\n",
+      `${Array.from({ length: 90 }, (_, i) => turnLine(T0 - 90_000 + i * 1000, i)).join("\n")}\n`,
     );
     let now = T0;
     const slept = [];
@@ -173,9 +173,9 @@ describe("turn-budget", () => {
     expect(budgetConfig({ M365_LOG_FILE: "/abs/x.log" }).dirs).toContain("/abs/x.log");
     const dir = mkdtempSync(join(tmpdir(), "turn-budget-"));
     mkdirSync(join(dir, "sub"));
-    writeFileSync(join(dir, "proxy.log"), turnLine(T0) + "\n");
-    writeFileSync(join(dir, "sub", "other.log"), turnLine(T0) + "\n");
-    writeFileSync(join(dir, "sub", "a-debug.log"), turnLine(T0) + "\n");
+    writeFileSync(join(dir, "proxy.log"), `${turnLine(T0)}\n`);
+    writeFileSync(join(dir, "sub", "other.log"), `${turnLine(T0)}\n`);
+    writeFileSync(join(dir, "sub", "a-debug.log"), `${turnLine(T0)}\n`);
     expect(findLogs([join(dir, "proxy.log")], 0)).toEqual([join(dir, "proxy.log")]);
     expect(findLogs([dir], 0)).toEqual([join(dir, "sub", "a-debug.log")]);
   });

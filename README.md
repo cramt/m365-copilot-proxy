@@ -65,7 +65,7 @@ Each agent session reuses the same M365 conversation (same `sessionId` + `conver
     6-digit code itself, so it needs the seed, not an app on your phone. See
     [Getting the TOTP secret](#getting-the-totp-secret). This is the headless-friendly
     option; prefer it if your tenant allows it.
-  - **or a display and 30 seconds** — set `M365_ENABLE_INTERACTIVE_APPROVAL=1` and sign
+  - **or a display for interactive approval** — leave `M365_NO_INTERACTIVE` unset and sign
     in by hand once. Required if your tenant has [no TOTP option](#if-your-tenant-has-no-totp-option)
     (push-only MFA, FIDO2, Okta/Ping/Duo).
 
@@ -138,24 +138,24 @@ Plenty of tenants can't do the above, and then there is no seed to extract:
 The stored-credentials flow above cannot work in those cases — the automated login has
 no code to type, and no amount of configuration fixes that.
 
-**Use interactive approval instead.** Skip `secrets.json` entirely and set:
+**Use interactive approval instead.** Skip `secrets.json` entirely and allow visible fallback:
 
 ```sh
-export M365_ENABLE_INTERACTIVE_APPROVAL=1
+unset M365_NO_INTERACTIVE
 m365-proxy 4141
 ```
 
 A real browser window opens; you complete SSO/MFA by hand exactly as you would in
 Outlook — push, FIDO2, Okta, whatever your tenant enforces. The proxy captures the
 resulting OAuth code and from then on refreshes tokens silently from the MSAL cache,
-so the window is a **one-time cost**, not a per-run prompt. It also kicks in when
+so subsequent runs normally use silent refresh. Interactive sign-in may be needed again if the cache or authorisation becomes invalid. It also kicks in when
 stored credentials exist but stop working (policy change, MFA method swap).
 
 Contributed by [@EatonWu](https://github.com/EatonWu). Two honest caveats:
 
-- It is **opt-in on purpose.** Without the flag a headless host (systemd, CI, a second
-  PC) fails loudly instead of hanging on a window nobody can see. Set
-  `M365_NO_INTERACTIVE=1` to veto it outright.
+- Visible fallback is currently enabled unless `M365_NO_INTERACTIVE=1`.
+  Set that variable explicitly on headless hosts. The former
+  `M365_ENABLE_INTERACTIVE_APPROVAL` opt-in is not enforced by this implementation.
 - The redirect capture and token exchange are the same ones the automated path uses in
   production, but **nobody has yet run this end to end against a federated Okta/Ping/Duo
   tenant.** If that's you, please report in
@@ -608,9 +608,9 @@ The auth flow uses Azure MSAL with PKCE:
    normal path; costs nothing and opens nothing.
 2. **Automated login** — headless Playwright browser driving the AAD form with stored
    credentials + a TOTP code generated from `mfaSecret`.
-3. **Interactive approval** — visible browser, human completes SSO/MFA (§13). Only when
-   `M365_ENABLE_INTERACTIVE_APPROVAL=1`, and only after step 2 is unavailable or has
-   actually failed. This is the path for tenants where no TOTP seed exists.
+3. **Interactive approval** — visible browser, human completes SSO/MFA.
+   Enabled unless `M365_NO_INTERACTIVE=1`, after automated login is unavailable
+   or fails. Headless deployments should explicitly disable it.
 
 All three redeem the code against `https://login.microsoftonline.com/common/oauth2/nativeclient`
 with PKCE. That redirect isn't a stylistic choice: the client is Microsoft's own Copilot app
@@ -642,11 +642,11 @@ Three token scopes are acquired:
 | `M365_NO_CONFAB_RETRY` / `M365_CONFAB_RETRIES` | M365's chat model sometimes produces prose instead of a tool call when it should act — either confabulating an inability ("I can't access the files, please paste them") **or** claiming a completion it never did ("I've replaced the README", with no tool call). By default the proxy detects both and re-prompts forcefully **in the same conversation** (`M365_CONFAB_RETRIES`, default `1`) to force a real action. Set `M365_NO_CONFAB_RETRY=1` to disable. |
 | `M365_NO_BACKOFF` (alias `M365_NO_AUTO_REAUTH`) | Set to `1` to disable degradation backoff. By default, when empty/throttled responses span several **distinct conversations** in a short window (the thread-rate-throttle signature, [F13](docs/hypotheses.md)), the proxy **paces subsequent turns** (a jittered delay before starting new backend conversations) to let the account self-heal. This replaced the old auto-reauth: a fresh login does **not** clear this throttle (it's `oid`-keyed — [§11 H-R1](docs/hypotheses.md)) and raised our detection profile. A single long pi thread never trips the trigger. |
 | `M365_BACKOFF_THRESHOLD` / `M365_BACKOFF_WINDOW_MS` / `M365_BACKOFF_BASE_MS` / `M365_BACKOFF_MAX_MS` | Tune backoff: distinct-conversation empties to trigger (default `3`), the window they must fall in (default `120000`), the initial pacing window (default `90000`), and its escalation cap (default `600000`). |
-| `M365_BROWSER_PROFILE` / `M365_LOGIN_UA` | Override the persistent browser-profile dir and the login User-Agent used for the (rare) automated interactive login. The persistent profile keeps AAD SSO/device cookies so repeat logins are silent and look like a familiar device ([§11 H-R3](docs/hypotheses.md)). |
-| `M365_ENABLE_INTERACTIVE_APPROVAL` | Set to `1` to allow a **visible** browser window for sign-in when the automated login can't work or fails — the fallback for tenants with no TOTP option (push-only MFA, FIDO2, Okta/Ping/Duo). You complete SSO/MFA by hand once; tokens refresh silently afterwards. Off by default so headless hosts fail loudly rather than hang. See [If your tenant has no TOTP option](#if-your-tenant-has-no-totp-option). |
-| `M365_NO_INTERACTIVE` | Set to `1` to hard-disable any visible browser login, overriding the flag above. For systemd/CI hosts where a window must never open. |
-| `M365_INTERACTIVE_TIMEOUT_MS` | How long to wait for you to finish the interactive sign-in (default `600000`, i.e. 10 minutes). |
-| `M365_LOGIN_LOCALE` / `M365_LOGIN_TIMEZONE` | Browser locale and timezone presented during login (defaults `en-GB` / `Europe/Copenhagen`). These are part of the anti-bot-scoring fingerprint ([§11 F25](docs/hypotheses.md)) — set them to match your own machine if AAD starts treating your automated login as a bot. |
+| `M365_BROWSER_PROFILE` / `M365_LOGIN_UA` | Legacy settings; not consumed by the current authentication implementation. |
+| `M365_ENABLE_INTERACTIVE_APPROVAL` | Legacy opt-in; not enforced currently. Visible fallback is enabled unless `M365_NO_INTERACTIVE=1`. |
+| `M365_NO_INTERACTIVE` | Set to `1` to disable visible browser fallback. Recommended for headless deployments. |
+| `M365_INTERACTIVE_TIMEOUT_MS` | Legacy setting; current interactive code capture uses a fixed five-minute timeout. |
+| `M365_LOGIN_LOCALE` / `M365_LOGIN_TIMEZONE` | Legacy settings; not consumed by the current authentication implementation. |
 | `M365_FORCE_AGENT` | Override which tool requests carry the Copilot Studio tool agent. `1` attaches it to every tool request (and turns off the GPT-6 Sol fallback below); `0` never attaches it. Unset, the proxy decides per model: GPT-5.x, `m365-copilot` and both Opus models take it, the other Claude models and `gpt-6-think-deeper` don't, and `gpt-6-sol` / `gpt-6.1-sol` take it only on a premium account, which the proxy learns from the first request. `claude-opus-4.5` carries it on tool-less requests too, since that's its only route (`0` turns that off as well). On a non-premium account `0` saves the probe turn (~3 s) per GPT-6 Sol model per proxy start. |
 | `M365_OPUS_FALLBACK_MODEL` | Model to serve `claude-opus` (Opus 5.5) requests with once its priority-access budget is used up, instead of returning a 429 — typically `claude-opus-4.5`, which isn't metered (premium accounts only). Applies until the budget resets; the response's `model` field names the model that answered. Unset by default. |
 | `M365_SONNET_FALLBACK_MODEL` | The same for `claude-sonnet-5.5` (Sonnet 5.5) once its priority-access budget is used up — e.g. `claude-sonnet-5` (unmetered) or `claude-sonnet` (Sonnet 4.6, any account). A fallback naming a metered model is ignored. Unset by default. |
@@ -761,3 +761,38 @@ both toolchains working side by side until the plugins support TypeScript 7's AP
 [MIT](LICENSE). Use at your own risk — this speaks to Microsoft's API with your own
 credentials, on your own account, and that's between you and your tenant's
 acceptable-use policy.
+
+## Current reliability and diagnostic boundaries
+
+- Forced browser reauthentication preserves existing cached accounts if replacement
+  login fails. Reauthentication is not a guaranteed account-throttle reset.
+- Canonical named upstream failures take precedence over accompanying text or images.
+  Already-streamed text cannot be retracted; streaming clients must inspect error chunks.
+- Diagnostic-header and observer failures must not prevent queue release or stream closure.
+- Completion metrics are best-effort and must not replace successful response delivery.
+- Dashboard history remains visible after failed health checks. Average model latency
+  comes from historical model-latency measurements, not a single health-check duration.
+- Dashboard health counts cover advertised models and exclude recorded application errors.
+- JSON fallback responses identify the served model. SSE chunks still retain the initial
+  model identity; do not treat that field as verified answering-model identity after fallback.
+- Provider-side context is reused while the same conversation remains available.
+  Fresh-thread recovery and omitted revised instructions are separate proxy concerns.
+  Cache and compaction behaviour are unchanged by this fix batch.
+
+### WebSocket incident diagnostics
+
+Enable `M365_DEBUG=1` on the proxy process to record diagnostics in
+`~/.config/m365-proxy/debug.log`. `M365_LOG_FILE` overrides the destination;
+relative paths resolve under that configuration directory.
+`M365_LOG_STDOUT=1` additionally mirrors enabled logs to the proxy terminal.
+
+WebSocket errors, SignalR close/completion errors and socket closure records
+include request, session and conversation IDs. Closure records include the
+WebSocket close code, handshake/send state, answer length and available quota.
+Final-response previews are debug output, bounded to 1,000 characters unless
+`M365_TRACE` is enabled. Logs can contain private prompts and responses:
+protect them and redact sensitive content before sharing.
+
+These diagnostics do not add automatic recovery or establish the cause of a
+generic server-close error. Capture logs during the failing request; older
+captures cannot establish the cause of a later incident.

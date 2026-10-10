@@ -104,7 +104,7 @@ export function logCompletionStatus(input: CompletionLogInput): void {
   const conversationRemaining = toNumberOrNull(usage?.x_m365_conversation_remaining);
   const modelLatencyMs = toModelLatencyMs(usage);
 
-  const status = input.statusCode >= 400 ? "ERROR" : "OK";
+  const status = input.statusCode >= 400 || input.errorType ? "ERROR" : "OK";
   const modelLatency = modelLatencyMs === null ? "n/a" : `${modelLatencyMs}ms`;
   const convUsage =
     conversationMessages === null || conversationMax === null

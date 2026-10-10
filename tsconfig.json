@@ -1,6 +1,7 @@
 {
   "include": ["packages/**/*.ts", "packages/proxy/.nitro/types/nitro.d.ts"],
   "compilerOptions": {
+    "noEmit": true,
     "target": "ES2022",
     "module": "ESNext",
     "moduleResolution": "bundler",

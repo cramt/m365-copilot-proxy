@@ -116,9 +116,12 @@ export class ModelSession {
     signal?: AbortSignal,
     useAgent: boolean = true,
   ): Promise<CopilotStream> {
+    signal?.throwIfAborted();
     const token = await this.resolveToken();
+    signal?.throwIfAborted();
     const wantAgent = this.useAgent && useAgent;
     const agentForTurn = wantAgent ? ((await this.resolveAgent()) ?? undefined) : undefined;
+    signal?.throwIfAborted();
 
     // Create (or recreate) the session when missing or when this turn's
     // agent-ness differs from the current session's — switching the agent on/off
@@ -136,6 +139,8 @@ export class ModelSession {
     try {
       return await this.copilotSession.chat(token, text, model, signal, turnOpts);
     } catch (err: unknown) {
+      signal?.throwIfAborted();
+      if (err instanceof Error && err.name === "AbortError") throw err;
       // Session might be stale — reconnect with same IDs
       log.info("Session error, reconnecting:", getErrorMessage(err));
       this.copilotSession = this.createCopilotSession(agentForTurn);

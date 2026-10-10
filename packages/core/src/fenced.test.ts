@@ -907,3 +907,21 @@ describe("array and object params written as a YAML block (#50)", () => {
     expect(args.command).toBe("  echo indented");
   });
 });
+
+describe("fenced schema compatibility regression", () => {
+  it("handles a null property schema without crashing", () => {
+    // Ingress currently permits arbitrary parameter schemas. This checks
+    // defensive parser compatibility, not complete JSON Schema validation.
+    const malformed = {
+      type: "function",
+      function: {
+        name: "synthetic",
+        parameters: {
+          type: "object",
+          properties: { content: null },
+        },
+      },
+    } as unknown as ToolDef;
+    expect(deriveFencedSpec(malformed).parameterTypes.content).toBe("string");
+  });
+});

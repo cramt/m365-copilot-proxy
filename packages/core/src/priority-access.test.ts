@@ -20,6 +20,13 @@ const DAILY =
 const WEEKLY =
   "You've used your available priority access to the Opus model for the week. You can choose another available model or wait until Monday to use the Opus model again.";
 
+function requireValue<T>(value: T | null | undefined): T {
+  if (value === null || value === undefined) {
+    throw new Error("Expected a non-null test result");
+  }
+  return value;
+}
+
 function expectExhaustion(
   text: string,
   now?: Date,
@@ -139,7 +146,7 @@ const METERING = {
 
 describe("parseMetering / meteredAllowance", () => {
   it("flattens the metering map and picks out the Opus daily and weekly allowances", () => {
-    const m = parseMetering(METERING)!;
+    const m = requireValue(parseMetering(METERING));
     expect(m.ClaudeOpusQuery75).toBe(74);
     expect(m.DeepResearch).toBe(100);
     expect(meteredAllowance(m, "opus")).toEqual({ daily: 39, weekly: 74 });
@@ -147,11 +154,13 @@ describe("parseMetering / meteredAllowance", () => {
 
   it("picks out Sonnet 5.5's allowances, apart from Opus's (§26)", () => {
     // Read off a Sonnet 5.5 turn on 2026-10-06, after its first turn of the week.
-    const m = parseMetering({
-      ...METERING,
-      ClaudeSonnet55QueryDaily: { remainingAllowance: 79 },
-      ClaudeSonnet55QueryWeekly: { remainingAllowance: 149 },
-    })!;
+    const m = requireValue(
+      parseMetering({
+        ...METERING,
+        ClaudeSonnet55QueryDaily: { remainingAllowance: 79 },
+        ClaudeSonnet55QueryWeekly: { remainingAllowance: 149 },
+      }),
+    );
     expect(meteredAllowance(m, "sonnet-5.5")).toEqual({ daily: 79, weekly: 149 });
     expect(meteredAllowance(m, "opus")).toEqual({ daily: 39, weekly: 74 });
     expect(meteredAllowance(parseMetering(METERING), "sonnet-5.5")).toBeNull();
@@ -168,27 +177,34 @@ describe("parseMetering / meteredAllowance", () => {
 
 describe("priorityAccessExhaustionOf (result + text)", () => {
   it("reads the OutOfCredits result's message", () => {
-    const r = priorityAccessExhaustionOf({ value: "OutOfCredits", message: WEEKLY }, "", WED)!;
+    const r = requireValue(
+      priorityAccessExhaustionOf({ value: "OutOfCredits", message: WEEKLY }, "", WED),
+    );
     expect(r.window).toBe("week");
     expect(r.resetsAt.toISOString()).toBe("2026-09-21T00:00:00.000Z");
   });
 
   it("trusts OutOfCredits even if the refusal is ever reworded", () => {
-    const r = priorityAccessExhaustionOf(
-      { value: "OutOfCredits", message: "Opus is unavailable until tomorrow." },
-      "",
-      WED,
-    )!;
+    const r = requireValue(
+      priorityAccessExhaustionOf(
+        { value: "OutOfCredits", message: "Opus is unavailable until tomorrow." },
+        "",
+        WED,
+      ),
+    );
     expect(r.window).toBe("day");
     expect(r.resetsAt.toISOString()).toBe("2026-09-17T00:00:00.000Z");
     expect(
-      priorityAccessExhaustionOf({ value: "OutOfCredits", message: "back on Monday" }, "", WED)!
-        .window,
+      requireValue(
+        priorityAccessExhaustionOf({ value: "OutOfCredits", message: "back on Monday" }, "", WED),
+      ).window,
     ).toBe("week");
   });
 
   it("still catches the text alone, and ignores ordinary turns", () => {
-    expect(priorityAccessExhaustionOf({ value: "Success" }, DAILY, WED)!.window).toBe("day");
+    expect(requireValue(priorityAccessExhaustionOf({ value: "Success" }, DAILY, WED)).window).toBe(
+      "day",
+    );
     expect(priorityAccessExhaustionOf({ value: "Success" }, "Done.", WED)).toBeNull();
     expect(priorityAccessExhaustionOf(null, null, WED)).toBeNull();
   });
@@ -198,15 +214,15 @@ describe("remembering an exhaustion until its reset", () => {
   afterEach(() => resetPriorityAccessState());
 
   it("is active until the reset, then forgotten", () => {
-    const e = parsePriorityAccessExhaustion(DAILY, WED)!;
+    const e = expectExhaustion(DAILY, WED);
     notePriorityAccessExhausted("opus", e, WED);
     expect(activePriorityAccessExhaustion("opus", new Date("2026-09-16T23:59:00Z"))).toBe(e);
     expect(activePriorityAccessExhaustion("opus", new Date("2026-09-17T00:00:01Z"))).toBeNull();
   });
 
   it("keeps the later reset when the weekly wall follows the daily one", () => {
-    const day = parsePriorityAccessExhaustion(DAILY, WED)!;
-    const week = parsePriorityAccessExhaustion(WEEKLY, WED)!;
+    const day = expectExhaustion(DAILY, WED);
+    const week = expectExhaustion(WEEKLY, WED);
     notePriorityAccessExhausted("opus", week, WED);
     notePriorityAccessExhausted("opus", day, WED);
     expect(activePriorityAccessExhaustion("opus", new Date("2026-09-18T00:00:00Z"))?.window).toBe(
@@ -215,7 +231,7 @@ describe("remembering an exhaustion until its reset", () => {
   });
 
   it("keeps each budget's wall to itself — Opus running out says nothing about Sonnet 5.5", () => {
-    const e = parsePriorityAccessExhaustion(DAILY, WED)!;
+    const e = expectExhaustion(DAILY, WED);
     notePriorityAccessExhausted("opus", e, WED);
     expect(activePriorityAccessExhaustion("sonnet-5.5", WED)).toBeNull();
     expect(activePriorityAccessExhaustion("gpt-6-sol", WED)).toBeNull();

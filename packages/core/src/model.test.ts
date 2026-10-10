@@ -1,4 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+// Clear cached modules before static imports bind this suite's mocks.
+vi.hoisted(() => vi.resetModules());
+
 import { ModelSession } from "./model.js";
 import { CopilotSession } from "./session.js";
 import { getOrCreateAgent } from "./agent.js";

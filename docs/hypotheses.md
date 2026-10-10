@@ -2530,6 +2530,13 @@ forks built it on assumption; this note exists so a third doesn't.
 
 ### Landed — interactive approval is upstream (Aug 6 2026) 🟢
 
+> Current-checkout correction (2026-10-11): the account below records the historical
+> implementation and measurements, not current configuration guarantees.
+> Current visible fallback is enabled unless `M365_NO_INTERACTIVE=1`.
+> The legacy approval opt-in, browser-profile/User-Agent, locale/timezone and
+> interactive-timeout settings described below are not consumed currently.
+> See the current authentication section in `m365-copilot-api.md` and README.
+
 [@EatonWu](https://github.com/EatonWu)'s `loginInteractiveForScopes` is now on `main`, wired
 into all three token paths (`doGetToken`, `getTokenForScope`, `doForceReauth`), each falling
 back to a human only after the automated login actually fails. The three §13 blockers are
@@ -5164,3 +5171,18 @@ final `result` other than `Success` ends the request at once: `ForbiddenRequest`
 (`InternalError` on an agent route that has answered still retries), one agent re-resolve before
 failing, and the `PREMIUM_ONLY_AGENT_TONES` agent-less fallback. Live: `claude-sonnet-5` → 403 in 4 s,
 `claude-sonnet` → 502 in 3 s (previously ~4 turns each).
+
+### Offline reliability review: WebSocket diagnostic restoration (2026-10-11)
+
+Hypothesis: socket and SignalR failure logs retain request/session/conversation
+correlation without changing error propagation. Falsification: mocked failure
+tests omit those identifiers or the original error stops propagating.
+Probe: `pnpm exec vitest run packages/core/src/session.lifecycle-regression.test.ts`.
+Regression cases cover transport errors, SignalR close/completion errors and
+closure summaries. Confirmed offline: all seven lifecycle tests passed, including
+three diagnostic cases; the full suite and shuffled seed 1013 passed. Lint,
+formatting, type checking and the build passed. Evidence: terminal validation
+output and /tmp/foo-docs-diagnostics-final.log plus
+/tmp/foo-docs-diagnostics-shuffled.log.
+No live upstream probe was run. Generic server-close causes and temporary-thread
+expiry remain unconfirmed. Logging behaviour is documented in `m365-copilot-api.md`.

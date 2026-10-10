@@ -135,7 +135,7 @@ export function deriveFencedSpec(tool: ToolDef): FencedToolSpec {
   const props = Object.keys(propsSchema);
 
   const parameterTypes = Object.fromEntries(
-    Object.entries(propsSchema).map(([key, value]) => [key, value.type ?? "string"]),
+    Object.entries(propsSchema).map(([key, value]) => [key, value?.type ?? "string"]),
   );
 
   const search = props.find((p) => SEARCH_KEYS.includes(p));
@@ -1064,7 +1064,7 @@ function parseYamlNode(lines: string[]): unknown {
   return parseYamlScalar(head);
 }
 
-const YAML_KEY = /^("(?:[^"\\]|\\.)*"|'(?:[^']|'')*'|[^\s:#'"\-][^:]*?):(?:[ \t]+(.*)|[ \t]*)$/;
+const YAML_KEY = /^("(?:[^"\\]|\\.)*"|'(?:[^']|'')*'|[^\s:#'"-][^:]*?):(?:[ \t]+(.*)|[ \t]*)$/;
 
 /** Children of the entry at lines[0]: the lines below it until one at `indent` or less. */
 function childLines(
@@ -1191,7 +1191,7 @@ function parseYamlBlockScalar(
         "",
       )
     : rows.join("\n");
-  const trailing = text.match(/\n*$/)![0].length;
+  const trailing = text.match(/\n*$/)?.[0].length ?? 0;
   if (chomp === "+") return `${text}\n`;
   text = text.slice(0, text.length - trailing);
   return chomp === "-" ? text : `${text}\n`;

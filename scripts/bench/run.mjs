@@ -361,7 +361,7 @@ run: for (let rep = 0; rep < REPEAT; rep++) {
     const r = await runTask(task);
     rows.push({ ...r, rep });
     console.log(
-      `  ${r.task.padEnd(14)} ${r.outcome.padEnd(14)} tools=${r.toolTurns} msgs=${r.msgs} ${Math.round(r.elapsedMs / 1000)}s ${r.error ? "(" + r.error.slice(0, 50) + ")" : ""} ${r.solved ? "" : "answer=" + JSON.stringify(r.finalAnswer)}`,
+      `  ${r.task.padEnd(14)} ${r.outcome.padEnd(14)} tools=${r.toolTurns} msgs=${r.msgs} ${Math.round(r.elapsedMs / 1000)}s ${r.error ? `(${r.error.slice(0, 50)})` : ""} ${r.solved ? "" : `answer=${JSON.stringify(r.finalAnswer)}`}`,
     );
     if (STOP_ON_THROTTLE && r.error && PRIORITY_EXHAUSTED.test(r.error)) {
       exhausted = true;

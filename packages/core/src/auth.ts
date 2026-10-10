@@ -473,10 +473,9 @@ export async function loginInteractive(scopes: string[] = SCOPES): Promise<strin
   return token;
 }
 
-// Force a fresh login (new tokens), bypassing the silent cache. This is the
-// throttle-recovery lever from docs/hypotheses.md §9 F13: account degradation is
-// thread-rate, and fresh tokens clear it. Single-flight so concurrent triggers
-// share one login instead of racing several browsers against the account.
+// Force browser authentication without first deleting recoverable cached accounts.
+// Account throttling is identity-keyed; new tokens are not a throttle reset.
+// Single-flight so concurrent triggers share one login instead of racing browsers.
 let inflightReauth: Promise<boolean> | null = null;
 
 export function forceReauth(): Promise<boolean> {
@@ -494,12 +493,9 @@ async function doForceReauth(): Promise<boolean> {
     return false;
   }
   try {
-    const app = getApp();
-    // Drop cached accounts so nothing can silently reuse the throttled token.
-    const accounts = await app.getTokenCache().getAllAccounts();
-    for (const acct of accounts) await app.getTokenCache().removeAccount(acct);
-    saveCache(app);
-    log.info("forceReauth: cleared cached accounts, doing fresh login");
+    // Browser login acquires a new token directly, without silent acquisition.
+    // Keep existing accounts intact if the replacement login fails.
+    log.info("forceReauth: preserving cached accounts while doing fresh login");
     if (secrets) {
       try {
         await loginAutomated(secrets.email, secrets.password, secrets.mfaSecret);

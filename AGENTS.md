@@ -144,9 +144,12 @@ pnpm test:live      # M365_LIVE=1; live tests that hit real M365 (uses quota)
   `msal-cache.json`. **This checkout uses the `m365-proxy` data dir.** Move existing
   credentials from the previous directory before starting.
 - Set `M365_DEBUG=1` to log to `~/.config/m365-proxy/debug.log` (`M365_LOG_FILE` renames it and
-  `M365_FRAME_DIR` moves the `M365_DUMP_FRAMES` dumps, both relative to that directory). There is **no
-  interactive login** — auth is silent-refresh → automated (secrets.json) → fail loudly.
-  A headless host / second PC never opens a browser tab or hangs on a paste-the-URL prompt.
+  `M365_FRAME_DIR` moves the `M365_DUMP_FRAMES` dumps, both relative to that directory).
+  Auth attempts silent refresh, automated login, then visible fallback unless
+  `M365_NO_INTERACTIVE=1`. Set that flag on headless hosts.
+  WebSocket error/close diagnostics include request/session/conversation IDs and available quota.
+  Debug final-response previews may contain private content; protect logs before sharing.
+  Logging does not rotate a failing conversation or diagnose generic server-close errors.
 - **Mind the quota**: ~600 messages **per conversation**, plus account-level throttling.
   Don't burn it on loops. A "rate limited / empty response" is often actually a
   `Disengaged` refusal (see the API doc), not throttling.

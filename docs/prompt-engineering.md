@@ -189,7 +189,7 @@ registered in `packages/core/src/fenced.ts` (`FRAMING_VARIANTS`) and selected pe
 - `M365_FRAMING_FILE=<path>` → first line of the file names the active variant, so **one
   long-lived proxy switches strategy per request** without a restart (used by the sweep).
 
-Current strategies: `baseline` (shipped default, unchanged), `minimal`, `recency`,
+Current strategies: `baseline` (a selectable variant; defaults are model-specific), `minimal`, `recency`,
 `fewshot`, `proof_demand`, `persona`, `react`, `negative`, `terse`, `softened`, `demo_only`,
 `session_facts`, `reply_tool` (synthetic `reply()` tool; also `M365_INJECT_REPLY_TOOL=1`), and the
 Claude Sonnet set: `retag`, `honest`, `terse_user`, `relay`, `relay_batch`, plus the experimental
@@ -235,7 +235,7 @@ sandbox and Disengaged turns, and drops tasks lost to the network or a throttle
 ```sh
 MODEL=gpt-6-sol TAG=mysweep PHASES='A:baseline,relay,demo_only|B@M365_FORCE_AGENT=0:relay,pi=fix-bug' \
   nix develop --command bash scripts/bench/phase-sweep.sh
-nix develop --command node scripts/bench/analyze-arms.mjs ~/.config/opencode-m365/sweeps/mysweep --compare relay demo_only
+nix develop --command node scripts/bench/analyze-arms.mjs ~/.config/m365-proxy/sweeps/mysweep --compare relay demo_only
 ```
 
 The older single-phase route also archives each arm's debug log + frame dumps for

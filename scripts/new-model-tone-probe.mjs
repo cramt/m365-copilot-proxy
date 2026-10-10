@@ -175,9 +175,9 @@ async function main(args) {
     );
     console.log(
       `[new-model] ${isControl ? "(control) " : ""}${tone} @ ${scenarioName}: ${row.verdict} ` +
-      `origin=${row.contentOrigin} result=${row.result?.value ?? "-"} ` +
-      `errorCode=${row.result?.errorCode ?? "-"} ${row.elapsedMs}ms ` +
-      `reply=${JSON.stringify(row.reply?.slice(0, 140))}`,
+        `origin=${row.contentOrigin} result=${row.result?.value ?? "-"} ` +
+        `errorCode=${row.result?.errorCode ?? "-"} ${row.elapsedMs}ms ` +
+        `reply=${JSON.stringify(row.reply?.slice(0, 140))}`,
     );
     if (row.verdict === "THROTTLED") {
       stoppedEarly = true;

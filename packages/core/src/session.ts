@@ -149,7 +149,7 @@ function dumpFrame(requestId: string, parsed: unknown, direction: "recv" | "send
     mkdirSync(FRAME_DIR, { recursive: true });
     appendFileSync(
       join(FRAME_DIR, `${requestId}.ndjson`),
-      JSON.stringify({ t: Date.now(), dir: direction, frame: parsed }) + "\n",
+      `${JSON.stringify({ t: Date.now(), dir: direction, frame: parsed })}\n`,
     );
   } catch {
     // best effort
@@ -369,6 +369,11 @@ export class CopilotSession {
     signal?: AbortSignal,
     opts?: ChatTurnOptions,
   ): Promise<CopilotStream> {
+    if (signal?.aborted) {
+      // Preserve the caller-provided abort reason, including non-Error values.
+      // eslint-disable-next-line @typescript-eslint/prefer-promise-reject-errors
+      return Promise.reject(signal.reason);
+    }
     const isFirst = this._turnCount === 0;
     this._turnCount++;
     const wantImages = opts?.generateImages ?? false;
@@ -379,6 +384,7 @@ export class CopilotSession {
 
     const claims = decodeJwt(token);
     const requestId = crypto.randomUUID();
+    const correlation = `request=${requestId} sid=${this.sessionId} cid=${this.conversationId}`;
 
     // Resolve the tone ONCE and derive the connection's entitlement from the
     // MODEL (not the tone alone). `scenario` is not cosmetic: agent-less, the
@@ -574,9 +580,17 @@ export class CopilotSession {
               if (streamDone) {
                 return Promise.resolve({ value: undefined, done: true });
               }
+              if (waiting) {
+                return Promise.reject(new Error("Concurrent stream reads are not supported"));
+              }
               return new Promise((res, rej) => {
                 waiting = { resolve: res, reject: rej };
               });
+            },
+            return(): Promise<IteratorResult<string>> {
+              queue.length = 0;
+              onAbort();
+              return Promise.resolve({ value: undefined, done: true });
             },
           };
         },
@@ -594,6 +608,8 @@ export class CopilotSession {
 
       let handshakeDone = false;
       let stopped = false;
+      let chatSent = false;
+      let stopTimer: ReturnType<typeof setTimeout> | undefined;
 
       // Cancellation: when the caller's signal aborts (HTTP client disconnected),
       // cancel the in-flight M365 turn the same way the real UI does — send the
@@ -603,12 +619,22 @@ export class CopilotSession {
       const onAbort = () => {
         if (stopped) return;
         stopped = true;
+        const reason: unknown = signal?.aborted
+          ? signal.reason
+          : new DOMException("Stream consumption stopped", "AbortError");
+        const error =
+          reason instanceof Error ? reason : new DOMException("Request aborted", "AbortError");
+        // Settle immediately, even if closing the socket emits no event.
+        // Preserve AbortSignal.reason identity; stream errors are normalised separately.
+        // eslint-disable-next-line @typescript-eslint/prefer-promise-reject-errors
+        reject(reason);
+        onError(error);
         try {
           if (ws.readyState === WebSocket.OPEN && handshakeDone) {
             log.info("Aborted — sending Stop frame to cancel the turn");
             dumpFrame(requestId, { target: "stop", type: 1 }, "send");
             ws.send(STOP_FRAME);
-            setTimeout(() => {
+            stopTimer = setTimeout(() => {
               try {
                 ws.close();
               } catch {}
@@ -628,14 +654,33 @@ export class CopilotSession {
         if (signal.aborted) onAbort();
         else signal.addEventListener("abort", onAbort, { once: true });
       }
-      const clearAbort = () => signal?.removeEventListener("abort", onAbort);
+      const clearAbort = () => {
+        signal?.removeEventListener("abort", onAbort);
+        if (stopTimer !== undefined) {
+          clearTimeout(stopTimer);
+          stopTimer = undefined;
+        }
+      };
 
       ws.on("open", () => {
-        log.debug("WS connected, sending handshake");
-        ws.send(JSON.stringify({ protocol: "json", version: 1 }) + RS);
+        if (stopped) return;
+        try {
+          log.debug("WS connected, sending handshake");
+          ws.send(JSON.stringify({ protocol: "json", version: 1 }) + RS);
+        } catch (error: unknown) {
+          stopped = true;
+          clearAbort();
+          const failure = error instanceof Error ? error : new Error(String(error));
+          reject(failure);
+          onError(failure);
+          try {
+            ws.close();
+          } catch {}
+        }
       });
 
       ws.on("message", (data: WebSocket.RawData) => {
+        if (stopped) return;
         const raw = rawDataToString(data);
         log.debug("WS recv:", trunc(raw, 500));
         const frames = raw.split(RS).filter((f) => f.length > 0);
@@ -657,8 +702,14 @@ export class CopilotSession {
             handshakeDone = true;
             const hs = SignalRHandshakeResponse.safeParse(parsed);
             if (hs.success && hs.data.error) {
-              ws.close();
-              reject(new Error(`Handshake error: ${hs.data.error}`));
+              stopped = true;
+              clearAbort();
+              const error = new Error(`Handshake error: ${hs.data.error}`);
+              reject(error);
+              onError(error);
+              try {
+                ws.close();
+              } catch {}
               return;
             }
             sendChat();
@@ -670,23 +721,36 @@ export class CopilotSession {
       });
 
       ws.on("error", (err: Error) => {
-        const msg = err.message || "connection failed";
-        log.error("WS error:", msg);
-        if (!handshakeDone) {
-          reject(new Error(`WebSocket error: ${msg}`));
+        if (stopped) return;
+        stopped = true;
+        clearAbort();
+        const error = new Error(`WebSocket error: ${err.message || "connection failed"}`);
+        log.error(`WS error: ${correlation}`, error.message);
+        reject(error);
+        onError(error);
+        try {
+          ws.close();
+        } catch {}
+      });
+
+      ws.on("close", (code: number) => {
+        stopped = true;
+        clearAbort();
+        log.info(
+          `WS closed: ${correlation} code=${code ?? "unknown"} handshake=${handshakeDone} chatSent=${chatSent} answerLength=${answer.length} quota=${throttleInfo ? `${throttleInfo.current}/${throttleInfo.max}` : "unknown"}`,
+        );
+        log.debug(`Final response: request=${requestId}`, trunc(answer, 1000));
+        if (!chatSent) {
+          const error = new Error("WebSocket closed before the chat request was sent");
+          reject(error);
+          onError(error);
         } else {
-          onError(new Error(`WebSocket error: ${msg}`));
+          onDone();
         }
       });
 
-      ws.on("close", () => {
-        clearAbort();
-        log.info("WS closed, answer length:", answer.length);
-        log.debug("Final response:", trunc(answer, 1000));
-        onDone();
-      });
-
       const sendChat = () => {
+        if (stopped || chatSent) return;
         const args = {
           source: "officeweb",
           clientCorrelationId: requestId,
@@ -833,8 +897,20 @@ export class CopilotSession {
         log.debug("WS send:", trunc(payload, 500));
         dumpFrame(requestId, chatMsg, "send");
         dumpFrame(requestId, metrics, "send");
-        ws.send(payload);
-        resolve(stream);
+        try {
+          ws.send(payload);
+          chatSent = true;
+          resolve(stream);
+        } catch (error: unknown) {
+          stopped = true;
+          clearAbort();
+          const failure = error instanceof Error ? error : new Error(String(error));
+          reject(failure);
+          onError(failure);
+          try {
+            ws.close();
+          } catch {}
+        }
       };
 
       // When the model triggers a native custom action, the server sends a
@@ -881,6 +957,7 @@ export class CopilotSession {
         if (base.type === 7) {
           const frame = CloseFrame.safeParse(raw);
           if (frame.success && frame.data.error) {
+            log.error(`Server close: ${correlation}`, frame.data.error);
             onError(new Error(`Server close: ${frame.data.error}`));
           }
           ws.close();
@@ -890,6 +967,7 @@ export class CopilotSession {
         if (base.type === 3) {
           const frame = CompletionFrame.safeParse(raw);
           if (frame.success && frame.data.error) {
+            log.error(`Completion error: ${correlation}`, frame.data.error);
             onError(new Error(`Completion error: ${frame.data.error}`));
           }
           ws.close();

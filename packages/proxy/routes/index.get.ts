@@ -59,7 +59,8 @@ function renderModelRows() {
           ? '<span class="badge err" title="Unreachable">❌</span>'
           : '<span class="badge unknown" title="Not checked">•</span>';
       const statusText = reachable ? "Reachable" : unreachable ? "Not Reachable" : "Unknown";
-      const metricOrDash = (value: string) => (unreachable ? "-" : value);
+      // A failed health check must not hide historical request metrics.
+      const metricOrDash = (value: string) => value;
 
       return `<tr>
       <td>
@@ -75,7 +76,7 @@ function renderModelRows() {
       <td>${metricOrDash(fmtNum(row?.cacheReadTokens ?? null))}</td>
       <td>${metricOrDash(fmtNum(row?.cacheWriteTokens ?? null))}</td>
       <td>${metricOrDash(fmtSeconds(row?.avgLatencyMs ?? null))}</td>
-      <td>${metricOrDash(fmtSeconds(unreachable ? null : (health?.latencyMs ?? row?.avgModelLatencyMs ?? null)))}</td>
+      <td>${metricOrDash(fmtSeconds(row?.avgModelLatencyMs ?? null))}</td>
       <td>${metricOrDash(fmtAgo(row?.lastSeenAt ?? null))}</td>
     </tr>`;
     })
@@ -131,8 +132,10 @@ export default defineEventHandler(() => {
       : accountThrottle.status === "recovered"
         ? "Recovery observed"
         : "Unknown";
-  const healthyModels = snapshot.modelHealth.filter((m) => m.ok === true).length;
-  const unhealthyModels = snapshot.modelHealth.filter((m) => m.ok === false).length;
+  const advertisedModels = new Set(buildModelsPayload().data.map((model) => model.id));
+  const currentHealth = snapshot.modelHealth.filter((model) => advertisedModels.has(model.model));
+  const healthyModels = currentHealth.filter((model) => model.ok === true).length;
+  const unhealthyModels = currentHealth.filter((model) => model.ok === false).length;
   const html = `<!doctype html>
 <html lang="en">
 <head>
@@ -361,18 +364,20 @@ export default defineEventHandler(() => {
         <span class="pill${accountThrottle.status === "throttled" ? " err" : ""}" title="${esc(accountThrottle.message ?? "No account-throttle response recorded")}">
           M365: <strong>${accountStatus}</strong>
         </span>
-        ${accountThrottle.since !== null
-      ? `<span class="pill">
+        ${
+          accountThrottle.since !== null
+            ? `<span class="pill">
           First observed: <time data-throttle-observed-at="${accountThrottle.since}" datetime="${new Date(accountThrottle.since).toISOString()}" title="${new Date(accountThrottle.since).toISOString()}">${fmtAgo(accountThrottle.since)}</time>
         </span>`
-      : ""
-    }
-        ${accountThrottle.lastObservedAt !== null
-      ? `<span class="pill">
+            : ""
+        }
+        ${
+          accountThrottle.lastObservedAt !== null
+            ? `<span class="pill">
           Last throttle: <time data-throttle-observed-at="${accountThrottle.lastObservedAt}" datetime="${new Date(accountThrottle.lastObservedAt).toISOString()}" title="${new Date(accountThrottle.lastObservedAt).toISOString()}">${fmtAgo(accountThrottle.lastObservedAt)}</time>
         </span>`
-      : ""
-    }
+            : ""
+        }
         <span id="backoffStatus" class="pill${retryAfterSeconds > 0 ? " err" : ""}" title="Proxy-imposed wait recommendation">
           Local backoff: <strong id="backoffTime" data-retry-after="${retryAfterSeconds}">${retryAfterSeconds > 0 ? `${retryAfterSeconds}s` : "Inactive"}</strong>
         </span>
@@ -498,13 +503,18 @@ export default defineEventHandler(() => {
         statusEl.className = "status" + (kind ? " " + kind : "");
       };
 
+      let actionBusy = false;
+      let reloadAfter = 0;
       const ping = async () => {
+        if (actionBusy) return;
         const model = modelSelect.value;
         if (!model) {
           setStatus("Select a model first.", "err");
           return;
         }
+        actionBusy = true;
         pingBtn.disabled = true;
+        healthBtn.disabled = true;
         setStatus("Pinging " + model + "...");
         try {
           const res = await fetch("/actions/ping", {
@@ -513,23 +523,28 @@ export default defineEventHandler(() => {
             body: JSON.stringify({ model }),
           });
           const data = await res.json();
-          if (!res.ok) {
-            setStatus("Ping failed: " + (data.error?.message || "unknown error"), "err");
+          if (!res.ok || data.status !== "ok") {
+            setStatus("Ping failed: " + (data.error?.message || data.status || "unknown error"), "err");
           } else {
             setStatus("Ping " + data.model + ": " + data.status + " (" + (data.latencyMs / 1000).toFixed(2) + " s)", "ok");
           }
         } catch (err) {
           setStatus("Ping failed: " + (err.message || String(err)), "err");
         } finally {
+          actionBusy = false;
+          reloadAfter = Date.now() + 10_000;
           pingBtn.disabled = false;
+          healthBtn.disabled = false;
         }
       };
 
       let checkingAll = false;
       const checkAll = async () => {
-        if (checkingAll) return;
+        if (actionBusy) return;
+        actionBusy = true;
         checkingAll = true;
         healthBtn.disabled = true;
+        pingBtn.disabled = true;
         const startedAt = Date.now();
         const progress = setInterval(() => {
           const elapsed = Math.floor((Date.now() - startedAt) / 1000);
@@ -550,13 +565,18 @@ export default defineEventHandler(() => {
         } finally {
           clearInterval(progress);
           checkingAll = false;
+          actionBusy = false;
+          reloadAfter = Date.now() + 10_000;
           healthBtn.disabled = false;
+          pingBtn.disabled = false;
         }
       };
 
       pingBtn.addEventListener("click", ping);
       healthBtn.addEventListener("click", checkAll);
-      setInterval(() => { if (!checkingAll) location.reload(); }, 10_000);
+      setInterval(() => {
+        if (!actionBusy && Date.now() >= reloadAfter) location.reload();
+      }, 10_000);
     })();
   </script>
 </body>
