@@ -23,8 +23,8 @@
     "format:check": "biome format .",
     "check": "biome check .",
     "test": "pnpm test:unit",
-    "test:unit": "pnpm build && vitest run",
-    "test:live": "pnpm build && M365_LIVE=1 vitest run",
+    "test:unit": "pnpm build && vitest run --no-isolate",
+    "test:live": "pnpm build && M365_LIVE=1 vitest run --no-isolate",
     "test:all": "pnpm test:unit && pnpm test:live"
   },
   "packageManager": "pnpm@12.8.1",

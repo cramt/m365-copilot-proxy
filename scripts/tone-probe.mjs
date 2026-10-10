@@ -64,8 +64,16 @@ const TONES = [
   // prompt — LIVE says a model answered, not which one; a self-ID prompt is
   // what tells them apart.
   { tone: "Claude_Sonnet", note: "included scenario: Claude Sonnet 4.6", ...INCLUDED },
-  { tone: "Claude_Sonnet", note: "PAID scenario: Claude Sonnet 5.5 (model ID claude-sonnet-5.5) — spends its priority access", ...PAID },
-  { tone: "Claude_Sonnet_5", note: "PAID scenario: Claude Sonnet 5 (model ID claude-sonnet-5)", ...PAID },
+  {
+    tone: "Claude_Sonnet",
+    note: "PAID scenario: Claude Sonnet 5.5 (model ID claude-sonnet-5.5) — spends its priority access",
+    ...PAID,
+  },
+  {
+    tone: "Claude_Sonnet_5",
+    note: "PAID scenario: Claude Sonnet 5 (model ID claude-sonnet-5)",
+    ...PAID,
+  },
   { tone: "Anthropic_Claude", note: "speculative Claude" },
   { tone: "Claude_Reasoning", note: "accepted but actually GPT-5 — don't use" },
 
@@ -73,8 +81,16 @@ const TONES = [
   // Agent-less (this probe) the included cell is dead on every account; Opus
   // 4.5 (`claude-opus-4.5`) lives there only WITH the agent, on a premium
   // account — agent-tone-probe.mjs is the probe for that (§24).
-  { tone: "Claude_Opus", note: "included scenario: expect the BotConnection apology (Opus 4.5 needs the agent)", ...INCLUDED },
-  { tone: "Claude_Opus", note: "PAID scenario: expect DeepLeo + Opus 5.5 (spends priority access)", ...PAID },
+  {
+    tone: "Claude_Opus",
+    note: "included scenario: expect the BotConnection apology (Opus 4.5 needs the agent)",
+    ...INCLUDED,
+  },
+  {
+    tone: "Claude_Opus",
+    note: "PAID scenario: expect DeepLeo + Opus 5.5 (spends priority access)",
+    ...PAID,
+  },
 
   // GPT-6, likewise paired. Entitlement-gated exactly like Opus but NOT
   // separately metered, so these two cells are cheap — they spend one ordinary
@@ -102,7 +118,11 @@ const TONES = [
   // Sol: LIVE on the included scenario on every account. The paid scenario
   // serves it on a premium account too but spends the GPT61Sol priority-access
   // budget (40/day, 75/week), so there's no paid cell here.
-  { tone: "Gpt_61_Sol_Reasoning", note: "gpt-6.1-sol — included scenario: expect DeepLeo on every account", ...INCLUDED },
+  {
+    tone: "Gpt_61_Sol_Reasoning",
+    note: "gpt-6.1-sol — included scenario: expect DeepLeo on every account",
+    ...INCLUDED,
+  },
 
   // Claude_Fable: present in the real web client's tone list (§12.6 decompile)
   // alongside Claude_Sonnet, so it is a registered route rather than a guess.

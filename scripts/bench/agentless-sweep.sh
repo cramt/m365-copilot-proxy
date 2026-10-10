@@ -2,7 +2,7 @@
 # Agent-less framing sweep. The whole point of the pivot: find a lean per-request
 # system prompt that makes the AGENT-LESS model (no Copilot Studio agent → never
 # Disengages, but only emits ```bash ~1/3 on minimal framing) reliably write a
-# ```bash block. One proxy booted with M365_NO_AGENT=1; we rotate --system over
+# ```bash block. One proxy booted with M365_DISABLE_AGENT=1; we rotate --system over
 # the al*.txt candidates (+ baseline) and let the bench scorecard pick a winner.
 #
 # Results: scripts/bench/out/al-<name>-<ts>.json ; summary at /tmp/m365-al-summary.txt
@@ -40,7 +40,7 @@ trap kill_proxy EXIT
 
 # Boot ONE agent-less proxy (env constant across strategies; only --system varies).
 kill_proxy; sleep 1
-M365_NO_AGENT=1 M365_DEBUG=1 node packages/proxy/bin/m365-proxy.mjs "$PORT" > "$PROXY_LOG" 2>&1 &
+M365_DISABLE_AGENT=1 M365_DEBUG=1 M365_STICKY_SESSION=off node packages/proxy/bin/m365-proxy.mjs "$PORT" > "$PROXY_LOG" 2>&1 &
 echo $! > "$PIDFILE"
 for i in $(seq 1 30); do
   curl -sf "http://localhost:$PORT/health" >/dev/null 2>&1 && break

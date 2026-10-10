@@ -39,6 +39,8 @@ export {
   decodeJwt,
   getToneForModel,
   getAvailableModels,
+  getAccountTier,
+  AccountTier,
   getScenarioForTone,
   getScenarioForModel,
   isSonnet5Model,

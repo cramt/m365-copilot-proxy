@@ -128,8 +128,9 @@ describe("proxy model catalog (offline)", () => {
     expect(body.object).toBe("list");
     const models = modelIds(body.data);
     expect(models).toEqual(getAvailableModels());
-    expect(models).toHaveLength(21);
+    expect(models).toHaveLength(22);
     expect(models).toContain("gpt-6-sol");
+    expect(models).toContain("gpt-6.1-sol");
     expect(models.filter((model: string) => model.startsWith("claude"))).toEqual([
       "claude-sonnet-think-deeper",
     ]);

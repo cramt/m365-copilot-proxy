@@ -5071,3 +5071,96 @@ executing"). Re-read by `contentType: Code`: F61's bench, relay vs relay_batch, 
 10 vs 3 (not reported). Together 11 vs 9, so relay_batch added no sandbox turns, and none of them cost a
 run; the decision stands. Every other archive on the three accounts (GPT-6, GPT-6 Sol, GPT-6.1 Sol,
 Sonnet 5) reads the same under both rules.
+
+## 31. Oct 10 2026 — sticky sessions: one M365 thread across compaction and model switches
+
+**Question.** One pi compaction opened three new M365 threads, and threads started is what the account throttle counts (F13). Can a client stay on one conversation across compaction and model switches, and which switches does M365 accept inside one conversation?
+
+**Evidence.** A gpt-6-sol pi session, 2026-10-09: `8c969ce9` (conv 63/600, 111,695 tokens, past pi's 128000 − 16384 threshold) → `bdfda8d8` (1 turn, 23k prompt, history summary) → `55ead5a8` (1 turn, 10k prompt, turn-prefix summary) → `2b5ec1c8` (the continuation, conv=1). pi compacts when `contextTokens > contextWindow − reserveTokens` (16384), keeping 20000 recent tokens. When the cut lands inside a turn, pi makes a second, turn-prefix summary call. In a long tool loop (one user prompt, dozens of tool calls) that is the normal case. The continuation's history also shrinks, which `resolve()` reads as a client restart and resets the session.
+
+**Behind `M365_STICKY_SESSION`** (default `all` since 2026-10-10, after the real-pi runs below; anything unrecognised is `all`; `off`/`0`/`false`/`no` opt out). `off` is the old behaviour: keyed on model + first user message, and a shrinking history gets a fresh thread. `model`: one conversation per model. A shrink sends the delta after the last message already sent (matched by digest), or after the last assistant message if that one is gone. Turns on a conversation are serialized FIFO. pi's summary requests get a local placeholder with zero M365 turns. Sticky conversations idle-evict after 4 h and roll over to a fresh thread with full history when M365's per-conversation counter has ≤ 5 messages left. `all`: one conversation across model switches; on a switch with tools, the new model's framing and tools block go ahead of the delta. Validated on GPT tones only (H-S2/H-S3 still open).
+
+**Open hypotheses.** Run each sequentially, one thread per probe, with a cooldown between them. Probe base: `scripts/opus-fallback-probe.mjs`. Command, inside `nix develop` after `pnpm build`: `node scripts/sticky-switch-probe.mjs --only=H-S1` (and `H-S2`, `H-S3`, `H-S4`).
+
+- **H-S1 — tone switch inside one conversation.** Same `conversationId`: turn 1 on `gpt-5.5` (`magic`), turn 2 on `claude-sonnet`. **Predicted:** turn 2 serves and self-IDs as Sonnet. **Falsified if:** turn 2 errors (`InternalError` or similar), or still self-IDs as GPT. Status: **confirmed for GPT tones**, n=2, on a non-premium account (2026-10-10). `gpt-5.5-quick` → `gpt-6-sol` in one conversation served, self-IDed as "GPT-6 reasoning model" and recalled the turn-1 codeword (`sticky-switch-2026-10-09T22-54-46-253Z.jsonl`). The Claude target returned `InternalError`/`BotConnection`, but agent-less `claude-sonnet` is the dead route on a non-premium account even in a fresh conversation (H-S2 t1 below), so that says nothing about the switch. The Claude target needs a premium account: `--switch-model=claude-sonnet` (the default).
+- **H-S2 — scenario switch.** Included → paid in one conversation: `claude-sonnet` → `claude-sonnet-5`. The scenario is per turn today. **Predicted:** M365 accepts the change and the paid turn serves with the history. **Falsified if:** the switch is refused, or the conversation resets. Status: open. Inconclusive on a non-premium account: the plant turn hit `InternalError` and the paid turn hit `ForbiddenRequest/InvalidCopilotLicense` (`sticky-switch-2026-10-09T22-48-34-233Z.jsonl`).
+- **H-S3 — agent ↔ agent-less.** `gpt-6-sol` with the agent, then a tool-less turn (no agent) in the same conversation. **Predicted:** the agent turn's history is visible to the agent-less turn. **Falsified if:** a fact planted in the agent turn isn't recalled, or the turn errors. Status: open. The run passed (magic → gpt-6-sol → magic, recalled on both later turns), but the agent never attached: on this tenant, publishing the agent fails with a 403 ("Copilot extensibility unavailable", `agent.ts` `publishBot`). So the run was three agent-less tone switches, which counts as H-S1/H-S4 evidence and not as H-S3. Rerun on a tenant that can publish the agent.
+- **H-S4 — history across a switch.** Plant a fact on turn 1, ask for it after the H-S1 switch. **Predicted:** recalled. **Falsified if:** it isn't recalled, reproduced on a repeat. Status: **confirmed**, 3/3 served recall checks across tone switches (gpt-5.5-quick→gpt-6-sol, magic→gpt-6-sol→magic).
+- **H-S5 — pi's summary requests are recognisable.** **Predicted:** the summary requests carry a stable marker the matcher can key on. **Falsified if:** they don't. Status: confirmed for the system prompt. pi 1.0.0 (`dist/core/compaction/utils.js`) sets `SUMMARIZATION_SYSTEM_PROMPT` to "You are a context summarization assistant. …". The user-side summary prompts from the pi build and openclaw's equivalent are not yet captured.
+
+**Proxy end-to-end, 2026-10-10 (non-premium account, `gpt-6-sol`, synthetic pi-shaped requests, n=1 each).**
+- `model`: plant → SSE append → a pi-style summary request → the compacted history (summary placeholder + a new question) → append. All four M365 turns stayed on one `cid` (conv 1→4/600). The summary was answered locally in 6 ms and never reached M365. The handler logged `rewritten, sending from message 2 of 3`. After the compaction the model still recalled the codeword and the sum, which the placeholder summary did not contain, so the server-side history carried them. The SSE turn released the queue, and the next request did not hang.
+- `all`: `gpt-5.5-quick` (no tools) → `gpt-6-sol` with a `bash` tool. Same `cid`, "framing re-sent", and the answer was a real `bash` tool call echoing the codeword planted under the other model.
+
+**Real pi 1.0.0, 2026-10-10 (non-premium account, n=1 each).** `COMPACTION_RESERVE_TOKENS` / `COMPACTION_KEEP_RECENT_TOKENS` in `scripts/pi-local.sh` lower pi's threshold so it compacts within a few prompts.
+- `model` + `gpt-6-sol`, `COMPACTION_RESERVE_TOKENS=122000 COMPACTION_KEEP_RECENT_TOKENS=1500`, 3 prompts. pi compacted twice in the first run: a split-turn summary and a history summary. Both were answered locally; the placeholder text is in the session file. All 5 M365 requests ran on one `cid`, conv 1→5. After the compactions the model recalled the codeword from file1 ("heron-228"). The run exposed a bug: the local SSE summary had no `x-proxy-stream: 1`, so the Nitro route re-read a body it had already consumed (`Response.clone: Body has already been consumed`, `ERR_HTTP_HEADERS_SENT`). Fixed in `harnessSummaryResponse`. The client never saw the error.
+- `all` + `pi -c --model` switches, gpt-6-sol → gpt-5.5-quick → gpt-6-sol (this is what Ctrl+P sends: the same history under a new model). 6 M365 requests on one `cid`, conv 1→6. `switches model … same thread, framing re-sent` was logged at both switches. gpt-5.5-quick fixed a bug in `calc.py` through tool calls on the shared thread, and gpt-6-sol then recalled both the codeword and the result. This run did not compact.
+
+**Validation still to do.**
+- H-S1 with a Claude target, H-S2 and H-S3: a premium account that can publish the agent.
+- openclaw: the same first check, once its summary prompt is matched (H-S5).
+- Bench and `proxy-verify` with the flag off: scorecards unchanged.
+
+## 32. Oct 10 2026 — tone-name sweeps in one conversation; named upstream failures fail fast
+
+All runs on the non-premium (basic) account, agent-less, sequential, n=1 per cell.
+
+### F76 — a tone-name sweep can run inside one conversation 🟢
+
+**Question.** Each tone probe opened a fresh thread, and threads started is what the throttle counts
+(F13). Can every name in a sweep go into one conversation?
+
+**Evidence.** `_probe-chat.mjs` takes `conversationId` / `sessionId` / `isStartOfSession`;
+`new-model-tone-probe.mjs --conversation=new|<uuid>` sends every cell into that thread, bracketed by
+a known-live control (`Gpt_61_Sol_Reasoning`). Conversation `0c74f8ba-10f9-4e53-9f3f-21071649de49`
+took dozens of cells over several runs, each run with a fresh `X-SessionId` and `isStartOfSession:false`:
+M365 threads on `ConversationId`, the session ID can change. A rejected name (type-3 "Failed to
+invoke 'Chat'") returns in ~1.5 s and the next turn on the thread still serves; the closing
+controls were LIVE. No throttling. **Caveat:** self-ID in a shared thread anchors on earlier answers
+(`Claude_Sonnet_Reasoning` once claimed "GPT-5 chat"), so take identity from fresh threads.
+Evidence: `scripts/new-model-tone-out/2026-10-10T05-27-36-612Z/`, `…T05-37-50-000Z/`; the earlier
+name runs used an ad-hoc `/tmp/m365-sweep/tone-try.mjs`, now folded into the probe.
+
+### F77 — no Haiku tone, no versioned Sonnet 4.x tone, no `Claude_Sonnet_5` variants 🟢
+
+| Names tried | Scenario | Result |
+|---|---|---|
+| `Gpt_6_1_Sol_Reasoning` | included | REJECTED (the live name is `Gpt_61_Sol_Reasoning`, §27) |
+| `Claude_Haiku`, `Claude_Haiku_Reasoning`, `Claude_Haiku_4_5`, `Claude_Haiku_5` | included + paid | REJECTED |
+| `Claude_Sonnet_{4_5,45,4.5}`, bare and `_Reasoning` / `_Quick` / `_Chat` | included (`4_5` bare on paid too) | REJECTED |
+| `Claude_Sonnet_{4_6,46,4.6}`, bare and `_Reasoning` / `_Quick` / `_Chat` | included | REJECTED |
+| `Claude_Sonnet_5_{Reasoning,Quick,Chat}` | included | REJECTED |
+| `Claude_Sonnet_5` | included | registered-but-dead (`InternalError`), as §26 |
+
+So Sonnet versions are chosen by scenario (§26), not by tone name, and Haiku isn't reachable. The
+unmapped `claude-haiku-*` IDs fall back to `Claude_Sonnet` (`getToneForModel`). Don't map any of these.
+
+### F78 — the catalog on a basic account: `gpt-6.1-sol` is advertised; `gpt-6-think-deeper` changed answer 🟡
+
+`gpt-6.1-sol` served (Success/DeepLeo) on this account all day, through the proxy and as every
+control above, so it moved from `PAID_ONLY_MODELS` to `BASIC_MODELS` (22 basic IDs, 33 with `paid`).
+The paid-only list, re-probed in conversation `0c74f8ba` (`…T05-37-50-000Z/`):
+
+| Tone | Included | Paid |
+|---|---|---|
+| `Claude_Sonnet` (Sonnet 4.6 / 5.5) | `InternalError` | `InvalidCopilotLicense` |
+| `Claude_Sonnet_5` | `InternalError` | `InvalidCopilotLicense` |
+| `Claude_Opus` | `InternalError` | `InvalidCopilotLicense` |
+| `Gpt_6_Reasoning` | `InternalError` | **`InternalError`** |
+
+`Gpt_6_Reasoning` @ paid was `InvalidCopilotLicense` on 2026-10-02 (findings/models.md) and is
+`InternalError` today, n=2 (this probe, and a fresh proxy thread earlier the same day). Cause unknown;
+a basic account can't tell a changed gate from an outage. These IDs stay in `PAID_ONLY_MODELS`
+because they serve on a premium account (§25, §26, §30, §22 F45) — which only a premium account
+can re-verify. **Next:** rerun the same four tones on a premium account in one thread.
+
+### Proxy: a named upstream failure is returned, not retried
+
+The proxy used to answer every failed turn with "Please continue." up to `MAX_RETRIES` times and
+then a generic 502 `upstream_empty_response`, spending turns on an answer that would not change. Now a
+final `result` other than `Success` ends the request at once: `ForbiddenRequest` → 403
+`permission_error`, anything else → 502 `upstream_error`, with `code` = `errorCode ?? value` and
+`param` = `value` (e.g. 403 `InvalidCopilotLicense`, 502 `InternalError`). Kept: the F52 transient
+(`InternalError` on an agent route that has answered still retries), one agent re-resolve before
+failing, and the `PREMIUM_ONLY_AGENT_TONES` agent-less fallback. Live: `claude-sonnet-5` → 403 in 4 s,
+`claude-sonnet` → 502 in 3 s (previously ~4 turns each).

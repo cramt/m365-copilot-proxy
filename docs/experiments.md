@@ -283,6 +283,7 @@ sample size and evidence in hypotheses §23 before changing the provisional defa
 - **Identity:** repeat only LIVE tones with `--phase=self-id --tones=<comma-separated-live-tones>`. For Sonnet, use `--tones=Claude_Sonnet` and compare included with paid.
 - **Read:** `scripts/new-model-tone-out/<timestamp>/results.json` and per-cell raw `.jsonl` frames. `DeepLeo` plus final `Success` is liveness, not model identity; `BotConnection` is not liveness. `InvalidCopilotLicense` is inconclusive for paid availability. Stop on `PerUserThrottled`; never run sweeps concurrently.
 - **Cost:** one fresh conversation per tone/scenario cell, with the default five-minute cooldown between cells. Do not run the full candidate matrix until a small smoke sweep confirms the instrument.
+- **One-thread mode:** add `--conversation=new` (or `=<uuid>` to reuse one) to send every cell into a single conversation, opened and closed by a known-live `--control` tone (default `Gpt_61_Sol_Reasoning`); the cooldown defaults to 10s. Name rejections return in ~1.5s and leave the thread usable. Use it for name sweeps; self-ID answers in a shared thread anchor on earlier ones, so take identity from fresh threads. Example: `M365_NO_INTERACTIVE=1 node scripts/new-model-tone-probe.mjs --tones=A,B --scenario=included --conversation=new`. Results: hypotheses §32.
 
 
 ## E-SR1 — Sonnet reasoning local-tool framing (H25)

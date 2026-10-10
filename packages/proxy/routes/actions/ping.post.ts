@@ -38,11 +38,14 @@ export default defineEventHandler(async (event) => {
   const payload = ChatCompletionRequest.parse({
     model,
     stream: false,
-    messages: [{ role: "user", content: "ok" }],
+    // Unique text: under sticky `all` a repeated "ok" is no new message, and
+    // the proxy would send "Please continue." instead.
+    messages: [{ role: "user", content: `ok (${requestId})` }],
   });
 
   const response: Response = await handleChatCompletion(payload, pool, {
     signal: AbortSignal.timeout(PING_TIMEOUT_MS),
+    stickySession: "all",
   });
   const endedAt = Date.now();
   const latencyMs = endedAt - startedAt;

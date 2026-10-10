@@ -300,8 +300,16 @@ pnpm test:live      # M365_LIVE=1; live tests that hit real M365 (uses quota)
   F13's "fresh login clears it" was n=1 and confounded with a rest). It lifts with idle time,
   which is why the proxy's degradation backoff replaced the old auto-reauth. Space experiment
   runs; don't loop new conversations.
+- **`M365_STICKY_SESSION` keeps one M365 thread across compaction and model switches; the default is `all`.** `all` (default, and anything unrecognised) is one thread for every request and model: a model switch re-sends the new model's framing, pi's compaction-summary requests are answered locally, turns are serialized, and only the delta is sent, so a pi compaction no longer opens 3 new threads (F13 throttle). Two clients at once share that thread, so their histories mix. `model` is one thread per model. `off` (or `0`/`false`/`no`) is the old behaviour: keyed on model + first user message, and a shrinking history starts a new thread. **Run the bench and the probes against an `off` proxy**, because they rely on a fresh thread per task. The launchers that start their own proxy pin `off`, and so does `proxy-verify`. The dashboard's check-models/ping force `all` per request (`stickySession` option), so a check across every model is one thread, not one per model. Run them when no pi session is active, because they share pi's thread. See docs/hypotheses.md §31 and `.plans/sticky-session.md`.
 - The `nativeclient` OAuth redirect bounces to `/common/wrongplace`; the auth code is
   scraped from the navigation request, not a settled URL.
+- **A named upstream failure is returned, not retried.** A final `result` other than `Success`
+  ends the request: `ForbiddenRequest` → 403 `permission_error`, else 502 `upstream_error`, with
+  the M365 value in `code`/`param`. Only the F52 transient (`InternalError` on an agent route that
+  has answered) still retries. Don't reintroduce "Please continue." retries for these; they spent
+  turns on the same answer. See docs/hypotheses.md §32.
+- **Name sweeps go in one thread:** `new-model-tone-probe.mjs --conversation=new|<uuid>` (F76).
+  No Haiku tone and no versioned Sonnet 4.x tone exists (F77); Sonnet versions follow the scenario.
 
 ## Verifying changes end-to-end
 

@@ -56,7 +56,7 @@ trap 'exit 130' INT TERM
 start_proxy() {
   local label="$1"
   # shellcheck disable=SC2086  # PROXY_CMD is a command line
-  env M365_DEBUG=1 M365_DUMP_FRAMES=1 M365_FRAMING_FILE="$CONTROL" \
+  env M365_DEBUG=1 M365_DUMP_FRAMES=1 M365_STICKY_SESSION=off M365_FRAMING_FILE="$CONTROL" \
     M365_LOG_FILE="$ARCHIVE/$label-debug.log" M365_FRAME_DIR="$ARCHIVE/$label-frames" \
     $PROXY_CMD "$PORT" > "$ARCHIVE/$label-proxy.out" 2>&1 &
   PROXY_PID=$!

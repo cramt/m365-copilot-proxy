@@ -174,10 +174,17 @@ describe("priorityAccessExhaustionOf (result + text)", () => {
   });
 
   it("trusts OutOfCredits even if the refusal is ever reworded", () => {
-    const r = priorityAccessExhaustionOf({ value: "OutOfCredits", message: "Opus is unavailable until tomorrow." }, "", WED)!;
+    const r = priorityAccessExhaustionOf(
+      { value: "OutOfCredits", message: "Opus is unavailable until tomorrow." },
+      "",
+      WED,
+    )!;
     expect(r.window).toBe("day");
     expect(r.resetsAt.toISOString()).toBe("2026-09-17T00:00:00.000Z");
-    expect(priorityAccessExhaustionOf({ value: "OutOfCredits", message: "back on Monday" }, "", WED)!.window).toBe("week");
+    expect(
+      priorityAccessExhaustionOf({ value: "OutOfCredits", message: "back on Monday" }, "", WED)!
+        .window,
+    ).toBe("week");
   });
 
   it("still catches the text alone, and ignores ordinary turns", () => {
@@ -202,7 +209,9 @@ describe("remembering an exhaustion until its reset", () => {
     const week = parsePriorityAccessExhaustion(WEEKLY, WED)!;
     notePriorityAccessExhausted("opus", week, WED);
     notePriorityAccessExhausted("opus", day, WED);
-    expect(activePriorityAccessExhaustion("opus", new Date("2026-09-18T00:00:00Z"))?.window).toBe("week");
+    expect(activePriorityAccessExhaustion("opus", new Date("2026-09-18T00:00:00Z"))?.window).toBe(
+      "week",
+    );
   });
 
   it("keeps each budget's wall to itself — Opus running out says nothing about Sonnet 5.5", () => {

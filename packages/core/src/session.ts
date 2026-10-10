@@ -27,7 +27,12 @@ import {
   type MaybeTriggerMessage,
 } from "./native-actions.js";
 import { createLogger, trunc, FRAME_DIR } from "./log.js";
-import { parseMetering, meteredAllowance, METERED_BUDGETS, type MeteredBudget } from "./priority-access.js";
+import {
+  parseMetering,
+  meteredAllowance,
+  METERED_BUDGETS,
+  type MeteredBudget,
+} from "./priority-access.js";
 
 const RS = "\x1E";
 const log = createLogger("session");
@@ -924,7 +929,10 @@ export class CopilotSession {
               metering = parseMetering(isRecord(item.throttling) ? item.throttling.metering : null);
               for (const [budget, { label }] of Object.entries(METERED_BUDGETS)) {
                 const left = meteredAllowance(metering, budget as MeteredBudget);
-                if (left) log.info(`${label} priority access left: ${left.daily ?? "?"} today, ${left.weekly ?? "?"} this week`);
+                if (left)
+                  log.info(
+                    `${label} priority access left: ${left.daily ?? "?"} today, ${left.weekly ?? "?"} this week`,
+                  );
               }
             }
             let resumedHere = false;

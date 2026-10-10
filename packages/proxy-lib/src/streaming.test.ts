@@ -5,13 +5,19 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 const scripted: {
   deltas: string[];
   fullText?: string;
+  images: import("@m365-copilot/core").CapturedImage[];
   /** Script an upstream `result` (e.g. Throttled) on a turn with no content. */
   result?: { value: string; errorCode?: string; message?: string } | null;
   runs: number;
   /** Text of every run() call, in order. */
   texts: string[];
   /** Per-call overrides, consumed front-first (e.g. a Disengaged turn, then an answer). */
-  queue: Array<{ fullText: string; messageType?: string | null; result?: { value: string; errorCode?: string; message?: string }; metering?: Record<string, number> }>;
+  queue: Array<{
+    fullText: string;
+    messageType?: string | null;
+    result?: { value: string; errorCode?: string; message?: string };
+    metering?: Record<string, number>;
+  }>;
   agentId?: string | null;
   resolutions: number;
   /** The model argument of every run() call, in order. */
@@ -20,8 +26,16 @@ const scripted: {
   agentFlags: Array<boolean | undefined>;
   /** How many times the handler rotated to a fresh conversation. */
   newConversations: number;
+  /** Throttle reported on every turn; null means { current: 1, max: 600 }. */
+  throttle: { current: number; max: number } | null;
+  /** When true, each delta waits a macrotask so overlapping turns would show. */
+  slowTurns: boolean;
+  /** Turns currently streaming, and the peak of that count. */
+  inFlight: number;
+  maxInFlight: number;
 } = {
   deltas: [],
+  images: [],
   runs: 0,
   texts: [],
   queue: [],
@@ -29,6 +43,10 @@ const scripted: {
   agentFlags: [],
   resolutions: 0,
   newConversations: 0,
+  throttle: null,
+  slowTurns: false,
+  inFlight: 0,
+  maxInFlight: 0,
 };
 
 vi.mock("@m365-copilot/core", async (importActual) => {
@@ -37,7 +55,7 @@ vi.mock("@m365-copilot/core", async (importActual) => {
     turnCount = 0;
     sessionId = "session-test";
     conversationId = "conv-test";
-    reset() {}
+    reset() { }
     newConversation() {
       this.conversationId = "conv-test-2";
       this.turnCount = 0;
@@ -64,8 +82,8 @@ vi.mock("@m365-copilot/core", async (importActual) => {
         hasContent: full.length > 0,
         result: next?.result ?? scripted.result ?? { value: "Success" },
         metering: next?.metering ?? null,
-        images: [],
-        throttle: { current: 1, max: 600 },
+        images: scripted.images,
+        throttle: scripted.throttle ?? { current: 1, max: 600 },
         contentOrigin: "Claude",
         messageType: next?.messageType ?? null,
         messageId: "m1",
@@ -73,9 +91,16 @@ vi.mock("@m365-copilot/core", async (importActual) => {
         turnCount: 1,
         turnState: "Completed",
         async *[Symbol.asyncIterator]() {
-          for (const d of deltas) {
-            await Promise.resolve(); // yield to the event loop between deltas
-            yield d;
+          scripted.inFlight++;
+          scripted.maxInFlight = Math.max(scripted.maxInFlight, scripted.inFlight);
+          try {
+            for (const d of deltas) {
+              if (scripted.slowTurns) await new Promise((resolve) => setTimeout(resolve, 5));
+              else await Promise.resolve(); // yield to the event loop between deltas
+              yield d;
+            }
+          } finally {
+            scripted.inFlight--;
           }
         },
       };
@@ -86,11 +111,23 @@ vi.mock("@m365-copilot/core", async (importActual) => {
     ...actual,
     ModelSession: FakeModelSession,
     awaitDegradationBackoff: vi.fn(() => Promise.resolve()),
+    getImageArtifactToken: vi.fn(() => Promise.resolve("test-artifact-token")),
+    fetchImageBytes: vi.fn(() =>
+      Promise.resolve({ data: Buffer.from("test-image"), contentType: "image/png" }),
+    ),
   };
 });
 
 const { handleChatCompletion, SessionPool, ChatCompletionRequest } = await import("./index.js");
-const { noteRequestOutcome, resetAgentRoutes, resetPriorityAccessState } = await import("@m365-copilot/core");
+const {
+  noteRequestOutcome,
+  resetAgentRoutes,
+  resetPriorityAccessState,
+  getImageArtifactToken,
+  fetchImageBytes,
+} = await import("@m365-copilot/core");
+const { formatMessages, currentFramingVariant, defaultFramingForModel, getToneForModel } =
+  await import("@m365-copilot/core");
 type JsonObject = Record<string, unknown>;
 type RequestMessage = ReturnType<typeof ChatCompletionRequest.parse>["messages"][number];
 type ToolCall = {
@@ -161,14 +198,14 @@ function asToolCalls(value: unknown): ToolCall[] {
 }
 
 describe("model-aware conversation snapshots", () => {
-  it("reuses a conversation only for the same model and first user message", () => {
+  it("reuses a conversation only for the same model and first user message (sticky off)", () => {
     const pool = new SessionPool();
     const messages = ChatCompletionRequest.parse({
       messages: [{ role: "user", content: "same prompt" }],
     }).messages;
-    const sonnet = pool.resolve(messages, "claude-sonnet");
-    expect(pool.resolve(messages, "claude-sonnet")).toBe(sonnet);
-    expect(pool.resolve(messages, "gpt-6-think-deeper")).not.toBe(sonnet);
+    const sonnet = pool.resolve(messages, "claude-sonnet", "off");
+    expect(pool.resolve(messages, "claude-sonnet", "off")).toBe(sonnet);
+    expect(pool.resolve(messages, "gpt-6-think-deeper", "off")).not.toBe(sonnet);
     expect(
       pool
         .getActiveConversations()
@@ -273,7 +310,6 @@ describe("exact-reply system guard", () => {
   });
 });
 
-
 // The proxy remembers a priority-access wall for the process (until the reset);
 // don't let one test's refusal 429 the next test's Opus request.
 afterEach(() => resetPriorityAccessState());
@@ -320,6 +356,105 @@ async function streamContents(deltas: string[], fullText?: string): Promise<stri
   }
   return contents;
 }
+
+describe("generated images in chat completions", () => {
+  const url = "https://example.invalid/generated.png";
+  const markdown = `![generated image](data:image/png;base64,${Buffer.from("test-image").toString("base64")})`;
+
+  afterEach(() => {
+    vi.mocked(getImageArtifactToken).mockReset().mockResolvedValue("test-artifact-token");
+    vi.mocked(fetchImageBytes)
+      .mockReset()
+      .mockResolvedValue({
+        data: Buffer.from("test-image"),
+        contentType: "image/png",
+      });
+    scripted.images = [];
+    scripted.deltas = [];
+    scripted.fullText = undefined;
+    scripted.result = null;
+  });
+
+  it.each(["", "Here is your image"])(
+    "includes image-only or text-plus-image in JSON: %s",
+    async (text) => {
+      scripted.images = [{ referenceUrls: [url] }];
+      scripted.deltas = text ? [text] : [];
+      scripted.fullText = text;
+      scripted.result = null;
+      const runsBefore = scripted.runs;
+      const response = await handleChatCompletion(
+        ChatCompletionRequest.parse({
+          model: "claude-sonnet",
+          messages: [{ role: "user", content: `draw ${Math.random()}` }],
+        }),
+        new SessionPool(),
+      );
+      expect(response.status).toBe(200);
+      const choice = asObject(asArray(asObject(await responseJson(response)).choices)[0]);
+      expect(asObject(choice.message).content).toBe(text ? `${text}\n\n${markdown}` : markdown);
+      expect(scripted.runs - runsBefore).toBe(1);
+    },
+  );
+
+  it.each(["", "Here is your image"])(
+    "streams image-only or text-plus-image once: %s",
+    async (text) => {
+      scripted.images = [{ referenceUrls: [url] }];
+      scripted.result = null;
+      const runsBefore = scripted.runs;
+      const contents = await streamContents(text ? [text] : [], text);
+      expect(contents.join("")).toBe(text ? `${text}\n\n${markdown}` : markdown);
+      expect(contents.filter((part) => part.includes(markdown))).toHaveLength(1);
+      expect(scripted.runs - runsBefore).toBe(1);
+    },
+  );
+
+  it.each(["missing token", "token error", "fetch error", "missing URL"])(
+    "returns an error instead of an unusable image URL in JSON: %s",
+    async (failure) => {
+      scripted.images = [{ referenceUrls: failure === "missing URL" ? [] : [url] }];
+      scripted.deltas = [];
+      scripted.fullText = "";
+      if (failure === "missing token") vi.mocked(getImageArtifactToken).mockResolvedValue(null);
+      if (failure === "token error")
+        vi.mocked(getImageArtifactToken).mockRejectedValue(new Error("token unavailable"));
+      if (failure === "fetch error")
+        vi.mocked(fetchImageBytes).mockRejectedValue(new Error("artifact unavailable"));
+      const runsBefore = scripted.runs;
+      const response = await handleChatCompletion(
+        ChatCompletionRequest.parse({
+          model: "claude-sonnet",
+          messages: [{ role: "user", content: `draw ${Math.random()}` }],
+        }),
+        new SessionPool(),
+      );
+      expect(response.status).toBe(502);
+      const body = asObject(await responseJson(response));
+      expect(asObject(body.error).type).toBe("upstream_error");
+      expect(JSON.stringify(body)).not.toContain(url);
+      expect(scripted.runs - runsBefore).toBe(1);
+    },
+  );
+
+  it("reports a streaming image fetch failure without emitting an unusable URL", async () => {
+    scripted.images = [{ referenceUrls: [url] }];
+    scripted.deltas = [];
+    scripted.fullText = "";
+    vi.mocked(fetchImageBytes).mockRejectedValue(new Error("artifact unavailable"));
+    const body = ChatCompletionRequest.parse({
+      model: "claude-sonnet",
+      stream: true,
+      messages: [{ role: "user", content: `draw ${Math.random()}` }],
+    });
+    const response = await handleChatCompletion(body, new SessionPool());
+    const text = await response.text();
+    expect(text).toContain("upstream_error");
+    expect(text).toContain("artifact unavailable");
+    expect(text).not.toContain(url);
+    expect(text).not.toContain("![generated image]");
+  });
+});
 
 describe("incremental streaming (non-tool path)", () => {
   it("forwards deltas as separate chunks, not one buffered blob", async () => {
@@ -482,7 +617,9 @@ describe("the only-the-first-call-ran note", () => {
   it("names the tool on a follow-up turn, though the tool message carries no name (#50)", async () => {
     // Like pi: the result names its call only by tool_call_id.
     const sent = await converse(["```bash\nls\n```", "Done."]);
-    expect(sent[1]).toMatch(/<tool_response name="bash" call_id="[^"]+">\nreal output 0\n<\/tool_response>/);
+    expect(sent[1]).toMatch(
+      /<tool_response name="bash" call_id="[^"]+">\nreal output 0\n<\/tool_response>/,
+    );
     expect(sent[1]).not.toContain('name="unknown"');
   });
 });
@@ -692,7 +829,6 @@ describe("Disengage retry keeps a model's <system>-free framing", () => {
     }
   });
 
-
   it("still retries the <system>-tagged defaults with softened (F22)", async () => {
     const retry = await disengageThenAnswer("gpt-5.5-think-deeper");
     expect(retry).toContain("<system>");
@@ -858,12 +994,13 @@ describe("GPT-6 Sol: agent on premium, learned fallback on non-premium (#23)", (
     expect(scripted.agentFlags).toEqual([true]);
   });
 
-  it("doesn't touch tones outside PREMIUM_ONLY_AGENT_TONES", async () => {
+  it("doesn't touch tones outside PREMIUM_ONLY_AGENT_TONES: their InternalError is passed through", async () => {
     scripted.queue = [DEAD, CALL];
     const res = await send("gpt-5.5-think-deeper");
-    expect(res.status).toBe(200);
+    expect(res.status).toBe(502);
+    expect(asObject(asObject(await responseJson(res)).error).code).toBe("InternalError");
     expect(scripted.newConversations).toBe(0);
-    expect(scripted.agentFlags[1]).toBe(true);
+    expect(scripted.agentFlags).toEqual([true]);
   });
 
   it("doesn't fall back under M365_FORCE_AGENT=1", async () => {
@@ -871,7 +1008,7 @@ describe("GPT-6 Sol: agent on premium, learned fallback on non-premium (#23)", (
     scripted.queue = [DEAD, CALL];
     await send();
     expect(scripted.newConversations).toBe(0);
-    expect(scripted.agentFlags).toEqual([true, true]);
+    expect(scripted.agentFlags).toEqual([true]);
   });
 });
 
@@ -1062,6 +1199,41 @@ describe("OpenAI response shape", () => {
     expect(usage.x_proxy_tokens_estimated).toBe(true);
   });
 
+  it("estimates cache read/write from what the thread already holds", async () => {
+    scripted.result = null;
+    scripted.fullText = "ok";
+    scripted.deltas = ["ok"];
+    const pool = new SessionPool();
+    const first = [{ role: "user", content: `${"y".repeat(400)} ${Math.random()}` }];
+    const usageOf = async (messages: unknown[]) =>
+      asObject(
+        asObject(
+          await responseJson(
+            await handleChatCompletion(
+              ChatCompletionRequest.parse({ model: "claude-sonnet", messages }),
+              pool,
+            ),
+          ),
+        ).usage,
+      );
+
+    const turn1 = await usageOf(first);
+    expect(turn1.x_proxy_cache_read_tokens).toBe(0);
+    expect(asNumber(turn1.x_proxy_cache_write_tokens)).toBeGreaterThan(90);
+    expect(asObject(turn1.prompt_tokens_details).cached_tokens).toBe(0);
+
+    const turn2 = await usageOf([
+      ...first,
+      { role: "assistant", content: "ok" },
+      { role: "user", content: "next" },
+    ]);
+    expect(asNumber(turn2.x_proxy_cache_read_tokens)).toBeGreaterThan(90);
+    expect(asNumber(turn2.x_proxy_cache_write_tokens)).toBeLessThan(20);
+    expect(asObject(turn2.prompt_tokens_details).cached_tokens).toBe(
+      turn2.x_proxy_cache_read_tokens,
+    );
+  });
+
   it("puts estimated usage in the final include_usage chunk", async () => {
     scripted.result = null;
     scripted.fullText = "Hello there";
@@ -1156,7 +1328,8 @@ describe("Opus 4.5 on an account that can't serve it (§24)", () => {
     scripted.newConversations = 0;
     scripted.queue = [DEAD, DEAD, DEAD];
     const body = ChatCompletionRequest.parse({
-      model: "claude-opus-4.5", stream: false,
+      model: "claude-opus-4.5",
+      stream: false,
       messages: [{ role: "user", content: `hello ${Math.random()}` }],
     });
     const res = await respond(body);
@@ -1164,39 +1337,89 @@ describe("Opus 4.5 on an account that can't serve it (§24)", () => {
     const err = asObject(asObject(await responseJson(res)).error);
     expect(err.code).toBe("model_route_unavailable");
     expect(err.message).toContain("premium");
-    // Agent-less is a dead route too, so there is nothing to fall back to.
-    expect(scripted.agentFlags).toEqual([true, true, true]);
+    // Agent-less is a dead route too, so there is nothing to fall back to; no retries either.
+    expect(scripted.agentFlags).toEqual([true]);
     expect(scripted.newConversations).toBe(0);
   });
 
-  it("keeps the generic message for other models' empty InternalErrors", async () => {
+  it("passes other models' InternalError through, without retrying", async () => {
     scripted.result = null;
+    scripted.runs = 0;
     scripted.queue = [DEAD, DEAD, DEAD];
     const body = ChatCompletionRequest.parse({
-      model: "claude-opus", stream: false,
+      model: "claude-opus",
+      stream: false,
       messages: [{ role: "user", content: `hello ${Math.random()}` }],
     });
     const res = await respond(body);
     expect(res.status).toBe(502);
-    expect(asObject(asObject(await responseJson(res)).error).type).toBe("upstream_empty_response");
+    const err = asObject(asObject(await responseJson(res)).error);
+    expect(err.type).toBe("upstream_error");
+    expect(err.code).toBe("InternalError");
+    expect(scripted.runs).toBe(1);
+  });
+
+  it("passes a licence refusal through as a 403, without retrying", async () => {
+    scripted.result = null;
+    scripted.runs = 0;
+    const message = "It looks like you don’t have a valid licence.";
+    scripted.queue = [
+      {
+        fullText: "",
+        result: { value: "ForbiddenRequest", errorCode: "InvalidCopilotLicense", message },
+      },
+    ];
+    const body = ChatCompletionRequest.parse({
+      model: "claude-sonnet-5",
+      stream: false,
+      messages: [{ role: "user", content: `hello ${Math.random()}` }],
+    });
+    const res = await respond(body);
+    expect(res.status).toBe(403);
+    const err = asObject(asObject(await responseJson(res)).error);
+    expect(err.code).toBe("InvalidCopilotLicense");
+    expect(err.param).toBe("ForbiddenRequest");
+    expect(err.message).toContain(message);
+    expect(scripted.runs).toBe(1);
   });
 });
 
 describe("Priority access (Opus 5.5, Sonnet 5.5): OutOfCredits, remembering it, metering, the opt-in fallback (#18)", () => {
-  const tools = [{ type: "function", function: { name: "bash", parameters: { type: "object", properties: { command: { type: "string" } } } } }];
-  const WEEKLY = "You\u2019ve used your available priority access to the Opus model for the week. You can choose another available model or wait until Monday to use the Opus model again.";
+  const tools = [
+    {
+      type: "function",
+      function: {
+        name: "bash",
+        parameters: { type: "object", properties: { command: { type: "string" } } },
+      },
+    },
+  ];
+  const WEEKLY =
+    "You\u2019ve used your available priority access to the Opus model for the week. You can choose another available model or wait until Monday to use the Opus model again.";
   const REFUSAL = { fullText: WEEKLY, result: { value: "OutOfCredits", message: WEEKLY } };
-  const CALL = { fullText: "```bash\nls\n```", metering: { ClaudeOpusQueryDaily: 12, ClaudeOpusQuery75: 30 } };
+  const CALL = {
+    fullText: "```bash\nls\n```",
+    metering: { ClaudeOpusQueryDaily: 12, ClaudeOpusQuery75: 30 },
+  };
 
-  async function send(model = "claude-opus", content = `list files ${Math.random()}`, stream = false) {
+  async function send(
+    model = "claude-opus",
+    content = `list files ${Math.random()}`,
+    stream = false,
+  ) {
     scripted.result = null;
     scripted.texts = [];
     scripted.models = [];
     scripted.agentFlags = [];
     scripted.newConversations = 0;
     const body = ChatCompletionRequest.parse({
-      model, stream, tools,
-      messages: [{ role: "system", content: "sys" }, { role: "user", content }],
+      model,
+      stream,
+      tools,
+      messages: [
+        { role: "system", content: "sys" },
+        { role: "user", content },
+      ],
     });
     return handleChatCompletion(body, pool);
   }
@@ -1267,23 +1490,38 @@ describe("Priority access (Opus 5.5, Sonnet 5.5): OutOfCredits, remembering it, 
 
   it("starts a fresh conversation when an ongoing Opus 5.5 conversation moves to the fallback", async () => {
     scripted.queue = [CALL];
-    await send("claude-opus", "long task");          // turn 1 served by Opus 5.5
+    await send("claude-opus", "long task"); // turn 1 served by Opus 5.5
     process.env.M365_OPUS_FALLBACK_MODEL = "claude-opus-4.5";
     scripted.queue = [REFUSAL, { fullText: "Done." }];
     // the client continues the same conversation with a tool result
-    scripted.texts = []; scripted.models = []; scripted.newConversations = 0;
+    scripted.texts = [];
+    scripted.models = [];
+    scripted.newConversations = 0;
     const body = ChatCompletionRequest.parse({
-      model: "claude-opus", stream: false, tools,
+      model: "claude-opus",
+      stream: false,
+      tools,
       messages: [
-        { role: "system", content: "sys" }, { role: "user", content: "long task" },
-        { role: "assistant", content: null, tool_calls: [{ id: "c1", type: "function", function: { name: "bash", arguments: "{\"command\":\"ls\"}" } }] },
+        { role: "system", content: "sys" },
+        { role: "user", content: "long task" },
+        {
+          role: "assistant",
+          content: null,
+          tool_calls: [
+            {
+              id: "c1",
+              type: "function",
+              function: { name: "bash", arguments: '{"command":"ls"}' },
+            },
+          ],
+        },
         { role: "tool", tool_call_id: "c1", content: "a.txt" },
       ],
     });
     const res = await handleChatCompletion(body, pool);
     expect(res.status).toBe(200);
     expect(scripted.models).toEqual(["claude-opus", "claude-opus-4.5"]);
-    expect(scripted.texts[1]).toContain("long task");   // full history for the new model
+    expect(scripted.texts[1]).toContain("long task"); // full history for the new model
     expect(scripted.texts[1]).toContain("a.txt");
   });
 
@@ -1298,8 +1536,13 @@ describe("Priority access (Opus 5.5, Sonnet 5.5): OutOfCredits, remembering it, 
   it("falls back on the streaming path too, without leaking the refusal", async () => {
     process.env.M365_OPUS_FALLBACK_MODEL = "claude-opus-4.5";
     scripted.queue = [REFUSAL, { fullText: "Hello from 4.5" }];
-    scripted.result = null; scripted.models = [];
-    const body = ChatCompletionRequest.parse({ model: "claude-opus", stream: true, messages: [{ role: "user", content: `hi ${Math.random()}` }] });
+    scripted.result = null;
+    scripted.models = [];
+    const body = ChatCompletionRequest.parse({
+      model: "claude-opus",
+      stream: true,
+      messages: [{ role: "user", content: `hi ${Math.random()}` }],
+    });
     const res = await handleChatCompletion(body, pool);
     const text = await res.text();
     expect(text).toContain("Hello from 4.5");
@@ -1308,11 +1551,25 @@ describe("Priority access (Opus 5.5, Sonnet 5.5): OutOfCredits, remembering it, 
   });
 
   // Sonnet 5.5 has a budget of its own (§26): ClaudeSonnet55QueryDaily/Weekly.
-  const SONNET_DAILY = "You\u2019ve used your available priority access to the Sonnet model for today. You can choose another available model or wait until tomorrow to use the Sonnet model again.";
-  const SONNET_REFUSAL = { fullText: SONNET_DAILY, result: { value: "OutOfCredits", message: SONNET_DAILY } };
+  const SONNET_DAILY =
+    "You\u2019ve used your available priority access to the Sonnet model for today. You can choose another available model or wait until tomorrow to use the Sonnet model again.";
+  const SONNET_REFUSAL = {
+    fullText: SONNET_DAILY,
+    result: { value: "OutOfCredits", message: SONNET_DAILY },
+  };
 
   it("surfaces Sonnet 5.5's allowances in usage, next to Opus's", async () => {
-    scripted.queue = [{ fullText: "```bash\nls\n```", metering: { ClaudeOpusQueryDaily: 12, ClaudeOpusQuery75: 30, ClaudeSonnet55QueryDaily: 79, ClaudeSonnet55QueryWeekly: 149 } }];
+    scripted.queue = [
+      {
+        fullText: "```bash\nls\n```",
+        metering: {
+          ClaudeOpusQueryDaily: 12,
+          ClaudeOpusQuery75: 30,
+          ClaudeSonnet55QueryDaily: 79,
+          ClaudeSonnet55QueryWeekly: 149,
+        },
+      },
+    ];
     const usage = asObject(asObject(await responseJson(await send("claude-sonnet-5.5"))).usage);
     expect(usage.x_m365_sonnet55_daily_remaining).toBe(79);
     expect(usage.x_m365_sonnet55_weekly_remaining).toBe(149);
@@ -1347,11 +1604,266 @@ describe("Priority access (Opus 5.5, Sonnet 5.5): OutOfCredits, remembering it, 
   });
 
   it("remembers an unexpected OutOfCredits under that model alone", async () => {
-    scripted.queue = [{ fullText: "Out of credits.", result: { value: "OutOfCredits", message: "Out of credits." } }];
+    scripted.queue = [
+      {
+        fullText: "Out of credits.",
+        result: { value: "OutOfCredits", message: "Out of credits." },
+      },
+    ];
     expect((await send("gpt-6-sol")).status).toBe(429);
     expect((await send("gpt-6-sol", "again")).status).toBe(429);
     expect(scripted.models).toEqual([]);
     scripted.queue = [CALL];
     expect((await send("claude-opus", "opus task")).status).toBe(200);
+  });
+});
+
+describe("sticky sessions (M365_STICKY_SESSION)", () => {
+  const MODEL = "claude-sonnet";
+  const SYSTEM = { role: "system", content: "You are a coding agent." };
+  const user = (content: string) => ({ role: "user", content });
+  const assistant = (content: string) => ({ role: "assistant", content });
+  const SUMMARY_REQUEST = [
+    { role: "system", content: "You are a context summarization assistant. Summarize." },
+    user("summarize"),
+  ];
+  const TOOLS = [
+    {
+      type: "function",
+      function: {
+        name: "bash",
+        description: "Run a shell command.",
+        parameters: {
+          type: "object",
+          properties: { command: { type: "string" } },
+          required: ["command"],
+        },
+      },
+    },
+  ];
+
+  beforeEach(() => {
+    scripted.result = null;
+    scripted.fullText = "ok";
+    scripted.deltas = ["ok"];
+    scripted.queue = [];
+    scripted.texts = [];
+    scripted.models = [];
+    scripted.agentFlags = [];
+    scripted.runs = 0;
+    scripted.newConversations = 0;
+    scripted.agentId = undefined;
+    scripted.throttle = null;
+    scripted.slowTurns = false;
+    scripted.inFlight = 0;
+    scripted.maxInFlight = 0;
+  });
+
+  afterEach(() => {
+    scripted.throttle = null;
+    scripted.slowTurns = false;
+    vi.unstubAllEnvs();
+  });
+
+  function sendChat(
+    pool: InstanceType<typeof SessionPool>,
+    model: string,
+    messages: unknown[],
+    extra: JsonObject = {},
+  ) {
+    return handleChatCompletion(ChatCompletionRequest.parse({ model, messages, ...extra }), pool);
+  }
+
+  it("model mode shares one thread across different first user messages", async () => {
+    vi.stubEnv("M365_STICKY_SESSION", "model");
+    const pool = new SessionPool();
+    await sendChat(pool, MODEL, [SYSTEM, user("first task")]);
+    await sendChat(pool, MODEL, [SYSTEM, user("other task")]);
+    expect(pool.size).toBe(1);
+    expect(scripted.newConversations).toBe(0);
+    expect(scripted.texts[1]).not.toContain("<conversation_id>");
+  });
+
+  it("model mode gives each model its own thread", async () => {
+    vi.stubEnv("M365_STICKY_SESSION", "model");
+    const pool = new SessionPool();
+    await sendChat(pool, MODEL, [SYSTEM, user("task")]);
+    await sendChat(pool, "gpt-6-think-deeper", [SYSTEM, user("task")]);
+    expect(pool.size).toBe(2);
+    expect(scripted.newConversations).toBe(0);
+  });
+
+  it("model mode keeps the thread when the client compacts history in place", async () => {
+    vi.stubEnv("M365_STICKY_SESSION", "model");
+    const pool = new SessionPool();
+    await sendChat(pool, MODEL, [SYSTEM, user("task-A")]);
+    await sendChat(pool, MODEL, [SYSTEM, user("task-A"), assistant("answer-X"), user("task-B")]);
+    await sendChat(pool, MODEL, [
+      SYSTEM,
+      user("SUMMARY-MARKER"),
+      assistant("answer-X"),
+      user("task-B"),
+      assistant("answer-Y"),
+      user("task-C"),
+    ]);
+    expect(pool.size).toBe(1);
+    expect(scripted.newConversations).toBe(0);
+    const delta = scripted.texts[2];
+    expect(delta).toContain("task-C");
+    expect(delta).not.toContain("SUMMARY-MARKER");
+    expect(delta).not.toContain("task-B");
+  });
+
+  it("model mode re-anchors on a repeated message when compaction rewrites the head", async () => {
+    vi.stubEnv("M365_STICKY_SESSION", "model");
+    const pool = new SessionPool();
+    await sendChat(pool, MODEL, [SYSTEM, user("task-A")]);
+    await sendChat(pool, MODEL, [SYSTEM, user("task-A"), assistant("answer-X"), user("task-B")]);
+    await sendChat(pool, MODEL, [SYSTEM, user("SUMMARY-MARKER"), user("task-B"), user("task-C")]);
+    expect(pool.size).toBe(1);
+    expect(scripted.newConversations).toBe(0);
+    const delta = scripted.texts[2];
+    expect(delta).toContain("task-C");
+    expect(delta).not.toContain("SUMMARY-MARKER");
+    expect(delta).not.toContain("task-B");
+  });
+
+  it("off mode still resets the thread when history shrinks", async () => {
+    vi.stubEnv("M365_STICKY_SESSION", "off");
+    const pool = new SessionPool();
+    await sendChat(pool, MODEL, [SYSTEM, user("task-A"), assistant("answer-X"), user("task-B")]);
+    await sendChat(pool, MODEL, [SYSTEM, user("task-A")]);
+    expect(scripted.texts[1]).toMatch(/<conversation_id>[^<]+<\/conversation_id>/);
+    expect(scripted.texts[1]).toContain("task-A");
+    expect(pool.size).toBe(1);
+  });
+
+  it("off mode starts a second thread when the first user message changes", async () => {
+    vi.stubEnv("M365_STICKY_SESSION", "off");
+    const pool = new SessionPool();
+    await sendChat(pool, MODEL, [SYSTEM, user("task-A"), assistant("answer-X"), user("task-B")]);
+    await sendChat(pool, MODEL, [
+      SYSTEM,
+      user("rewritten-A"),
+      assistant("answer-X"),
+      user("task-B"),
+      user("task-C"),
+    ]);
+    expect(pool.size).toBe(2);
+    expect(scripted.texts[1]).toContain("rewritten-A");
+    expect(scripted.texts[1]).toMatch(/<conversation_id>[^<]+<\/conversation_id>/);
+  });
+
+  it("model mode answers a harness summary locally and leaves the thread alone", async () => {
+    vi.stubEnv("M365_STICKY_SESSION", "model");
+    const pool = new SessionPool();
+    await sendChat(pool, MODEL, [SYSTEM, user("task-A")]);
+    const runsBefore = scripted.runs;
+    const summary = await sendChat(pool, MODEL, SUMMARY_REQUEST);
+    expect(summary.headers.get("x-proxy-local-summary")).toBe("1");
+    expect(scripted.runs).toBe(runsBefore);
+    expect(pool.size).toBe(1);
+  });
+
+  it("off mode sends a harness summary to the model as before", async () => {
+    vi.stubEnv("M365_STICKY_SESSION", "off");
+    const pool = new SessionPool();
+    const summary = await sendChat(pool, MODEL, SUMMARY_REQUEST);
+    expect(summary.headers.get("x-proxy-local-summary")).toBeNull();
+    expect(scripted.runs).toBe(1);
+  });
+
+  it("defaults to all mode when M365_STICKY_SESSION is unset", async () => {
+    vi.stubEnv("M365_STICKY_SESSION", undefined);
+    const pool = new SessionPool();
+    await sendChat(pool, MODEL, [SYSTEM, user("task-A")]);
+    await sendChat(pool, "gpt-6-think-deeper", [SYSTEM, user("task-B")]);
+    expect(pool.size).toBe(1);
+    expect(pool.getActiveConversations()[0].fingerprint).toBe("sticky:all");
+  });
+
+  it("a per-request stickySession override of all shares one thread even when the env is off", async () => {
+    vi.stubEnv("M365_STICKY_SESSION", "off");
+    const pool = new SessionPool();
+    const probe = (model: string) =>
+      handleChatCompletion(ChatCompletionRequest.parse({ model, messages: [user("ok")] }), pool, {
+        stickySession: "all",
+      });
+    await probe(MODEL);
+    await probe("gpt-6-think-deeper");
+    expect(pool.size).toBe(1);
+    expect(scripted.newConversations).toBe(0);
+    expect(scripted.texts[1]).not.toContain("<conversation_id>");
+  });
+
+  it("a dashboard probe with unique text sends that text, not a continue nudge", async () => {
+    const pool = new SessionPool();
+    const probe = (content: string) =>
+      handleChatCompletion(
+        ChatCompletionRequest.parse({ model: MODEL, messages: [user(content)] }),
+        pool,
+        { stickySession: "all" },
+      );
+    await probe("ok (dash-1)");
+    await probe("ok (dash-2)");
+    expect(scripted.texts[1]).toContain("ok (dash-2)");
+    expect(scripted.texts[1]).not.toContain("Please continue.");
+  });
+
+  it("all mode keeps the thread across a model switch and re-sends the framing", async () => {
+    vi.stubEnv("M365_STICKY_SESSION", "all");
+    const pool = new SessionPool();
+    const second = "gpt-6-think-deeper";
+    await sendChat(pool, MODEL, [SYSTEM, user("task-A")]);
+    await sendChat(pool, second, [SYSTEM, user("task-A"), assistant("answer-X"), user("task-B")], {
+      tools: TOOLS,
+    });
+    expect(pool.size).toBe(1);
+    expect(scripted.newConversations).toBe(0);
+    const parsed = ChatCompletionRequest.parse({
+      model: second,
+      messages: [user("placeholder")],
+      tools: TOOLS,
+    });
+    const framingVariant = currentFramingVariant(
+      defaultFramingForModel(second, { agentLess: scripted.agentFlags[1] !== true }),
+    );
+    const framing = formatMessages(
+      [],
+      parsed.tools,
+      parsed.tool_choice,
+      undefined,
+      framingVariant,
+      {
+        tone: getToneForModel(second),
+      },
+    );
+    expect(scripted.texts[1].startsWith(framing)).toBe(true);
+  });
+
+  it("serializes overlapping streamed turns on one thread", async () => {
+    vi.stubEnv("M365_STICKY_SESSION", "model");
+    scripted.slowTurns = true;
+    scripted.deltas = ["a", "b", "c"];
+    scripted.fullText = "abc";
+    const pool = new SessionPool();
+    const bodies = await Promise.all([
+      sendChat(pool, MODEL, [SYSTEM, user("first")], { stream: true }).then((r) => r.text()),
+      sendChat(pool, MODEL, [SYSTEM, user("second")], { stream: true }).then((r) => r.text()),
+    ]);
+    expect(scripted.runs).toBe(2);
+    expect(scripted.maxInFlight).toBe(1);
+    for (const body of bodies) expect(body).toContain("[DONE]");
+  });
+
+  it("rolls over to a fresh thread when the quota is nearly spent", async () => {
+    vi.stubEnv("M365_STICKY_SESSION", "model");
+    scripted.throttle = { current: 596, max: 600 };
+    const pool = new SessionPool();
+    await sendChat(pool, MODEL, [SYSTEM, user("task-A")]);
+    await sendChat(pool, MODEL, [SYSTEM, user("task-A"), assistant("answer-X"), user("task-B")]);
+    expect(scripted.newConversations).toBe(1);
+    expect(scripted.texts[1]).toContain("<conversation_id>conv-test-2</conversation_id>");
+    expect(scripted.texts[1]).toContain("task-A");
   });
 });

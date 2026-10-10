@@ -251,9 +251,12 @@ Then point any OpenAI-compatible client at `http://localhost:4141/v1`.
 | `GET /health` | Liveness |
 
 Errors use OpenAI's `{"error": {"message", "type", "param", "code"}}` body: 400 invalid
-request, 401 bad API key, 404 unknown URL or model, 405 wrong method (with `Allow`), 429 rate
+request, 401 bad API key, 403 M365 refused the entitlement (`permission_error`, code
+`InvalidCopilotLicense`), 404 unknown URL or model, 405 wrong method (with `Allow`), 429 rate
 limited (`m365_throttled`, `priority_access_exhausted`), 502 upstream failure (`disengaged`,
-`upstream_empty_response`, `upstream_error`). Set `M365_PROXY_API_KEY` to require
+`upstream_empty_response`, `upstream_error`). When M365 names its failure (`InternalError`,
+`ForbiddenRequest`, …) the proxy returns it at once, with the upstream value in `code`/`param`,
+instead of retrying. Set `M365_PROXY_API_KEY` to require
 `Authorization: Bearer <key>` on `/v1/*`.
 
 The local dashboard at `http://127.0.0.1:4141/` shows request counts, estimated
@@ -314,13 +317,13 @@ without NixOS: `nix run github:cramt/m365-copilot-proxy -- 4141`.
 
 ## Available models
 
-The current `/v1/models` catalogue exposes 21 included model IDs: the 20 responders
-from the saved 2026-10-02 sweep, plus the upstream-verified `gpt-6-sol`. Edit `EXPOSED_MODELS` in
-[packages/core/src/copilot.ts](packages/core/src/copilot.ts) to change discovery:
-Claude chat entries that failed upstream, and paid entries refused
-by this account, are commented out there. Their routing remains intact for
-explicit requests; the paid and Claude chat notes below describe those routes, not
-the advertised catalog. A successful response does not guarantee local tool
+`/v1/models` depends on `M365_ACCOUNT_TIER`. The default, `basic`, exposes 22 included
+model IDs: the 20 responders from the saved 2026-10-02 sweep, plus the upstream-verified
+`gpt-6-sol` and `gpt-6.1-sol`. `paid` (alias `premium`) adds the Claude chat IDs that failed upstream on a
+basic account and the paid routes it refused; they serve on a premium account. Edit `BASIC_MODELS` / `PAID_ONLY_MODELS` in
+[packages/core/src/copilot.ts](packages/core/src/copilot.ts) to change discovery.
+Routing of hidden IDs remains intact for
+explicit requests. A successful response does not guarantee local tool
 calling. Claude reasoning remains listed because it responded, despite refusing
 the tool task. Evidence: [findings/models.md](findings/models.md).
 
@@ -647,6 +650,7 @@ Three token scopes are acquired:
 | `M365_FORCE_AGENT` | Override which tool requests carry the Copilot Studio tool agent. `1` attaches it to every tool request (and turns off the GPT-6 Sol fallback below); `0` never attaches it. Unset, the proxy decides per model: GPT-5.x, `m365-copilot` and both Opus models take it, the other Claude models and `gpt-6-think-deeper` don't, and `gpt-6-sol` / `gpt-6.1-sol` take it only on a premium account, which the proxy learns from the first request. `claude-opus-4.5` carries it on tool-less requests too, since that's its only route (`0` turns that off as well). On a non-premium account `0` saves the probe turn (~3 s) per GPT-6 Sol model per proxy start. |
 | `M365_OPUS_FALLBACK_MODEL` | Model to serve `claude-opus` (Opus 5.5) requests with once its priority-access budget is used up, instead of returning a 429 — typically `claude-opus-4.5`, which isn't metered (premium accounts only). Applies until the budget resets; the response's `model` field names the model that answered. Unset by default. |
 | `M365_SONNET_FALLBACK_MODEL` | The same for `claude-sonnet-5.5` (Sonnet 5.5) once its priority-access budget is used up — e.g. `claude-sonnet-5` (unmetered) or `claude-sonnet` (Sonnet 4.6, any account). A fallback naming a metered model is ignored. Unset by default. |
+| `M365_ACCOUNT_TIER` | `basic` (default) or `paid` (alias `premium`). Selects which model IDs `/v1/models` advertises; see [Available models](#available-models). Discovery only — routing and scenarios are unchanged. Any other value is an error. |
 | `M365_SCENARIO` / `M365_LICENSE_TYPE` | Override the entitlement the WebSocket is opened under (defaults: `OfficeWebIncludedCopilot` / `Starter`, switching to `OfficeWebPaidCopilot` / `Premium` for the entitlement-gated models — `claude-opus`, `gpt-6-think-deeper`, `claude-sonnet-5` and `claude-sonnet-5.5`; `claude-opus-4.5` and `gpt-6.1-sol` stay on the included one). `scenario` is what gates the model list (and picks Sonnet 4.6 vs 5.5 for the `Claude_Sonnet` tone, Sonnet 4.6 vs 5 for `Claude_Sonnet_5`, Opus 4.5 vs 5.5 for `Claude_Opus`); `licenseType` rides along and unlocks nothing by itself. Forcing the paid scenario on `gpt-6.1-sol` spends its separate GPT-6.1 Sol allowance (40 turns a day, 75 a week), which the proxy doesn't track. |
 | `M365_CACHE_FILE` | Override MSAL token cache location |
 | `M365_SECRETS_FILE` | Override credentials file location |

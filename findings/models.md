@@ -30,15 +30,16 @@ responded in the earlier sweep: 19 GPT IDs and `claude-sonnet-think-deeper`.
 The initial selection omitted Claude reasoning because it refused the tool
 task; that was corrected because a tool refusal is not a failed model response.
 Comparison against all 28 saved rows found no other missing included responder.
-The editable `EXPOSED_MODELS` list in
-[packages/core/src/copilot.ts](../packages/core/src/copilot.ts) comments out:
+The catalog is now split by `M365_ACCOUNT_TIER` into `BASIC_MODELS` and
+`PAID_ONLY_MODELS` in
+[packages/core/src/copilot.ts](../packages/core/src/copilot.ts); `paid` adds:
 
 - Included Claude chat IDs: `claude`, `claude-sonnet`, `claude-sonnet-4.5`,
   and `claude-sonnet-4.6` (failed upstream).
 - Paid IDs: `claude-sonnet-5`, `claude-opus`, `claude-opus-5`, and
   `gpt-6-think-deeper`, unavailable to this account. Earlier evidence on other
   accounts is not invalidated by the current licence refusals.
-- Unverified `claude-sonnet-5.5`, which was never advertised.
+- `claude-sonnet-5.5`, `claude-opus-5.5` and `claude-opus-4.5`.
 
 The tone/scenario mappings are unchanged, so explicit requests can still use
 hidden IDs with their original routing. This is discovery filtering, not an
@@ -54,6 +55,28 @@ On 2026-10-03, `gpt-6-sol` was restored to discovery using the separate upstream
 evidence in hypotheses §23 F49, bringing the catalog to 21 IDs. It was not a cell
 in either sweep recorded here; its included scenario and premium-only tool-agent
 routing remain unchanged.
+
+On 2026-10-10, `gpt-6.1-sol` joined the basic catalog (22 IDs): it served
+(`Success` / `DeepLeo`) on this account through the proxy and as the control of
+every one-thread probe run.
+
+## 2026-10-10 re-probe of the paid-only list
+
+[scripts/new-model-tone-probe.mjs](../scripts/new-model-tone-probe.mjs)
+`--phase=self-id --scenario=both --conversation=0c74f8ba-10f9-4e53-9f3f-21071649de49`,
+one conversation, bracketed by a LIVE `Gpt_61_Sol_Reasoning` control. Results:
+`scripts/new-model-tone-out/2026-10-10T05-37-50-000Z/` (gitignored).
+
+| Tone | Included | Paid |
+|---|---|---|
+| `Claude_Sonnet` | `InternalError` / `BotConnection` | `ForbiddenRequest` / `InvalidCopilotLicense` |
+| `Claude_Sonnet_5` | `InternalError` / `BotConnection` | `ForbiddenRequest` / `InvalidCopilotLicense` |
+| `Claude_Opus` | `InternalError` / `BotConnection` | `ForbiddenRequest` / `InvalidCopilotLicense` |
+| `Gpt_6_Reasoning` | `InternalError` / `BotConnection` | `InternalError` / `BotConnection` |
+
+`Gpt_6_Reasoning` @ paid changed from the licence refusal recorded below to
+`InternalError`. Premium availability is not re-verified by this account; see
+[docs/hypotheses.md](../docs/hypotheses.md) §32 F78.
 
 ## Earlier observation: 28-model tool sweep
 

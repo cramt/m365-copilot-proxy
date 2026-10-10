@@ -4,6 +4,9 @@
 // response, and returns a structured summary. No files written — callers
 // decide what to persist. Modelled on frame-dump-probe.mjs's payload.
 //
+// Pass `conversationId` to continue a thread: M365 keys the thread on ConversationId, so a
+// fresh sessionId per run is accepted, and isStartOfSession then defaults to false (§32).
+//
 // Returns: {
 //   fullText, deltaText, snapshotText,   // text (we keep the longer of delta vs snapshot)
 //   disengaged,                          // saw messageType:"Disengaged"
@@ -54,6 +57,9 @@ const VARIANTS = [
  * @param {string} [o.streamingMode]  default "ConciseWithPadding"
  * @param {number} [o.timeoutMs] default 120000
  * @param {(frame:object)=>void} [o.onFrame]  optional raw-frame sink
+ * @param {string} [o.conversationId]  continue this conversation instead of a fresh one
+ * @param {string} [o.sessionId]
+ * @param {boolean} [o.isStartOfSession]  default: true unless a conversationId is passed
  */
 export function oneTurn(o) {
   const {
@@ -81,10 +87,11 @@ export function oneTurn(o) {
     // (docs/hypotheses.md §16 F28/F29). `false` / M365_SAVE_HISTORY=1 restores the
     // pre-#15 wire state most recorded probe evidence was taken under.
     temporaryChat = process.env.M365_SAVE_HISTORY !== "1",
+    conversationId = crypto.randomUUID(),
+    sessionId = crypto.randomUUID(),
+    isStartOfSession = o.conversationId === undefined,
   } = o;
 
-  const sessionId = crypto.randomUUID();
-  const conversationId = crypto.randomUUID();
   const requestId = crypto.randomUUID();
 
   const params = new URLSearchParams({
@@ -119,7 +126,7 @@ export function oneTurn(o) {
         sliceIds: [],
         threadLevelGptId: agentId ? { id: agentId, source: "MOS3" } : {},
         traceId: requestId,
-        isStartOfSession: true,
+        isStartOfSession,
         clientInfo: {
           clientPlatform: "mcmcopilot-web",
           clientAppName: "Office",
@@ -144,18 +151,18 @@ export function oneTurn(o) {
         },
         ...(agentId
           ? {
-              gpts: [
-                {
-                  id: agentId,
-                  source: "MOS3",
-                  version: "1.0.0",
-                  clientOverrides: {
-                    capabilities: [],
-                    "deepResearchModels@odata.type": "Collection(String)",
-                  },
+            gpts: [
+              {
+                id: agentId,
+                source: "MOS3",
+                version: "1.0.0",
+                clientOverrides: {
+                  capabilities: [],
+                  "deepResearchModels@odata.type": "Collection(String)",
                 },
-              ],
-            }
+              },
+            ],
+          }
           : { plugins: plugins ?? [{ Id: "BingWebSearch", Source: "BuiltIn" }] }),
         isSbsSupported: true,
         tone,

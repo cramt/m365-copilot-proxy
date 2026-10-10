@@ -1059,14 +1059,19 @@ function parseYamlNode(lines: string[]): unknown {
   const head = body[0].trimStart();
   if (/^-([ \t]|$)/.test(head)) return parseYamlSequence(body, indent);
   if (YAML_KEY.test(head)) return parseYamlMapping(body, indent);
-  if (body.slice(1).some((l) => l.trim() !== "")) throw new YamlSubsetError("multi-line plain scalar");
+  if (body.slice(1).some((l) => l.trim() !== ""))
+    throw new YamlSubsetError("multi-line plain scalar");
   return parseYamlScalar(head);
 }
 
 const YAML_KEY = /^("(?:[^"\\]|\\.)*"|'(?:[^']|'')*'|[^\s:#'"\-][^:]*?):(?:[ \t]+(.*)|[ \t]*)$/;
 
 /** Children of the entry at lines[0]: the lines below it until one at `indent` or less. */
-function childLines(lines: string[], from: number, indent: number): { lines: string[]; next: number } {
+function childLines(
+  lines: string[],
+  from: number,
+  indent: number,
+): { lines: string[]; next: number } {
   let j = from;
   for (; j < lines.length; j++) {
     if (lines[j].trim() !== "" && indentOf(lines[j]) <= indent) break;
@@ -1079,8 +1084,12 @@ function parseYamlSequence(lines: string[], indent: number): unknown[] {
   let i = 0;
   while (i < lines.length) {
     const line = lines[i];
-    if (line.trim() === "") { i++; continue; }
-    if (indentOf(line) !== indent || !/^-([ \t]|$)/.test(line.trimStart())) throw new YamlSubsetError(`bad sequence line: ${line}`);
+    if (line.trim() === "") {
+      i++;
+      continue;
+    }
+    if (indentOf(line) !== indent || !/^-([ \t]|$)/.test(line.trimStart()))
+      throw new YamlSubsetError(`bad sequence line: ${line}`);
     const rest = line.trimStart().slice(1);
     const kids = childLines(lines, i + 1, indent);
     if (rest.trim() === "") {
@@ -1089,7 +1098,11 @@ function parseYamlSequence(lines: string[], indent: number): unknown[] {
       // `- key: value` opens a mapping whose keys sit one column past the dash's text.
       const itemIndent = indent + 1 + (rest.length - rest.trimStart().length);
       const itemLines = [" ".repeat(itemIndent) + rest.trimStart(), ...kids.lines];
-      items.push(YAML_KEY.test(rest.trimStart()) ? parseYamlMapping(itemLines, itemIndent) : parseYamlValue(rest.trim(), kids.lines, indent));
+      items.push(
+        YAML_KEY.test(rest.trimStart())
+          ? parseYamlMapping(itemLines, itemIndent)
+          : parseYamlValue(rest.trim(), kids.lines, indent),
+      );
     }
     i = kids.next;
   }
@@ -1101,7 +1114,10 @@ function parseYamlMapping(lines: string[], indent: number): Record<string, unkno
   let i = 0;
   while (i < lines.length) {
     const line = lines[i];
-    if (line.trim() === "") { i++; continue; }
+    if (line.trim() === "") {
+      i++;
+      continue;
+    }
     const m = indentOf(line) === indent ? line.trimStart().match(YAML_KEY) : null;
     if (!m) throw new YamlSubsetError(`bad mapping line: ${line}`);
     const key = String(parseYamlScalar(m[1]));
@@ -1111,7 +1127,11 @@ function parseYamlMapping(lines: string[], indent: number): Record<string, unkno
       const l = lines[j];
       if (l.trim() === "") continue;
       const ind = indentOf(l);
-      if (ind > indent || (ind === indent && /^-([ \t]|$)/.test(l.trimStart()) && !(m[2] ?? "").trim())) continue;
+      if (
+        ind > indent ||
+        (ind === indent && /^-([ \t]|$)/.test(l.trimStart()) && !(m[2] ?? "").trim())
+      )
+        continue;
       break;
     }
     out[key] = parseYamlValue((m[2] ?? "").trim(), lines.slice(i + 1, j), indent);
@@ -1125,7 +1145,8 @@ function parseYamlValue(inline: string, nested: string[], parentIndent: number):
   const block = inline.match(/^([|>])([-+]?)$/);
   if (block) return parseYamlBlockScalar(nested, parentIndent, block[1] === ">", block[2]);
   if (inline === "") return nested.some((l) => l.trim() !== "") ? parseYamlNode(nested) : "";
-  if (nested.some((l) => l.trim() !== "")) throw new YamlSubsetError("value with both inline text and nested lines");
+  if (nested.some((l) => l.trim() !== ""))
+    throw new YamlSubsetError("value with both inline text and nested lines");
   return parseYamlScalar(inline);
 }
 
@@ -1138,7 +1159,8 @@ function parseYamlScalar(raw: string): unknown {
       return s.slice(1, -1);
     }
   }
-  if (s.startsWith("'") && s.endsWith("'") && s.length >= 2) return s.slice(1, -1).replace(/''/g, "'");
+  if (s.startsWith("'") && s.endsWith("'") && s.length >= 2)
+    return s.slice(1, -1).replace(/''/g, "'");
   if ((s.startsWith("[") && s.endsWith("]")) || (s.startsWith("{") && s.endsWith("}"))) {
     try {
       return JSON.parse(s);
@@ -1151,14 +1173,23 @@ function parseYamlScalar(raw: string): unknown {
 
 /** `|` keeps line breaks, `>` folds them into spaces; `-` strips the final
  *  newline, `+` keeps trailing blank lines, the default keeps exactly one. */
-function parseYamlBlockScalar(lines: string[], parentIndent: number, folded: boolean, chomp: string): string {
+function parseYamlBlockScalar(
+  lines: string[],
+  parentIndent: number,
+  folded: boolean,
+  chomp: string,
+): string {
   const content = lines.filter((l) => l.trim() !== "");
   if (!content.length) return "";
   const indent = Math.min(...content.map(indentOf));
   if (indent <= parentIndent) throw new YamlSubsetError("block scalar not indented");
   const rows = lines.map((l) => (l.trim() === "" ? "" : l.slice(indent)));
   let text = folded
-    ? rows.reduce((acc, row, k) => (k === 0 ? row : row === "" || rows[k - 1] === "" ? `${acc}\n${row}` : `${acc} ${row}`), "")
+    ? rows.reduce(
+        (acc, row, k) =>
+          k === 0 ? row : row === "" || rows[k - 1] === "" ? `${acc}\n${row}` : `${acc} ${row}`,
+        "",
+      )
     : rows.join("\n");
   const trailing = text.match(/\n*$/)![0].length;
   if (chomp === "+") return `${text}\n`;
@@ -1189,7 +1220,8 @@ function parseFencedInner(spec: FencedToolSpec, inner: string): Record<string, u
         const type = spec.parameterTypes[key];
         if (m[2].trim() === "" && (type === "array" || type === "object")) {
           const end = yamlBlockEnd(lines, i + 1, type === "array");
-          const value = end > i + 1 ? parseYamlBlockValue(lines.slice(i + 1, end), type) : undefined;
+          const value =
+            end > i + 1 ? parseYamlBlockValue(lines.slice(i + 1, end), type) : undefined;
           if (value !== undefined) {
             args[key] = value;
             i = end - 1;

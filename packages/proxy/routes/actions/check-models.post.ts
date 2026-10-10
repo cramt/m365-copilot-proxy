@@ -7,6 +7,9 @@ import { pool } from "../../server-pool";
 import { logCompletionStatus, recordCompletionMetric, syncActiveSessions } from "../../metrics";
 
 const CHECK_MODEL_TIMEOUT_MS = Number(process.env.M365_DASH_CHECK_TIMEOUT_MS ?? 45_000);
+// Short: every check shares one sticky thread, and the throttle counts threads, not messages (F13).
+const CHECK_MODEL_PAUSE_MS = 10_000;
+let checkAllRunning = false;
 
 function json(status: number, body: unknown): Response {
   return new Response(JSON.stringify(body), {
@@ -37,93 +40,107 @@ interface ModelCheckResult {
 }
 
 export default defineEventHandler(async () => {
-  const modelsPayload = buildModelsPayload();
-  const models = modelsPayload.data.map((m) => m.id);
+  if (checkAllRunning)
+    return json(409, { error: { message: "A model health check is already running." } });
+  checkAllRunning = true;
+  try {
+    const modelsPayload = buildModelsPayload();
+    const models = modelsPayload.data.map((m) => m.id);
 
-  const results: ModelCheckResult[] = [];
+    const results: ModelCheckResult[] = [];
 
-  for (const model of models) {
-    const requestId = `dash-health-${crypto.randomUUID()}`;
-    const startedAt = Date.now();
-    const payload = ChatCompletionRequest.parse({
-      model,
-      stream: false,
-      messages: [{ role: "user", content: "ok" }],
+    for (const [index, model] of models.entries()) {
+      if (index > 0)
+        await new Promise<void>((resolve) => setTimeout(resolve, CHECK_MODEL_PAUSE_MS));
+      const requestId = `dash-health-${crypto.randomUUID()}`;
+      const startedAt = Date.now();
+      const payload = ChatCompletionRequest.parse({
+        model,
+        stream: false,
+        // Unique text: under sticky `all` a repeated "ok" is no new message, and
+        // the proxy would send "Please continue." instead.
+        messages: [{ role: "user", content: `ok (${requestId})` }],
+      });
+
+      const response = await handleChatCompletion(payload, pool, {
+        signal: AbortSignal.timeout(CHECK_MODEL_TIMEOUT_MS),
+        // One thread for every model checked: a thread per model trips the thread-rate throttle (F13).
+        stickySession: "all",
+      });
+      const endedAt = Date.now();
+      const latencyMs = endedAt - startedAt;
+
+      const usage = parseJsonOrNull(response.headers.get("x-proxy-usage"));
+      const sessionId = response.headers.get("x-proxy-session-id");
+      const conversationId = response.headers.get("x-proxy-conversation-id");
+      const finishReason = response.headers.get("x-proxy-finish-reason");
+      const messageType = response.headers.get("x-proxy-message-type");
+      const modelHeader = response.headers.get("x-proxy-model") || model;
+
+      const responseText = await response.clone().text();
+      const responseBytes = Buffer.byteLength(responseText, "utf8");
+      const body = parseJsonOrNull(responseText);
+      const errorObj =
+        body?.error && typeof body.error === "object"
+          ? (body.error as Record<string, unknown>)
+          : null;
+      const errorType = errorObj && typeof errorObj.type === "string" ? errorObj.type : null;
+      const errorMessage =
+        errorObj && typeof errorObj.message === "string" ? errorObj.message : null;
+
+      logCompletionStatus({
+        requestId,
+        model: modelHeader,
+        stream: false,
+        statusCode: response.status,
+        latencyMs,
+        sessionId,
+        conversationId,
+        usage,
+        finishReason,
+        messageType,
+        errorType,
+        errorMessage,
+      });
+
+      recordCompletionMetric({
+        requestId,
+        startedAt,
+        endedAt,
+        latencyMs,
+        statusCode: response.status,
+        model: modelHeader,
+        stream: false,
+        sessionId,
+        conversationId,
+        usage,
+        finishReason,
+        messageType,
+        requestBodyBytes: Buffer.byteLength(JSON.stringify(payload), "utf8"),
+        responseBytes,
+        errorType,
+        errorMessage,
+      });
+
+      results.push({
+        model: modelHeader,
+        ok: response.ok,
+        statusCode: response.status,
+        latencyMs,
+        finishReason: finishReason ?? null,
+        messageType: messageType ?? null,
+        errorType,
+        errorMessage,
+      });
+    }
+
+    syncActiveSessions(pool.getActiveConversations());
+
+    return json(200, {
+      checkedAt: Date.now(),
+      results,
     });
-
-    const response = await handleChatCompletion(payload, pool, {
-      signal: AbortSignal.timeout(CHECK_MODEL_TIMEOUT_MS),
-    });
-    const endedAt = Date.now();
-    const latencyMs = endedAt - startedAt;
-
-    const usage = parseJsonOrNull(response.headers.get("x-proxy-usage"));
-    const sessionId = response.headers.get("x-proxy-session-id");
-    const conversationId = response.headers.get("x-proxy-conversation-id");
-    const finishReason = response.headers.get("x-proxy-finish-reason");
-    const messageType = response.headers.get("x-proxy-message-type");
-    const modelHeader = response.headers.get("x-proxy-model") || model;
-
-    const responseText = await response.clone().text();
-    const responseBytes = Buffer.byteLength(responseText, "utf8");
-    const body = parseJsonOrNull(responseText);
-    const errorObj =
-      body?.error && typeof body.error === "object"
-        ? (body.error as Record<string, unknown>)
-        : null;
-    const errorType = errorObj && typeof errorObj.type === "string" ? errorObj.type : null;
-    const errorMessage = errorObj && typeof errorObj.message === "string" ? errorObj.message : null;
-
-    logCompletionStatus({
-      requestId,
-      model: modelHeader,
-      stream: false,
-      statusCode: response.status,
-      latencyMs,
-      sessionId,
-      conversationId,
-      usage,
-      finishReason,
-      messageType,
-      errorType,
-      errorMessage,
-    });
-
-    recordCompletionMetric({
-      requestId,
-      startedAt,
-      endedAt,
-      latencyMs,
-      statusCode: response.status,
-      model: modelHeader,
-      stream: false,
-      sessionId,
-      conversationId,
-      usage,
-      finishReason,
-      messageType,
-      requestBodyBytes: Buffer.byteLength(JSON.stringify(payload), "utf8"),
-      responseBytes,
-      errorType,
-      errorMessage,
-    });
-
-    results.push({
-      model: modelHeader,
-      ok: response.ok,
-      statusCode: response.status,
-      latencyMs,
-      finishReason: finishReason ?? null,
-      messageType: messageType ?? null,
-      errorType,
-      errorMessage,
-    });
+  } finally {
+    checkAllRunning = false;
   }
-
-  syncActiveSessions(pool.getActiveConversations());
-
-  return json(200, {
-    checkedAt: Date.now(),
-    results,
-  });
 });

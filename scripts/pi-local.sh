@@ -7,8 +7,11 @@
 #   PORT=24034 pnpm run pi         # point at a proxy on a different port
 #   MODEL=quick pnpm run pi        # different default model
 #   pnpm run pi -- -p "write hi"   # pass a prompt / extra pi flags through
+#   COMPACTION=true pnpm run pi    # pi's own compaction (off by default here)
+#   COMPACTION_RESERVE_TOKENS=N COMPACTION_KEEP_RECENT_TOKENS=N  # optional thresholds (pi: 16384 / 20000)
 #
 # Start the proxy first in another shell:  pnpm run proxy   (defaults to :4141)
+# The proxy keeps one M365 thread across compaction and Ctrl+P switches by default (M365_STICKY_SESSION=all).
 set -euo pipefail
 
 PORT="${PORT:-4141}"
@@ -16,6 +19,7 @@ MODEL="${MODEL:-m365-copilot}"
 BASE="http://localhost:${PORT}/v1"
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 PIHOME="$ROOT/.pi-local"
+COMPACTION="${COMPACTION:-false}"
 
 mkdir -p "$PIHOME/.pi/agent"
 
@@ -43,8 +47,22 @@ cat > "$PIHOME/.pi/agent/models.json" <<EOF
 }
 EOF
 
+COMPACTION_EXTRA=""
+if [[ -n "${COMPACTION_RESERVE_TOKENS:-}" ]]; then
+  COMPACTION_EXTRA+=",\"reserveTokens\":${COMPACTION_RESERVE_TOKENS}";
+fi
+
+if [[ -n "${COMPACTION_KEEP_RECENT_TOKENS:-}" ]]; then
+  COMPACTION_EXTRA+=",\"keepRecentTokens\":${COMPACTION_KEEP_RECENT_TOKENS}";
+fi
+
 cat > "$PIHOME/.pi/agent/settings.json" <<EOF
-{"defaultModel":"$MODEL","defaultProvider":"m365","enableInstallTelemetry":false,"compaction":{"enabled":true}}
+{
+  "defaultModel":"$MODEL",
+  "defaultProvider":"m365",
+  "enableInstallTelemetry":false,
+  "compaction":{"enabled":$COMPACTION$COMPACTION_EXTRA}
+}
 EOF
 
 # Warn (don't fail) if the proxy isn't reachable — pi can still start.

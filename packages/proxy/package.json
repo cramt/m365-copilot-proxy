@@ -14,7 +14,7 @@
     "bin"
   ],
   "scripts": {
-    "dev": "nitro dev --port 4141",
+    "dev": "nitro dev --port 4141 --host 127.0.0.1",
     "build": "nitro build",
     "prepare": "nitro prepare",
     "start": "PORT=4141 NITRO_HOST=127.0.0.1 node .output/server/index.mjs"

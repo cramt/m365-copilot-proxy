@@ -6,6 +6,9 @@ import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
+// Each check needs its own M365 thread, so sticky sessions are off unless set explicitly.
+process.env.M365_STICKY_SESSION ??= "off";
+
 const useAgent = process.argv.includes("--agent");
 const withTools = process.argv.includes("--tools");
 const manyTools = process.argv.includes("--manytools");

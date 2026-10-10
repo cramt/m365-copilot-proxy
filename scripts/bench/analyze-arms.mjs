@@ -172,7 +172,17 @@ function piRows(dir, a) {
 
 // --- wire --------------------------------------------------------------------
 
-const emptyWire = () => ({ runs: [], cids: new Set(), corr: [], fallback: 0, internalError: 0, throttled: 0, outOfCredits: 0, wsError: 0, disengagedRetry: 0 });
+const emptyWire = () => ({
+  runs: [],
+  cids: new Set(),
+  corr: [],
+  fallback: 0,
+  internalError: 0,
+  throttled: 0,
+  outOfCredits: 0,
+  wsError: 0,
+  disengagedRetry: 0,
+});
 // The Opus priority-access wall (§24 F55): the turn's final result is OutOfCredits.
 // Older proxies didn't recognise it (the refusal text isn't streamed) and returned
 // "empty response" instead, so read the turn result, not only the client's error.
@@ -236,7 +246,19 @@ export function analyzeArm(a) {
   const convs = existsSync(logFile) ? conversations(readFileSync(logFile, "utf8")) : [];
   const frames = frameFlags(join(a.dir, `${a.label}-frames`));
   const mapped = convs.length === rows.length;
-  const wire = { turns: 0, agent: 0, agentless: 0, sandbox: 0, disengaged: 0, jailbreak: 0, internalError: 0, fallback: 0, wsError: 0, throttled: 0, outOfCredits: 0 };
+  const wire = {
+    turns: 0,
+    agent: 0,
+    agentless: 0,
+    sandbox: 0,
+    disengaged: 0,
+    jailbreak: 0,
+    internalError: 0,
+    fallback: 0,
+    wsError: 0,
+    throttled: 0,
+    outOfCredits: 0,
+  };
   convs.forEach((c, i) => {
     const turnFlags = c.corr.map((id) => frames.get(id)).filter(Boolean);
     const w = {
@@ -246,7 +268,10 @@ export function analyzeArm(a) {
       sandbox: turnFlags.filter((x) => x.sandbox).length,
       disengaged: turnFlags.filter((x) => x.disengaged).length,
       jailbreak: turnFlags.filter((x) => x.jailbreak).length,
-      internalError: c.internalError, fallback: c.fallback, wsError: c.wsError, throttled: c.throttled,
+      internalError: c.internalError,
+      fallback: c.fallback,
+      wsError: c.wsError,
+      throttled: c.throttled,
       outOfCredits: c.outOfCredits,
     };
     for (const k of Object.keys(wire)) wire[k] += w[k];
@@ -258,13 +283,21 @@ export function analyzeArm(a) {
   for (const r of rows) {
     r.path ??= "?";
     const w = r.wire;
-    r.invalid = r.solved ? null
-      : QUOTA.test(r.error) || w?.outOfCredits ? "quota"
-      : TRANSPORT.test(r.error) ? (/429|throttl/i.test(r.error) ? "throttled" : "transport")
-      : w?.throttled ? "throttled"
-      : w?.wsError ? "transport"
-      : wire.wsError && /timeout|timed out/i.test(r.error) ? "transport?"
-      : null;
+    r.invalid = r.solved
+      ? null
+      : QUOTA.test(r.error) || w?.outOfCredits
+        ? "quota"
+        : TRANSPORT.test(r.error)
+          ? /429|throttl/i.test(r.error)
+            ? "throttled"
+            : "transport"
+          : w?.throttled
+            ? "throttled"
+            : w?.wsError
+              ? "transport"
+              : wire.wsError && /timeout|timed out/i.test(r.error)
+                ? "transport?"
+                : null;
   }
   return { ...a, rows, wire, mapped, convs: convs.length, hasLog: existsSync(logFile) };
 }
@@ -310,9 +343,17 @@ export function fisherExact(a, b, c, d) {
 export function select(arms, spec) {
   const [head, path] = spec.split("@");
   const [names, ...envs] = head.split("+");
-  const want = new Set(names.split(",").map((s) => s.trim()).filter(Boolean));
+  const want = new Set(
+    names
+      .split(",")
+      .map((s) => s.trim())
+      .filter(Boolean),
+  );
   const hasEnv = (a) => envs.every((kv) => (a.env || "").split(/\s+/).includes(kv.trim()));
-  return arms.filter((a) => want.has(a.arm) && hasEnv(a)).flatMap((a) => a.rows).filter((r) => !r.invalid && (!path || r.path === path));
+  return arms
+    .filter((a) => want.has(a.arm) && hasEnv(a))
+    .flatMap((a) => a.rows)
+    .filter((r) => !r.invalid && (!path || r.path === path));
 }
 
 /** M365 turns a task took, less the dead agent turn of a fallback; null if unmapped. */
@@ -335,7 +376,10 @@ function rng(seed) {
  *  Returns (hits + 1) / (iters + 1). */
 export function stratifiedPermutation(xs, ys, { iters = 100_000, seed = 1 } = {}) {
   const strata = new Map();
-  for (const [inY, rows] of [[false, xs], [true, ys]]) {
+  for (const [inY, rows] of [
+    [false, xs],
+    [true, ys],
+  ]) {
     for (const r of rows) {
       const k = r.task.replace(/#\d+$/, "");
       if (!strata.has(k)) strata.set(k, { vals: [], ny: 0 });
@@ -344,7 +388,8 @@ export function stratifiedPermutation(xs, ys, { iters = 100_000, seed = 1 } = {}
       if (inY) s.ny++;
     }
   }
-  const nx = xs.length, ny = ys.length;
+  const nx = xs.length,
+    ny = ys.length;
   if (!nx || !ny) return 1;
   const total = [...xs, ...ys].reduce((s, r) => s + r.turns, 0);
   const diff = (sumY) => sumY / ny - (total - sumY) / nx;
@@ -385,11 +430,15 @@ const fmtP = (p) => (p >= 0.001 ? p.toFixed(3) : p.toExponential(1));
 function report(arms, { rows: showRows, compares, turnCompares }) {
   const armName = (a) => (a.env ? `${a.arm} [${a.env}]` : a.arm);
   const armWidth = Math.max(16, ...arms.map((a) => armName(a).length));
-  console.log(`${pad("arm", armWidth)} ${pad("path", 13)} ${lpad("solved", 7)} ${lpad("inv", 4)} | ${["turns", "agent", "noagt", "sandbx", "diseng", "jb", "IE", "fb", "ws", "thr"].map((h) => lpad(h, 7)).join("")} | label`);
+  console.log(
+    `${pad("arm", armWidth)} ${pad("path", 13)} ${lpad("solved", 7)} ${lpad("inv", 4)} | ${["turns", "agent", "noagt", "sandbx", "diseng", "jb", "IE", "fb", "ws", "thr"].map((h) => lpad(h, 7)).join("")} | label`,
+  );
   for (const a of arms) {
     const w = a.wire;
     const inv = a.rows.filter((r) => r.invalid).length;
-    console.log(`${pad(armName(a), armWidth)} ${pad(pathOf(a.rows), 13)} ${lpad(score(a.rows), 7)} ${lpad(inv || "", 4)} | ${[w.turns, w.agent, w.agentless, w.sandbox, w.disengaged, w.jailbreak, w.internalError, w.fallback, w.wsError, w.throttled].map((x) => lpad(x || "·", 7)).join("")} | ${basename(a.dir)}/${a.label}${!a.hasLog ? "  (no debug log)" : a.mapped ? "" : `  (rows↔log mismatch: ${a.rows.length} tasks, ${a.convs} conversations)`}`);
+    console.log(
+      `${pad(armName(a), armWidth)} ${pad(pathOf(a.rows), 13)} ${lpad(score(a.rows), 7)} ${lpad(inv || "", 4)} | ${[w.turns, w.agent, w.agentless, w.sandbox, w.disengaged, w.jailbreak, w.internalError, w.fallback, w.wsError, w.throttled].map((x) => lpad(x || "·", 7)).join("")} | ${basename(a.dir)}/${a.label}${!a.hasLog ? "  (no debug log)" : a.mapped ? "" : `  (rows↔log mismatch: ${a.rows.length} tasks, ${a.convs} conversations)`}`,
+    );
     if (showRows) {
       for (const r of a.rows) {
         const w = r.wire;
@@ -440,31 +489,57 @@ function report(arms, { rows: showRows, compares, turnCompares }) {
   }
 
   for (const [x, y] of turnCompares) {
-    const [A, B] = [x, y].map((s) => select(arms, s).filter((r) => r.wire).map((r) => ({ ...r, turns: turnsOf(r) })));
+    const [A, B] = [x, y].map((s) =>
+      select(arms, s)
+        .filter((r) => r.wire)
+        .map((r) => ({ ...r, turns: turnsOf(r) })),
+    );
     const sum = (rs, f) => rs.reduce((s, r) => s + f(r), 0);
     const mean = (rs) => (rs.length ? sum(rs, (r) => r.turns) / rs.length : NaN);
-    const events = (rs) => ["sandbox", "disengaged", "jailbreak"].map((k) => sum(rs, (r) => r.wire[k])).join("/");
+    const events = (rs) =>
+      ["sandbox", "disengaged", "jailbreak"].map((k) => sum(rs, (r) => r.wire[k])).join("/");
     const [ma, mb] = [mean(A), mean(B)];
     const delta = `${mb >= ma ? "+" : "−"}${Math.round((Math.abs(mb - ma) / ma) * 100)}%`;
-    console.log(`\nturns  ${x}: ${ma.toFixed(2)} per task (${A.length})   vs   ${y}: ${mb.toFixed(2)} (${B.length})   ${delta}   task-stratified permutation p = ${fmtP(stratifiedPermutation(A, B))}`);
+    console.log(
+      `\nturns  ${x}: ${ma.toFixed(2)} per task (${A.length})   vs   ${y}: ${mb.toFixed(2)} (${B.length})   ${delta}   task-stratified permutation p = ${fmtP(stratifiedPermutation(A, B))}`,
+    );
     console.log(`       sandbox/diseng/jb turns: ${events(A)}   vs   ${events(B)}`);
   }
 }
 
 function main(argv) {
-  const dirs = [], compares = [], turnCompares = [];
+  const dirs = [],
+    compares = [],
+    turnCompares = [];
   let rows = false;
   for (let i = 0; i < argv.length; i++) {
     if (argv[i] === "--rows") rows = true;
-    else if (argv[i] === "--compare") { compares.push([argv[i + 1], argv[i + 2]]); i += 2; }
-    else if (argv[i] === "--turns") { turnCompares.push([argv[i + 1], argv[i + 2]]); i += 2; }
-    else if (argv[i] === "-h" || argv[i] === "--help") { console.log(readFileSync(new URL(import.meta.url), "utf8").split("\nimport ")[0]); return; }
-    else dirs.push(resolve(argv[i]));
+    else if (argv[i] === "--compare") {
+      compares.push([argv[i + 1], argv[i + 2]]);
+      i += 2;
+    } else if (argv[i] === "--turns") {
+      turnCompares.push([argv[i + 1], argv[i + 2]]);
+      i += 2;
+    } else if (argv[i] === "-h" || argv[i] === "--help") {
+      console.log(readFileSync(new URL(import.meta.url), "utf8").split("\nimport ")[0]);
+      return;
+    } else dirs.push(resolve(argv[i]));
   }
-  if (!dirs.length) { console.error("usage: analyze-arms.mjs <archive-dir>... [--rows] [--compare A B]... [--turns A B]..."); process.exit(1); }
-  if ([...compares, ...turnCompares].some((c) => !c[0] || !c[1])) { console.error("--compare and --turns need two selections"); process.exit(1); }
+  if (!dirs.length) {
+    console.error(
+      "usage: analyze-arms.mjs <archive-dir>... [--rows] [--compare A B]... [--turns A B]...",
+    );
+    process.exit(1);
+  }
+  if ([...compares, ...turnCompares].some((c) => !c[0] || !c[1])) {
+    console.error("--compare and --turns need two selections");
+    process.exit(1);
+  }
   const arms = dirs.flatMap(discoverArms).map(analyzeArm);
-  if (!arms.length) { console.error(`no arms found in ${dirs.join(", ")}`); process.exit(1); }
+  if (!arms.length) {
+    console.error(`no arms found in ${dirs.join(", ")}`);
+    process.exit(1);
+  }
   report(arms, { rows, compares, turnCompares });
 }
 

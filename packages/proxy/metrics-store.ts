@@ -21,6 +21,8 @@ export interface RequestMetricInput {
   promptTokens: number;
   completionTokens: number;
   totalTokens: number;
+  cacheReadTokens: number;
+  cacheWriteTokens: number;
   conversationMessages: number | null;
   conversationMax: number | null;
   conversationRemaining: number | null;
@@ -39,6 +41,8 @@ export interface ModelUsageTotals {
   promptTokens: number;
   completionTokens: number;
   totalTokens: number;
+  cacheReadTokens: number;
+  cacheWriteTokens: number;
   avgLatencyMs: number | null;
   avgModelLatencyMs: number | null;
   lastSeenAt: number;
@@ -69,6 +73,8 @@ export interface DashboardSnapshot {
     promptTokens: number;
     completionTokens: number;
     totalTokens: number;
+    cacheReadTokens: number;
+    cacheWriteTokens: number;
     avgLatencyMs: number | null;
     avgModelLatencyMs: number | null;
   };
@@ -87,6 +93,8 @@ type TotalsRow = {
   prompt_tokens: number;
   completion_tokens: number;
   total_tokens: number;
+  cache_read_tokens: number;
+  cache_write_tokens: number;
   avg_latency_ms: number | null;
   avg_model_latency_ms: number | null;
 };
@@ -99,6 +107,8 @@ type ModelRow = {
   prompt_tokens: number;
   completion_tokens: number;
   total_tokens: number;
+  cache_read_tokens: number;
+  cache_write_tokens: number;
   avg_latency_ms: number | null;
   avg_model_latency_ms: number | null;
   last_seen_at: number;
@@ -118,6 +128,8 @@ interface SessionUsageUpdate {
   promptTokens: number;
   completionTokens: number;
   totalTokens: number;
+  cacheReadTokens?: number;
+  cacheWriteTokens?: number;
   conversationMessages: number | null;
   conversationMax: number | null;
   conversationRemaining: number | null;
@@ -148,6 +160,8 @@ export interface ActiveSessionView {
   promptTokens: number;
   completionTokens: number;
   totalTokens: number;
+  cacheReadTokens: number;
+  cacheWriteTokens: number;
   conversationMessages: number | null;
   conversationMax: number | null;
   conversationRemaining: number | null;
@@ -222,6 +236,18 @@ class MetricsStore {
     // Active sessions are process-local (in-memory SessionPool), so clear any
     // stale rows from previous runs on startup.
     this.db.exec("DELETE FROM active_sessions");
+    for (const table of ["request_metrics", "active_sessions"]) {
+      this.addColumnIfMissing(table, "cache_read_tokens", "INTEGER NOT NULL DEFAULT 0");
+      this.addColumnIfMissing(table, "cache_write_tokens", "INTEGER NOT NULL DEFAULT 0");
+    }
+  }
+
+  private addColumnIfMissing(table: string, column: string, definition: string): void {
+    const columns = this.db.prepare(`PRAGMA table_info(${table})`).all() as Array<{
+      name: string;
+    }>;
+    if (!columns.some((c) => c.name === column))
+      this.db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`);
   }
 
   addRequestMetric(input: RequestMetricInput): void {
@@ -241,6 +267,8 @@ class MetricsStore {
         prompt_tokens,
         completion_tokens,
         total_tokens,
+        cache_read_tokens,
+        cache_write_tokens,
         conversation_messages,
         conversation_max,
         conversation_remaining,
@@ -249,7 +277,7 @@ class MetricsStore {
         response_bytes,
         error_type,
         error_message
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
 
     stmt.run(
@@ -267,6 +295,8 @@ class MetricsStore {
       input.promptTokens,
       input.completionTokens,
       input.totalTokens,
+      input.cacheReadTokens,
+      input.cacheWriteTokens,
       input.conversationMessages,
       input.conversationMax,
       input.conversationRemaining,
@@ -279,52 +309,62 @@ class MetricsStore {
   }
 
   replaceActiveSessions(sessions: ActiveSessionSnapshot[]): void {
-    const tx = this.db.prepare("DELETE FROM active_sessions");
-    tx.run();
+    this.db.exec("BEGIN");
+    try {
+      this.db.exec("DELETE FROM active_sessions");
 
-    if (sessions.length === 0) return;
+      if (sessions.length > 0) {
+        const insert = this.db.prepare(`
+          INSERT INTO active_sessions (
+            fingerprint,
+            session_id,
+            conversation_id,
+            model,
+            turn_count,
+            sent_message_count,
+            last_accessed_at,
+            updated_at,
+            prompt_tokens,
+            completion_tokens,
+            total_tokens,
+            cache_read_tokens,
+            cache_write_tokens,
+            conversation_messages,
+            conversation_max,
+            conversation_remaining,
+            model_latency_ms,
+            message_type
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        `);
 
-    const insert = this.db.prepare(`
-      INSERT INTO active_sessions (
-        fingerprint,
-        session_id,
-        conversation_id,
-        model,
-        turn_count,
-        sent_message_count,
-        last_accessed_at,
-        updated_at,
-        prompt_tokens,
-        completion_tokens,
-        total_tokens,
-        conversation_messages,
-        conversation_max,
-        conversation_remaining,
-        model_latency_ms,
-        message_type
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `);
-
-    for (const session of sessions) {
-      const usage = session.usage;
-      insert.run(
-        session.fingerprint,
-        session.sessionId,
-        session.conversationId,
-        session.model,
-        session.turnCount,
-        session.sentMessageCount,
-        session.lastAccessedAt,
-        usage?.updatedAt ?? 0,
-        usage?.promptTokens ?? 0,
-        usage?.completionTokens ?? 0,
-        usage?.totalTokens ?? 0,
-        usage?.conversationMessages ?? null,
-        usage?.conversationMax ?? null,
-        usage?.conversationRemaining ?? null,
-        usage?.modelLatencyMs ?? null,
-        usage?.messageType ?? null,
-      );
+        for (const session of sessions) {
+          const usage = session.usage;
+          insert.run(
+            session.fingerprint,
+            session.sessionId,
+            session.conversationId,
+            session.model,
+            session.turnCount,
+            session.sentMessageCount,
+            session.lastAccessedAt,
+            usage?.updatedAt ?? 0,
+            usage?.promptTokens ?? 0,
+            usage?.completionTokens ?? 0,
+            usage?.totalTokens ?? 0,
+            usage?.cacheReadTokens ?? 0,
+            usage?.cacheWriteTokens ?? 0,
+            usage?.conversationMessages ?? null,
+            usage?.conversationMax ?? null,
+            usage?.conversationRemaining ?? null,
+            usage?.modelLatencyMs ?? null,
+            usage?.messageType ?? null,
+          );
+        }
+      }
+      this.db.exec("COMMIT");
+    } catch (error) {
+      this.db.exec("ROLLBACK");
+      throw error;
     }
   }
 
@@ -359,6 +399,8 @@ class MetricsStore {
         SUM(prompt_tokens) AS prompt_tokens,
         SUM(completion_tokens) AS completion_tokens,
         SUM(total_tokens) AS total_tokens,
+        SUM(cache_read_tokens) AS cache_read_tokens,
+        SUM(cache_write_tokens) AS cache_write_tokens,
         AVG(latency_ms) AS avg_latency_ms,
         AVG(model_latency_ms) AS avg_model_latency_ms
       FROM request_metrics
@@ -375,6 +417,8 @@ class MetricsStore {
         SUM(prompt_tokens) AS prompt_tokens,
         SUM(completion_tokens) AS completion_tokens,
         SUM(total_tokens) AS total_tokens,
+        SUM(cache_read_tokens) AS cache_read_tokens,
+        SUM(cache_write_tokens) AS cache_write_tokens,
         AVG(latency_ms) AS avg_latency_ms,
         AVG(model_latency_ms) AS avg_model_latency_ms,
         MAX(ended_at) AS last_seen_at
@@ -429,6 +473,8 @@ class MetricsStore {
         promptTokens: totals?.prompt_tokens ?? 0,
         completionTokens: totals?.completion_tokens ?? 0,
         totalTokens: totals?.total_tokens ?? 0,
+        cacheReadTokens: totals?.cache_read_tokens ?? 0,
+        cacheWriteTokens: totals?.cache_write_tokens ?? 0,
         avgLatencyMs: totals?.avg_latency_ms ?? null,
         avgModelLatencyMs: totals?.avg_model_latency_ms ?? null,
       },
@@ -440,6 +486,8 @@ class MetricsStore {
         promptTokens: row.prompt_tokens ?? 0,
         completionTokens: row.completion_tokens ?? 0,
         totalTokens: row.total_tokens ?? 0,
+        cacheReadTokens: row.cache_read_tokens ?? 0,
+        cacheWriteTokens: row.cache_write_tokens ?? 0,
         avgLatencyMs: row.avg_latency_ms ?? null,
         avgModelLatencyMs: row.avg_model_latency_ms ?? null,
         lastSeenAt: row.last_seen_at ?? 0,
@@ -474,6 +522,8 @@ class MetricsStore {
         prompt_tokens,
         completion_tokens,
         total_tokens,
+        cache_read_tokens,
+        cache_write_tokens,
         conversation_messages,
         conversation_max,
         conversation_remaining,
@@ -494,6 +544,8 @@ class MetricsStore {
       prompt_tokens: number;
       completion_tokens: number;
       total_tokens: number;
+      cache_read_tokens: number;
+      cache_write_tokens: number;
       conversation_messages: number | null;
       conversation_max: number | null;
       conversation_remaining: number | null;
@@ -513,6 +565,8 @@ class MetricsStore {
       promptTokens: row.prompt_tokens,
       completionTokens: row.completion_tokens,
       totalTokens: row.total_tokens,
+      cacheReadTokens: row.cache_read_tokens,
+      cacheWriteTokens: row.cache_write_tokens,
       conversationMessages: row.conversation_messages,
       conversationMax: row.conversation_max,
       conversationRemaining: row.conversation_remaining,

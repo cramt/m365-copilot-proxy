@@ -14,7 +14,11 @@ loopback.addAddress("::1", "ipv6");
 export default defineEventHandler((event) => {
   const pathname = getRequestURL(event).pathname;
   if (pathname === "/" || pathname === "/actions" || pathname.startsWith("/actions/")) {
-    const address = event.node.req.socket.remoteAddress ?? "";
+    const socket = event.node.req.socket;
+    // `nitro dev` proxies to its worker over a Unix socket; its listener is local-only unless --host widens it.
+    if (import.meta.dev && socket.remoteAddress === undefined && socket.remoteFamily === undefined)
+      return;
+    const address = socket.remoteAddress ?? "";
     const family = isIP(address);
     if (family === 0 || !loopback.check(address, family === 6 ? "ipv6" : "ipv4")) {
       return openAIError(403, {

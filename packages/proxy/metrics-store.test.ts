@@ -43,6 +43,8 @@ function metric(overrides: Partial<RequestMetricInput> = {}): RequestMetricInput
     promptTokens: 0,
     completionTokens: 0,
     totalTokens: 0,
+    cacheReadTokens: 0,
+    cacheWriteTokens: 0,
     conversationMessages: 1,
     conversationMax: 600,
     conversationRemaining: 599,
@@ -72,6 +74,51 @@ beforeEach(() => {
 });
 afterAll(() => {
   sqlite.database?.close();
+});
+
+describe("active-session snapshot replacement", () => {
+  const session = (fingerprint: string) => ({
+    fingerprint,
+    sessionId: `session-${fingerprint}`,
+    conversationId: `conversation-${fingerprint}`,
+    model: "claude-sonnet",
+    turnCount: 1,
+    sentMessageCount: 1,
+    lastAccessedAt: 1000,
+    usage: null,
+  });
+
+  it("replaces a snapshot and commits an empty snapshot", () => {
+    metricsStore.replaceActiveSessions([session("old")]);
+    metricsStore.replaceActiveSessions([session("new")]);
+    expect(sqlite.database.prepare("SELECT fingerprint FROM active_sessions").all()).toMatchObject([
+      { fingerprint: "new" },
+    ]);
+    metricsStore.replaceActiveSessions([]);
+    expect(
+      sqlite.database.prepare("SELECT COUNT(*) AS count FROM active_sessions").get(),
+    ).toMatchObject({
+      count: 0,
+    });
+    metricsStore.replaceActiveSessions([session("after-empty")]);
+    expect(sqlite.database.prepare("SELECT fingerprint FROM active_sessions").all()).toMatchObject([
+      { fingerprint: "after-empty" },
+    ]);
+  });
+
+  it("rolls back the deletion and earlier inserts if a later insert fails", () => {
+    metricsStore.replaceActiveSessions([session("original")]);
+    expect(() =>
+      metricsStore.replaceActiveSessions([session("partial"), session("partial")]),
+    ).toThrow();
+    expect(sqlite.database.prepare("SELECT fingerprint FROM active_sessions").all()).toMatchObject([
+      { fingerprint: "original" },
+    ]);
+    metricsStore.replaceActiveSessions([session("recovered")]);
+    expect(sqlite.database.prepare("SELECT fingerprint FROM active_sessions").all()).toMatchObject([
+      { fingerprint: "recovered" },
+    ]);
+  });
 });
 
 describe("persisted account-throttle status", () => {

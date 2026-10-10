@@ -203,12 +203,16 @@ describe("native call closer leaking into a fence (Opus)", () => {
   });
 
   it("…and with a stray zero-width line before the closing fence", () => {
-    const { args } = argsOf(`\`\`\`write_file\npath: count.sh\n\n${SCRIPT}\n</invoke>\n\u200c\n\`\`\``);
+    const { args } = argsOf(
+      `\`\`\`write_file\npath: count.sh\n\n${SCRIPT}\n</invoke>\n\u200c\n\`\`\``,
+    );
     expect(args).toEqual({ path: "count.sh", content: SCRIPT });
   });
 
   it("accepts a fence that </invoke> ends instead of ```, stray symbol and all", () => {
-    const { calls, args, leftover } = argsOf(`\`\`\`write_file\npath: count.sh\n\n${SCRIPT}\n</invoke>\n∂`);
+    const { calls, args, leftover } = argsOf(
+      `\`\`\`write_file\npath: count.sh\n\n${SCRIPT}\n</invoke>\n∂`,
+    );
     expect(calls).toHaveLength(1);
     expect(args).toEqual({ path: "count.sh", content: SCRIPT });
     expect(leftover.trim()).toBe("");
@@ -221,19 +225,26 @@ describe("native call closer leaking into a fence (Opus)", () => {
 
   it("drops native <parameter> lines after the closer, unclosed fence (opus45-r5c relay)", () => {
     const script = "#!/usr/bin/env bash\nwc -l < data.txt | tr -d ' ' > count.txt";
-    const { calls, args } = argsOf(`\`\`\`write_file\npath: count.sh\n\n${script}\n</invoke>\n<parameter name="path">count.sh</parameter>`);
+    const { calls, args } = argsOf(
+      `\`\`\`write_file\npath: count.sh\n\n${script}\n</invoke>\n<parameter name="path">count.sh</parameter>`,
+    );
     expect(calls).toHaveLength(1);
     expect(args).toEqual({ path: "count.sh", content: script });
   });
 
   it("…and inside a closed fence", () => {
-    const { args } = argsOf(`\`\`\`write_file\npath: count.sh\n\n${SCRIPT}\n</invoke>\n<parameter name="path">count.sh</parameter>\n</function_calls>\n\`\`\``);
+    const { args } = argsOf(
+      `\`\`\`write_file\npath: count.sh\n\n${SCRIPT}\n</invoke>\n<parameter name="path">count.sh</parameter>\n</function_calls>\n\`\`\``,
+    );
     expect(args).toEqual({ path: "count.sh", content: SCRIPT });
   });
 
   it("drops </parameter> lines BEFORE the closer too — they'd run as shell (opus45-r5c retag)", () => {
-    const command = "cat > count.sh <<'EOF'\n#!/bin/bash\nwc -l < data.txt | tr -d ' \\t' > count.txt\nEOF\nchmod +x count.sh\n./count.sh\ncat -A count.txt";
-    const { calls, args } = argsOf(`\`\`\`bash\n${command}\n</parameter>\n</invoke>\n</function_calls>`);
+    const command =
+      "cat > count.sh <<'EOF'\n#!/bin/bash\nwc -l < data.txt | tr -d ' \\t' > count.txt\nEOF\nchmod +x count.sh\n./count.sh\ncat -A count.txt";
+    const { calls, args } = argsOf(
+      `\`\`\`bash\n${command}\n</parameter>\n</invoke>\n</function_calls>`,
+    );
     expect(calls).toHaveLength(1);
     expect(args).toEqual({ command });
   });
@@ -458,7 +469,13 @@ describe("defaultFramingForTone", () => {
     // relay_batch: 2.30 turns per bench task vs relay's 3.65 — and Opus 5.5's
     // budget counts turns (F55). `minimal`'s shorter prompt saved nothing.
     expect(defaultFramingForTone("Claude_Opus")).toBe("relay_batch");
-    for (const id of ["claude-opus", "claude-opus-5.5", "claude-opus-4.5", "claude-opus-4-5-20251101", "claude-opus-5[1m]"]) {
+    for (const id of [
+      "claude-opus",
+      "claude-opus-5.5",
+      "claude-opus-4.5",
+      "claude-opus-4-5-20251101",
+      "claude-opus-5[1m]",
+    ]) {
       expect(defaultFramingForModel(id)).toBe("relay_batch");
     }
   });
@@ -474,8 +491,12 @@ describe("defaultFramingForTone", () => {
   it("asks for batching only when there's a shell to batch in — otherwise it is relay (§25 H25b)", () => {
     // Shell-less, "a script can look at the files…" read as a request only its
     // own sandbox could meet: Sonnet 4.6 3/7 vs relay 6/6.
-    expect(formatFencedToolDefinitions([readFile], "relay_batch")).toBe(formatFencedToolDefinitions([readFile], "relay"));
-    expect(formatFencedToolDefinitions([bash, readFile], "relay_batch")).not.toBe(formatFencedToolDefinitions([bash, readFile], "relay"));
+    expect(formatFencedToolDefinitions([readFile], "relay_batch")).toBe(
+      formatFencedToolDefinitions([readFile], "relay"),
+    );
+    expect(formatFencedToolDefinitions([bash, readFile], "relay_batch")).not.toBe(
+      formatFencedToolDefinitions([bash, readFile], "relay"),
+    );
   });
 
   it("leaves unrelated tones on the bench-tuned baseline", () => {
@@ -548,7 +569,13 @@ describe("defaultFramingForModel", () => {
   });
 
   it("gives Sonnet 4.6 relay_batch — and every unmapped claude-* string that lands on its tone", () => {
-    for (const id of ["claude-sonnet", "claude-sonnet-4.6", "claude-sonnet-4.5", "claude", "claude-haiku-9"]) {
+    for (const id of [
+      "claude-sonnet",
+      "claude-sonnet-4.6",
+      "claude-sonnet-4.5",
+      "claude",
+      "claude-haiku-9",
+    ]) {
       expect(defaultFramingForModel(id)).toBe("relay_batch");
     }
   });
@@ -780,7 +807,13 @@ describe("array and object params written as a YAML block (#50)", () => {
         type: "object",
         properties: {
           path: { type: "string" },
-          edits: { type: "array", items: { type: "object", properties: { oldText: { type: "string" }, newText: { type: "string" } } } },
+          edits: {
+            type: "array",
+            items: {
+              type: "object",
+              properties: { oldText: { type: "string" }, newText: { type: "string" } },
+            },
+          },
         },
         required: ["path", "edits"],
       },
@@ -788,7 +821,13 @@ describe("array and object params written as a YAML block (#50)", () => {
   };
   const opts: ToolDef = {
     type: "function",
-    function: { name: "configure", parameters: { type: "object", properties: { target: { type: "string" }, options: { type: "object" } } } },
+    function: {
+      name: "configure",
+      parameters: {
+        type: "object",
+        properties: { target: { type: "string" }, options: { type: "object" } },
+      },
+    },
   };
   const piSpecs = buildSpecMap([piEdit, opts, bash]);
   const argsOf = (text: string) => {
@@ -798,20 +837,31 @@ describe("array and object params written as a YAML block (#50)", () => {
   };
 
   it("reads Sonnet 4.6's block list, verbatim from real pi (44 of its 47 edits were lost)", () => {
-    const args = argsOf('```edit\npath: /tmp/pi-task-mi5OyW/mathutil.py\nedits:\n  - oldText: "    return sum(nums) / len(nums) + 1"\n    newText: "    return sum(nums) / len(nums)"\n```');
+    const args = argsOf(
+      '```edit\npath: /tmp/pi-task-mi5OyW/mathutil.py\nedits:\n  - oldText: "    return sum(nums) / len(nums) + 1"\n    newText: "    return sum(nums) / len(nums)"\n```',
+    );
     expect(args).toEqual({
       path: "/tmp/pi-task-mi5OyW/mathutil.py",
-      edits: [{ oldText: "    return sum(nums) / len(nums) + 1", newText: "    return sum(nums) / len(nums)" }],
+      edits: [
+        {
+          oldText: "    return sum(nums) / len(nums) + 1",
+          newText: "    return sum(nums) / len(nums)",
+        },
+      ],
     });
   });
 
   it("still reads the inline JSON Opus writes", () => {
-    const args = argsOf('```edit\npath: calc.py\nedits: [{"oldText": "    return a - b", "newText": "    return a + b"}]\n```');
+    const args = argsOf(
+      '```edit\npath: calc.py\nedits: [{"oldText": "    return a - b", "newText": "    return a + b"}]\n```',
+    );
     expect(args.edits).toEqual([{ oldText: "    return a - b", newText: "    return a + b" }]);
   });
 
   it("reads single-quoted text with quotes and colons inside, and several items", () => {
-    const args = argsOf(`\`\`\`edit\npath: calc.py\nedits:\n  - oldText: '"quotient": a - b,'\n    newText: '"quotient": a / b,'\n  - oldText: 'it''s'\n    newText: "say \\"hi\\"\\tthere"\n\`\`\``);
+    const args = argsOf(
+      `\`\`\`edit\npath: calc.py\nedits:\n  - oldText: '"quotient": a - b,'\n    newText: '"quotient": a / b,'\n  - oldText: 'it''s'\n    newText: "say \\"hi\\"\\tthere"\n\`\`\``,
+    );
     expect(args.edits).toEqual([
       { oldText: '"quotient": a - b,', newText: '"quotient": a / b,' },
       { oldText: "it's", newText: 'say "hi"\tthere' },
@@ -819,9 +869,14 @@ describe("array and object params written as a YAML block (#50)", () => {
   });
 
   it("reads multi-line text as | and |- block scalars", () => {
-    const args = argsOf("```edit\npath: calc.py\nedits:\n  - oldText: |\n      def add(a, b):\n          return a - b\n    newText: |-\n      def add(a, b):\n\n          return a + b\n```");
+    const args = argsOf(
+      "```edit\npath: calc.py\nedits:\n  - oldText: |\n      def add(a, b):\n          return a - b\n    newText: |-\n      def add(a, b):\n\n          return a + b\n```",
+    );
     expect(args.edits).toEqual([
-      { oldText: "def add(a, b):\n    return a - b\n", newText: "def add(a, b):\n\n    return a + b" },
+      {
+        oldText: "def add(a, b):\n    return a - b\n",
+        newText: "def add(a, b):\n\n    return a + b",
+      },
     ]);
   });
 
@@ -841,7 +896,9 @@ describe("array and object params written as a YAML block (#50)", () => {
   });
 
   it("falls back to the old reading when the block isn't YAML it can read", () => {
-    const args = argsOf("```edit\npath: a.py\nedits:\n  - oldText: x\n        newText: misaligned\n```");
+    const args = argsOf(
+      "```edit\npath: a.py\nedits:\n  - oldText: x\n        newText: misaligned\n```",
+    );
     expect(args.edits).toEqual([]);
   });
 

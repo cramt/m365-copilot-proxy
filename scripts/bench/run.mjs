@@ -348,25 +348,33 @@ async function runTask(task) {
 }
 
 // --- run ---
-console.log(`[bench] label=${LABEL} model=${MODEL} base=${BASE} tasks=${tasks.map(t=>t.name).join(",")} repeat=${REPEAT}${TASK_GAP_MS ? ` task-gap=${TASK_GAP_MS / 1000}s` : ""}`);
+console.log(
+  `[bench] label=${LABEL} model=${MODEL} base=${BASE} tasks=${tasks.map((t) => t.name).join(",")} repeat=${REPEAT}${TASK_GAP_MS ? ` task-gap=${TASK_GAP_MS / 1000}s` : ""}`,
+);
 const rows = [];
 let throttled = false;
 let exhausted = false;
 run: for (let rep = 0; rep < REPEAT; rep++) {
   for (const task of tasks) {
-    if (rows.length > 0) await new Promise(rr => setTimeout(rr, Math.max(1500, TASK_GAP_MS)));
+    if (rows.length > 0) await new Promise((rr) => setTimeout(rr, Math.max(1500, TASK_GAP_MS)));
     await waitForBudget({ need: MAX_TURNS, label: "bench" });
     const r = await runTask(task);
     rows.push({ ...r, rep });
-    console.log(`  ${r.task.padEnd(14)} ${r.outcome.padEnd(14)} tools=${r.toolTurns} msgs=${r.msgs} ${Math.round(r.elapsedMs/1000)}s ${r.error ? "(" + r.error.slice(0,50) + ")" : ""} ${r.solved ? "" : "answer=" + JSON.stringify(r.finalAnswer)}`);
+    console.log(
+      `  ${r.task.padEnd(14)} ${r.outcome.padEnd(14)} tools=${r.toolTurns} msgs=${r.msgs} ${Math.round(r.elapsedMs / 1000)}s ${r.error ? "(" + r.error.slice(0, 50) + ")" : ""} ${r.solved ? "" : "answer=" + JSON.stringify(r.finalAnswer)}`,
+    );
     if (STOP_ON_THROTTLE && r.error && PRIORITY_EXHAUSTED.test(r.error)) {
       exhausted = true;
-      console.log(`[bench] PRIORITY ACCESS EXHAUSTED — stopping after ${rows.length} task(s); the model's budget is used up until the reset`);
+      console.log(
+        `[bench] PRIORITY ACCESS EXHAUSTED — stopping after ${rows.length} task(s); the model's budget is used up until the reset`,
+      );
       break run;
     }
     if (STOP_ON_THROTTLE && r.error && THROTTLED.test(r.error)) {
       throttled = true;
-      console.log(`[bench] THROTTLED — stopping after ${rows.length} task(s); the rest would only fail the same way and keep the throttle alive`);
+      console.log(
+        `[bench] THROTTLED — stopping after ${rows.length} task(s); the rest would only fail the same way and keep the throttle alive`,
+      );
       break run;
     }
   }
@@ -388,7 +396,29 @@ console.log(
     .join(" ")}`,
 );
 console.log(`[bench] avg tool-calls/task: ${avgTools}  |  M365 messages spent: ${totalMsgs}`);
-writeFileSync(join(OUT, `${LABEL}-${TS}.json`), JSON.stringify({ label: LABEL, model: MODEL, base: BASE, ts: TS, pct, solved, total: rows.length, byOutcome, avgTools, totalMsgs, throttled, exhausted, system: SYSTEM, rows }, null, 2));
+writeFileSync(
+  join(OUT, `${LABEL}-${TS}.json`),
+  JSON.stringify(
+    {
+      label: LABEL,
+      model: MODEL,
+      base: BASE,
+      ts: TS,
+      pct,
+      solved,
+      total: rows.length,
+      byOutcome,
+      avgTools,
+      totalMsgs,
+      throttled,
+      exhausted,
+      system: SYSTEM,
+      rows,
+    },
+    null,
+    2,
+  ),
+);
 console.log(`[bench] → scripts/bench/out/${LABEL}-${TS}.json`);
 if (throttled) process.exit(3);
 if (exhausted) process.exit(4);

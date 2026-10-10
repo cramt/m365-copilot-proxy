@@ -55,7 +55,7 @@ console.log(
 console.log(`[matrix] starting proxy on :${PORT} ...`);
 const serve = spawn("node", [join("scripts", "harness", "serve.mjs"), String(PORT)], {
   stdio: ["ignore", "inherit", "inherit"],
-  env: process.env,
+  env: { ...process.env, M365_STICKY_SESSION: "off" }, // fresh M365 thread per cell
 });
 const health = async () => {
   try {

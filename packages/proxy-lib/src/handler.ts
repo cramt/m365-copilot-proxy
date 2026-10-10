@@ -39,12 +39,42 @@ import {
   noteUpstreamThrottle,
   getDegradationRetryAfterSeconds,
   awaitDegradationBackoff,
+  getImageArtifactToken,
+  fetchImageBytes,
+  type CapturedImage,
 } from "@m365-copilot/core";
 import type { ChatCompletionRequest } from "./schemas.js";
+import {
+  type DigestableMessage,
+  type StickySessionMode,
+  TurnQueue,
+  messageDigest,
+  stickyConversationKey,
+  stickyDeltaStart,
+  stickySessionMode,
+} from "./sticky-session.js";
+import { harnessSummaryResponse, isHarnessSummaryRequest } from "./harness-summary.js";
 import { estimatePromptTokens, estimateTokens, openAIError } from "./openai.js";
 import type { z } from "zod/v4";
 
 const log = createLogger("handler");
+
+// Generated image URLs require a designerappservice token. Embed the bytes so
+// OpenAI-compatible chat clients can display them without that token.
+async function renderImagesMarkdown(images: CapturedImage[]): Promise<string> {
+  if (images.length === 0) return "";
+  const artifactToken = await getImageArtifactToken();
+  if (!artifactToken)
+    throw new Error("Could not acquire designerappservice token to fetch image bytes");
+  const parts: string[] = [];
+  for (const image of images) {
+    const url = image.referenceUrls[0];
+    if (!url) throw new Error("Generated image has no reference URL");
+    const { data, contentType } = await fetchImageBytes(url, artifactToken);
+    parts.push(`![generated image](data:${contentType};base64,${data.toString("base64")})`);
+  }
+  return parts.join("\n\n");
+}
 
 // Forcing follow-up sent (in the same conversation) when M365 confabulates an
 // inability to act instead of calling a tool. See the confab-retry loop below.
@@ -95,6 +125,8 @@ export interface SessionUsageSnapshot {
   promptTokens: number;
   completionTokens: number;
   totalTokens: number;
+  cacheReadTokens: number;
+  cacheWriteTokens: number;
   conversationMessages: number | null;
   conversationMax: number | null;
   conversationRemaining: number | null;
@@ -129,6 +161,12 @@ interface ConversationState {
    *  Opus fallback, #18) can't continue the M365 conversation — it may need
    *  another scenario — so it starts a fresh one with the full history. */
   servedModel?: string;
+  /** Sticky modes (M365_STICKY_SESSION): true when this state is shared across requests by key, not by first message. */
+  sticky: boolean;
+  /** Sticky modes: serializes turns on this conversation so they never interleave. */
+  turnQueue: TurnQueue;
+  /** Sticky modes: digest of the last message sent to M365, used to find the delta after a client rewrites history. */
+  lastSentDigest: string | null;
 }
 
 /**
@@ -170,6 +208,10 @@ export function executedOnlyFirstNote(
 // --- Session pool: maps conversation fingerprint → M365 session ---
 
 const MAX_IDLE_MS = 30 * 60 * 1000; // evict after 30 min idle
+// Sticky threads are long-lived (compaction and model switches keep them), so they idle longer.
+const STICKY_MAX_IDLE_MS = 4 * 60 * 60 * 1000;
+// Roll a sticky thread over to a fresh M365 conversation once this few messages remain on its quota.
+const STICKY_ROLLOVER_REMAINING = 5;
 
 export class SessionPool {
   private conversations = new Map<string, ConversationState>();
@@ -183,22 +225,34 @@ export class SessionPool {
    * Resolve the conversation state for an incoming request.
    * Fingerprint includes the model and first user message.
    */
-  resolve(messages: ParsedMessage[], model: string = "m365-copilot"): ConversationState {
+  resolve(
+    messages: ParsedMessage[],
+    model: string = "m365-copilot",
+    mode: StickySessionMode = stickySessionMode(),
+  ): ConversationState {
     this.evictStale();
 
-    const fingerprint = this.fingerprint(messages, model);
+    const fingerprint =
+      mode === "off" ? this.fingerprint(messages, model) : stickyConversationKey(mode, model);
     const existing = this.conversations.get(fingerprint);
 
     if (existing) {
-      // Messages shrunk means client restarted this conversation — reset M365 session
+      // Messages shrunk means client restarted this conversation — reset M365 session.
+      // Sticky threads survive it: a shrink there is a client compaction, which the delta logic handles.
       if (messages.length < existing.sentMessageCount) {
-        log.info(
-          `Conversation ${fingerprint}: messages shrunk (${messages.length} < ${existing.sentMessageCount}), resetting`,
-        );
-        existing.session.reset();
-        existing.sentMessageCount = 0;
-        existing.pendingNote = null;
-        existing.lastUsage = null;
+        if (existing.sticky) {
+          log.debug(
+            `Sticky conversation ${fingerprint}: messages shrunk (${messages.length} < ${existing.sentMessageCount}), keeping thread`,
+          );
+        } else {
+          log.info(
+            `Conversation ${fingerprint}: messages shrunk (${messages.length} < ${existing.sentMessageCount}), resetting`,
+          );
+          existing.session.reset();
+          existing.sentMessageCount = 0;
+          existing.pendingNote = null;
+          existing.lastUsage = null;
+        }
       }
       existing.lastAccessedAt = Date.now();
       return existing;
@@ -214,6 +268,9 @@ export class SessionPool {
       lastAccessedAt: Date.now(),
       lastModel: model,
       lastUsage: null,
+      sticky: mode !== "off",
+      turnQueue: new TurnQueue(),
+      lastSentDigest: null,
     };
     this.conversations.set(fingerprint, state);
     return state;
@@ -228,7 +285,8 @@ export class SessionPool {
   private evictStale() {
     const now = Date.now();
     for (const [key, state] of this.conversations) {
-      if (now - state.lastAccessedAt > MAX_IDLE_MS) {
+      const idleLimit = state.sticky ? STICKY_MAX_IDLE_MS : MAX_IDLE_MS;
+      if (now - state.lastAccessedAt > idleLimit) {
         log.info(`Evicting idle conversation ${key}`);
         this.conversations.delete(key);
       }
@@ -254,6 +312,13 @@ export class SessionPool {
       }))
       .sort((left, right) => right.lastAccessedAt - left.lastAccessedAt);
   }
+}
+
+/** Record what was sent to M365: the count, and a digest of the last message to anchor the next delta. */
+function markSent(conv: ConversationState, messages: ReadonlyArray<DigestableMessage>): void {
+  conv.sentMessageCount = messages.length;
+  const last = messages[messages.length - 1];
+  conv.lastSentDigest = last ? messageDigest(last) : null;
 }
 
 function simpleHash(str: string): string {
@@ -366,12 +431,71 @@ function extractForcedExactReply(messages: ParsedMessage[]): string | null {
 export async function handleChatCompletion(
   body: ChatBody,
   pool: SessionPool,
-  opts: {
-    signal?: AbortSignal;
-    onComplete?: (response: Response, error?: { type: string; message: string }) => void;
-  } = {},
+  opts: ChatOptions = {},
 ): Promise<Response> {
-  const conv = pool.resolve(body.messages, body.model);
+  const mode = opts.stickySession ?? stickySessionMode();
+  if (mode !== "off" && isHarnessSummaryRequest(body)) {
+    // Context-compaction summaries are answered locally: they must not open or disturb the M365 thread.
+    const response = harnessSummaryResponse(body);
+    opts.onComplete?.(response);
+    return response;
+  }
+  const conv = pool.resolve(body.messages, body.model, mode);
+  if (mode === "off") return runChatCompletion(body, conv, mode, opts);
+  return runSerialized(body, conv, mode, opts);
+}
+
+interface ChatOptions {
+  signal?: AbortSignal;
+  onComplete?: (response: Response, error?: { type: string; message: string }) => void;
+  /** Overrides M365_STICKY_SESSION for this request, e.g. "all" for dashboard checks across every model. */
+  stickySession?: StickySessionMode;
+}
+
+/**
+ * Sticky modes: one turn at a time per conversation. The lock is released when the
+ * turn ends (the stream's onComplete), not when the Response is returned, so a
+ * second request waits for the first M365 turn to finish.
+ */
+async function runSerialized(
+  body: ChatBody,
+  conv: ConversationState,
+  mode: StickySessionMode,
+  opts: ChatOptions,
+): Promise<Response> {
+  const release = await conv.turnQueue.acquire();
+  let released = false;
+  const releaseOnce = (): void => {
+    if (released) return;
+    released = true;
+    release();
+  };
+  try {
+    const response = await runChatCompletion(body, conv, mode, {
+      ...opts,
+      onComplete: (completed, error) => {
+        releaseOnce();
+        opts.onComplete?.(completed, error);
+      },
+    });
+    // A buffered body is already complete; only an event stream holds the turn open.
+    const streaming = (response.headers.get("content-type") ?? "")
+      .toLowerCase()
+      .includes("text/event-stream");
+    if (!streaming) releaseOnce();
+    return response;
+  } catch (error) {
+    releaseOnce();
+    throw error;
+  }
+}
+
+async function runChatCompletion(
+  body: ChatBody,
+  conv: ConversationState,
+  mode: StickySessionMode,
+  opts: ChatOptions,
+): Promise<Response> {
   const { session } = conv;
   const hasTools = body.tools && body.tools.length > 0 && body.tool_choice !== "none";
   const requestedModel = body.model;
@@ -396,19 +520,39 @@ export async function handleChatCompletion(
   // counts.
   const requestedBudget = meteredBudgetOf(requestedModel);
   const knownExhaustion = activePriorityAccessExhaustion(requestedBudget ?? requestedModel);
-  const fallbackModel = knownExhaustion && requestedBudget ? priorityAccessFallbackModel(requestedBudget) : null;
+  const fallbackModel =
+    knownExhaustion && requestedBudget ? priorityAccessFallbackModel(requestedBudget) : null;
   if (knownExhaustion && !fallbackModel) {
-    log.info(`Priority access exhausted (${knownExhaustion.window}) until ${knownExhaustion.resetsAt.toISOString()} — 429 without contacting M365`);
+    log.info(
+      `Priority access exhausted (${knownExhaustion.window}) until ${knownExhaustion.resetsAt.toISOString()} — 429 without contacting M365`,
+    );
     return priorityAccessResponse(knownExhaustion, requestedModel);
   }
   let model = fallbackModel ?? requestedModel;
-  if (fallbackModel) log.info(`Priority access exhausted until ${knownExhaustion!.resetsAt.toISOString()} — serving ${requestedModel} with ${fallbackModel} (${PRIORITY_ACCESS_FALLBACK_ENV[requestedBudget!]})`);
+  if (fallbackModel)
+    log.info(
+      `Priority access exhausted until ${knownExhaustion!.resetsAt.toISOString()} — serving ${requestedModel} with ${fallbackModel} (${PRIORITY_ACCESS_FALLBACK_ENV[requestedBudget!]})`,
+    );
+  // Set when the framing must travel with this turn's delta (see the end of the delta branch).
+  let reframe = false;
   if (conv.servedModel && conv.servedModel !== model) {
-    // The conversation was being served by another model (e.g. Opus 5.5 before
-    // the fallback): continue in a fresh M365 conversation with the full history.
-    log.info(`Conversation switches model ${conv.servedModel} → ${model}: fresh conversation, full history`);
-    session.newConversation();
-    conv.sentMessageCount = 0;
+    if (mode === "all") {
+      // One thread across models: keep it. The framing is per model and only a full
+      // prompt carries it, so the delta re-sends it.
+      reframe = !!hasTools;
+      log.info(
+        `Sticky conversation switches model ${conv.servedModel} → ${model}: same thread, framing re-sent`,
+      );
+    } else {
+      // The conversation was being served by another model (e.g. Opus 5.5 before
+      // the fallback): continue in a fresh M365 conversation with the full history.
+      log.info(
+        `Conversation switches model ${conv.servedModel} → ${model}: fresh conversation, full history`,
+      );
+      session.newConversation();
+      conv.sentMessageCount = 0;
+      conv.lastSentDigest = null;
+    }
   }
 
   // Which requests carry the declarative tool agent. GPT-the-chat-model won't
@@ -428,18 +572,35 @@ export async function handleChatCompletion(
   // claude-* string into GPT-tone + agent-suppressed — the confab quadrant we
   // observed. One resolved tone drives both.
   let tone = getToneForModel(model);
-  let useToolAgent = getEnvironmentVariable("M365_DISABLE_AGENT") !== "1" && requestUsesAgent(model, !!hasTools);
+  let useToolAgent =
+    getEnvironmentVariable("M365_DISABLE_AGENT") !== "1" && requestUsesAgent(model, !!hasTools);
   const agentId = useToolAgent ? await session.resolveAgent() : null;
   if (useToolAgent && !agentId) useToolAgent = false;
   let framingVariant = currentFramingVariant(
     defaultFramingForModel(model, { agentLess: !!hasTools && !useToolAgent }),
   );
   const framingContext = { tone };
-  log.info(`Tool routing: model=${model}, tone=${tone}, agent=${agentId ?? "none"}, framing=${framingVariant}`);
+  log.info(
+    `Tool routing: model=${model}, tone=${tone}, agent=${agentId ?? "none"}, framing=${framingVariant}`,
+  );
 
   // Format message: full prompt on first turn, delta on follow-ups.
   // M365 is stateful — it remembers everything from prior turns,
   // so we only need to send new messages after the first turn.
+  // Sticky threads are finite: when M365 reports few messages left on this thread's quota,
+  // roll over to a fresh conversation (full history) before it runs out mid-task.
+  const remaining = conv.lastUsage?.conversationRemaining;
+  if (mode !== "off" && typeof remaining === "number" && remaining <= STICKY_ROLLOVER_REMAINING) {
+    log.info(
+      `Sticky conversation ${conv.fingerprint}: ${remaining} messages left on this thread, rolling over to a fresh conversation`,
+    );
+    session.newConversation();
+    conv.sentMessageCount = 0;
+    conv.lastSentDigest = null;
+    conv.lastUsage = null; // that snapshot was the old thread's
+    reframe = false; // the full prompt carries the framing already
+  }
+
   const isFirstTurn = session.turnCount === 0;
   const convId = session.conversationId;
   let text: string;
@@ -456,8 +617,20 @@ export async function handleChatCompletion(
       `Chat completion: model=${model}, stream=${body.stream}, messages=${body.messages.length}, turn=${session.turnCount}, mode=full, cid=${convId}`,
     );
   } else {
-    const newMessages = body.messages.slice(conv.sentMessageCount);
-    const delta = newMessages.length > 0 ? formatDeltaMessages(newMessages, body.messages, framingVariant) : "";
+    // Sticky modes anchor the delta on the last message sent: a client that compacted
+    // its history shifts every position, so a plain count would skip the wrong messages.
+    const { start, reason } =
+      mode === "off"
+        ? { start: conv.sentMessageCount, reason: "append" as const }
+        : stickyDeltaStart(body.messages, conv.sentMessageCount, conv.lastSentDigest);
+    if (reason === "rebased" || reason === "rewritten") {
+      log.info(
+        `Sticky conversation ${conv.fingerprint}: client rewrote history (${reason}), sending from message ${start} of ${body.messages.length}`,
+      );
+    }
+    const newMessages = body.messages.slice(start);
+    const delta =
+      newMessages.length > 0 ? formatDeltaMessages(newMessages, body.messages, framingVariant) : "";
     if (delta.length > 0) {
       text = delta;
       // Only a tool result is the thing the note corrects the model about.
@@ -474,6 +647,9 @@ export async function handleChatCompletion(
       log.info(
         `Chat completion: model=${model}, stream=${body.stream}, messages=${body.messages.length}, turn=${session.turnCount}, mode=retry, cid=${convId}`,
       );
+    }
+    if (reframe) {
+      text = `${formatMessages([], body.tools, body.tool_choice, undefined, framingVariant, framingContext)}\n\n${text}`;
     }
   }
   conv.pendingNote = null; // one turn only: consumed above, or stale
@@ -497,6 +673,8 @@ export async function handleChatCompletion(
   let lastTurnCount: number | null | undefined;
   let lastModelLatencyMs: number | null = null;
   let lastMetering: Record<string, number> | null | undefined;
+  // Estimated from the last send: the thread already holds the rest of the prompt.
+  let lastCache = { read: 0, write: 0 };
 
   // `onDelta` (when provided) forwards each text delta to the caller AS IT ARRIVES,
   // for live incremental streaming. It's safe to forward without ever retracting:
@@ -533,6 +711,11 @@ export async function handleChatCompletion(
         // The agent overrides `tone` (forces GPT-5), so tool-less requests must
         // skip it to reach the model the tone selects (e.g. Claude). See
         // ModelSession.run / docs H8.6.
+        const write = estimateTokens(text);
+        lastCache = {
+          read: session.turnCount === 0 ? 0 : Math.max(0, promptTokens - write),
+          write,
+        };
         copilotStream = await session.run(text, model, opts.signal, useToolAgent);
       } catch (err: unknown) {
         return finish({
@@ -630,27 +813,57 @@ export async function handleChatCompletion(
       const exhausted = priorityAccessExhaustionOf(copilotStream.result, fullText);
       if (exhausted) {
         const budget = meteredBudgetOf(model);
-        if (budget || copilotStream.result?.value === "OutOfCredits") notePriorityAccessExhausted(budget ?? model, exhausted);
-        const fallback = budget && !priorityFallbackDone ? priorityAccessFallbackModel(budget) : null;
+        if (budget || copilotStream.result?.value === "OutOfCredits")
+          notePriorityAccessExhausted(budget ?? model, exhausted);
+        const fallback =
+          budget && !priorityFallbackDone ? priorityAccessFallbackModel(budget) : null;
         if (fallback) {
           priorityFallbackDone = true;
-          log.info(`Priority access exhausted (${exhausted.window}) — re-sending to ${fallback} (${PRIORITY_ACCESS_FALLBACK_ENV[budget!]}) in a fresh conversation`);
+          log.info(
+            `Priority access exhausted (${exhausted.window}) — re-sending to ${fallback} (${PRIORITY_ACCESS_FALLBACK_ENV[budget!]}) in a fresh conversation`,
+          );
           model = fallback;
           tone = getToneForModel(model);
-          useToolAgent = getEnvironmentVariable("M365_DISABLE_AGENT") !== "1" && requestUsesAgent(model, !!hasTools);
+          useToolAgent =
+            getEnvironmentVariable("M365_DISABLE_AGENT") !== "1" &&
+            requestUsesAgent(model, !!hasTools);
           if (useToolAgent && !(await session.resolveAgent())) useToolAgent = false;
           framingVariant = currentFramingVariant(
             defaultFramingForModel(model, { agentLess: !!hasTools && !useToolAgent }),
           );
           session.newConversation();
-          text = formatMessages(body.messages, body.tools, body.tool_choice, session.conversationId, framingVariant, { tone });
+          text = formatMessages(
+            body.messages,
+            body.tools,
+            body.tool_choice,
+            session.conversationId,
+            framingVariant,
+            { tone },
+          );
           originalText = text;
           attempt--;
           continue;
         }
         noteRequestOutcome(false, convId); // an answer, not a throttle
-        log.info(`Priority access exhausted (${exhausted.window}) — resets ${exhausted.resetsAt.toISOString()}`);
+        log.info(
+          `Priority access exhausted (${exhausted.window}) — resets ${exhausted.resetsAt.toISOString()}`,
+        );
         return { error: priorityAccessResponse(exhausted, model) };
+      }
+
+      // Render only after throttle and priority-access refusals have been handled.
+      // An image-only turn is content and must not enter the empty-response retry.
+      try {
+        const imageMarkdown = await renderImagesMarkdown(copilotStream.images ?? []);
+        if (imageMarkdown) {
+          const addition = fullText ? `\n\n${imageMarkdown}` : imageMarkdown;
+          fullText += addition;
+          onDelta?.(addition);
+        }
+      } catch (error: unknown) {
+        return finish({
+          error: openAIError(502, { message: getErrorMessage(error), type: "upstream_error" }),
+        });
       }
 
       if (copilotStream.hasContent || fullText.length > 0) {
@@ -707,6 +920,33 @@ export async function handleChatCompletion(
         });
       }
 
+      // M365 named the failure (ForbiddenRequest/InvalidCopilotLicense, InternalError…):
+      // "Please continue." retries only spend turns on the same answer, so pass it through.
+      // Except F52: InternalError on an agent route that has answered is a premium transient.
+      const failure = copilotStream.result;
+      if (
+        failure &&
+        failure.value !== "Success" &&
+        !(failure.value === "InternalError" && useToolAgent && isAgentRouteAlive(tone))
+      ) {
+        if (useToolAgent && !agentRefreshed) {
+          agentRefreshed = true;
+          if (await session.refreshAgent()) {
+            log.info("Agent re-resolved after a failed turn, resending original prompt");
+            text = originalText;
+            continue;
+          }
+        }
+        log.info(
+          `Upstream ${failure.value}${failure.errorCode ? `/${failure.errorCode}` : ""} — failing fast (no retry)`,
+        );
+        if (useToolAgent && modelRequiresAgent(model) && failure.value === "InternalError") {
+          return { error: premiumOnlyModelResponse(model) };
+        }
+        noteRequestOutcome(false, convId); // an explicit answer, not the throttle signature
+        return finish({ error: upstreamResultResponse(failure) });
+      }
+
       // Empty response. Only an at-limit throttle warrants treating this as rate
       // limiting; otherwise it's a different failure (content filter, an invalid
       // agent/session, a transient upstream error) where a long escalating
@@ -739,14 +979,6 @@ export async function handleChatCompletion(
         await new Promise((r) => setTimeout(r, SHORT_RETRY_DELAY_MS));
         text = "Please continue."; // M365 already has context
       } else {
-        // A model that serves only with the agent, on an account whose agent
-        // route doesn't serve it (Opus 4.5 on a non-premium account: BotConnection,
-        // `InternalError`, every time — §24). Not a throttle, so it doesn't feed
-        // the degradation backoff; say what it is instead of "empty response".
-        if (useToolAgent && modelRequiresAgent(model) && copilotStream.result?.value === "InternalError") {
-          log.info(`${model}: agent route returned InternalError on every attempt — premium-only model on a non-premium account?`);
-          return { error: premiumOnlyModelResponse(model) };
-        }
         // Final empty after retries, and not an at-limit (per-conversation) cap:
         // this is the thread-rate throttle signature (F13). Feed the degradation-
         // backoff policy — once empties span enough distinct conversations it paces
@@ -760,7 +992,12 @@ export async function handleChatCompletion(
   }
 
   function usageForResponse(): Record<string, unknown> {
-    const tokens = { prompt: promptTokens, completion: estimateTokens(completionText) };
+    const tokens = {
+      prompt: promptTokens,
+      completion: estimateTokens(completionText),
+      cacheRead: lastCache.read,
+      cacheWrite: lastCache.write,
+    };
     const usage = buildUsage(
       tokens,
       lastThrottle,
@@ -819,7 +1056,7 @@ export async function handleChatCompletion(
       };
       const result = await runBuffered();
       if ("error" in result) return { kind: "error", resp: result.error };
-      conv.sentMessageCount = body.messages.length;
+      markSent(conv, body.messages);
       let fullText = stopAtFabricatedResult(result.fullText);
 
       log.debug("Raw response (tool mode):", trunc(fullText, 1000));
@@ -862,7 +1099,7 @@ export async function handleChatCompletion(
             : HALLUCINATION_FORCE_PROMPT;
         const retry = await runBuffered();
         if ("error" in retry) return { kind: "error", resp: retry.error };
-        conv.sentMessageCount = body.messages.length;
+        markSent(conv, body.messages);
         fullText = stopAtFabricatedResult(retry.fullText);
         parsed = parseToolCalls(fullText, body.tools);
         log.info(
@@ -975,7 +1212,7 @@ export async function handleChatCompletion(
       // No tools — stream deltas live (onDelta) while buffering for the retry logic.
       const result = await runBuffered(onDelta);
       if ("error" in result) return { kind: "error", resp: result.error };
-      conv.sentMessageCount = body.messages.length;
+      markSent(conv, body.messages);
       return { kind: "text", text: applyForcedExactReply(result.fullText) };
     }
   } // end produce()
@@ -1005,13 +1242,13 @@ export async function handleChatCompletion(
     if (p.kind === "tools") {
       const message = legacy
         ? {
-            role: "assistant",
-            content: null,
-            function_call: {
-              name: p.toolCalls[0].function.name,
-              arguments: p.toolCalls[0].function.arguments,
-            },
-          }
+          role: "assistant",
+          content: null,
+          function_call: {
+            name: p.toolCalls[0].function.name,
+            arguments: p.toolCalls[0].function.arguments,
+          },
+        }
         : { role: "assistant", content: null, tool_calls: p.toolCalls };
       return withProxyHeaders(
         jsonResponse(200, {
@@ -1068,7 +1305,7 @@ export async function handleChatCompletion(
           const hb = setInterval(() => {
             try {
               controller.enqueue(enc.encode(": keepalive\n\n"));
-            } catch {}
+            } catch { }
           }, 15000);
 
           // Live token passthrough (non-tool only). Track exactly what we've sent so the
@@ -1087,21 +1324,21 @@ export async function handleChatCompletion(
             hasTools || forcedExactReply
               ? undefined
               : (delta: string) => {
-                  if (!delta) return;
-                  if (gated) {
-                    head += delta;
-                    if (couldBePriorityAccessPrefix(head)) return; // still undecided — keep buffering
-                    gated = false;
-                    delta = head; // release everything held so far, in order
-                  }
-                  sent += delta;
-                  try {
-                    send({
-                      ...base,
-                      choices: [{ index: 0, delta: { content: delta }, finish_reason: null }],
-                    });
-                  } catch {}
-                };
+                if (!delta) return;
+                if (gated) {
+                  head += delta;
+                  if (couldBePriorityAccessPrefix(head)) return; // still undecided — keep buffering
+                  gated = false;
+                  delta = head; // release everything held so far, in order
+                }
+                sent += delta;
+                try {
+                  send({
+                    ...base,
+                    choices: [{ index: 0, delta: { content: delta }, finish_reason: null }],
+                  });
+                } catch { }
+              };
 
           let p: Produced;
           try {
@@ -1141,7 +1378,7 @@ export async function handleChatCompletion(
                     code = parsedError.code;
                   if (typeof parsedError.param === "string") param = parsedError.param;
                 }
-              } catch {}
+              } catch { }
               streamError = { message, type };
               const retryAfter = p.resp.headers.get("Retry-After");
               // HTTP 200 is already committed, so surface the failure as an in-stream error chunk.
@@ -1238,7 +1475,7 @@ export async function handleChatCompletion(
             try {
               controller.enqueue(enc.encode("data: [DONE]\n\n"));
               controller.close();
-            } catch {}
+            } catch { }
           }
         },
       }),
@@ -1260,7 +1497,7 @@ export async function handleChatCompletion(
  * users can read them.
  */
 function buildUsage(
-  tokens: { prompt: number; completion: number },
+  tokens: { prompt: number; completion: number; cacheRead?: number; cacheWrite?: number },
   throttle: { current: number; max: number } | null,
   contentOrigin?: string | null,
   messageType?: string | null,
@@ -1275,6 +1512,13 @@ function buildUsage(
     total_tokens: tokens.prompt + tokens.completion,
     x_proxy_tokens_estimated: true,
   };
+  // M365 reports no caching; "cached" is the history the sticky thread already holds
+  // (not re-sent), "write" is what this turn added to it.
+  if (tokens.cacheRead !== undefined || tokens.cacheWrite !== undefined) {
+    base.prompt_tokens_details = { cached_tokens: tokens.cacheRead ?? 0 };
+    base.x_proxy_cache_read_tokens = tokens.cacheRead ?? 0;
+    base.x_proxy_cache_write_tokens = tokens.cacheWrite ?? 0;
+  }
   if (throttle) {
     base.x_m365_conversation_messages = throttle.current;
     base.x_m365_conversation_max = throttle.max;
@@ -1321,6 +1565,8 @@ function usageToSessionSnapshot(
     promptTokens: asNumber(usage.prompt_tokens),
     completionTokens: asNumber(usage.completion_tokens),
     totalTokens: asNumber(usage.total_tokens),
+    cacheReadTokens: asNumber(usage.x_proxy_cache_read_tokens),
+    cacheWriteTokens: asNumber(usage.x_proxy_cache_write_tokens),
     conversationMessages: asNumberOrNull(usage.x_m365_conversation_messages),
     conversationMax: asNumberOrNull(usage.x_m365_conversation_max),
     conversationRemaining: asNumberOrNull(usage.x_m365_conversation_remaining),
@@ -1433,10 +1679,27 @@ function emptyResponseResponse(throttle: { current: number; max: number } | null
   });
 }
 
+/** A turn whose final result names the failure (e.g. `ForbiddenRequest` /
+ *  `InvalidCopilotLicense`, `InternalError`), passed through verbatim. */
+function upstreamResultResponse(result: {
+  value: string;
+  errorCode?: string;
+  message?: string;
+}): Response {
+  const forbidden = result.value === "ForbiddenRequest";
+  const scope = result.errorCode ? ` (${result.errorCode})` : "";
+  return openAIError(forbidden ? 403 : 502, {
+    message: `M365 Copilot returned ${result.value}${scope}: ${result.message ?? "no message"}`,
+    type: forbidden ? "permission_error" : "upstream_error",
+    code: result.errorCode ?? result.value,
+    param: result.value,
+  });
+}
+
 function premiumOnlyModelResponse(model: string): Response {
   return jsonResponse(502, {
     error: {
-      message: `M365 Copilot didn't serve ${model}: its only route (with the tool agent attached) returned InternalError on every attempt. ${model} is served only on a premium (paid Microsoft 365 Copilot) account; on any other account use claude-sonnet.`,
+      message: `M365 Copilot didn't serve ${model}: its only route (with the tool agent attached) returned InternalError. ${model} is served only on a premium (paid Microsoft 365 Copilot) account; on any other account use claude-sonnet.`,
       type: "upstream_error",
       code: "model_route_unavailable",
     },

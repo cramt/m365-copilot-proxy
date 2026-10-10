@@ -44,7 +44,7 @@ function renderModelRows() {
   const healthMap = new Map(snapshot.modelHealth.map((row) => [row.model, row]));
 
   if (models.length === 0) {
-    return '<tr><td colspan="11" class="muted">No model data available.</td></tr>';
+    return '<tr><td colspan="13" class="muted">No model data available.</td></tr>';
   }
 
   return models
@@ -72,6 +72,8 @@ function renderModelRows() {
       <td>${metricOrDash(fmtNum(row?.promptTokens ?? null))}</td>
       <td>${metricOrDash(fmtNum(row?.completionTokens ?? null))}</td>
       <td>${metricOrDash(fmtNum(row?.totalTokens ?? null))}</td>
+      <td>${metricOrDash(fmtNum(row?.cacheReadTokens ?? null))}</td>
+      <td>${metricOrDash(fmtNum(row?.cacheWriteTokens ?? null))}</td>
       <td>${metricOrDash(fmtSeconds(row?.avgLatencyMs ?? null))}</td>
       <td>${metricOrDash(fmtSeconds(unreachable ? null : (health?.latencyMs ?? row?.avgModelLatencyMs ?? null)))}</td>
       <td>${metricOrDash(fmtAgo(row?.lastSeenAt ?? null))}</td>
@@ -83,7 +85,7 @@ function renderModelRows() {
 function renderActiveRows() {
   const sessions = getActiveSessionsSnapshot();
   if (sessions.length === 0) {
-    return '<tr><td colspan="11" class="muted">No active sessions in memory.</td></tr>';
+    return '<tr><td colspan="13" class="muted">No active sessions in memory.</td></tr>';
   }
 
   return sessions
@@ -101,6 +103,8 @@ function renderActiveRows() {
       <td>${fmtNum(s.promptTokens)}</td>
       <td>${fmtNum(s.completionTokens)}</td>
       <td>${fmtNum(s.totalTokens)}</td>
+      <td>${fmtNum(s.cacheReadTokens)}</td>
+      <td>${fmtNum(s.cacheWriteTokens)}</td>
       <td>${esc(convQuota)}</td>
       <td>${fmtSeconds(s.modelLatencyMs)}</td>
       <td>${fmtAgo(s.lastAccessedAt)}</td>
@@ -357,20 +361,18 @@ export default defineEventHandler(() => {
         <span class="pill${accountThrottle.status === "throttled" ? " err" : ""}" title="${esc(accountThrottle.message ?? "No account-throttle response recorded")}">
           M365: <strong>${accountStatus}</strong>
         </span>
-        ${
-          accountThrottle.since !== null
-            ? `<span class="pill">
+        ${accountThrottle.since !== null
+      ? `<span class="pill">
           First observed: <time data-throttle-observed-at="${accountThrottle.since}" datetime="${new Date(accountThrottle.since).toISOString()}" title="${new Date(accountThrottle.since).toISOString()}">${fmtAgo(accountThrottle.since)}</time>
         </span>`
-            : ""
-        }
-        ${
-          accountThrottle.lastObservedAt !== null
-            ? `<span class="pill">
+      : ""
+    }
+        ${accountThrottle.lastObservedAt !== null
+      ? `<span class="pill">
           Last throttle: <time data-throttle-observed-at="${accountThrottle.lastObservedAt}" datetime="${new Date(accountThrottle.lastObservedAt).toISOString()}" title="${new Date(accountThrottle.lastObservedAt).toISOString()}">${fmtAgo(accountThrottle.lastObservedAt)}</time>
         </span>`
-            : ""
-        }
+      : ""
+    }
         <span id="backoffStatus" class="pill${retryAfterSeconds > 0 ? " err" : ""}" title="Proxy-imposed wait recommendation">
           Local backoff: <strong id="backoffTime" data-retry-after="${retryAfterSeconds}">${retryAfterSeconds > 0 ? `${retryAfterSeconds}s` : "Inactive"}</strong>
         </span>
@@ -384,6 +386,7 @@ export default defineEventHandler(() => {
       <article class="card"><div class="k">Success / Error</div><div class="v">${fmtNum(snapshot.totals.successRequests)} / ${fmtNum(snapshot.totals.errorRequests)}</div></article>
       <article class="card"><div class="k">Prompt / Completion</div><div class="v">${fmtNum(snapshot.totals.promptTokens)} / ${fmtNum(snapshot.totals.completionTokens)}</div></article>
       <article class="card"><div class="k">Total Tokens</div><div class="v">${fmtNum(snapshot.totals.totalTokens)}</div></article>
+      <article class="card"><div class="k">Cache Read / Write</div><div class="v">${fmtNum(snapshot.totals.cacheReadTokens)} / ${fmtNum(snapshot.totals.cacheWriteTokens)}</div></article>
       <article class="card"><div class="k">Avg Req / Model Latency</div><div class="v">${fmtSeconds(snapshot.totals.avgLatencyMs)} / ${fmtSeconds(snapshot.totals.avgModelLatencyMs)}</div></article>
     </section>
 
@@ -414,6 +417,8 @@ export default defineEventHandler(() => {
             <th>Prompt</th>
             <th>Completion</th>
             <th>Total</th>
+            <th>Cache Read</th>
+            <th>Cache Write</th>
             <th>Avg Req Latency</th>
             <th>Avg Model Latency</th>
             <th>Last Seen</th>
@@ -440,6 +445,8 @@ export default defineEventHandler(() => {
             <th>Prompt</th>
             <th>Completion</th>
             <th>Total</th>
+            <th>Cache Read</th>
+            <th>Cache Write</th>
             <th>Conversation Quota</th>
             <th>Model Latency</th>
             <th>Last Access</th>
@@ -450,7 +457,7 @@ export default defineEventHandler(() => {
         </tbody>
       </table>
       </div>
-      <p class="note">Prompt/completion tokens are currently zero when upstream does not expose token counts; conversation quota fields come from M365 usage metadata.</p>
+      <p class="note">Token counts are character-based estimates (M365 exposes none). Cache read is the history the M365 thread already holds and the proxy didn't re-send; cache write is what the turn added to the thread. Conversation quota fields come from M365 usage metadata.</p>
     </section>
   </main>
 
@@ -518,9 +525,17 @@ export default defineEventHandler(() => {
         }
       };
 
+      let checkingAll = false;
       const checkAll = async () => {
+        if (checkingAll) return;
+        checkingAll = true;
         healthBtn.disabled = true;
-        setStatus("Checking all models...");
+        const startedAt = Date.now();
+        const progress = setInterval(() => {
+          const elapsed = Math.floor((Date.now() - startedAt) / 1000);
+          setStatus("Checking models sequentially with a 10-second pause between completed checks (" + Math.floor(elapsed / 60) + "m " + (elapsed % 60) + "s elapsed)...");
+        }, 1000);
+        setStatus("Checking models sequentially with a 10-second pause between completed checks...");
         try {
           const res = await fetch("/actions/check-models", { method: "POST" });
           const data = await res.json();
@@ -533,13 +548,15 @@ export default defineEventHandler(() => {
         } catch (err) {
           setStatus("Health check failed: " + (err.message || String(err)), "err");
         } finally {
+          clearInterval(progress);
+          checkingAll = false;
           healthBtn.disabled = false;
         }
       };
 
       pingBtn.addEventListener("click", ping);
       healthBtn.addEventListener("click", checkAll);
-      setInterval(() => location.reload(), 10_000);
+      setInterval(() => { if (!checkingAll) location.reload(); }, 10_000);
     })();
   </script>
 </body>

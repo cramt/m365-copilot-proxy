@@ -151,7 +151,10 @@ for (const name of pick) {
   }
   const frames = [];
   const r = await oneTurn({
-    token, claims, text: cell.text, tone: TONE,
+    token,
+    claims,
+    text: cell.text,
+    tone: TONE,
     optionsSets: cell.optionsSets,
     extraAllowed: cell.extraAllowed ?? ["GeneratedCode"],
     ...(cell.baseAllowed ? { baseAllowed: cell.baseAllowed } : {}),

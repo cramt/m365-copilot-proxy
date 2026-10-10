@@ -65,6 +65,8 @@ export function recordCompletionMetric(input: CompletionMetricInput): void {
     promptTokens: toNumber(usage?.prompt_tokens),
     completionTokens: toNumber(usage?.completion_tokens),
     totalTokens: toNumber(usage?.total_tokens),
+    cacheReadTokens: toNumber(usage?.x_proxy_cache_read_tokens),
+    cacheWriteTokens: toNumber(usage?.x_proxy_cache_write_tokens),
     conversationMessages: toNumberOrNull(usage?.x_m365_conversation_messages),
     conversationMax: toNumberOrNull(usage?.x_m365_conversation_max),
     conversationRemaining: toNumberOrNull(usage?.x_m365_conversation_remaining),
@@ -95,6 +97,8 @@ export function logCompletionStatus(input: CompletionLogInput): void {
   const promptTokens = toNumber(usage?.prompt_tokens);
   const completionTokens = toNumber(usage?.completion_tokens);
   const totalTokens = toNumber(usage?.total_tokens);
+  const cacheReadTokens = toNumber(usage?.x_proxy_cache_read_tokens);
+  const cacheWriteTokens = toNumber(usage?.x_proxy_cache_write_tokens);
   const conversationMessages = toNumberOrNull(usage?.x_m365_conversation_messages);
   const conversationMax = toNumberOrNull(usage?.x_m365_conversation_max);
   const conversationRemaining = toNumberOrNull(usage?.x_m365_conversation_remaining);
@@ -113,7 +117,7 @@ export function logCompletionStatus(input: CompletionLogInput): void {
   const conversationId = input.conversationId ?? "n/a";
 
   console.log(
-    `[request:${input.requestId}] ${status} model=${input.model} stream=${input.stream} status=${input.statusCode} latency=${input.latencyMs}ms model_latency=${modelLatency} finish=${finish} message_type=${messageType} tokens(p/c/t)=${totalTokenText} conv=${convUsage} remaining=${conversationRemaining ?? "n/a"} sid=${sessionId} cid=${conversationId}`,
+    `[request:${input.requestId}] ${status} model=${input.model} stream=${input.stream} status=${input.statusCode} latency=${input.latencyMs}ms model_latency=${modelLatency} finish=${finish} message_type=${messageType} tokens(p/c/t)=${totalTokenText} cache(r/w)=${cacheReadTokens}/${cacheWriteTokens} conv=${convUsage} remaining=${conversationRemaining ?? "n/a"} sid=${sessionId} cid=${conversationId}`,
   );
 
   if (input.errorType || input.errorMessage) {

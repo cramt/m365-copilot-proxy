@@ -134,9 +134,21 @@ export type MeteredBudget = "opus" | "sonnet-5.5";
  * - Sonnet 5.5: `ClaudeSonnet55QueryDaily` (80) and `ClaudeSonnet55QueryWeekly`
  *   (150), read 79/149 after the first turn (§26). Sonnet 5 lowers neither.
  */
-export const METERED_BUDGETS: Readonly<Record<MeteredBudget, { label: string; usageKey: string; daily: string; weekly: string }>> = {
-  opus: { label: "Opus", usageKey: "opus", daily: "ClaudeOpusQueryDaily", weekly: "ClaudeOpusQuery75" },
-  "sonnet-5.5": { label: "Sonnet 5.5", usageKey: "sonnet55", daily: "ClaudeSonnet55QueryDaily", weekly: "ClaudeSonnet55QueryWeekly" },
+export const METERED_BUDGETS: Readonly<
+  Record<MeteredBudget, { label: string; usageKey: string; daily: string; weekly: string }>
+> = {
+  opus: {
+    label: "Opus",
+    usageKey: "opus",
+    daily: "ClaudeOpusQueryDaily",
+    weekly: "ClaudeOpusQuery75",
+  },
+  "sonnet-5.5": {
+    label: "Sonnet 5.5",
+    usageKey: "sonnet55",
+    daily: "ClaudeSonnet55QueryDaily",
+    weekly: "ClaudeSonnet55QueryWeekly",
+  },
 };
 
 /** `throttling.metering` as `{budget: remainingAllowance}`; null when absent or empty. */
@@ -173,12 +185,17 @@ export function priorityAccessExhaustionOf(
   text: string | null | undefined,
   now: Date = new Date(),
 ): PriorityAccessExhaustion | null {
-  const fromText = parsePriorityAccessExhaustion(result?.message, now) ?? parsePriorityAccessExhaustion(text, now);
+  const fromText =
+    parsePriorityAccessExhaustion(result?.message, now) ?? parsePriorityAccessExhaustion(text, now);
   if (fromText) return fromText;
   if (result?.value !== "OutOfCredits") return null;
   const message = (result.message ?? text ?? "").trim() || "OutOfCredits";
   const window: PriorityAccessWindow = /\bweek|monday/i.test(message) ? "week" : "day";
-  return { window, resetsAt: window === "week" ? nextUtcMonday(now) : nextUtcMidnight(now), message };
+  return {
+    window,
+    resetsAt: window === "week" ? nextUtcMonday(now) : nextUtcMidnight(now),
+    message,
+  };
 }
 
 // --- Remembering it ----------------------------------------------------------
@@ -193,13 +210,20 @@ export function priorityAccessExhaustionOf(
 const exhaustions = new Map<string, PriorityAccessExhaustion>();
 
 /** Record that the budget under `key` (a MeteredBudget, or a model ID) ran out. */
-export function notePriorityAccessExhausted(key: string, e: PriorityAccessExhaustion, now: Date = new Date()): void {
+export function notePriorityAccessExhausted(
+  key: string,
+  e: PriorityAccessExhaustion,
+  now: Date = new Date(),
+): void {
   const known = exhaustions.get(key);
   if (!known || e.resetsAt > known.resetsAt || known.resetsAt <= now) exhaustions.set(key, e);
 }
 
 /** The recorded exhaustion under `key`, while it lasts; null once its reset has passed. */
-export function activePriorityAccessExhaustion(key: string, now: Date = new Date()): PriorityAccessExhaustion | null {
+export function activePriorityAccessExhaustion(
+  key: string,
+  now: Date = new Date(),
+): PriorityAccessExhaustion | null {
   const known = exhaustions.get(key);
   if (known && known.resetsAt <= now) exhaustions.delete(key);
   return exhaustions.get(key) ?? null;

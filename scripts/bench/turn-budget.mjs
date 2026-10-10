@@ -67,7 +67,8 @@ export function budgetConfig(env = process.env) {
   };
 }
 
-const EVENT = /^\[(\d{4}-\d\d-\d\dT[\d:.]+Z)\] \[\w+\] \[session\] (Chat turn|Turn result: Throttled)/gm;
+const EVENT =
+  /^\[(\d{4}-\d\d-\d\dT[\d:.]+Z)\] \[\w+\] \[session\] (Chat turn|Turn result: Throttled)/gm;
 const LOG_FILE = /debug.*\.log$/;
 const SKIP_DIR = /^(browser-profile|node_modules)$|frames/;
 
@@ -75,7 +76,11 @@ const SKIP_DIR = /^(browser-profile|node_modules)$|frames/;
 export function parseEvents(text) {
   const out = [];
   for (const m of text.matchAll(EVENT)) {
-    out.push({ t: Date.parse(m[1]), kind: m[2] === "Chat turn" ? "turn" : "throttled", line: m[0] });
+    out.push({
+      t: Date.parse(m[1]),
+      kind: m[2] === "Chat turn" ? "turn" : "throttled",
+      line: m[0],
+    });
   }
   return out;
 }
@@ -85,11 +90,22 @@ export function findLogs(dirs, sinceMs, depth = 3) {
   const out = [];
   const walk = (p, d) => {
     let st;
-    try { st = statSync(p); } catch { return; }
-    if (st.isFile()) { if ((d === 0 || LOG_FILE.test(basename(p))) && st.mtimeMs >= sinceMs) out.push(p); return; }
+    try {
+      st = statSync(p);
+    } catch {
+      return;
+    }
+    if (st.isFile()) {
+      if ((d === 0 || LOG_FILE.test(basename(p))) && st.mtimeMs >= sinceMs) out.push(p);
+      return;
+    }
     if (!st.isDirectory() || d > depth) return;
     let names;
-    try { names = readdirSync(p); } catch { return; }
+    try {
+      names = readdirSync(p);
+    } catch {
+      return;
+    }
     for (const n of names) if (!SKIP_DIR.test(n)) walk(join(p, n), d + 1);
   };
   for (const d of dirs) walk(resolve(d), 0);
@@ -119,17 +135,23 @@ export function replay(events, nowMs, cfg) {
   for (let i = evs.length; i >= 0; i--) {
     const gapStart = i > 0 ? evs[i - 1].t : start;
     const gapEnd = i < evs.length ? evs[i].t : nowMs;
-    if (gapEnd - gapStart >= fullAfterMs) { first = i; break; }
+    if (gapEnd - gapStart >= fullAfterMs) {
+      first = i;
+      break;
+    }
   }
   const settled = first >= 0;
   let level = settled ? cfg.capacity : 0;
   const since = settled ? (first < evs.length ? evs[first].t : nowMs) : start;
-  let last = since, turns = 0;
+  let last = since,
+    turns = 0;
   for (const e of evs.slice(settled ? first : 0)) {
     level = Math.min(cfg.capacity, level + ((e.t - last) / 60_000) * cfg.refillPerMin);
     last = e.t;
-    if (e.kind === "turn") { level -= 1; turns++; }
-    else level = Math.min(level, 0);
+    if (e.kind === "turn") {
+      level -= 1;
+      turns++;
+    } else level = Math.min(level, 0);
   }
   level = Math.min(cfg.capacity, level + ((nowMs - last) / 60_000) * cfg.refillPerMin);
   return { level, turns, lastThrottle, settled, since };
@@ -153,7 +175,13 @@ export function budgetStatus(nowMs = Date.now(), cfg = budgetConfig()) {
   const maxWindowMin = Math.max(cfg.windowMin, cfg.maxWindowMin ?? cfg.windowMin);
   for (let windowMin = cfg.windowMin; ; windowMin = Math.min(windowMin * 4, maxWindowMin)) {
     const logs = findLogs(cfg.dirs, nowMs - windowMin * 60_000);
-    const events = logs.flatMap((f) => { try { return parseEvents(readFileSync(f, "utf8")); } catch { return []; } });
+    const events = logs.flatMap((f) => {
+      try {
+        return parseEvents(readFileSync(f, "utf8"));
+      } catch {
+        return [];
+      }
+    });
     const st = replay(events, nowMs, { ...cfg, windowMin });
     if (st.settled || windowMin >= maxWindowMin) return { ...st, logs: logs.length, windowMin };
   }
@@ -162,7 +190,14 @@ export function budgetStatus(nowMs = Date.now(), cfg = budgetConfig()) {
 const fmtMin = (ms) => `${(ms / 60_000).toFixed(1)} min`;
 
 /** Block until the account can afford `need` more turns (see the header). A no-op unless M365_AVOID_THROTTLING is set. */
-export async function waitForBudget({ need = 12, label = "bench", log = console.log, cfg = budgetConfig(), now = () => Date.now(), sleep = (ms) => new Promise((r) => setTimeout(r, ms)) } = {}) {
+export async function waitForBudget({
+  need = 12,
+  label = "bench",
+  log = console.log,
+  cfg = budgetConfig(),
+  now = () => Date.now(),
+  sleep = (ms) => new Promise((r) => setTimeout(r, ms)),
+} = {}) {
   if (!cfg.enabled) return { waitedMs: 0 };
   const t0 = now();
   let announced = false;
@@ -170,12 +205,17 @@ export async function waitForBudget({ need = 12, label = "bench", log = console.
     const st = budgetStatus(now(), cfg);
     const d = decide(st, need, now(), cfg);
     if (d.ok) {
-      if (announced) log(`[${label}] pacing: resumed after ${fmtMin(now() - t0)} (bucket ~${st.level.toFixed(0)})`);
+      if (announced)
+        log(
+          `[${label}] pacing: resumed after ${fmtMin(now() - t0)} (bucket ~${st.level.toFixed(0)})`,
+        );
       return { waitedMs: now() - t0 };
     }
     if (!announced) {
-      log(`[${label}] pacing: bucket ~${st.level.toFixed(0)}/${cfg.capacity} turns, need ${need} + reserve ${cfg.reserve}` +
-        `${d.reason === "throttle hold" ? `, throttled at ${new Date(st.lastThrottle).toISOString()}` : ""} — waiting ~${fmtMin(d.waitMs)} (${d.reason})`);
+      log(
+        `[${label}] pacing: bucket ~${st.level.toFixed(0)}/${cfg.capacity} turns, need ${need} + reserve ${cfg.reserve}` +
+          `${d.reason === "throttle hold" ? `, throttled at ${new Date(st.lastThrottle).toISOString()}` : ""} — waiting ~${fmtMin(d.waitMs)} (${d.reason})`,
+      );
       announced = true;
     }
     // Re-read the logs at least once a minute: something else may be spending turns.
@@ -185,21 +225,29 @@ export async function waitForBudget({ need = 12, label = "bench", log = console.
 
 async function main(argv) {
   const cmd = argv[0] ?? "status";
-  const opt = (k, d) => { const i = argv.indexOf(k); return i >= 0 && argv[i + 1] ? argv[i + 1] : d; };
+  const opt = (k, d) => {
+    const i = argv.indexOf(k);
+    return i >= 0 && argv[i + 1] ? argv[i + 1] : d;
+  };
   const cfg = budgetConfig();
   if (cmd === "status") {
     const at = opt("--at") ? Date.parse(opt("--at")) : Date.now();
     const st = budgetStatus(at, cfg);
     const d = decide(st, Number(opt("--need", "12")), at, cfg);
-    console.log(`bucket ~${st.level.toFixed(1)}/${cfg.capacity} turns at ${new Date(at).toISOString()} (refill ${cfg.refillPerMin}/min, reserve ${cfg.reserve}; ${st.turns} turns since ${st.settled ? "it was last full at" : "the start of the logs read, assumed empty, at"} ${new Date(st.since).toISOString()}, from ${st.logs} logs` +
-      `${st.lastThrottle ? `; last throttled turn ${new Date(st.lastThrottle).toISOString()}` : ""}) — ${d.ok ? "a task may start" : `wait ~${fmtMin(d.waitMs)} (${d.reason})`}` +
-      `${cfg.enabled ? "" : " [pacing is off: set M365_AVOID_THROTTLING=1 to have the bench wait]"}`);
+    console.log(
+      `bucket ~${st.level.toFixed(1)}/${cfg.capacity} turns at ${new Date(at).toISOString()} (refill ${cfg.refillPerMin}/min, reserve ${cfg.reserve}; ${st.turns} turns since ${st.settled ? "it was last full at" : "the start of the logs read, assumed empty, at"} ${new Date(st.since).toISOString()}, from ${st.logs} logs` +
+        `${st.lastThrottle ? `; last throttled turn ${new Date(st.lastThrottle).toISOString()}` : ""}) — ${d.ok ? "a task may start" : `wait ~${fmtMin(d.waitMs)} (${d.reason})`}` +
+        `${cfg.enabled ? "" : " [pacing is off: set M365_AVOID_THROTTLING=1 to have the bench wait]"}`,
+    );
   } else if (cmd === "wait") {
     await waitForBudget({ need: Number(opt("--need", "12")), label: opt("--label", "bench"), cfg });
   } else {
-    console.error("usage: turn-budget.mjs status [--at ISO] [--need N] | wait [--need N] [--label L]");
+    console.error(
+      "usage: turn-budget.mjs status [--at ISO] [--need N] | wait [--need N] [--label L]",
+    );
     process.exit(1);
   }
 }
 
-if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) await main(process.argv.slice(2));
+if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href)
+  await main(process.argv.slice(2));
