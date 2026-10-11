@@ -165,10 +165,6 @@ settings:
 importers:
 
   .:
-    dependencies:
-      m365-copilot-proxy:
-        specifier: 'link:'
-        version: 'link:'
     devDependencies:
       '@biomejs/biome':
         specifier: 2.5.15
@@ -246,18 +242,6 @@ importers:
       '@types/ws':
         specifier: ^8.18.1
         version: 8.18.2
-
-  packages/openclaw-plugin:
-    dependencies:
-      '@m365-copilot/core':
-        specifier: workspace:*
-        version: link:../core
-      '@m365-copilot/proxy-lib':
-        specifier: workspace:*
-        version: link:../proxy-lib
-      srvx:
-        specifier: ^0.8.0
-        version: 0.8.16
 
   packages/proxy:
     dependencies:
