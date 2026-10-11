@@ -24,7 +24,9 @@ if (!secrets) {
 console.log("[probe] running headless automated login...");
 try {
   const token = await loginAutomated(secrets.email, secrets.password, secrets.mfaSecret);
-  console.log(`[probe] AUTOMATED LOGIN OK — ${token.length} chars, starts ${token.slice(0, 12)}...`);
+  console.log(
+    `[probe] AUTOMATED LOGIN OK — ${token.length} chars, starts ${token.slice(0, 12)}...`,
+  );
   process.exit(0);
 } catch (e) {
   console.log(`[probe] AUTOMATED LOGIN FAILED: ${e.message}`);

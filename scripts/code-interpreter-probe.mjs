@@ -31,8 +31,12 @@ const CODE_INTERP_OPTIONSSETS = [
   "enable_gg_gpt",
 ];
 const CODE_INTERP_ALLOWED = [
-  "GeneratedCode", "GenerateContentQuery", "Progress",
-  "TriggerPlugin", "InternalLoaderMessage", "RenderCardRequest",
+  "GeneratedCode",
+  "GenerateContentQuery",
+  "Progress",
+  "TriggerPlugin",
+  "InternalLoaderMessage",
+  "RenderCardRequest",
 ];
 
 const TS = new Date().toISOString().replace(/[:.]/g, "-");
@@ -45,7 +49,9 @@ const EXPECTED = createHash("sha256").update(SECRET, "utf8").digest("hex");
 
 console.log(`[ci] secret="${SECRET}"`);
 console.log(`[ci] expected sha256=${EXPECTED}`);
-console.log(`[ci] mode=${CONTROL ? "CONTROL (no optionsSets)" : "code-interpreter optionsSets ON"}`);
+console.log(
+  `[ci] mode=${CONTROL ? "CONTROL (no optionsSets)" : "code-interpreter optionsSets ON"}`,
+);
 
 const token = await getToken();
 const claims = decodeJwt(token);
@@ -57,45 +63,68 @@ const prompt =
 
 const seenTypes = new Set();
 const r = await oneTurn({
-  token, claims, text: prompt, agentId: null,
+  token,
+  claims,
+  text: prompt,
+  agentId: null,
   optionsSets: CONTROL ? [] : CODE_INTERP_OPTIONSSETS,
   extraAllowed: CONTROL ? [] : CODE_INTERP_ALLOWED,
   timeoutMs: 180000,
   onFrame: (f) => {
-    appendFileSync(framesPath, JSON.stringify(f) + "\n");
+    appendFileSync(framesPath, `${JSON.stringify(f)}\n`);
     // surface any message types / targets we see
     if (f?.target) seenTypes.add(`target:${f.target}`);
     const args = Array.isArray(f?.arguments) ? f.arguments : [];
     for (const a of args) {
-      if (a?.messages) for (const m of a.messages) if (m?.messageType) seenTypes.add(`msgType:${m.messageType}`);
+      if (a?.messages)
+        for (const m of a.messages) if (m?.messageType) seenTypes.add(`msgType:${m.messageType}`);
       // code interpreter often carries a `messageType` or a code/result payload
       for (const k of ["code", "generatedCode", "executionResult", "result", "language"]) {
         if (a && typeof a === "object" && k in a) seenTypes.add(`field:${k}`);
       }
     }
-    if (f?.item?.messages) for (const m of f.item.messages) if (m?.messageType) seenTypes.add(`msgType:${m.messageType}`);
+    if (f?.item?.messages)
+      for (const m of f.item.messages)
+        if (m?.messageType) seenTypes.add(`msgType:${m.messageType}`);
   },
 });
 
 const out = r.fullText || "";
 const correct = out.toLowerCase().includes(EXPECTED);
-const sawCodeFrame = [...seenTypes].some((t) => /GeneratedCode|GenerateContentQuery|code|execution/i.test(t));
+const sawCodeFrame = [...seenTypes].some((t) =>
+  /GeneratedCode|GenerateContentQuery|code|execution/i.test(t),
+);
 
-writeFileSync(join(OUT, "result.json"), JSON.stringify({
-  mode: CONTROL ? "control" : "codeinterp",
-  secret: SECRET, expected: EXPECTED,
-  correctDigestPresent: correct,
-  sawCodeFrame,
-  messageTypesAndFields: [...seenTypes].sort(),
-  disengaged: r.disengaged, contentOrigin: r.contentOrigin,
-  throttle: r.throttle, elapsedMs: r.elapsedMs, error: r.error,
-  replyHead: out.slice(0, 600),
-}, null, 2));
+writeFileSync(
+  join(OUT, "result.json"),
+  JSON.stringify(
+    {
+      mode: CONTROL ? "control" : "codeinterp",
+      secret: SECRET,
+      expected: EXPECTED,
+      correctDigestPresent: correct,
+      sawCodeFrame,
+      messageTypesAndFields: [...seenTypes].sort(),
+      disengaged: r.disengaged,
+      contentOrigin: r.contentOrigin,
+      throttle: r.throttle,
+      elapsedMs: r.elapsedMs,
+      error: r.error,
+      replyHead: out.slice(0, 600),
+    },
+    null,
+    2,
+  ),
+);
 
 console.log(`\n[ci] === RESULT ===`);
 console.log(`[ci] frames/types seen: ${[...seenTypes].sort().join(", ") || "(none special)"}`);
 console.log(`[ci] saw code-interpreter frame: ${sawCodeFrame}`);
-console.log(`[ci] CORRECT sha256 in reply: ${correct}  ${correct ? "✅ REAL EXECUTION" : "❌ (hallucinated or refused)"}`);
-console.log(`[ci] disengaged=${r.disengaged} origin=${r.contentOrigin} throttle=${JSON.stringify(r.throttle)} ${r.elapsedMs}ms ${r.error ? "ERR=" + r.error : ""}`);
+console.log(
+  `[ci] CORRECT sha256 in reply: ${correct}  ${correct ? "✅ REAL EXECUTION" : "❌ (hallucinated or refused)"}`,
+);
+console.log(
+  `[ci] disengaged=${r.disengaged} origin=${r.contentOrigin} throttle=${JSON.stringify(r.throttle)} ${r.elapsedMs}ms ${r.error ? `ERR=${r.error}` : ""}`,
+);
 console.log(`[ci] --- reply (first 600 chars) ---\n${out.slice(0, 600)}`);
 console.log(`[ci] full frames: ${framesPath}`);

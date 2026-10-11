@@ -4,6 +4,9 @@
 // response, and returns a structured summary. No files written — callers
 // decide what to persist. Modelled on frame-dump-probe.mjs's payload.
 //
+// Pass `conversationId` to continue a thread: M365 keys the thread on ConversationId, so a
+// fresh sessionId per run is accepted, and isStartOfSession then defaults to false (§32).
+//
 // Returns: {
 //   fullText, deltaText, snapshotText,   // text (we keep the longer of delta vs snapshot)
 //   disengaged,                          // saw messageType:"Disengaged"
@@ -16,20 +19,31 @@
 
 const RS = "\x1E";
 
-const ROOT = process.cwd();
-const wsMod = await import(`${ROOT}/node_modules/.pnpm/ws@8.20.0/node_modules/ws/wrapper.mjs`);
+const wsMod = await import("ws");
 const WebSocket = wsMod.default ?? wsMod.WebSocket;
 
 const BASE_ALLOWED = [
-  "Chat", "Suggestion", "InternalSearchQuery", "Disengaged",
-  "InternalLoaderMessage", "Progress", "RenderCardRequest", "SemanticSerp",
-  "GenerateContentQuery", "SearchQuery", "ConfirmationCard", "DeveloperLogs",
-  "EndOfRequest", "ReferencesListComplete",
+  "Chat",
+  "Suggestion",
+  "InternalSearchQuery",
+  "Disengaged",
+  "InternalLoaderMessage",
+  "Progress",
+  "RenderCardRequest",
+  "SemanticSerp",
+  "GenerateContentQuery",
+  "SearchQuery",
+  "ConfirmationCard",
+  "DeveloperLogs",
+  "EndOfRequest",
+  "ReferencesListComplete",
 ];
 
 const VARIANTS = [
-  "EnableMcpServerWidgets", "feature.EnableMcpServerWidgets",
-  "feature.IsStreamingModeInChatRequestEnabled", "DeveloperLogs",
+  "EnableMcpServerWidgets",
+  "feature.EnableMcpServerWidgets",
+  "feature.IsStreamingModeInChatRequestEnabled",
+  "DeveloperLogs",
   "Agt_bizchat_enableGpt5ForHelix",
 ].join(",");
 
@@ -43,17 +57,25 @@ const VARIANTS = [
  * @param {string} [o.streamingMode]  default "ConciseWithPadding"
  * @param {number} [o.timeoutMs] default 120000
  * @param {(frame:object)=>void} [o.onFrame]  optional raw-frame sink
+ * @param {string} [o.conversationId]  continue this conversation instead of a fresh one
+ * @param {string} [o.sessionId]
+ * @param {boolean} [o.isStartOfSession]  default: true unless a conversationId is passed
  */
 export function oneTurn(o) {
   const {
-    token, claims, text, agentId = null,
-    tone = "magic", streamingMode = "ConciseWithPadding",
-    timeoutMs = 120000, onFrame,
-    optionsSets = [],                 // extra BizChat optionsSets (code interpreter, memory, …)
-    extraAllowed = [],                // extra allowedMessageTypes (GeneratedCode, …)
-    baseAllowed = BASE_ALLOWED,       // override the base allowedMessageTypes (declare-to-receive probes)
-    plugins = undefined,              // override plugins; default = BingWebSearch (or [] to disable search)
-    variants = VARIANTS,              // override the WS-query variants flag list (string)
+    token,
+    claims,
+    text,
+    agentId = null,
+    tone = "magic",
+    streamingMode = "ConciseWithPadding",
+    timeoutMs = 120000,
+    onFrame,
+    optionsSets = [], // extra BizChat optionsSets (code interpreter, memory, …)
+    extraAllowed = [], // extra allowedMessageTypes (GeneratedCode, …)
+    baseAllowed = BASE_ALLOWED, // override the base allowedMessageTypes (declare-to-receive probes)
+    plugins = undefined, // override plugins; default = BingWebSearch (or [] to disable search)
+    variants = VARIANTS, // override the WS-query variants flag list (string)
     // Entitlement the connection is opened under. The default included scenario
     // will NOT serve Claude_Opus (canned BotConnection apology); the paid one
     // does. `licenseType` is the value the paid scenario travels with — it is
@@ -65,10 +87,11 @@ export function oneTurn(o) {
     // (docs/hypotheses.md §16 F28/F29). `false` / M365_SAVE_HISTORY=1 restores the
     // pre-#15 wire state most recorded probe evidence was taken under.
     temporaryChat = process.env.M365_SAVE_HISTORY !== "1",
+    conversationId = crypto.randomUUID(),
+    sessionId = crypto.randomUUID(),
+    isStartOfSession = o.conversationId === undefined,
   } = o;
 
-  const sessionId = crypto.randomUUID();
-  const conversationId = crypto.randomUUID();
   const requestId = crypto.randomUUID();
 
   const params = new URLSearchParams({
@@ -89,62 +112,87 @@ export function oneTurn(o) {
   const wsUrl = `wss://substrate.office.com/m365Copilot/Chathub/${claims.oid}@${claims.tid}?${params}`;
 
   const chatMsg = {
-    arguments: [{
-      source: "officeweb",
-      clientCorrelationId: requestId,
-      sessionId,
-      optionsSets,
-      streamingMode,
-      spokenTextMode: "None",
-      options: {},
-      extraExtensionParameters: {},
-      allowedMessageTypes: [...new Set([...baseAllowed, ...extraAllowed])],
-      sliceIds: [],
-      threadLevelGptId: agentId ? { id: agentId, source: "MOS3" } : {},
-      traceId: requestId,
-      isStartOfSession: true,
-      clientInfo: {
-        clientPlatform: "mcmcopilot-web",
-        clientAppName: "Office",
-        clientEntrypoint: "mcmcopilot-officeweb",
-        clientSessionId: sessionId,
-        clientAppType: "Web",
-        deviceOS: "Linux",
-        deviceType: "Desktop",
+    arguments: [
+      {
+        source: "officeweb",
+        clientCorrelationId: requestId,
+        sessionId,
+        optionsSets,
+        streamingMode,
+        spokenTextMode: "None",
+        options: {},
+        extraExtensionParameters: {},
+        allowedMessageTypes: [...new Set([...baseAllowed, ...extraAllowed])],
+        sliceIds: [],
+        threadLevelGptId: agentId ? { id: agentId, source: "MOS3" } : {},
+        traceId: requestId,
+        isStartOfSession,
+        clientInfo: {
+          clientPlatform: "mcmcopilot-web",
+          clientAppName: "Office",
+          clientEntrypoint: "mcmcopilot-officeweb",
+          clientSessionId: sessionId,
+          clientAppType: "Web",
+          deviceOS: "Linux",
+          deviceType: "Desktop",
+        },
+        message: {
+          author: "user",
+          inputMethod: "Keyboard",
+          text,
+          entityAnnotationTypes: ["People", "File", "Event", "Email", "TeamsMessage"],
+          requestId,
+          locationInfo: { timeZoneOffset: 1, timeZone: "Europe/Copenhagen" },
+          locale: "en-gb",
+          messageType: "Chat",
+          experienceType: "Default",
+          adaptiveCards: [],
+          clientPreferences: {},
+        },
+        ...(agentId
+          ? {
+              gpts: [
+                {
+                  id: agentId,
+                  source: "MOS3",
+                  version: "1.0.0",
+                  clientOverrides: {
+                    capabilities: [],
+                    "deepResearchModels@odata.type": "Collection(String)",
+                  },
+                },
+              ],
+            }
+          : { plugins: plugins ?? [{ Id: "BingWebSearch", Source: "BuiltIn" }] }),
+        isSbsSupported: true,
+        tone,
+        renderReferencesBehindEOS: true,
+        disconnectBehavior: "continue",
       },
-      message: {
-        author: "user",
-        inputMethod: "Keyboard",
-        text,
-        entityAnnotationTypes: ["People", "File", "Event", "Email", "TeamsMessage"],
-        requestId,
-        locationInfo: { timeZoneOffset: 1, timeZone: "Europe/Copenhagen" },
-        locale: "en-gb",
-        messageType: "Chat",
-        experienceType: "Default",
-        adaptiveCards: [],
-        clientPreferences: {},
-      },
-      ...(agentId
-        ? { gpts: [{ id: agentId, source: "MOS3", version: "1.0.0",
-            clientOverrides: { capabilities: [], "deepResearchModels@odata.type": "Collection(String)" } }] }
-        : { plugins: plugins ?? [{ Id: "BingWebSearch", Source: "BuiltIn" }] }),
-      isSbsSupported: true,
-      tone,
-      renderReferencesBehindEOS: true,
-      disconnectBehavior: "continue",
-    }],
-    invocationId: "0", target: "chat", type: 4,
+    ],
+    invocationId: "0",
+    target: "chat",
+    type: 4,
   };
   const metrics = {
-    arguments: [{ Timestamps: { ConnectionStart: new Date().toISOString(), UserInputStart: new Date().toISOString(), ConnectionEstablished: new Date().toISOString(), UserInputSubmit: new Date().toISOString() } }],
-    target: "Metrics", type: 1,
+    arguments: [
+      {
+        Timestamps: {
+          ConnectionStart: new Date().toISOString(),
+          UserInputStart: new Date().toISOString(),
+          ConnectionEstablished: new Date().toISOString(),
+          UserInputSubmit: new Date().toISOString(),
+        },
+      },
+    ],
+    target: "Metrics",
+    type: 1,
   };
 
   return new Promise((resolve) => {
     const ws = new WebSocket(wsUrl, {
       headers: {
-        "Origin": "https://m365.cloud.microsoft",
+        Origin: "https://m365.cloud.microsoft",
         "User-Agent": "Mozilla/5.0 (X11; Linux x86_64; rv:148.0) Gecko/20100101 Firefox/148.0",
       },
     });
@@ -157,7 +205,7 @@ export function oneTurn(o) {
     let disengaged = false;
     const messageTypes = new Set();
     let contentOrigin = null;
-    let scores = {};
+    const scores = {};
     let throttle = null;
     let serviceVersion = null;
     let turnCount = null;
@@ -171,13 +219,26 @@ export function oneTurn(o) {
       if (settled) return;
       settled = true;
       clearTimeout(timer);
-      try { ws.close(); } catch {}
+      try {
+        ws.close();
+      } catch {
+        // Closing is best-effort; preserve the result already being settled.
+      }
       const fullText = snapshotText.length >= deltaText.length ? snapshotText : deltaText;
       resolve({
-        fullText, deltaText, snapshotText,
-        disengaged, messageTypes: [...messageTypes].sort(), contentOrigin,
-        scores, throttle, serviceVersion, turnCount,
-        elapsedMs: Date.now() - t0, frameCount, error: error ?? null,
+        fullText,
+        deltaText,
+        snapshotText,
+        disengaged,
+        messageTypes: [...messageTypes].sort(),
+        contentOrigin,
+        scores,
+        throttle,
+        serviceVersion,
+        turnCount,
+        elapsedMs: Date.now() - t0,
+        frameCount,
+        error: error ?? null,
       });
     }
 
@@ -200,20 +261,33 @@ export function oneTurn(o) {
     }
 
     ws.on("open", () => {
-      ws.send(JSON.stringify({ protocol: "json", version: 1 }) + RS);
+      ws.send(`${JSON.stringify({ protocol: "json", version: 1 })}${RS}`);
     });
 
     ws.on("message", (data) => {
-      const frames = data.toString().split(RS).filter((f) => f.length > 0);
+      const frames = data
+        .toString()
+        .split(RS)
+        .filter((f) => f.length > 0);
       for (const f of frames) {
         let parsed;
-        try { parsed = JSON.parse(f); } catch { continue; }
+        try {
+          parsed = JSON.parse(f);
+        } catch {
+          continue;
+        }
         frameCount++;
-        if (onFrame) { try { onFrame(parsed); } catch {} }
+        if (onFrame) {
+          try {
+            onFrame(parsed);
+          } catch {
+            // Frame observers are optional and must not interrupt protocol handling.
+          }
+        }
 
         if (!handshakeDone) {
           handshakeDone = true;
-          ws.send(JSON.stringify(chatMsg) + RS + JSON.stringify(metrics) + RS);
+          ws.send(`${JSON.stringify(chatMsg)}${RS}${JSON.stringify(metrics)}${RS}`);
           continue;
         }
 
@@ -247,12 +321,17 @@ export function oneTurn(o) {
             }
             if (it.result?.serviceVersion) serviceVersion = it.result.serviceVersion;
             if (typeof it.turnCount === "number") turnCount = it.turnCount;
-            if (typeof it.result?.message === "string" && it.result.message.length > snapshotText.length) snapshotText = it.result.message;
+            if (
+              typeof it.result?.message === "string" &&
+              it.result.message.length > snapshotText.length
+            )
+              snapshotText = it.result.message;
           }
         }
 
-        if (parsed.type === 6) ws.send(JSON.stringify({ type: 6 }) + RS);
-        if (parsed.type === 2 || parsed.type === 3 || parsed.type === 7) finish(parsed.error ?? null);
+        if (parsed.type === 6) ws.send(`${JSON.stringify({ type: 6 })}${RS}`);
+        if (parsed.type === 2 || parsed.type === 3 || parsed.type === 7)
+          finish(parsed.error ?? null);
       }
     });
 

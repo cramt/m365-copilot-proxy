@@ -1,0 +1,1 @@
+Solve it at the shell. ```bash only — one block, no prose.

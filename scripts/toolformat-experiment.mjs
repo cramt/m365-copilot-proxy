@@ -64,7 +64,12 @@ for (const mode of Object.keys(FORMATS)) {
       raw = `<error: ${e.message}>`;
     }
     const verdict = classify(raw, p.expect);
-    results[mode].push({ q: p.q, expect: p.expect, verdict, raw: raw.slice(0, 160).replace(/\n/g, "\\n") });
+    results[mode].push({
+      q: p.q,
+      expect: p.expect,
+      verdict,
+      raw: raw.slice(0, 160).replace(/\n/g, "\\n"),
+    });
     console.log(`[${mode}] ${verdict}  «${p.q}»`);
     console.log(`        raw: ${raw.slice(0, 160).replace(/\n/g, "\\n")}`);
     await new Promise((r) => setTimeout(r, 1500));

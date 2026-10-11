@@ -24,11 +24,13 @@ Each task ends in one outcome:
 ## Usage
 
 ```sh
-pnpm run proxy 4141                 # in one shell
+M365_STICKY_SESSION=off pnpm run proxy 4141   # in one shell
 # in another:
 node scripts/bench/run.mjs --base-url http://localhost:4141/v1 \
   --model m365-copilot --label magic-baseline
 ```
+
+Start the proxy under test with `M365_STICKY_SESSION=off`, because the bench needs a fresh M365 thread per task. The default (`all`) would put every task on one thread. The sweep scripts that launch their own proxy pin it; anything that reuses a running proxy (`run.mjs`, `variant-sweep.sh`, `overnight-sweep.sh`, `pi-e2e.sh`) does not.
 
 ### Nix
 

@@ -4,10 +4,12 @@ import {
   currentFramingVariant,
   deriveFencedSpec,
   findFirstToolFence,
+  findShellTool,
   formatFencedToolDefinitions,
   parseFencedToolCalls,
   renderFencedCall,
   transcriptStyleForVariant,
+  type FramingContext,
 } from "./fenced.js";
 
 const log = createLogger("tools");
@@ -53,6 +55,37 @@ export type ToolChoice =
   | { type: "function"; function: { name: string } }
   | undefined;
 
+const PROMPT_TOOL_NAME =
+  /^(?:.*\.)?(?:read|read_file|write|write_file|create|create_file|edit|edit_file|apply_patch|replace_string_in_file|multi_replace_string_in_file|grep|glob|find|ls|list_dir|search|search_file|search_files|file_search|grep_search|semantic_search)$/i;
+
+export function selectPromptTools(tools: ToolDef[], toolChoice?: ToolChoice): ToolDef[] {
+  const allowlist = process.env.M365_TOOL_ALLOWLIST?.trim();
+  if (allowlist === "all") return tools;
+  const shell = findShellTool(tools);
+  const names = allowlist
+    ? new Set(
+        allowlist
+          .split(",")
+          .map((name) => name.trim())
+          .filter(Boolean),
+      )
+    : null;
+  const selected = tools.filter((tool) =>
+    names
+      ? names.has(tool.function.name)
+      : tool === shell || PROMPT_TOOL_NAME.test(tool.function.name),
+  );
+  if (selected.length === 0) return tools;
+  const forcedName = typeof toolChoice === "object" ? toolChoice.function.name : undefined;
+  const promptTools = tools.filter(
+    (tool) => selected.includes(tool) || tool.function.name === forcedName,
+  );
+  const dropped = tools.filter((tool) => !promptTools.includes(tool));
+  if (dropped.length)
+    log.debug("Tools omitted from prompt:", dropped.map((tool) => tool.function.name).join(", "));
+  return promptTools;
+}
+
 // --- Tool call format ---
 
 // Fenced Markdown is the format we instruct and primarily parse (see fenced.ts).
@@ -70,14 +103,20 @@ const FENCED_TOOL_CALL_REGEX = /```tool_call\s*\n(\{[\s\S]*?\})\s*\n\s*```/g;
 const CONFIDENCE_REGEX = /\{\s*"confidence"\s*:\s*-?[0-9.]+\s*\}/g;
 const FINAL_OBJECT_REGEX = /\{\s*"final"\s*:\s*"(?:[^"\\]|\\.)*"\s*\}/g;
 
+function isJsonObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
 /** Strip invented confidence/final objects from a no-tool-call response and
  *  unwrap a lone {"final": "..."} answer into bare text. Returns null if empty. */
 function cleanLooseText(text: string): string | null {
   let out = text;
   for (const m of out.match(FINAL_OBJECT_REGEX) ?? []) {
     try {
-      const value = JSON.parse(m).final;
-      if (typeof value === "string") out = out.replace(m, value);
+      const parsed: unknown = JSON.parse(m);
+      if (isJsonObject(parsed) && typeof parsed.final === "string") {
+        out = out.replace(m, parsed.final);
+      }
     } catch {
       // leave the literal text in place if it isn't valid JSON
     }
@@ -88,8 +127,12 @@ function cleanLooseText(text: string): string | null {
 
 // --- Formatting ---
 
-export function formatToolDefinitions(tools: ToolDef[], variantOverride?: string): string {
-  return formatFencedToolDefinitions(tools, variantOverride);
+export function formatToolDefinitions(
+  tools: ToolDef[],
+  variantOverride?: string,
+  ctx?: FramingContext,
+): string {
+  return formatFencedToolDefinitions(tools, variantOverride, ctx);
 }
 
 export function formatToolChoiceInstruction(toolChoice: ToolChoice): string {
@@ -113,13 +156,20 @@ export function getMessageContent(msg: Message): string {
 function toolCallSummary(rawArgs: string): string {
   let args: Record<string, unknown> = {};
   try {
-    args = typeof rawArgs === "string" ? JSON.parse(rawArgs || "{}") : (rawArgs ?? {});
+    const parsed: unknown = JSON.parse(rawArgs || "{}");
+    if (isJsonObject(parsed)) args = parsed;
   } catch {
     return "";
   }
   const primary =
-    args.command ?? args.cmd ?? args.script ?? args.path ?? args.file ??
-    args.filename ?? args.query ?? Object.values(args).find((v) => typeof v === "string");
+    args.command ??
+    args.cmd ??
+    args.script ??
+    args.path ??
+    args.file ??
+    args.filename ??
+    args.query ??
+    Object.values(args).find((v) => typeof v === "string");
   if (typeof primary !== "string") return "";
   return primary.replace(/\s+/g, " ").replace(/"/g, "'").trim().slice(0, 100);
 }
@@ -163,6 +213,7 @@ export function formatMessages(
   toolChoice?: ToolChoice,
   conversationId?: string,
   framingVariant?: string,
+  ctx?: FramingContext,
 ): string {
   const parts: string[] = [];
 
@@ -178,8 +229,11 @@ export function formatMessages(
   // source.
   const style = transcriptStyleForVariant(framingVariant ?? currentFramingVariant());
   if (effectiveTools && effectiveTools.length > 0 && toolChoice !== "none") {
-    const framing = `${formatToolDefinitions(effectiveTools, framingVariant)}${formatToolChoiceInstruction(toolChoice)}`;
-    parts.push(style.framingTag ? `<${style.framingTag}>\n${framing}\n</${style.framingTag}>` : framing);
+    const promptTools = maybeInjectReplyTool(selectPromptTools(tools ?? [], toolChoice));
+    const framing = `${formatToolDefinitions(promptTools, framingVariant, ctx)}${formatToolChoiceInstruction(toolChoice)}`;
+    parts.push(
+      style.framingTag ? `<${style.framingTag}>\n${framing}\n</${style.framingTag}>` : framing,
+    );
   }
 
   // Correlate each tool result back to the call that produced it, so the model
@@ -190,45 +244,56 @@ export function formatMessages(
   for (const m of messages) {
     if (m.role === "assistant" && m.tool_calls) {
       for (const tc of m.tool_calls) {
-        if (tc.id) callMeta.set(tc.id, { name: tc.function.name, summary: toolCallSummary(tc.function.arguments) });
+        if (tc.id)
+          callMeta.set(tc.id, {
+            name: tc.function.name,
+            summary: toolCallSummary(tc.function.arguments),
+          });
       }
     }
   }
 
   for (const m of messages) {
     if (m.role === "assistant" && m.tool_calls && m.tool_calls.length > 0) {
-      const calls = m.tool_calls.map((tc) => {
-        const rawArgs = tc.function.arguments;
-        let argsObj: Record<string, unknown> = {};
-        try {
-          argsObj = typeof rawArgs === "string" ? JSON.parse(rawArgs || "{}") : (rawArgs ?? {});
-        } catch {
-          // fall through with empty args; better than crashing the transcript
-        }
-        // Prefer the request's tool schema; otherwise synthesize one from the
-        // recorded argument keys so a tool no longer in scope still renders.
-        const spec = specMap?.get(tc.function.name) ?? deriveFencedSpec({
-          type: "function",
-          function: {
-            name: tc.function.name,
-            parameters: {
-              properties: Object.fromEntries(
-                Object.keys(argsObj).map((k) => [k, { type: "string" }]),
-              ),
-            },
-          },
-        });
-        return renderFencedCall(spec, argsObj);
-      }).join("\n");
+      const calls = m.tool_calls
+        .map((tc) => {
+          const rawArgs = tc.function.arguments;
+          let argsObj: Record<string, unknown> = {};
+          try {
+            const parsed: unknown = JSON.parse(rawArgs || "{}");
+            if (isJsonObject(parsed)) argsObj = parsed;
+          } catch {
+            // fall through with empty args; better than crashing the transcript
+          }
+          // Prefer the request's tool schema; otherwise synthesize one from the
+          // recorded argument keys so a tool no longer in scope still renders.
+          const spec =
+            specMap?.get(tc.function.name) ??
+            deriveFencedSpec({
+              type: "function",
+              function: {
+                name: tc.function.name,
+                parameters: {
+                  properties: Object.fromEntries(
+                    Object.keys(argsObj).map((k) => [k, { type: "string" }]),
+                  ),
+                },
+              },
+            });
+          return renderFencedCall(spec, argsObj);
+        })
+        .join("\n");
       const content = getMessageContent(m);
-      parts.push(`<assistant>${content ? "\n" + content : ""}\n${calls}\n</assistant>`);
+      parts.push(`<assistant>${content ? `\n${content}` : ""}\n${calls}\n</assistant>`);
     } else if (m.role === "tool") {
       const meta = m.tool_call_id ? callMeta.get(m.tool_call_id) : undefined;
       const name = m.name || meta?.name || "tool";
       // Show the command/args that produced this output so the model reads it in
       // context (a directory listing vs file contents vs a command's stdout).
       const cmdAttr = meta?.summary ? ` command="${meta.summary}"` : "";
-      parts.push(`<tool_response tool="${name}"${cmdAttr}>\n${getMessageContent(m)}\n</tool_response>`);
+      parts.push(
+        `<tool_response tool="${name}"${cmdAttr}>\n${getMessageContent(m)}\n</tool_response>`,
+      );
     } else if (m.role === "system") {
       parts.push(`<${style.systemTag}>\n${getMessageContent(m)}\n</${style.systemTag}>`);
     } else {
@@ -265,7 +330,7 @@ const CONFABULATION_PATTERNS: RegExp[] = [
   // ("unable to execute or retrieve any output") and they were absent from the list.
   /(?:unable|not able|can.?t|cannot)\s+(?:to\s+)?(?:access|inspect|list|read|run|execute|retrieve|fetch|locate|see|open)/i,
   /don.?t\s+have\s+access/i,
-  /no\s+(?:longer\s+have|access\s+to)/i,   // "no access to" + "no longer have access/the tools"
+  /no\s+(?:longer\s+have|access\s+to)/i, // "no access to" + "no longer have access/the tools"
   /lost\s+(?:access|my\s+access|the\s+ability)/i,
   // Mid-conversation give-up (F12.11, magic model): after a real tool call it claims
   // it "no longer has the tools" and asks to move to another session, e.g. "restart the
@@ -291,7 +356,7 @@ const CONFABULATION_PATTERNS: RegExp[] = [
   /container\.(?:exec|open_image|download)[\s\S]{0,120}(?:returned|output|shows?|result)/i,
   /no\s+files?\s+(?:in|found|present|visible)/i,
   /(?:file|directory|folder|it)\s+(?:appears?|seems?|looks?)\s+(?:to\s+be\s+)?empty/i, // "the file appears to be empty"
-  /nothing\s+to\s+(?:simplify|fix|do|change|show|read)/i,                               // "nothing to simplify"
+  /nothing\s+to\s+(?:simplify|fix|do|change|show|read)/i, // "nothing to simplify"
   /(?:tool|command|it)\s+returned\s+(?:no|empty|nothing)/i,
   // GPT-5.6 can truthfully describe M365's remote runtime as if it were the
   // caller's environment. This wording slipped past the older can't-access
@@ -408,7 +473,8 @@ export function truncateAtFabricatedToolResponse(text: string, tools?: ToolDef[]
   const i = text.search(SELF_WRITTEN_RESULT);
   if (i < 0) return text;
   const head = text.slice(0, i);
-  const acted = tools && tools.length > 0 ? parseToolCalls(head, tools).hasToolCalls : ANY_FENCE.test(head);
+  const acted =
+    tools && tools.length > 0 ? parseToolCalls(head, tools).hasToolCalls : ANY_FENCE.test(head);
   return acted ? head.trimEnd() : text;
 }
 
@@ -489,21 +555,24 @@ export function parseToolCalls(text: string, tools?: ToolDef[]): ParseResult {
 
   // Tolerance fallback: a stray JSON tool call {"tool": "...", "arguments": {...}}
   const jsonRegex = new RegExp(TOOL_CALL_REGEX.source, "g");
-  let match: RegExpExecArray | null;
-
-  while ((match = jsonRegex.exec(text)) !== null) {
+  while (true) {
+    const match = jsonRegex.exec(text);
+    if (match === null) break;
     try {
-      const parsed = JSON.parse(match[0]);
+      const parsed: unknown = JSON.parse(match[0]);
+      if (!isJsonObject(parsed)) continue;
       const name = resolveName(parsed.tool);
       if (name) {
+        const parsedArguments = parsed.arguments;
         toolCalls.push({
           id: `call_${crypto.randomUUID().replace(/-/g, "").slice(0, 24)}`,
           type: "function",
           function: {
             name,
-            arguments: typeof parsed.arguments === "string"
-              ? parsed.arguments
-              : JSON.stringify(parsed.arguments ?? {}),
+            arguments:
+              typeof parsedArguments === "string"
+                ? parsedArguments
+                : JSON.stringify(parsedArguments ?? {}),
           },
         });
       }
@@ -515,19 +584,24 @@ export function parseToolCalls(text: string, tools?: ToolDef[]): ParseResult {
   // Fallback: try legacy fenced format
   if (toolCalls.length === 0) {
     const fencedRegex = new RegExp(FENCED_TOOL_CALL_REGEX.source, "g");
-    while ((match = fencedRegex.exec(text)) !== null) {
+    while (true) {
+      const match = fencedRegex.exec(text);
+      if (match === null) break;
       try {
-        const parsed = JSON.parse(match[1]);
+        const parsed: unknown = JSON.parse(match[1]);
+        if (!isJsonObject(parsed)) continue;
         const name = resolveName(parsed.tool || parsed.name);
         if (name) {
+          const parsedArguments = parsed.arguments;
           toolCalls.push({
             id: `call_${crypto.randomUUID().replace(/-/g, "").slice(0, 24)}`,
             type: "function",
             function: {
               name,
-              arguments: typeof parsed.arguments === "string"
-                ? parsed.arguments
-                : JSON.stringify(parsed.arguments ?? {}),
+              arguments:
+                typeof parsedArguments === "string"
+                  ? parsedArguments
+                  : JSON.stringify(parsedArguments ?? {}),
             },
           });
         }
@@ -547,7 +621,7 @@ export function parseToolCalls(text: string, tools?: ToolDef[]): ParseResult {
   // behind so they aren't mistaken for real assistant prose. Also drop the
   // invented confidence/final objects so a premature "✅ SUCCESS" never reaches
   // the client and a junk-only leftover isn't flagged as mixed output.
-  let remaining = text
+  const remaining = text
     .replace(jsonRegex, "")
     .replace(new RegExp(FENCED_TOOL_CALL_REGEX.source, "g"), "")
     .replace(CONFIDENCE_REGEX, "")

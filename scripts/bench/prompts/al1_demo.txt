@@ -1,0 +1,1 @@
+Demonstrate the solution as a runnable shell snippet. Reply with exactly one ```bash code block that carries out the whole task in the current directory, then stop. The block is run for you and you'll see its output; if more is needed, send another ```bash block; when it's done, give a one-line confirmation.

@@ -21,20 +21,20 @@ import type { MeteredBudget } from "./priority-access.js";
 const MODEL_TONES: Record<string, string> = {
   // Default
   "m365-copilot": "magic",
-  "auto": "magic",
+  auto: "magic",
 
   // Generic modes. No unversioned tone survives: `Gpt_Quick`, `Gpt_Chat` and
   // `Gpt_Reasoning` are all REJECTED, so these pin to a versioned tone.
   // GPT-5.5 over GPT-5.6, deliberately (bench, confab-retry off, §19): 5.5
   // wins the chat half (16/30 vs 7/30) and the reasoning half is a tie (26/30
   // vs 27/30, p=1.0). Don't re-point them to 5.6 on the reasoning numbers.
-  "quick": "Gpt_5_5_Chat",
+  quick: "Gpt_5_5_Chat",
   "think-deeper": "Gpt_5_5_Reasoning",
 
   // Claude (real Anthropic models, confirmed via self-id) — chat + reasoning.
   // On the included scenario `Claude_Sonnet` is now Sonnet 4.6 (it was 4.5);
   // `claude-sonnet-4.5` stays as a legacy alias so existing configs keep working.
-  "claude": "Claude_Sonnet",
+  claude: "Claude_Sonnet",
   "claude-sonnet": "Claude_Sonnet",
   "claude-sonnet-4.5": "Claude_Sonnet",
   "claude-sonnet-4.6": "Claude_Sonnet",
@@ -70,7 +70,7 @@ const MODEL_TONES: Record<string, string> = {
   // every account, and with the agent it is dead on a non-premium one (docs §24).
   "claude-opus-4.5": "Claude_Opus",
 
-  // GPT-5.5 (current generation)
+  // GPT-5.5
   "gpt-5.5": "Gpt_5_5_Chat",
   "gpt-5.5-quick": "Gpt_5_5_Chat",
   "gpt-5.5-think-deeper": "Gpt_5_5_Reasoning",
@@ -127,6 +127,7 @@ const MODEL_TONES: Record<string, string> = {
   // sandbox when told to and GPT-6 Sol doesn't (docs §29). The tone name has no
   // separator between 6 and 1, and every
   // sibling (`Gpt_61_Sol`, `Gpt_61_Sol_Chat`, `Gpt_61_Reasoning`, …) is rejected.
+  // (current generation)
   "gpt-6.1-sol": "Gpt_61_Sol_Reasoning",
 
   // GPT-5.4. Bare `gpt-5.4` has always been the reasoning tone (unlike its
@@ -167,7 +168,9 @@ export function getToneForModel(model: string): string {
   // `Claude_Sonnet` and get the paid scenario from isSonnet55Model.
   if (/opus/i.test(model)) return "Claude_Opus";
   if (/^claude/i.test(model)) {
-    return SONNET_5_PATTERN.test(model) && !SONNET_5_5_PATTERN.test(model) ? "Claude_Sonnet_5" : "Claude_Sonnet";
+    return SONNET_5_PATTERN.test(model) && !SONNET_5_5_PATTERN.test(model)
+      ? "Claude_Sonnet_5"
+      : "Claude_Sonnet";
   }
   return MODEL_TONES["m365-copilot"];
 }
@@ -230,9 +233,7 @@ export const PAID_SCENARIO_TONES: ReadonlySet<string> = new Set([
  * (`claude-sonnet-5.5[1m]`, a dated `claude-sonnet-5-5-…`) are caught by
  * SONNET_5_5_PATTERN rather than silently served by Sonnet 4.6.
  */
-export const PAID_SCENARIO_MODELS: ReadonlySet<string> = new Set([
-  "claude-sonnet-5.5",
-]);
+export const PAID_SCENARIO_MODELS: ReadonlySet<string> = new Set(["claude-sonnet-5.5"]);
 // `sonnet-5.5`, `sonnet-5-5`, `sonnet5_5`, `sonnet 5.5`, and anything after it —
 // but not a dated `sonnet-5-2026…` and not a hypothetical `sonnet-5.50`.
 const SONNET_5_5_PATTERN = /sonnet[-_ ]?5[-_. ]5(?!\d)/i;
@@ -244,8 +245,10 @@ const SONNET_5_PATTERN = /sonnet[-_ ]?5(?!\d|\.\d)/i;
 
 /** True when this model ID is Claude Sonnet 5.5, i.e. `Claude_Sonnet` + paid scenario. */
 export function isSonnet55Model(model: string): boolean {
-  return PAID_SCENARIO_MODELS.has(model) ||
-    (getToneForModel(model) === "Claude_Sonnet" && SONNET_5_5_PATTERN.test(model));
+  return (
+    PAID_SCENARIO_MODELS.has(model) ||
+    (getToneForModel(model) === "Claude_Sonnet" && SONNET_5_5_PATTERN.test(model))
+  );
 }
 
 /** True when this model ID is Claude Sonnet 5, i.e. the `Claude_Sonnet_5` tone. */
@@ -264,17 +267,17 @@ export function isSonnet5Model(model: string): boolean {
  * `claude-opus-4.5[1m]`) are caught by OPUS_4_5_PATTERN rather than silently
  * served by Opus 5.5 — which would also spend the priority-access budget.
  */
-export const INCLUDED_SCENARIO_MODELS: ReadonlySet<string> = new Set([
-  "claude-opus-4.5",
-]);
+export const INCLUDED_SCENARIO_MODELS: ReadonlySet<string> = new Set(["claude-opus-4.5"]);
 // `opus-4.5`, `opus-4-5`, `opus4_5`, `opus 4.5`, and anything after it — but not
 // `opus-4` / `opus-4-1` / `opus-4.6`, and not a hypothetical `opus-4.50`.
 const OPUS_4_5_PATTERN = /opus[-_ ]?4[-_. ]5(?!\d)/i;
 
 /** True when this model ID is Claude Opus 4.5, i.e. `Claude_Opus` + included scenario. */
 export function isOpus45Model(model: string): boolean {
-  return INCLUDED_SCENARIO_MODELS.has(model) ||
-    (getToneForModel(model) === "Claude_Opus" && OPUS_4_5_PATTERN.test(model));
+  return (
+    INCLUDED_SCENARIO_MODELS.has(model) ||
+    (getToneForModel(model) === "Claude_Opus" && OPUS_4_5_PATTERN.test(model))
+  );
 }
 
 // --- Which tool requests carry the Copilot Studio tool agent ------------------
@@ -295,9 +298,7 @@ export function isOpus45Model(model: string): boolean {
 //
 // Listed by exact tone. Check a new tone with `scripts/agent-tone-probe.mjs`
 // on BOTH kinds of account before deciding which side it belongs on.
-export const AGENTLESS_TOOL_TONES: ReadonlySet<string> = new Set([
-  "Gpt_6_Reasoning",
-]);
+export const AGENTLESS_TOOL_TONES: ReadonlySet<string> = new Set(["Gpt_6_Reasoning"]);
 
 /**
  * Claude tones that DO take the tool agent; every other `Claude_*` tone goes
@@ -322,9 +323,7 @@ export const AGENTLESS_TOOL_TONES: ReadonlySet<string> = new Set([
  * where relay_batch merges fix and check into one shell call; Sonnet 5.5
  * (`Claude_Sonnet`, paid) gains nothing measurable either way.
  */
-export const AGENT_CLAUDE_TONES: ReadonlySet<string> = new Set([
-  "Claude_Opus",
-]);
+export const AGENT_CLAUDE_TONES: ReadonlySet<string> = new Set(["Claude_Opus"]);
 
 /**
  * Tones whose agent route serves only on a PREMIUM account (a paid Microsoft
@@ -497,15 +496,98 @@ export function priorityAccessFallbackModel(budget: MeteredBudget): string | nul
   return v;
 }
 
-export function getAvailableModels(): string[] {
-  return Object.keys(MODEL_TONES);
+/** Which Copilot entitlement the signed-in account holds; picks the advertised catalog. */
+export const AccountTier = {
+  Basic: "basic",
+  Paid: "paid",
+} as const;
+export type AccountTier = (typeof AccountTier)[keyof typeof AccountTier];
+
+/**
+ * The account tier from `M365_ACCOUNT_TIER`: `basic` (default) or `paid`
+ * (`premium` is accepted too). Nothing on the token says which it is, so it's
+ * configured. Throws on any other value rather than silently hiding models.
+ */
+export function getAccountTier(): AccountTier {
+  const raw = process.env.M365_ACCOUNT_TIER?.trim().toLowerCase();
+  if (!raw || raw === AccountTier.Basic) return AccountTier.Basic;
+  if (raw === AccountTier.Paid || raw === "premium") return AccountTier.Paid;
+  throw new Error(`M365_ACCOUNT_TIER must be "basic" or "paid", got "${raw}"`);
+}
+
+// Advertised catalog per tier; routing above remains compatible with explicit
+// model IDs. Evidence: findings/models.md (2026-10-02).
+const BASIC_MODELS: readonly string[] = [
+  // Included GPT routes that responded; local tool support is not established.
+  "m365-copilot",
+  "auto",
+  "quick",
+  "think-deeper",
+  "gpt-5.2",
+  "gpt-5.2-quick",
+  "gpt-5.2-think-deeper",
+  "gpt-5.3",
+  "gpt-5.3-quick",
+  "gpt-5.3-think-deeper",
+  "gpt-5.4",
+  "gpt-5.4-think-deeper",
+  "gpt-5.4-quick",
+  "gpt-5.5",
+  "gpt-5.5-quick",
+  "gpt-5.5-think-deeper",
+  "gpt-5.6",
+  "gpt-5.6-quick",
+  "gpt-5.6-think-deeper",
+  "gpt-6-sol",
+  // Live on the basic account (Success/DeepLeo, 2026-10-10).
+  "gpt-6.1-sol",
+
+  // Included Claude reasoning responded; local tool support is unverified.
+  "claude-sonnet-think-deeper",
+];
+
+const PAID_ONLY_MODELS: readonly string[] = [
+  // Sonnet 4.6, included scenario: InternalError on basic, serves on premium (docs §25, §30).
+  "claude",
+  "claude-sonnet",
+  "claude-sonnet-4.5",
+  "claude-sonnet-4.6",
+
+  // Paid scenario: InvalidCopilotLicense on basic (re-probed 2026-10-10); serves on premium (§26).
+  "claude-sonnet-5",
+  "claude-opus",
+  "claude-opus-5",
+  // InternalError on basic under both scenarios, not a licence refusal; serves on premium (§22 F45).
+  "gpt-6-think-deeper",
+  "claude-sonnet-5.5",
+  "claude-opus-5.5",
+  // Opus 4.5 serves only through the tool agent, which needs a premium account.
+  "claude-opus-4.5",
+];
+
+const MODELS_BY_TIER: Readonly<Record<AccountTier, readonly string[]>> = {
+  [AccountTier.Basic]: BASIC_MODELS,
+  [AccountTier.Paid]: [...BASIC_MODELS, ...PAID_ONLY_MODELS],
+};
+
+export function getAvailableModels(tier: AccountTier = getAccountTier()): string[] {
+  return [...MODELS_BY_TIER[tier]];
 }
 
 export function decodeJwt(token: string) {
   const payload = token.split(".")[1];
   const padded = payload + "=".repeat((4 - (payload.length % 4)) % 4);
-  const raw = JSON.parse(Buffer.from(padded, "base64").toString());
+  const raw: unknown = JSON.parse(Buffer.from(padded, "base64").toString());
   return JwtClaims.parse(raw);
+}
+
+export interface CapturedImage {
+  referenceUrls: string[];
+  fileToken?: string;
+  pollUrl?: string;
+  size?: string;
+  orientation?: string;
+  status?: number;
 }
 
 /**
@@ -513,24 +595,9 @@ export function decodeJwt(token: string) {
  * `CopilotSession.chat` (session.ts); async-iterate it for delta text and read
  * the getters for the turn's diagnostic metadata after it completes.
  */
-/** One generated image, as carried on a GraphicArt frame (§14). URLs point at
- *  designerapp.officeapps.live.com and need the designerappservice token to
- *  fetch — see `fetchImageBytes` / `generateImage`. */
-export interface CapturedImage {
-  referenceUrls: string[];
-  fileToken?: string;
-  pollUrl?: string;
-  size?: string;
-  orientation?: string;
-  /** Server status; 2 = ready (observed). */
-  status?: number;
-}
-
 export interface CopilotStream {
   [Symbol.asyncIterator](): AsyncIterator<string>;
   fullText: string;
-  /** Generated images captured this turn (empty unless image gen was requested
-   *  and the server returned a GraphicArt frame). */
   images: CapturedImage[];
   /** True if the server returned content (deltas or full text) */
   hasContent: boolean;

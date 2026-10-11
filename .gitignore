@@ -6,10 +6,9 @@ token.txt
 msal-cache.json
 secrets.json
 *.har
-.env
-result
-result-*
-debug.log
+*.env
+*.env.*
+
 scripts/studio-dig-out/
 scripts/frame-dump-out/
 scripts/tool-compliance-out/
@@ -41,3 +40,13 @@ scripts/da-app/gui-out/
 scripts/da-app/pkg/
 scripts/da-app/sentinel-agent.zip
 scripts/harness/out/
+
+# studio capture output
+scripts/studio-capture-out/
+result
+result-*
+*.log
+**/.audit-*/
+
+# local plans
+.plans/

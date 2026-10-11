@@ -1,8 +1,11 @@
 {
+  "include": ["packages/**/*.ts", "packages/proxy/.nitro/types/nitro.d.ts"],
   "compilerOptions": {
+    "noEmit": true,
     "target": "ES2022",
     "module": "ESNext",
     "moduleResolution": "bundler",
+    "types": ["node"],
     "strict": true,
     "esModuleInterop": true,
     "skipLibCheck": true,
@@ -10,11 +13,5 @@
     "declarationMap": true,
     "sourceMap": true
   },
-  "exclude": [
-    "**/node_modules",
-    "**/dist",
-    "**/.output",
-    "**/.nitro",
-    "packages/proxy"
-  ]
+  "exclude": ["**/node_modules", "**/dist", "**/.output", "**/.nitro", "packages/proxy"]
 }

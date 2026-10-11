@@ -34,7 +34,7 @@
 # Repeat arms in rotated order to spread order effects: `A:relay,demo_only,demo_only,relay`.
 #
 # Every proxy runs with M365_DEBUG=1 M365_DUMP_FRAMES=1 M365_NO_CONFAB_RETRY=1
-# M365_NO_INTERACTIVE=1, its own M365_FRAMING_FILE, and M365_LOG_FILE /
+# M365_NO_INTERACTIVE=1 M365_STICKY_SESSION=off, its own M365_FRAMING_FILE, and M365_LOG_FILE /
 # M365_FRAME_DIR pointing at the arm's files in $ARCHIVE; phase env goes on top.
 # A proxy per arm, not per phase, so no arm inherits what an earlier one taught
 # the proxy (a dead agent route, say) — that would be an order effect.
@@ -87,7 +87,7 @@ ARCHIVE="${ARCHIVE:-$CFG/sweeps/$TAG}"
 # The proxy resolves M365_LOG_FILE / M365_FRAME_DIR against $CFG, not the cwd.
 [[ "$ARCHIVE" == /* ]] || ARCHIVE="$REPO/$ARCHIVE"
 PROXY_CMD="${PROXY_CMD:-node packages/proxy/bin/m365-proxy.mjs}"
-BASE_ENV=(M365_DEBUG=1 M365_DUMP_FRAMES=1 M365_NO_CONFAB_RETRY=1 M365_NO_INTERACTIVE=1)
+BASE_ENV=(M365_DEBUG=1 M365_DUMP_FRAMES=1 M365_NO_CONFAB_RETRY=1 M365_NO_INTERACTIVE=1 M365_STICKY_SESSION=off)
 # Pacing (M365_AVOID_THROTTLING=1) reads the debug logs under $CFG; an archive
 # kept elsewhere has to be named.
 export M365_BUDGET_LOGS="$ARCHIVE${M365_BUDGET_LOGS:+:$M365_BUDGET_LOGS}"

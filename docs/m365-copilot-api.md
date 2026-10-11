@@ -66,13 +66,24 @@ wss://substrate.office.com/m365Copilot/Chathub/{oid}@{tid}?{query}
   - `https://api.bap.microsoft.com/.default` (environment discovery)
 
 ### Flow: MSAL PKCE
-We use `@azure/msal-node` `PublicClientApplication` with PKCE. The token cache is persisted to `~/.config/opencode-m365/msal-cache.json` and refreshed silently when possible.
+We use `@azure/msal-node` `PublicClientApplication` with PKCE. The token cache is persisted to `~/.config/m365-proxy/msal-cache.json` and refreshed silently when possible.
 
 > **The cache is disposable (tested June 2026, `scripts/token-regen-probe.mjs`).** Delete `msal-cache.json` and the next `getToken()` self-heals: silent fails → automated browser login (stored creds + TOTP) → a fresh, working token in **~12s**, no human in the loop. The regenerated token is **functionally identical** — same `aud`/`appid`/`tid`/`oid`/scopes, only `iat`/`exp`/`uti` change. Point auth at a throwaway cache with `M365_CACHE_FILE` to test this without touching the real one.
 >
 > **Re-auth does NOT clear account throttling** — the fresh token carries the same `oid`, so it lands in the same account-keyed throttle bucket. Throttling is identity-level, not token-level.
 >
 > **Observed token scopes** (the Sydney token already carries these): `CopilotPlatform{Content.Process,Files.ReadWrite(All),Mail.Read(.Shared),Presence.Read(.All),Sites.Read.All,Teams.ReadWrite.All,User.Read,License...,ProtectionScopes...,DataLossPrevention...}` + `M365Chat.Read` + `sydney.readwrite`. So the auth we hold already has the entitlements behind Files/Mail/Sites/Teams/Presence — the foundation for any Graph "Work" grounding (hypotheses §8 H8.11).
+
+### Current authentication implementation
+
+Visible browser fallback is enabled unless `M365_NO_INTERACTIVE=1`; set that
+variable on headless hosts. The legacy `M365_ENABLE_INTERACTIVE_APPROVAL`
+opt-in is not enforced. `M365_BROWSER_PROFILE`, `M365_LOGIN_UA`,
+`M365_LOGIN_LOCALE`, `M365_LOGIN_TIMEZONE` and
+`M365_INTERACTIVE_TIMEOUT_MS` are not consumed by the current implementation.
+Interactive code capture currently uses a fixed five-minute timeout.
+Forced browser reauthentication preserves cached accounts if replacement login
+fails; it does not clear identity-keyed account throttling.
 
 ### The `nativeclient` redirect gotcha (this one cost hours)
 The `nativeclient` redirect URI is designed to be **intercepted by an embedded native host** (WebView2 etc.) *before the page loads*. A real browser instead follows the redirect one hop further and lands on **`https://login.microsoftonline.com/common/wrongplace`** ("This is not the right page"). So:
@@ -310,6 +321,28 @@ The proxy enables this on the **agent-less path** (so plain chat can compute; th
 
 > The `optionsSets` array was previously sent **empty**. Live reference implementations (`kuchris/m365-copilot-openai-proxy`, Microsoft's own `PyRIT`) populate it richly — code interpreter, memory, custom-instructions, image input. See `docs/hypotheses.md` §8 for the full catalogue of flags still on the table.
 
+### Image generation
+
+Core exposes `generateImage()` and `fetchImageBytes()`. Image turns run agent-less
+with the GUI's ten image-generation optionsSets and `GenerateGraphicArt` declared
+in `allowedMessageTypes`. `CopilotSession.chat(..., {generateImages: true})`
+collects GraphicArt payloads from Progress updates and the final type-2 item into
+`stream.images`, deduplicated by file token with the highest observed readiness.
+`ModelSession` enables this on agent-less turns unless `M365_NO_IMAGE_GEN` is set.
+
+Artifact downloads use `getImageArtifactToken()` for
+`https://designerappservice.officeapps.live.com/.default`, not the Sydney chat
+token. `urlsOnly` skips downloads; style and orientation are prompt directives.
+Image-quota refusals throw `ImageGenerationError` with reason `quota_exceeded`.
+The OpenAI `/v1/images/generations` endpoint is still a follow-up, not implemented.
+Live evidence is in hypotheses §14; the Oct 3 restoration was verified offline.
+
+Tenant policy can block generation even on a premium account. Confirmed Oct 3:
+the final type-2 result was `ForbiddenRequest` with
+`errorCode: ImageGenerationAdminPolicyBlocked` and an administrator-policy
+message, without image payloads or answer text. This is distinct from image
+quota exhaustion; inspect the final result metadata when no image arrives.
+
 ---
 
 ## 6. Receiving a response
@@ -396,6 +429,33 @@ The final `type:2` frame carries the canonical state of the whole conversation i
 - This is why we **reuse one conversation** across an agent session and send **only new messages** on follow-up turns (delta mode) — every `Please continue.` retry also counts against the 600.
 - There is also opaque **account-level throttling** (rapid-fire requests can start returning empties). It recovers on its own.
 
+The account throttle can also be explicit: the final `type:2.item.result` contains
+`value: "Throttled"`, `errorCode: "PerUserThrottled"`, and a request-volume refusal.
+This can occur at `1/600`; the conversation counter is not the account's remaining budget.
+The proxy detects this before accepting content and returns HTTP 429 with
+`type: "rate_limit_error"`, `code: "m365_throttled"`, and the upstream scope in `param`.
+It does not retry that turn or re-authenticate.
+
+An explicit throttle now opens the proxy's local degradation backoff immediately.
+The remaining window is sent as `Retry-After` and `error.retry_after` in seconds;
+an early-flushed SSE response instead carries the same fields in an error chunk.
+`M365_THROTTLE_RETRY_AFTER_S` can extend this recommendation, but cannot shorten
+active local backoff. M365 supplies no reset time, so the hint is a local policy,
+not an observed upstream duration. Defaults start at 90 seconds, escalate on
+continued throttling after expiry up to 600 seconds, and reset on a clean response.
+`M365_NO_BACKOFF=1` disables the local window; a configured retry hint still applies.
+These response changes are verified offline; see hypotheses §23.
+
+The dashboard separately reads persisted account-throttle observations from completion
+metrics: last observed status, first refusal since the last successful response, and
+latest refusal time. Elapsed observation ages update every second. A proxy restart or
+local wait expiry does not mark the account recovered; a later successful response does.
+HTTP 200 SSE errors are not successes for this purpose, and Opus priority-access refusals
+are not account-throttle observations. This is last-known state, not an automatic probe
+of whether the account is still blocked. The Oct 3 final frames inspected (n=3) contain
+the refusal and metering allowances but no retry duration or reset timestamp, so the
+dashboard leaves the upstream reset time unknown (hypotheses §23).
+
 ### Account degradation under sustained use (observed June 13 2026)
 
 A full session of heavy use (~80+ messages across probes, bench runs, and logins
@@ -435,6 +495,7 @@ conversation at `1/600`). Characterised behaviour:
 
 - A "conversation" = a stable `ConversationId` (+ `X-SessionId`). M365 keeps **server-side context** for it.
 - Each **turn opens a fresh WebSocket** (with `invocationId:"0"`), but reuses the same `ConversationId`/`sessionId`, so the server threads them together. `isStartOfSession:true` only on turn 0.
+- The thread is keyed on `ConversationId`: a later run can continue a conversation with a fresh `X-SessionId`/`sessionId` and `isStartOfSession:false`, and a rejected tone mid-thread leaves it usable (hypotheses §32 F76).
 - Because the server remembers prior turns, follow-ups should send **only the new messages** (the delta), not the whole history. Re-sending the full history confuses it and burns quota. See `ModelSession`/`CopilotSession` and `SessionPool` (`handler.ts`).
 - The proxy adds `disableMemory=1` to the Chathub URL **by default** — M365's temporary-chat control. Both halves are verified (§16 F28/F29, `scripts/temporary-chat-probe.mjs`): the live `ConversationId` still retains multi-turn context across turns, and the thread never appears in the Copilot history sidebar. Without it the proxy leaves one saved thread per prompt in the user's history. The trade is that a proxy conversation can't be recovered from the UI afterwards; `M365_SAVE_HISTORY=1` opts back into saved history.
 
@@ -554,7 +615,20 @@ Two behaviours of the chat-tuned model distort any naïve "is it tool-calling ye
    **This was previously documented (and implemented) as a hardcoded `.df.` plus a "trim the last 2 characters" DNS quirk.** That is wrong, and it was invisible here because this tenant's env ID *ends in* `df` — so the trimmed candidate landed on the correct host by coincidence. Any tenant whose env ID ends in something else got two names that don't resolve, and provisioning failed outright. Measured (@FreemindTrader, [#8](https://github.com/cramt/m365-copilot-proxy/issues/8)): for an ID ending `df` the old and new forms hit the same host (200, byte-identical bot list); the full-length label `ENOTFOUND` either way. Implemented in `getEnvironmentUrl()`.
 3. **Create a bot** via the Copilot Studio `minimalBots` API (`…/copilotstudio/minimalBots/api?api-version=2022-03-01-preview`), with the tool-calling instructions as the GPT component's `instructions` text.
 4. **Publish** it → returns a `TitleId`.
-5. The usable **agent id** is `T_{titleId}.{botId}.gpt.default`, cached in `~/.config/opencode-m365/agent-id.json`.
+5. The usable **agent id** is `T_{titleId}.{botId}.gpt.default`, cached in `~/.config/m365-proxy/agent-id.json`.
+
+**Unavailable extensibility (2026-10-02).** A publish **403 mentioning extensibility**
+now marks the agent unavailable for the process lifetime. That error does not delete and
+recreate the bot, and later sessions (including force-refresh) do not repeat provisioning.
+Other publish failures retain the existing recovery path. Restarting the proxy clears this
+negative cache; `M365_DISABLE_AGENT=1` skips resolution and attachment entirely. These are
+proxy-side safeguards verified with mocked provisioning tests, not a new live API finding.
+
+`ModelSession.resolveAgent()` exposes the same lazy cache used by `run()`, so the handler
+chooses framing after it knows whether an agent exists. Agent-less GPT provisionally uses
+`relay` with GPT sandbox wording; agent-backed defaults are unchanged. Tool definitions are
+lean by default (`M365_TOOL_ALLOWLIST`), while response parsing retains the full toolset.
+The dual-environment candidates and pending comparison are in hypotheses §23.
 
 ### Referencing the agent in a chat turn
 Instead of `plugins`, set on the chat message:
@@ -672,8 +746,8 @@ Run unsandboxed with `CHROMIUM_PATH` set and `M365_NO_INTERACTIVE=1`. They reuse
 
 When set, `CopilotSession` appends every WS frame (both `send` and `recv`,
 both raw chat invocation and bot updates) to
-`~/.config/opencode-m365/frames/<requestId>.ndjson` (`M365_FRAME_DIR` names
-another directory, relative to `~/.config/opencode-m365/`). Use this in production
+`~/.config/m365-proxy/frames/<requestId>.ndjson` (`M365_FRAME_DIR` names
+another directory, relative to `~/.config/m365-proxy/`). Use this in production
 to catch a regression mid-flight: ship the suspect NDJSON to a dev box and
 diff against a known-good capture. Negligible overhead since the data is
 already in memory.
@@ -683,3 +757,21 @@ already in memory.
 *If a future reader finds any of this is now wrong: M365 Copilot is an undocumented,
 first-party-only surface and Microsoft changes it freely. Re-capture a real session
 from `m365.cloud.microsoft` (browser devtools → WS frames) and diff against the above.*
+
+### WebSocket incident diagnostics
+
+Enable `M365_DEBUG=1` on the proxy process to record diagnostics in
+`~/.config/m365-proxy/debug.log`. `M365_LOG_FILE` overrides the destination;
+relative paths resolve under that configuration directory.
+`M365_LOG_STDOUT=1` additionally mirrors enabled logs to the proxy terminal.
+
+WebSocket errors, SignalR close/completion errors and socket closure records
+include request, session and conversation IDs. Closure records include the
+WebSocket close code, handshake/send state, answer length and available quota.
+Final-response previews are debug output, bounded to 1,000 characters unless
+`M365_TRACE` is enabled. Logs can contain private prompts and responses:
+protect them and redact sensitive content before sharing.
+
+These diagnostics do not add automatic recovery or establish the cause of a
+generic server-close error. Capture logs during the failing request; older
+captures cannot establish the cause of a later incident.

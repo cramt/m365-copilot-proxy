@@ -15,8 +15,13 @@
     "dist"
   ],
   "scripts": {
-    "build": "tsdown src/index.ts --format esm --dts",
+    "build": "tsdown src/index.ts --format esm --no-clean",
     "test": "vitest run"
+  },
+  "tsdown": {
+    "dts": {
+      "generator": "tsgo"
+    }
   },
   "dependencies": {
     "@m365-copilot/core": "workspace:*",

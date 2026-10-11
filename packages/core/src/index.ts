@@ -4,6 +4,7 @@ export {
   getTokenForScope,
   getImageArtifactToken,
   loginAutomated,
+  loginInteractive,
   loadSecrets,
   forceReauth,
 } from "./auth.js";
@@ -23,6 +24,8 @@ export {
 
 export {
   noteRequestOutcome,
+  noteUpstreamThrottle,
+  getDegradationRetryAfterSeconds,
   awaitDegradationBackoff,
   isDegradationBackoff,
   createBackoffController,
@@ -36,6 +39,8 @@ export {
   decodeJwt,
   getToneForModel,
   getAvailableModels,
+  getAccountTier,
+  AccountTier,
   getScenarioForTone,
   getScenarioForModel,
   isSonnet5Model,
@@ -85,6 +90,8 @@ export {
   defaultFramingForModel,
   transcriptStyleForVariant,
   FRAMING_VARIANT_NAMES,
+  sandboxDescription,
+  type FramingContext,
   type TranscriptStyle,
 } from "./fenced.js";
 
@@ -115,6 +122,7 @@ export {
   formatMessages,
   formatToolDefinitions,
   formatToolChoiceInstruction,
+  selectPromptTools,
   getMessageContent,
   parseToolCalls,
   looksLikeConfabulation,

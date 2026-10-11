@@ -25,9 +25,10 @@ REPEAT="${REPEAT:-1}"
 TASKS="${TASKS:-}"
 COOLDOWN="${COOLDOWN:-45}"
 TAG="${TAG:-s5}"
-CFG="${CFG:-$HOME/.config/opencode-m365}"
+CONTROL="${CONTROL:-/tmp/m365-framing}"
+CFG="${CFG:-$HOME/.config/m365-proxy}"
 ARCHIVE="${ARCHIVE:-$CFG/s5-sweep}"
-# The proxy resolves M365_LOG_FILE / M365_FRAME_DIR against ~/.config/opencode-m365, not the cwd.
+# The proxy resolves M365_LOG_FILE / M365_FRAME_DIR against ~/.config/m365-proxy, not the cwd.
 [[ "$ARCHIVE" == /* ]] || ARCHIVE="$PWD/$ARCHIVE"
 PROXY_CMD="${PROXY_CMD:-node packages/proxy/bin/m365-proxy.mjs}"
 SUMMARY="$ARCHIVE/summary-$TAG.txt"
@@ -55,7 +56,7 @@ trap 'exit 130' INT TERM
 start_proxy() {
   local label="$1"
   # shellcheck disable=SC2086  # PROXY_CMD is a command line
-  env M365_DEBUG=1 M365_DUMP_FRAMES=1 M365_FRAMING_FILE="$CONTROL" \
+  env M365_DEBUG=1 M365_DUMP_FRAMES=1 M365_STICKY_SESSION=off M365_FRAMING_FILE="$CONTROL" \
     M365_LOG_FILE="$ARCHIVE/$label-debug.log" M365_FRAME_DIR="$ARCHIVE/$label-frames" \
     $PROXY_CMD "$PORT" > "$ARCHIVE/$label-proxy.out" 2>&1 &
   PROXY_PID=$!

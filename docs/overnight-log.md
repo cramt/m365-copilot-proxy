@@ -192,7 +192,7 @@ driving the actual `pi` agent headless against the proxy on fix-bug, verifying e
 - 2026-06-25 00:43 — wake 2. **Found+fixed an orchestrator flaw.** Round 1 reached 14 cells
   then hit a 3-ERROR streak (proof_demand/persona/react on find-needle) → triggered a 30-min
   throttle backoff that recovered NOTHING, because **every ERROR was content-filter Disengaged,
-  not throttle** (confirmed in ~/.config/opencode-m365/debug.log: messageType:"Disengaged",
+  not throttle** (confirmed in ~/.config/m365-proxy/debug.log: messageType:"Disengaged",
   hiddenText:"> Conversation disengaged", offense:"None"). Account is HEALTHY — zero empty-throttle.
   - **Signal building:** find-needle Disengages across MANY framings (recency, proof_demand,
     persona, react all Disengaged; fewshot SOLVED it); fix-bug only persona Disengaged. So

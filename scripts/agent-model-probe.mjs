@@ -21,13 +21,18 @@ const pp = (token) => ({
 
 const bapToken = await getTokenForScope(BAP_SCOPES);
 const ppToken = await getTokenForScope(PP_SCOPES);
-if (!bapToken || !ppToken) { console.log("[probe] no tokens"); process.exit(1); }
+if (!bapToken || !ppToken) {
+  console.log("[probe] no tokens");
+  process.exit(1);
+}
 
 const envUrl = await getEnvironmentUrl(bapToken);
 console.log(`[probe] envUrl=${envUrl}`);
 
 // botId from cache
-const cache = JSON.parse(readFileSync(join(homedir(), ".config", "opencode-m365", "agent-id.json"), "utf-8"));
+const cache = JSON.parse(
+  readFileSync(join(homedir(), ".config", "m365-proxy", "agent-id.json"), "utf-8"),
+);
 const botId = cache.botId;
 console.log(`[probe] botId=${botId}`);
 
@@ -68,7 +73,10 @@ async function get(label, url) {
 
 // 1) Full single-bot definition + its components.
 await get("GET bot", `${envUrl}/copilotstudio/minimalBots/api/${botId}?${API}`);
-await get("GET bot/components", `${envUrl}/copilotstudio/minimalBots/api/${botId}/components?${API}`);
+await get(
+  "GET bot/components",
+  `${envUrl}/copilotstudio/minimalBots/api/${botId}/components?${API}`,
+);
 
 // 2) Candidate model-list endpoints (guesses — see which resolve).
 for (const ep of [

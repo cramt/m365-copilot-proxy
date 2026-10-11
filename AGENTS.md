@@ -104,10 +104,8 @@ hypothesis that teaches us something.
   real agentic coding tasks objectively, executing every tool call in a
   `--network none` Docker sandbox. To compare *any* lever (tool format, model/tone,
   prompt, optionsSets) run it with a `--label` and diff the scorecards in
-  `scripts/bench/out/`. "Best" is a pass-rate number, not an opinion. For a framing or
-  proxy-env sweep use `scripts/bench/phase-sweep.sh`, and read it back with
-  `scripts/bench/analyze-arms.mjs`, which also says what happened on the wire (agent path,
-  sandbox, Disengaged) and drops tasks lost to the network. See `scripts/bench/README.md`.
+  `scripts/bench/out/`. "Best" is a pass-rate number, not an opinion. See
+  `scripts/bench/README.md`.
 - Prefer empirical evidence — what the real first-party client sends/receives
   (capture it with Playwright), what the bench scores — over schema guesses.
 
@@ -142,13 +140,16 @@ pnpm test:live      # M365_LIVE=1; live tests that hit real M365 (uses quota)
 - **Run inside the Nix dev shell**: `nix develop --command bash -c '...'`. It provides
   `CHROMIUM_PATH` (a system Chromium; Playwright's bundled one is broken on NixOS), pi, python3
   and curl. Run the bench scripts in it too: `nix develop --command bash scripts/bench/phase-sweep.sh`.
-- Auth uses `~/.config/opencode-m365/secrets.json` (email/password/mfaSecret) +
-  `msal-cache.json`. **This data dir keeps the legacy `opencode-m365` name** — do not
-  rename it or you orphan working credentials.
-- Set `M365_DEBUG=1` to log to `~/.config/opencode-m365/debug.log` (`M365_LOG_FILE` renames it and
-  `M365_FRAME_DIR` moves the `M365_DUMP_FRAMES` dumps, both relative to that directory). There is **no
-  interactive login** — auth is silent-refresh → automated (secrets.json) → fail loudly.
-  A headless host / second PC never opens a browser tab or hangs on a paste-the-URL prompt.
+- Auth uses `~/.config/m365-proxy/secrets.json` (email/password/mfaSecret) +
+  `msal-cache.json`. **This checkout uses the `m365-proxy` data dir.** Move existing
+  credentials from the previous directory before starting.
+- Set `M365_DEBUG=1` to log to `~/.config/m365-proxy/debug.log` (`M365_LOG_FILE` renames it and
+  `M365_FRAME_DIR` moves the `M365_DUMP_FRAMES` dumps, both relative to that directory).
+  Auth attempts silent refresh, automated login, then visible fallback unless
+  `M365_NO_INTERACTIVE=1`. Set that flag on headless hosts.
+  WebSocket error/close diagnostics include request/session/conversation IDs and available quota.
+  Debug final-response previews may contain private content; protect logs before sharing.
+  Logging does not rotate a failing conversation or diagnose generic server-close errors.
 - **Mind the quota**: ~600 messages **per conversation**, plus account-level throttling.
   Don't burn it on loops. A "rate limited / empty response" is often actually a
   `Disengaged` refusal (see the API doc), not throttling.
@@ -302,8 +303,16 @@ pnpm test:live      # M365_LIVE=1; live tests that hit real M365 (uses quota)
   F13's "fresh login clears it" was n=1 and confounded with a rest). It lifts with idle time,
   which is why the proxy's degradation backoff replaced the old auto-reauth. Space experiment
   runs; don't loop new conversations.
+- **`M365_STICKY_SESSION` keeps one M365 thread across compaction and model switches; the default is `all`.** `all` (default, and anything unrecognised) is one thread for every request and model: a model switch re-sends the new model's framing, pi's compaction-summary requests are answered locally, turns are serialized, and only the delta is sent, so a pi compaction no longer opens 3 new threads (F13 throttle). Two clients at once share that thread, so their histories mix. `model` is one thread per model. `off` (or `0`/`false`/`no`) is the old behaviour: keyed on model + first user message, and a shrinking history starts a new thread. **Run the bench and the probes against an `off` proxy**, because they rely on a fresh thread per task. The launchers that start their own proxy pin `off`, and so does `proxy-verify`. The dashboard's check-models/ping force `all` per request (`stickySession` option), so a check across every model is one thread, not one per model. Run them when no pi session is active, because they share pi's thread. See docs/hypotheses.md §31 and `.plans/sticky-session.md`.
 - The `nativeclient` OAuth redirect bounces to `/common/wrongplace`; the auth code is
   scraped from the navigation request, not a settled URL.
+- **A named upstream failure is returned, not retried.** A final `result` other than `Success`
+  ends the request: `ForbiddenRequest` → 403 `permission_error`, else 502 `upstream_error`, with
+  the M365 value in `code`/`param`. Only the F52 transient (`InternalError` on an agent route that
+  has answered) still retries. Don't reintroduce "Please continue." retries for these; they spent
+  turns on the same answer. See docs/hypotheses.md §32.
+- **Name sweeps go in one thread:** `new-model-tone-probe.mjs --conversation=new|<uuid>` (F76).
+  No Haiku tone and no versioned Sonnet 4.x tone exists (F77); Sonnet versions follow the scenario.
 
 ## Verifying changes end-to-end
 

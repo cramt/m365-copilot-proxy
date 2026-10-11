@@ -1,7 +1,9 @@
-import { describe, expect, it, afterEach } from "vitest";
+import { describe, expect, it, afterEach, vi } from "vitest";
 import {
+  AccountTier,
   AGENT_CLAUDE_TONES,
   AGENTLESS_TOOL_TONES,
+  getAccountTier,
   getAvailableModels,
   getScenarioForModel,
   getScenarioForTone,
@@ -27,6 +29,102 @@ import {
 const INCLUDED = { scenario: "OfficeWebIncludedCopilot", licenseType: "Starter" };
 const PAID = { scenario: "OfficeWebPaidCopilot", licenseType: "Premium" };
 
+describe("advertised model catalog", () => {
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
+  it("exposes the included model IDs that responded in the saved sweep", () => {
+    expect(getAvailableModels()).toEqual([
+      "m365-copilot",
+      "auto",
+      "quick",
+      "think-deeper",
+      "gpt-5.2",
+      "gpt-5.2-quick",
+      "gpt-5.2-think-deeper",
+      "gpt-5.3",
+      "gpt-5.3-quick",
+      "gpt-5.3-think-deeper",
+      "gpt-5.4",
+      "gpt-5.4-think-deeper",
+      "gpt-5.4-quick",
+      "gpt-5.5",
+      "gpt-5.5-quick",
+      "gpt-5.5-think-deeper",
+      "gpt-5.6",
+      "gpt-5.6-quick",
+      "gpt-5.6-think-deeper",
+      "gpt-6-sol",
+      "gpt-6.1-sol",
+      "claude-sonnet-think-deeper",
+    ]);
+  });
+
+  it("keeps the responding Claude reasoning model on its included route", () => {
+    expect(getAvailableModels()).toContain("claude-sonnet-think-deeper");
+    expect(getToneForModel("claude-sonnet-think-deeper")).toBe("Claude_Sonnet_Reasoning");
+    expect(getScenarioForModel("claude-sonnet-think-deeper")).toEqual(INCLUDED);
+  });
+
+  it("hides failed Claude routes, paid models, and unverified Sonnet 5.5", () => {
+    for (const model of [
+      "claude",
+      "claude-sonnet",
+      "claude-sonnet-4.5",
+      "claude-sonnet-4.6",
+      "claude-sonnet-5",
+      "claude-opus",
+      "claude-opus-5",
+      "gpt-6-think-deeper",
+      "claude-sonnet-5.5",
+    ]) {
+      expect(getAvailableModels()).not.toContain(model);
+    }
+  });
+
+  it("returns a copy so callers cannot mutate the catalog", () => {
+    const models = getAvailableModels();
+    models.length = 0;
+    expect(getAvailableModels()).toHaveLength(22);
+  });
+
+  const PAID_ONLY = [
+    "claude",
+    "claude-sonnet",
+    "claude-sonnet-4.5",
+    "claude-sonnet-4.6",
+    "claude-sonnet-5",
+    "claude-opus",
+    "claude-opus-5",
+    "gpt-6-think-deeper",
+    "claude-sonnet-5.5",
+    "claude-opus-5.5",
+    "claude-opus-4.5",
+  ];
+
+  it("defaults to the basic tier and accepts it explicitly", () => {
+    expect(getAccountTier()).toBe(AccountTier.Basic);
+    vi.stubEnv("M365_ACCOUNT_TIER", " Basic ");
+    expect(getAccountTier()).toBe(AccountTier.Basic);
+  });
+
+  it("adds the paid routes when M365_ACCOUNT_TIER is paid (or premium)", () => {
+    for (const value of ["paid", "PREMIUM"]) {
+      vi.stubEnv("M365_ACCOUNT_TIER", value);
+      expect(getAccountTier()).toBe(AccountTier.Paid);
+      const models = getAvailableModels();
+      expect(models.slice(0, 22)).toEqual(getAvailableModels(AccountTier.Basic));
+      expect(models.slice(22)).toEqual(PAID_ONLY);
+    }
+  });
+
+  it("rejects an unknown tier instead of silently hiding models", () => {
+    vi.stubEnv("M365_ACCOUNT_TIER", "pro");
+    expect(() => getAccountTier()).toThrow(/M365_ACCOUNT_TIER/);
+  });
+});
+
 describe("Sonnet routing — one tone, two models", () => {
   // `Claude_Sonnet` is Sonnet 4.6 on the included scenario and Sonnet 5.5 on
   // the paid one; `Claude_Sonnet_5` is Sonnet 5 on the paid one and Sonnet 4.6
@@ -38,14 +136,14 @@ describe("Sonnet routing — one tone, two models", () => {
   it("sends claude-sonnet-5.5 to the shared tone under the paid scenario", () => {
     expect(getToneForModel("claude-sonnet-5.5")).toBe("Claude_Sonnet");
     expect(getScenarioForModel("claude-sonnet-5.5")).toEqual(PAID);
-    expect(getAvailableModels()).toContain("claude-sonnet-5.5");
+    expect(getAvailableModels()).not.toContain("claude-sonnet-5.5");
   });
 
   it("sends claude-sonnet-5 to its own tone, which is paid", () => {
     expect(getToneForModel("claude-sonnet-5")).toBe("Claude_Sonnet_5");
     expect(getScenarioForModel("claude-sonnet-5")).toEqual(PAID);
     expect(getScenarioForTone("Claude_Sonnet_5")).toEqual(PAID);
-    expect(getAvailableModels()).toContain("claude-sonnet-5");
+    expect(getAvailableModels()).not.toContain("claude-sonnet-5");
   });
 
   it("keeps every other Sonnet ID on the included scenario (Sonnet 4.6)", () => {
@@ -61,7 +159,12 @@ describe("Sonnet routing — one tone, two models", () => {
   });
 
   it("routes unmapped Sonnet 5.5 strings a client may send to Sonnet 5.5, not 4.6 or 5", () => {
-    for (const id of ["claude-sonnet-5.5[1m]", "claude-sonnet-5-5-20261001", "Claude-Sonnet-5.5", "claude-sonnet-5_5"]) {
+    for (const id of [
+      "claude-sonnet-5.5[1m]",
+      "claude-sonnet-5-5-20261001",
+      "Claude-Sonnet-5.5",
+      "claude-sonnet-5_5",
+    ]) {
       expect(getToneForModel(id)).toBe("Claude_Sonnet");
       expect(isSonnet55Model(id)).toBe(true);
       expect(isSonnet5Model(id)).toBe(false);
@@ -79,7 +182,14 @@ describe("Sonnet routing — one tone, two models", () => {
   });
 
   it("does not mistake older Sonnet names for Sonnet 5 or 5.5", () => {
-    for (const id of ["claude-sonnet-4-5-20250929", "claude-3-5-sonnet", "claude-sonnet-4.5", "claude-sonnet-50", "claude-sonnet-5.50", "claude-sonnet-5.1"]) {
+    for (const id of [
+      "claude-sonnet-4-5-20250929",
+      "claude-3-5-sonnet",
+      "claude-sonnet-4.5",
+      "claude-sonnet-50",
+      "claude-sonnet-5.50",
+      "claude-sonnet-5.1",
+    ]) {
       expect(isSonnet5Model(id)).toBe(false);
       expect(isSonnet55Model(id)).toBe(false);
       expect(getScenarioForModel(id)).toEqual(INCLUDED);
@@ -134,9 +244,9 @@ describe("GPT-5.6 model routing", () => {
 });
 
 describe("GPT-6 routing", () => {
-  it("maps the advertised model ID to the reasoning tone", () => {
+  it("keeps the unadvertised model ID on its reasoning tone", () => {
     expect(getToneForModel("gpt-6-think-deeper")).toBe("Gpt_6_Reasoning");
-    expect(getAvailableModels()).toContain("gpt-6-think-deeper");
+    expect(getAvailableModels()).not.toContain("gpt-6-think-deeper");
   });
 
   it("advertises no chat variant — Gpt_6_Chat is rejected by the validator", () => {
@@ -157,20 +267,45 @@ describe("which tool requests carry the tool agent", () => {
   });
 
   it("keeps every Claude model but Opus off the agent, mapped or not", () => {
-    for (const id of ["claude", "claude-sonnet", "claude-sonnet-5", "claude-sonnet-5.5", "claude-sonnet-5[1m]", "claude-sonnet-think-deeper", "claude-haiku-9"]) {
+    for (const id of [
+      "claude",
+      "claude-sonnet",
+      "claude-sonnet-5",
+      "claude-sonnet-5.5",
+      "claude-sonnet-5[1m]",
+      "claude-sonnet-think-deeper",
+      "claude-haiku-9",
+    ]) {
       expect(usesAgent(id)).toBe(false);
     }
   });
 
   it("gives both Opus models the agent — Opus 4.5 is served only with it (§24)", () => {
     expect(AGENT_CLAUDE_TONES.has("Claude_Opus")).toBe(true);
-    for (const id of ["claude-opus", "claude-opus-5", "claude-opus-5.5", "claude-opus-4.5", "claude-opus-5[1m]", "claude-opus-4-5-20251101"]) {
+    for (const id of [
+      "claude-opus",
+      "claude-opus-5",
+      "claude-opus-5.5",
+      "claude-opus-4.5",
+      "claude-opus-5[1m]",
+      "claude-opus-4-5-20251101",
+    ]) {
       expect(usesAgent(id)).toBe(true);
     }
   });
 
   it("still gives the GPT-5.x and default models the agent — they won't act without it", () => {
-    for (const id of ["m365-copilot", "quick", "think-deeper", "gpt-5.2", "gpt-5.4", "gpt-5.5", "gpt-5.5-think-deeper", "gpt-5.6", "gpt-5.6-think-deeper"]) {
+    for (const id of [
+      "m365-copilot",
+      "quick",
+      "think-deeper",
+      "gpt-5.2",
+      "gpt-5.4",
+      "gpt-5.5",
+      "gpt-5.5-think-deeper",
+      "gpt-5.6",
+      "gpt-5.6-think-deeper",
+    ]) {
       expect(usesAgent(id)).toBe(true);
     }
   });
@@ -264,7 +399,7 @@ describe("Opus routing", () => {
     expect(getToneForModel("claude-opus-5.5")).toBe("Claude_Opus");
     expect(getToneForModel("claude-opus-4.5")).toBe("Claude_Opus");
     for (const id of ["claude-opus", "claude-opus-5.5", "claude-opus-4.5"]) {
-      expect(getAvailableModels()).toContain(id);
+      expect(getAvailableModels()).not.toContain(id);
     }
   });
 
@@ -284,7 +419,16 @@ describe("Opus routing", () => {
   });
 
   it("keeps every other Opus ID on the paid scenario (Opus 5.5)", () => {
-    for (const id of ["claude-opus", "claude-opus-5", "claude-opus-5.5", "claude-opus-5[1m]", "claude-opus-4", "claude-opus-4-1", "claude-opus-4.6", "claude-opus-4.50"]) {
+    for (const id of [
+      "claude-opus",
+      "claude-opus-5",
+      "claude-opus-5.5",
+      "claude-opus-5[1m]",
+      "claude-opus-4",
+      "claude-opus-4-1",
+      "claude-opus-4.6",
+      "claude-opus-4.50",
+    ]) {
       expect(isOpus45Model(id)).toBe(false);
       expect(getScenarioForModel(id)).toEqual(PAID);
     }
@@ -293,7 +437,13 @@ describe("Opus routing", () => {
   });
 
   it("routes unmapped Opus 4.5 strings a client may send to Opus 4.5, not Opus 5.5", () => {
-    for (const id of ["claude-opus-4-5", "claude-opus-4-5-20251101", "claude-opus-4.5[1m]", "Claude-Opus-4.5", "opus_4_5"]) {
+    for (const id of [
+      "claude-opus-4-5",
+      "claude-opus-4-5-20251101",
+      "claude-opus-4.5[1m]",
+      "Claude-Opus-4.5",
+      "opus_4_5",
+    ]) {
       expect(getToneForModel(id)).toBe("Claude_Opus");
       expect(isOpus45Model(id)).toBe(true);
       expect(getScenarioForModel(id)).toEqual(INCLUDED);
@@ -324,9 +474,17 @@ describe("Opus routing", () => {
   });
 
   it("knows which turns are metered — Opus 5.5's and Sonnet 5.5's, not Opus 4.5's or Sonnet 5's", () => {
-    for (const id of ["claude-opus", "claude-opus-5", "claude-opus-5.5", "claude-opus-5[1m]"]) expect(meteredBudgetOf(id)).toBe("opus");
-    for (const id of ["claude-sonnet-5.5", "claude-sonnet-5-5-20261001"]) expect(meteredBudgetOf(id)).toBe("sonnet-5.5");
-    for (const id of ["claude-opus-4.5", "claude-opus-4-5-20251101", "claude-sonnet-5", "claude-sonnet", "gpt-6-think-deeper"]) {
+    for (const id of ["claude-opus", "claude-opus-5", "claude-opus-5.5", "claude-opus-5[1m]"])
+      expect(meteredBudgetOf(id)).toBe("opus");
+    for (const id of ["claude-sonnet-5.5", "claude-sonnet-5-5-20261001"])
+      expect(meteredBudgetOf(id)).toBe("sonnet-5.5");
+    for (const id of [
+      "claude-opus-4.5",
+      "claude-opus-4-5-20251101",
+      "claude-sonnet-5",
+      "claude-sonnet",
+      "gpt-6-think-deeper",
+    ]) {
       expect(meteredBudgetOf(id)).toBeNull();
     }
   });
@@ -364,8 +522,12 @@ describe("Opus routing", () => {
 // Tones the live validator REJECTS — every one errored `Failed to invoke 'Chat'`
 // in all 3 runs of the 2026-09-28 tone-probe sweep (docs/hypotheses.md §19).
 const REJECTED_TONES = [
-  "Gpt_Quick", "Gpt_Chat", "Gpt_Reasoning",
-  "Gpt_5_2_Quick", "Gpt_5_3_Quick", "Gpt_5_4_Quick",
+  "Gpt_Quick",
+  "Gpt_Chat",
+  "Gpt_Reasoning",
+  "Gpt_5_2_Quick",
+  "Gpt_5_3_Quick",
+  "Gpt_5_4_Quick",
   "Gpt_6_Chat",
 ];
 
@@ -397,7 +559,15 @@ describe("retired Quick tones", () => {
   });
 
   it("keeps advertising every legacy ID, so existing client configs keep working", () => {
-    for (const id of ["quick", "think-deeper", "gpt-5.4-quick", "gpt-5.3", "gpt-5.3-quick", "gpt-5.2", "gpt-5.2-quick"]) {
+    for (const id of [
+      "quick",
+      "think-deeper",
+      "gpt-5.4-quick",
+      "gpt-5.3",
+      "gpt-5.3-quick",
+      "gpt-5.2",
+      "gpt-5.2-quick",
+    ]) {
       expect(getAvailableModels()).toContain(id);
     }
   });
@@ -424,7 +594,13 @@ describe("getScenarioForTone", () => {
   });
 
   it("leaves every other tone on the included scenario", () => {
-    for (const tone of ["magic", "Claude_Sonnet", "Gpt_5_5_Reasoning", "Gpt_5_6_Reasoning", "Gpt_5_6_Chat"]) {
+    for (const tone of [
+      "magic",
+      "Claude_Sonnet",
+      "Gpt_5_5_Reasoning",
+      "Gpt_5_6_Reasoning",
+      "Gpt_5_6_Chat",
+    ]) {
       expect(getScenarioForTone(tone)).toEqual({
         scenario: "OfficeWebIncludedCopilot",
         licenseType: "Starter",

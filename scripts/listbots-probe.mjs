@@ -23,10 +23,9 @@ if (!bapToken || !ppToken) process.exit(1);
 const envUrl = await getEnvironmentUrl(bapToken);
 console.log(`[probe] envUrl=${envUrl}`);
 
-const res = await fetch(
-  `${envUrl}/copilotstudio/minimalBots/api?api-version=2022-03-01-preview`,
-  { headers: ppHeaders(ppToken) },
-);
+const res = await fetch(`${envUrl}/copilotstudio/minimalBots/api?api-version=2022-03-01-preview`, {
+  headers: ppHeaders(ppToken),
+});
 console.log(`[probe] listBots status=${res.status}`);
 const bots = await res.json();
 // Show the full shape of one bot, plus the name fields for all of them.
@@ -34,11 +33,13 @@ console.log("[probe] === one full bot object ===");
 console.log(JSON.stringify(Array.isArray(bots) ? bots[0] : bots, null, 2));
 console.log("[probe] === name fields for all bots ===");
 for (const b of Array.isArray(bots) ? bots : []) {
-  console.log(JSON.stringify({
-    botId: b.botId,
-    shortBotName: b.shortBotName,
-    displayName: b.displayName,
-    name: b.name,
-    schemaName: b.schemaName,
-  }));
+  console.log(
+    JSON.stringify({
+      botId: b.botId,
+      shortBotName: b.shortBotName,
+      displayName: b.displayName,
+      name: b.name,
+      schemaName: b.schemaName,
+    }),
+  );
 }

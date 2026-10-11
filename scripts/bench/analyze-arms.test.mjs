@@ -21,14 +21,28 @@ describe("analyze-arms", () => {
   });
 
   it("is reproducible for a seed", () => {
-    const xs = rows("t", 3, 4, 2, 5, 3, 3), ys = rows("t", 2, 3, 3, 2, 4, 2);
-    expect(stratifiedPermutation(xs, ys, { seed: 7, iters: 5_000 })).toBe(stratifiedPermutation(xs, ys, { seed: 7, iters: 5_000 }));
+    const xs = rows("t", 3, 4, 2, 5, 3, 3),
+      ys = rows("t", 2, 3, 3, 2, 4, 2);
+    expect(stratifiedPermutation(xs, ys, { seed: 7, iters: 5_000 })).toBe(
+      stratifiedPermutation(xs, ys, { seed: 7, iters: 5_000 }),
+    );
   });
 
   it("counts a sandbox turn by its Code progress frame, whatever the model calls it", () => {
     const dir = mkdtempSync(join(tmpdir(), "frames-"));
-    const progress = (text) => JSON.stringify({ type: 1, arguments: [{ messages: [{ text, author: "bot", messageType: "Progress", contentType: "Code" }] }] });
-    const chat = JSON.stringify({ type: 1, arguments: [{ messages: [{ text: "```bash\nls\n```", author: "bot", contentOrigin: "DeepLeo" }] }] });
+    const progress = (text) =>
+      JSON.stringify({
+        type: 1,
+        arguments: [
+          { messages: [{ text, author: "bot", messageType: "Progress", contentType: "Code" }] },
+        ],
+      });
+    const chat = JSON.stringify({
+      type: 1,
+      arguments: [
+        { messages: [{ text: "```bash\nls\n```", author: "bot", contentOrigin: "DeepLeo" }] },
+      ],
+    });
     writeFileSync(join(dir, "s46.ndjson"), [progress("Analysing"), chat].join("\n")); // Sonnet 4.6's code interpreter
     writeFileSync(join(dir, "g6s.ndjson"), [progress("Coding and executing"), chat].join("\n")); // GPT-6 Sol, Sonnet 5
     writeFileSync(join(dir, "plain.ndjson"), chat);
@@ -46,14 +60,24 @@ describe("analyze-arms", () => {
   it("selects by arm, phase env and path", () => {
     const row = (path) => ({ task: "fix-bug#1", solved: true, invalid: null, path });
     const arms = [
-      { arm: "pi=fix-bug", env: "M365_FORCE_AGENT=0 M365_FRAMING_VARIANT=relay", rows: [row("agent-less")] },
-      { arm: "pi=fix-bug", env: "M365_FRAMING_VARIANT=relay_batch", rows: [row("agent"), row("agent-less")] },
+      {
+        arm: "pi=fix-bug",
+        env: "M365_FORCE_AGENT=0 M365_FRAMING_VARIANT=relay",
+        rows: [row("agent-less")],
+      },
+      {
+        arm: "pi=fix-bug",
+        env: "M365_FRAMING_VARIANT=relay_batch",
+        rows: [row("agent"), row("agent-less")],
+      },
       { arm: "relay", env: "", rows: [row("agent")] },
     ];
     expect(select(arms, "pi=fix-bug").length).toBe(3);
     expect(select(arms, "pi=fix-bug+M365_FRAMING_VARIANT=relay").length).toBe(1);
     expect(select(arms, "pi=fix-bug+M365_FRAMING_VARIANT=relay_batch@agent").length).toBe(1);
-    expect(select(arms, "pi=fix-bug,relay+M365_FORCE_AGENT=0+M365_FRAMING_VARIANT=relay").length).toBe(1);
+    expect(
+      select(arms, "pi=fix-bug,relay+M365_FORCE_AGENT=0+M365_FRAMING_VARIANT=relay").length,
+    ).toBe(1);
     expect(select(arms, "relay@agent").length).toBe(1);
   });
 });

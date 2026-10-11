@@ -39,7 +39,7 @@ On first use, the system creates a **Copilot Studio agent** with tool-calling in
 2. Creates a bot with instructions in the Copilot Studio `minimalBots` API
 3. Publishes the bot to get a `TitleId`
 4. Uses the agent ID (`T_{titleId}.{botId}.gpt.default`) in WebSocket chat requests
-5. Caches the agent ID in `~/.config/opencode-m365/agent-id.json`
+5. Caches the agent ID in `~/.config/m365-proxy/agent-id.json`
 
 ### Conversation reuse
 
@@ -57,22 +57,22 @@ Each agent session reuses the same M365 conversation (same `sessionId` + `conver
 
 ### Prerequisites
 
-- Node.js 24+
-- pnpm 10+
+- Node.js >=22.13.0
+- pnpm 12 (the workspace specifies pnpm 12.8.1)
 - An M365 account with Copilot access
 - A way to sign in, either:
   - **TOTP-based MFA with the base32 secret in hand** — the automated login types the
     6-digit code itself, so it needs the seed, not an app on your phone. See
     [Getting the TOTP secret](#getting-the-totp-secret). This is the headless-friendly
     option; prefer it if your tenant allows it.
-  - **or a display and 30 seconds** — set `M365_ENABLE_INTERACTIVE_APPROVAL=1` and sign
+  - **or a display for interactive approval** — leave `M365_NO_INTERACTIVE` unset and sign
     in by hand once. Required if your tenant has [no TOTP option](#if-your-tenant-has-no-totp-option)
     (push-only MFA, FIDO2, Okta/Ping/Duo).
 
 ### 1. Install
 
 ```sh
-git clone https://github.com/cramt/m365-copilot-proxy
+git clone --branch async-m365 git@github.com:noobie-bob/m365-copilot-proxy.git
 cd m365-copilot-proxy
 pnpm install
 pnpm build
@@ -80,7 +80,13 @@ pnpm build
 
 ### 2. Configure credentials
 
-Create `~/.config/opencode-m365/secrets.json`:
+If upgrading from a checkout that used `~/.config/opencode-m365/`, copy any
+existing `secrets.json` and `msal-cache.json` you need to
+`~/.config/m365-proxy/` before starting. This migration is not automatic.
+The token cache contains sensitive credentials and must stay out of Git;
+`secrets.json` is only needed for automated browser login.
+
+Create `~/.config/m365-proxy/secrets.json` for automated login:
 
 ```json
 {
@@ -132,24 +138,24 @@ Plenty of tenants can't do the above, and then there is no seed to extract:
 The stored-credentials flow above cannot work in those cases — the automated login has
 no code to type, and no amount of configuration fixes that.
 
-**Use interactive approval instead.** Skip `secrets.json` entirely and set:
+**Use interactive approval instead.** Skip `secrets.json` entirely and allow visible fallback:
 
 ```sh
-export M365_ENABLE_INTERACTIVE_APPROVAL=1
+unset M365_NO_INTERACTIVE
 m365-proxy 4141
 ```
 
 A real browser window opens; you complete SSO/MFA by hand exactly as you would in
 Outlook — push, FIDO2, Okta, whatever your tenant enforces. The proxy captures the
 resulting OAuth code and from then on refreshes tokens silently from the MSAL cache,
-so the window is a **one-time cost**, not a per-run prompt. It also kicks in when
+so subsequent runs normally use silent refresh. Interactive sign-in may be needed again if the cache or authorisation becomes invalid. It also kicks in when
 stored credentials exist but stop working (policy change, MFA method swap).
 
 Contributed by [@EatonWu](https://github.com/EatonWu). Two honest caveats:
 
-- It is **opt-in on purpose.** Without the flag a headless host (systemd, CI, a second
-  PC) fails loudly instead of hanging on a window nobody can see. Set
-  `M365_NO_INTERACTIVE=1` to veto it outright.
+- Visible fallback is currently enabled unless `M365_NO_INTERACTIVE=1`.
+  Set that variable explicitly on headless hosts. The former
+  `M365_ENABLE_INTERACTIVE_APPROVAL` opt-in is not enforced by this implementation.
 - The redirect capture and token exchange are the same ones the automated path uses in
   production, but **nobody has yet run this end to end against a federated Okta/Ping/Duo
   tenant.** If that's you, please report in
@@ -164,7 +170,11 @@ Contributed by [@EatonWu](https://github.com/EatonWu). Two honest caveats:
 
 #### First run
 
-On first run, the system does an automated browser login (via Playwright/Chromium) to get OAuth tokens. After that, tokens refresh silently from the MSAL cache.
+On first run, the proxy tries the MSAL cache, then `M365_REFRESH_TOKEN` if
+set, then browser login if needed. After successful authentication, tokens
+refresh silently from the cache. A headless host needs a usable cache, a
+refresh token, or supported automated login; interactive approval requires
+a display.
 
 ### 3. Use with pi (or any OpenAI-compatible agent)
 
@@ -197,8 +207,8 @@ Point [pi](https://pi.dev/) at it via `~/.pi/agent/models.json`:
 }
 ```
 
-> `apiKey` is a placeholder. The proxy binds to localhost and validates no
-> credential — the field exists only because the OpenAI client schema requires it.
+> `apiKey` is a placeholder unless `M365_PROXY_API_KEY` is set. If it is set,
+> use that same key here; otherwise the field only satisfies the OpenAI client schema.
 
 Then run pi (use `gpt-5.5-think-deeper` — the reliable tool-calling model — and keep the
 toolset lean; M365 "disengages" on very large tool payloads, see
@@ -232,6 +242,33 @@ pnpm run dev
 ```
 
 Then point any OpenAI-compatible client at `http://localhost:4141/v1`.
+
+| Endpoint | Notes |
+|---|---|
+| `GET /v1/models` | Model list, plus `context_window` / `max_output_tokens` hints |
+| `GET /v1/models/{id}` | One model; `404 model_not_found` for an unknown ID |
+| `POST /v1/chat/completions` | Roles `system` / `developer` / `user` / `assistant` / `tool`; `tools` + `tool_choice` and the legacy `functions` + `function_call`; `stream` + `stream_options.include_usage`. `top_p`, `stop`, `seed`, `response_format`, `max_completion_tokens` and the other sampling fields are accepted and ignored (M365 exposes no such controls); `n > 1` is a 400. An unknown model ID falls back to `m365-copilot`. |
+| `GET /health` | Liveness |
+
+Errors use OpenAI's `{"error": {"message", "type", "param", "code"}}` body: 400 invalid
+request, 401 bad API key, 403 M365 refused the entitlement (`permission_error`, code
+`InvalidCopilotLicense`), 404 unknown URL or model, 405 wrong method (with `Allow`), 429 rate
+limited (`m365_throttled`, `priority_access_exhausted`), 502 upstream failure (`disengaged`,
+`upstream_empty_response`, `upstream_error`). When M365 names its failure (`InternalError`,
+`ForbiddenRequest`, …) the proxy returns it at once, with the upstream value in `code`/`param`,
+instead of retrying. Set `M365_PROXY_API_KEY` to require
+`Authorization: Bearer <key>` on `/v1/*`.
+
+The local dashboard at `http://127.0.0.1:4141/` shows request counts, estimated
+usage, latency, active sessions, model health, and last-observed account throttling.
+It can ping one model or check the advertised models; these actions start real M365
+conversations, so use them sparingly. Request history is stored in
+`~/.config/m365-proxy/metrics.sqlite` across restarts; active sessions are
+process-local. The dashboard (`/`) and `/actions/*` accept only loopback socket
+peers; remote requests get 403 `dashboard_local_only`, even with a valid API key.
+IPv4 and IPv6 loopback are supported; forwarded headers do not override
+the peer address.
+Do not forward these routes through a remote-facing reverse proxy.
 
 #### Temporary chats
 
@@ -280,6 +317,16 @@ without NixOS: `nix run github:cramt/m365-copilot-proxy -- 4141`.
 
 ## Available models
 
+`/v1/models` depends on `M365_ACCOUNT_TIER`. The default, `basic`, exposes 22 included
+model IDs: the 20 responders from the saved 2026-10-02 sweep, plus the upstream-verified
+`gpt-6-sol` and `gpt-6.1-sol`. `paid` (alias `premium`) adds the Claude chat IDs that failed upstream on a
+basic account and the paid routes it refused; they serve on a premium account. Edit `BASIC_MODELS` / `PAID_ONLY_MODELS` in
+[packages/core/src/copilot.ts](packages/core/src/copilot.ts) to change discovery.
+Routing of hidden IDs remains intact for
+explicit requests. A successful response does not guarantee local tool
+calling. Claude reasoning remains listed because it responded, despite refusing
+the tool task. Evidence: [findings/models.md](findings/models.md).
+
 | Model ID | M365 Tone | Description |
 |---|---|---|
 | `gpt-6-think-deeper` | Gpt_6_Reasoning | GPT-6 reasoning. **Needs a paid/premium Copilot seat** (see below); 30/30 on the bench (agent-less, `relay` framing). Defaults to `relay_batch`: 20/20 at 2.1 turns per task (relay: 3.2), 10/10 driving real pi |
@@ -295,12 +342,15 @@ without NixOS: `nix run github:cramt/m365-copilot-proxy -- 4141`.
 | `claude` / `claude-sonnet` / `claude-sonnet-4.6` | Claude_Sonnet | Real Anthropic Claude Sonnet 4.6 (agent-less path) — 78/90 on the bench with the `relay` framing (47/76 with `baseline`). Defaults to `relay_batch`: 40/40, and 21% fewer turns driving real pi (20/20). `claude-sonnet-4.5` is kept as an alias |
 | `claude-sonnet-5.5` | Claude_Sonnet (paid scenario) | Claude Sonnet 5.5. **Needs a paid/premium Copilot seat** — same tone as above, the scenario picks the model — and has a separate quota: 80 turns a day, 150 a week (see below). Defaults to `relay`, inherited from Sonnet 5 (not benchmarked yet) |
 | `claude-sonnet-5` | Claude_Sonnet_5 (paid scenario) | Claude Sonnet 5. **Needs a paid/premium Copilot seat**; no separate quota. 27/30 on the bench with the `relay` framing (6/40 with `baseline`; see below) |
-| `claude-sonnet-think-deeper` | Claude_Sonnet_Reasoning | Claude reasoning |
+| `claude-sonnet-think-deeper` | Claude_Sonnet_Reasoning | Included Claude reasoning; responded in the sweep; local tool calling was verified in the paired real-Pi checks (H25) |
 | `claude-opus` / `claude-opus-5.5` | Claude_Opus (paid scenario) | Claude Opus 5.5. **Needs a paid/premium Copilot seat** and has a small separate quota: 40 turns a day (see below). 10/10 on the bench with `relay`; defaults to `relay_batch`. `claude-opus-5` is kept as an alias |
 | `claude-opus-4.5` | Claude_Opus (included scenario, tool agent) | Claude Opus 4.5. **Premium accounts only**, but **no** priority-access quota. With its default `relay_batch` framing: 20/20 on the bench at 2.3 turns per task, 10/10 driving real pi |
 | `gpt-5.4` / `gpt-5.4-quick` | Gpt_5_4_* | GPT-5.4 |
 | `gpt-5.3` / `gpt-5.3-think-deeper` | Gpt_5_3_* | GPT-5.3 |
 | `gpt-5.2` / `gpt-5.2-think-deeper` | Gpt_5_2_* | GPT-5.2 |
+| `gpt-5.4-think-deeper` | Gpt_5_4_Reasoning | GPT-5.4 reasoning |
+| `gpt-5.3-quick` | Gpt_5_3_Chat | GPT-5.3 chat |
+| `gpt-5.2-quick` | Gpt_5_2_Chat | GPT-5.2 chat |
 
 Bench scores are 10 tasks × 3 reps with the confab-retry **off** (`M365_NO_CONFAB_RETRY=1`), so
 every first-try give-up counts, including ones the proxy's retry would normally recover
@@ -554,13 +604,13 @@ next step — the core API it needs is already in place.
 
 The auth flow uses Azure MSAL with PKCE:
 
-1. **Silent refresh** — cached tokens from `~/.config/opencode-m365/msal-cache.json`. The
+1. **Silent refresh** — cached tokens from `~/.config/m365-proxy/msal-cache.json`. The
    normal path; costs nothing and opens nothing.
 2. **Automated login** — headless Playwright browser driving the AAD form with stored
    credentials + a TOTP code generated from `mfaSecret`.
-3. **Interactive approval** — visible browser, human completes SSO/MFA (§13). Only when
-   `M365_ENABLE_INTERACTIVE_APPROVAL=1`, and only after step 2 is unavailable or has
-   actually failed. This is the path for tenants where no TOTP seed exists.
+3. **Interactive approval** — visible browser, human completes SSO/MFA.
+   Enabled unless `M365_NO_INTERACTIVE=1`, after automated login is unavailable
+   or fails. Headless deployments should explicitly disable it.
 
 All three redeem the code against `https://login.microsoftonline.com/common/oauth2/nativeclient`
 with PKCE. That redirect isn't a stylistic choice: the client is Microsoft's own Copilot app
@@ -578,41 +628,49 @@ Three token scopes are acquired:
 
 | Variable | Description |
 |---|---|
-| `M365_DEBUG` | Set to `1` to enable debug logging to `~/.config/opencode-m365/debug.log` (truncated payloads) |
-| `M365_LOG_FILE` | Debug log name, relative to `~/.config/opencode-m365/` (default `debug.log`; an absolute path is used as is). `M365_LOG_FILE=my/log.log` logs to `~/.config/opencode-m365/my/log.log`. |
+| `M365_DEBUG` | Set to `1` to enable debug logging to `~/.config/m365-proxy/debug.log` (truncated payloads) |
+| `M365_LOG_FILE` | Debug log name, relative to `~/.config/m365-proxy/` (default `debug.log`; an absolute path is used as is). `M365_LOG_FILE=my/log.log` logs to `~/.config/m365-proxy/my/log.log`. |
 | `M365_TRACE` | Set to `1` for full, untruncated debug logging (every WS frame/prompt/response) — implies `M365_DEBUG`. For reverse engineering. |
 | `M365_LOG_STDOUT` | Set to `1` to mirror debug lines to the proxy's stdout as well as the log file, so you can watch a run without tailing it in a second terminal. Needs `M365_DEBUG` or `M365_TRACE` — on its own it logs nothing. |
-| `M365_DUMP_FRAMES` | Set to `1` to write every WebSocket frame (both directions) to `~/.config/opencode-m365/frames/<requestId>.ndjson`. For offline diffing of new M365 fields. |
-| `M365_FRAME_DIR` | Frame dump directory, relative to `~/.config/opencode-m365/` (default `frames`; an absolute path is used as is). `M365_FRAME_DIR=my/frames` dumps to `~/.config/opencode-m365/my/frames/`. |
+| `M365_DUMP_FRAMES` | Set to `1` to write every WebSocket frame (both directions) to `~/.config/m365-proxy/frames/<requestId>.ndjson`. For offline diffing of new M365 fields. |
+| `M365_FRAME_DIR` | Frame dump directory, relative to `~/.config/m365-proxy/` (default `frames`; an absolute path is used as is). `M365_FRAME_DIR=my/frames` dumps to `~/.config/m365-proxy/my/frames/`. |
 | `M365_ALLOW_MULTI_TOOL` | Allow the model to emit multiple tool calls per turn (default: only the first is kept) |
+| `M365_DISABLE_AGENT` | Set to `1` to skip Copilot Studio agent resolution and attachment, including when `M365_FORCE_AGENT=1`. A publish 403 mentioning extensibility is also cached as unavailable until the proxy restarts, without deleting/recreating the bot. |
+| `M365_TOOL_ALLOWLIST` | Unset: include shell, read, write/create, edit and search tools in the prompt. Set to `all` to retain every tool, or a comma-separated list of exact tool names. Zero matches fall back to all tools; a named `tool_choice` is always retained. Responses are still parsed against the full request toolset. |
+| `M365_FRAMING_VARIANT` / `M365_FRAMING_FILE` | Override the per-model framing; a control file's first line takes precedence over the env variant. Agent-less GPT provisionally defaults to `relay`; agent-backed defaults are unchanged. New experimental variants: `dual_env`, `dual_env_sys`, `dual_env_protocol`. Live comparison is pending ([hypotheses §23](docs/hypotheses.md)). |
 | `M365_INJECT_REPLY_TOOL` | Set to `1` to inject a synthetic `reply(text)` tool. Forces every turn to be a tool call, including pure-prose answers. Cleaner contract for the model, +1 tool to the prompt (watch the Disengaged threshold). Confirmed 5/5 compliance on June 9 2026 ([hypotheses §1.1](docs/hypotheses.md)). |
 | `M365_NO_CONFAB_RETRY` / `M365_CONFAB_RETRIES` | M365's chat model sometimes produces prose instead of a tool call when it should act — either confabulating an inability ("I can't access the files, please paste them") **or** claiming a completion it never did ("I've replaced the README", with no tool call). By default the proxy detects both and re-prompts forcefully **in the same conversation** (`M365_CONFAB_RETRIES`, default `1`) to force a real action. Set `M365_NO_CONFAB_RETRY=1` to disable. |
 | `M365_NO_BACKOFF` (alias `M365_NO_AUTO_REAUTH`) | Set to `1` to disable degradation backoff. By default, when empty/throttled responses span several **distinct conversations** in a short window (the thread-rate-throttle signature, [F13](docs/hypotheses.md)), the proxy **paces subsequent turns** (a jittered delay before starting new backend conversations) to let the account self-heal. This replaced the old auto-reauth: a fresh login does **not** clear this throttle (it's `oid`-keyed — [§11 H-R1](docs/hypotheses.md)) and raised our detection profile. A single long pi thread never trips the trigger. |
 | `M365_BACKOFF_THRESHOLD` / `M365_BACKOFF_WINDOW_MS` / `M365_BACKOFF_BASE_MS` / `M365_BACKOFF_MAX_MS` | Tune backoff: distinct-conversation empties to trigger (default `3`), the window they must fall in (default `120000`), the initial pacing window (default `90000`), and its escalation cap (default `600000`). |
-| `M365_BROWSER_PROFILE` / `M365_LOGIN_UA` | Override the persistent browser-profile dir and the login User-Agent used for the (rare) automated interactive login. The persistent profile keeps AAD SSO/device cookies so repeat logins are silent and look like a familiar device ([§11 H-R3](docs/hypotheses.md)). |
-| `M365_ENABLE_INTERACTIVE_APPROVAL` | Set to `1` to allow a **visible** browser window for sign-in when the automated login can't work or fails — the fallback for tenants with no TOTP option (push-only MFA, FIDO2, Okta/Ping/Duo). You complete SSO/MFA by hand once; tokens refresh silently afterwards. Off by default so headless hosts fail loudly rather than hang. See [If your tenant has no TOTP option](#if-your-tenant-has-no-totp-option). |
-| `M365_NO_INTERACTIVE` | Set to `1` to hard-disable any visible browser login, overriding the flag above. For systemd/CI hosts where a window must never open. |
-| `M365_INTERACTIVE_TIMEOUT_MS` | How long to wait for you to finish the interactive sign-in (default `600000`, i.e. 10 minutes). |
-| `M365_LOGIN_LOCALE` / `M365_LOGIN_TIMEZONE` | Browser locale and timezone presented during login (defaults `en-GB` / `Europe/Copenhagen`). These are part of the anti-bot-scoring fingerprint ([§11 F25](docs/hypotheses.md)) — set them to match your own machine if AAD starts treating your automated login as a bot. |
+| `M365_BROWSER_PROFILE` / `M365_LOGIN_UA` | Legacy settings; not consumed by the current authentication implementation. |
+| `M365_ENABLE_INTERACTIVE_APPROVAL` | Legacy opt-in; not enforced currently. Visible fallback is enabled unless `M365_NO_INTERACTIVE=1`. |
+| `M365_NO_INTERACTIVE` | Set to `1` to disable visible browser fallback. Recommended for headless deployments. |
+| `M365_INTERACTIVE_TIMEOUT_MS` | Legacy setting; current interactive code capture uses a fixed five-minute timeout. |
+| `M365_LOGIN_LOCALE` / `M365_LOGIN_TIMEZONE` | Legacy settings; not consumed by the current authentication implementation. |
 | `M365_FORCE_AGENT` | Override which tool requests carry the Copilot Studio tool agent. `1` attaches it to every tool request (and turns off the GPT-6 Sol fallback below); `0` never attaches it. Unset, the proxy decides per model: GPT-5.x, `m365-copilot` and both Opus models take it, the other Claude models and `gpt-6-think-deeper` don't, and `gpt-6-sol` / `gpt-6.1-sol` take it only on a premium account, which the proxy learns from the first request. `claude-opus-4.5` carries it on tool-less requests too, since that's its only route (`0` turns that off as well). On a non-premium account `0` saves the probe turn (~3 s) per GPT-6 Sol model per proxy start. |
 | `M365_OPUS_FALLBACK_MODEL` | Model to serve `claude-opus` (Opus 5.5) requests with once its priority-access budget is used up, instead of returning a 429 — typically `claude-opus-4.5`, which isn't metered (premium accounts only). Applies until the budget resets; the response's `model` field names the model that answered. Unset by default. |
 | `M365_SONNET_FALLBACK_MODEL` | The same for `claude-sonnet-5.5` (Sonnet 5.5) once its priority-access budget is used up — e.g. `claude-sonnet-5` (unmetered) or `claude-sonnet` (Sonnet 4.6, any account). A fallback naming a metered model is ignored. Unset by default. |
+| `M365_ACCOUNT_TIER` | `basic` (default) or `paid` (alias `premium`). Selects which model IDs `/v1/models` advertises; see [Available models](#available-models). Discovery only — routing and scenarios are unchanged. Any other value is an error. |
 | `M365_SCENARIO` / `M365_LICENSE_TYPE` | Override the entitlement the WebSocket is opened under (defaults: `OfficeWebIncludedCopilot` / `Starter`, switching to `OfficeWebPaidCopilot` / `Premium` for the entitlement-gated models — `claude-opus`, `gpt-6-think-deeper`, `claude-sonnet-5` and `claude-sonnet-5.5`; `claude-opus-4.5` and `gpt-6.1-sol` stay on the included one). `scenario` is what gates the model list (and picks Sonnet 4.6 vs 5.5 for the `Claude_Sonnet` tone, Sonnet 4.6 vs 5 for `Claude_Sonnet_5`, Opus 4.5 vs 5.5 for `Claude_Opus`); `licenseType` rides along and unlocks nothing by itself. Forcing the paid scenario on `gpt-6.1-sol` spends its separate GPT-6.1 Sol allowance (40 turns a day, 75 a week), which the proxy doesn't track. |
 | `M365_CACHE_FILE` | Override MSAL token cache location |
 | `M365_SECRETS_FILE` | Override credentials file location |
+| `M365_PROXY_API_KEY` | When set, `/v1/*` requires `Authorization: Bearer <key>` (401 `invalid_api_key` otherwise). `/health` stays open. The dashboard and `/actions/*` are always restricted to loopback socket peers, independently of the API key. |
+| `M365_THROTTLE_RETRY_AFTER_S` | Optional minimum retry delay in seconds for `m365_throttled`. By default, the proxy sends its remaining local backoff as `Retry-After` and `error.retry_after` (also in SSE errors). M365 provides no reset time; this is a proxy recommendation, not a guaranteed refill. |
 | `CHROMIUM_PATH` | Path to Chromium binary for automated login |
 
 ### Usage / context-window % in responses
 
-The OpenAI `usage` block in every chat completion response now includes M365
-extension fields with the **per-conversation message quota** — the closest
-proxy we have to "context-window utilisation" since M365 hides token counts:
+The OpenAI `usage` block in every chat completion response carries **estimated**
+token counts (M365 hides real ones: ~4 characters per token, prompt = the full
+message history + tool schemas the client sent) plus M365 extension fields with the
+**per-conversation message quota**:
 
 ```json
 "usage": {
-  "prompt_tokens": 0,
-  "completion_tokens": 0,
-  "total_tokens": 0,
+  "prompt_tokens": 1830,
+  "completion_tokens": 212,
+  "total_tokens": 2042,
+  "x_proxy_tokens_estimated": true,
   "x_m365_conversation_messages": 42,
   "x_m365_conversation_max": 600,
   "x_m365_conversation_pct": 7,
@@ -642,7 +700,7 @@ findings dump and [§2](docs/hypotheses.md) for what we tried and didn't find.
 
 ## Config files
 
-All stored in `~/.config/opencode-m365/`:
+All stored in `~/.config/m365-proxy/`:
 
 | File | Description |
 |---|---|
@@ -651,16 +709,42 @@ All stored in `~/.config/opencode-m365/`:
 | `agent-id.json` | Cached Copilot Studio agent ID |
 | `debug.log` | Debug log (when `M365_DEBUG=1`; renamed by `M365_LOG_FILE`) |
 | `frames/` | WebSocket frame dumps (when `M365_DUMP_FRAMES=1`; moved by `M365_FRAME_DIR`) |
+| `metrics.sqlite` | Persistent request and model-health metrics (SQLite WAL mode) |
 
 ## Development
+
+Scripts under `scripts/` import `ws`, `playwright`, and `otpauth` by package name
+rather than using version-specific pnpm paths. These packages are workspace-root
+development dependencies, so run `pnpm install` before using the probes. Docker
+is needed for the benchmark's sandbox, not for running the proxy.
 
 ```sh
 pnpm install
 pnpm build            # Build all packages
+pnpm start            # Start built proxy on 127.0.0.1:4141
+pnpm typecheck        # TypeScript 7 type check (typecheck:ts6 also available)
+pnpm lint             # Biome lint (no writes)
+pnpm lint:fix         # Apply safe Biome lint fixes
+pnpm format:check     # Check formatting (no writes)
+pnpm format           # Apply Biome formatting
+pnpm check            # Biome lint + formatting (no writes)
+pnpm lint:eslint      # Additional type-aware, import, and Vitest lint rules
+pnpm lint:all         # Run both linters
 pnpm run dev          # Start standalone proxy on :4141
 pnpm run test:unit    # Run vitest unit tests (no auth/network)
 pnpm run test:live    # Run live integration tests against M365
 ```
+
+Biome owns formatting and everyday linting; ESLint adds type-aware, import,
+and Vitest checks. Build output and generated probe results are excluded. Run
+`pnpm format:check`, `pnpm lint:all`, and `pnpm typecheck` before submitting changes.
+
+Builds use stable TypeScript 7.0.2 and tsdown 0.23.0's native declaration generator.
+The `@typescript/native-preview` alias points to stable TypeScript 7, not a nightly,
+and supplies the `tsc` binary. ESLint's TypeScript plugins still require the
+JavaScript compiler API, so `typescript` aliases the official TypeScript 6.0.2
+compatibility package (`@typescript/typescript6`, which supplies `tsc6`). This keeps
+both toolchains working side by side until the plugins support TypeScript 7's API.
 
 ## Known limitations
 
@@ -677,3 +761,38 @@ pnpm run test:live    # Run live integration tests against M365
 [MIT](LICENSE). Use at your own risk — this speaks to Microsoft's API with your own
 credentials, on your own account, and that's between you and your tenant's
 acceptable-use policy.
+
+## Current reliability and diagnostic boundaries
+
+- Forced browser reauthentication preserves existing cached accounts if replacement
+  login fails. Reauthentication is not a guaranteed account-throttle reset.
+- Canonical named upstream failures take precedence over accompanying text or images.
+  Already-streamed text cannot be retracted; streaming clients must inspect error chunks.
+- Diagnostic-header and observer failures must not prevent queue release or stream closure.
+- Completion metrics are best-effort and must not replace successful response delivery.
+- Dashboard history remains visible after failed health checks. Average model latency
+  comes from historical model-latency measurements, not a single health-check duration.
+- Dashboard health counts cover advertised models and exclude recorded application errors.
+- JSON fallback responses identify the served model. SSE chunks still retain the initial
+  model identity; do not treat that field as verified answering-model identity after fallback.
+- Provider-side context is reused while the same conversation remains available.
+  Fresh-thread recovery and omitted revised instructions are separate proxy concerns.
+  Cache and compaction behaviour are unchanged by this fix batch.
+
+### WebSocket incident diagnostics
+
+Enable `M365_DEBUG=1` on the proxy process to record diagnostics in
+`~/.config/m365-proxy/debug.log`. `M365_LOG_FILE` overrides the destination;
+relative paths resolve under that configuration directory.
+`M365_LOG_STDOUT=1` additionally mirrors enabled logs to the proxy terminal.
+
+WebSocket errors, SignalR close/completion errors and socket closure records
+include request, session and conversation IDs. Closure records include the
+WebSocket close code, handshake/send state, answer length and available quota.
+Final-response previews are debug output, bounded to 1,000 characters unless
+`M365_TRACE` is enabled. Logs can contain private prompts and responses:
+protect them and redact sensitive content before sharing.
+
+These diagnostics do not add automatic recovery or establish the cause of a
+generic server-close error. Capture logs during the failing request; older
+captures cannot establish the cause of a later incident.

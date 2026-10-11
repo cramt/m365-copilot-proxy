@@ -27,8 +27,7 @@ import { getToken, getOrCreateAgent, decodeJwt } from "../packages/core/dist/ind
 
 // `ws` lives in @m365-copilot/core's dependencies, not the workspace root,
 // so resolve it via the pnpm store the way studio-dig.mjs does for playwright.
-const ROOT = process.cwd();
-const wsMod = await import(`${ROOT}/node_modules/.pnpm/ws@8.20.0/node_modules/ws/wrapper.mjs`);
+const wsMod = await import("ws");
 const WebSocket = wsMod.default ?? wsMod.WebSocket;
 
 const RS = "\x1E";
@@ -64,15 +63,33 @@ if (USE_AGENT) {
 // list. We deliberately include guesses for token/usage frames (cheap: M365
 // either honors them and we see new frames, or ignores them silently).
 const BASE_ALLOWED = [
-  "Chat", "Suggestion", "InternalSearchQuery", "Disengaged",
-  "InternalLoaderMessage", "Progress", "RenderCardRequest", "SemanticSerp",
-  "GenerateContentQuery", "SearchQuery", "ConfirmationCard", "DeveloperLogs",
-  "EndOfRequest", "ReferencesListComplete",
+  "Chat",
+  "Suggestion",
+  "InternalSearchQuery",
+  "Disengaged",
+  "InternalLoaderMessage",
+  "Progress",
+  "RenderCardRequest",
+  "SemanticSerp",
+  "GenerateContentQuery",
+  "SearchQuery",
+  "ConfirmationCard",
+  "DeveloperLogs",
+  "EndOfRequest",
+  "ReferencesListComplete",
 ];
 const TOKEN_GUESSES = [
-  "TokenUsage", "Telemetry", "Usage", "ResponseInformation",
-  "ContextLimits", "ContextLength", "TokenCount", "Diagnostics",
-  "ChatRequestStarted", "InvocationMetrics", "RequestMetrics",
+  "TokenUsage",
+  "Telemetry",
+  "Usage",
+  "ResponseInformation",
+  "ContextLimits",
+  "ContextLength",
+  "TokenCount",
+  "Diagnostics",
+  "ChatRequestStarted",
+  "InvocationMetrics",
+  "RequestMetrics",
 ];
 const ALLOWED = [...new Set([...BASE_ALLOWED, ...TOKEN_GUESSES, ...ALLOWED_EXTRA])];
 
@@ -89,7 +106,18 @@ const TOOL_BLOCK = MANY_TOOLS
       ["glob", "Glob files", { pattern: "string" }],
       ["grep", "Grep contents", { pattern: "string" }],
       ["list", "List a dir", { path: "string" }],
-    ]).map(([n, d, p]) => JSON.stringify({ name: n, description: d, parameters: { type: "object", properties: Object.fromEntries(Object.entries(p).map(([k, t]) => [k, { type: t }])) } })).join("\n")}\n</tools>\n`
+    ])
+      .map(([n, d, p]) =>
+        JSON.stringify({
+          name: n,
+          description: d,
+          parameters: {
+            type: "object",
+            properties: Object.fromEntries(Object.entries(p).map(([k, t]) => [k, { type: t }])),
+          },
+        }),
+      )
+      .join("\n")}\n</tools>\n`
   : "";
 
 const sessionId = crypto.randomUUID();
@@ -97,8 +125,10 @@ const conversationId = crypto.randomUUID();
 const requestId = crypto.randomUUID();
 
 const VARIANTS = [
-  "EnableMcpServerWidgets", "feature.EnableMcpServerWidgets",
-  "feature.IsStreamingModeInChatRequestEnabled", "DeveloperLogs",
+  "EnableMcpServerWidgets",
+  "feature.EnableMcpServerWidgets",
+  "feature.IsStreamingModeInChatRequestEnabled",
+  "DeveloperLogs",
   "Agt_bizchat_enableGpt5ForHelix",
 ].join(",");
 
@@ -119,71 +149,107 @@ const params = new URLSearchParams({
 const wsUrl = `wss://substrate.office.com/m365Copilot/Chathub/${claims.oid}@${claims.tid}?${params}`;
 
 const chatMsg = {
-  arguments: [{
-    source: "officeweb",
-    clientCorrelationId: requestId,
-    sessionId,
-    optionsSets: [],
-    streamingMode: "ConciseWithPadding",
-    spokenTextMode: "None",
-    options: {},
-    extraExtensionParameters: {},
-    allowedMessageTypes: ALLOWED,
-    sliceIds: [],
-    threadLevelGptId: agentId ? { id: agentId, source: "MOS3" } : {},
-    traceId: requestId,
-    isStartOfSession: true,
-    clientInfo: {
-      clientPlatform: "mcmcopilot-web",
-      clientAppName: "Office",
-      clientEntrypoint: "mcmcopilot-officeweb",
-      clientSessionId: sessionId,
-      clientAppType: "Web",
-      deviceOS: "Linux",
-      deviceType: "Desktop",
+  arguments: [
+    {
+      source: "officeweb",
+      clientCorrelationId: requestId,
+      sessionId,
+      optionsSets: [],
+      streamingMode: "ConciseWithPadding",
+      spokenTextMode: "None",
+      options: {},
+      extraExtensionParameters: {},
+      allowedMessageTypes: ALLOWED,
+      sliceIds: [],
+      threadLevelGptId: agentId ? { id: agentId, source: "MOS3" } : {},
+      traceId: requestId,
+      isStartOfSession: true,
+      clientInfo: {
+        clientPlatform: "mcmcopilot-web",
+        clientAppName: "Office",
+        clientEntrypoint: "mcmcopilot-officeweb",
+        clientSessionId: sessionId,
+        clientAppType: "Web",
+        deviceOS: "Linux",
+        deviceType: "Desktop",
+      },
+      message: {
+        author: "user",
+        inputMethod: "Keyboard",
+        text: `${TOOL_BLOCK}<user>\n${PROMPT}\n</user>`,
+        entityAnnotationTypes: ["People", "File", "Event", "Email", "TeamsMessage"],
+        requestId,
+        locationInfo: { timeZoneOffset: 1, timeZone: "Europe/Copenhagen" },
+        locale: "en-gb",
+        messageType: "Chat",
+        experienceType: "Default",
+        adaptiveCards: [],
+        clientPreferences: {},
+      },
+      ...(agentId
+        ? {
+            gpts: [
+              {
+                id: agentId,
+                source: "MOS3",
+                version: "1.0.0",
+                clientOverrides: {
+                  capabilities: [],
+                  "deepResearchModels@odata.type": "Collection(String)",
+                },
+              },
+            ],
+          }
+        : { plugins: [{ Id: "BingWebSearch", Source: "BuiltIn" }] }),
+      isSbsSupported: true,
+      tone: "magic",
+      renderReferencesBehindEOS: true,
+      disconnectBehavior: "continue",
     },
-    message: {
-      author: "user",
-      inputMethod: "Keyboard",
-      text: TOOL_BLOCK + `<user>\n${PROMPT}\n</user>`,
-      entityAnnotationTypes: ["People", "File", "Event", "Email", "TeamsMessage"],
-      requestId,
-      locationInfo: { timeZoneOffset: 1, timeZone: "Europe/Copenhagen" },
-      locale: "en-gb",
-      messageType: "Chat",
-      experienceType: "Default",
-      adaptiveCards: [],
-      clientPreferences: {},
-    },
-    ...(agentId
-      ? { gpts: [{ id: agentId, source: "MOS3", version: "1.0.0",
-          clientOverrides: { capabilities: [], "deepResearchModels@odata.type": "Collection(String)" } }] }
-      : { plugins: [{ Id: "BingWebSearch", Source: "BuiltIn" }] }),
-    isSbsSupported: true,
-    tone: "magic",
-    renderReferencesBehindEOS: true,
-    disconnectBehavior: "continue",
-  }],
-  invocationId: "0", target: "chat", type: 4,
+  ],
+  invocationId: "0",
+  target: "chat",
+  type: 4,
 };
 const metrics = {
-  arguments: [{ Timestamps: { ConnectionStart: new Date().toISOString(), UserInputStart: new Date().toISOString(), ConnectionEstablished: new Date().toISOString(), UserInputSubmit: new Date().toISOString() } }],
-  target: "Metrics", type: 1,
+  arguments: [
+    {
+      Timestamps: {
+        ConnectionStart: new Date().toISOString(),
+        UserInputStart: new Date().toISOString(),
+        ConnectionEstablished: new Date().toISOString(),
+        UserInputSubmit: new Date().toISOString(),
+      },
+    },
+  ],
+  target: "Metrics",
+  type: 1,
 };
 
-writeFileSync(join(OUT, "sent.json"), JSON.stringify({ wsUrl: wsUrl.split("?")[0] + "?...", chatMsg, metrics, allowedMessageTypes: ALLOWED }, null, 2));
+writeFileSync(
+  join(OUT, "sent.json"),
+  JSON.stringify(
+    { wsUrl: `${wsUrl.split("?")[0]}?...`, chatMsg, metrics, allowedMessageTypes: ALLOWED },
+    null,
+    2,
+  ),
+);
 
 // --- Walk arbitrary JSON, collect every key path + sample value.
 const keyFreq = new Map(); // path -> { count, samples: [up to 3] }
-const TOKEN_KEY_RE = /token|usage|context|prompt|completion|length|cost|quota|tier|budget|limit|remaining|model[A-Z]|deployment|charge|count|metering/i;
-const TOKEN_VAL_RE = /\btokens?\b|context.window|prompt.tokens|completion.tokens|max.{0,4}token|usage|maxTokensPerMessage/i;
+const TOKEN_KEY_RE =
+  /token|usage|context|prompt|completion|length|cost|quota|tier|budget|limit|remaining|model[A-Z]|deployment|charge|count|metering/i;
+const TOKEN_VAL_RE =
+  /\btokens?\b|context.window|prompt.tokens|completion.tokens|max.{0,4}token|usage|maxTokensPerMessage/i;
 const candidates = [];
 
 function walk(obj, path = "") {
   if (obj === null || obj === undefined) return;
   if (typeof obj !== "object") return;
   if (Array.isArray(obj)) {
-    obj.forEach((item, i) => walk(item, `${path}[${i}]`));
+    obj.forEach((item, i) => {
+      walk(item, `${path}[${i}]`);
+    });
     return;
   }
   for (const [k, v] of Object.entries(obj)) {
@@ -191,7 +257,11 @@ function walk(obj, path = "") {
     const slot = keyFreq.get(p) ?? { count: 0, samples: [] };
     slot.count++;
     if (slot.samples.length < 3) {
-      try { slot.samples.push(JSON.stringify(v).slice(0, 200)); } catch {}
+      try {
+        slot.samples.push(JSON.stringify(v).slice(0, 200));
+      } catch (error) {
+        void error;
+      }
     }
     keyFreq.set(p, slot);
 
@@ -199,8 +269,15 @@ function walk(obj, path = "") {
     const keyMatch = TOKEN_KEY_RE.test(k);
     let valMatch = false;
     if (typeof v === "string") valMatch = TOKEN_VAL_RE.test(v);
-    if (keyMatch) candidates.push({ where: p, kind: "key", key: k, value: typeof v === "object" ? "(object)" : v });
-    if (valMatch) candidates.push({ where: p, kind: "value", key: k, value: String(v).slice(0, 240) });
+    if (keyMatch)
+      candidates.push({
+        where: p,
+        kind: "key",
+        key: k,
+        value: typeof v === "object" ? "(object)" : v,
+      });
+    if (valMatch)
+      candidates.push({ where: p, kind: "value", key: k, value: String(v).slice(0, 240) });
 
     walk(v, p);
   }
@@ -209,7 +286,7 @@ function walk(obj, path = "") {
 console.log(`[probe] connecting...`);
 const ws = new WebSocket(wsUrl, {
   headers: {
-    "Origin": "https://m365.cloud.microsoft",
+    Origin: "https://m365.cloud.microsoft",
     "User-Agent": "Mozilla/5.0 (X11; Linux x86_64; rv:148.0) Gecko/20100101 Firefox/148.0",
   },
 });
@@ -231,11 +308,18 @@ ws.on("message", (data) => {
 
   for (const f of frames) {
     let parsed;
-    try { parsed = JSON.parse(f); } catch { parsed = { _raw_unparsable: f }; }
+    try {
+      parsed = JSON.parse(f);
+    } catch (error) {
+      void error;
+      parsed = { _raw_unparsable: f };
+    }
 
     // Record raw + dt
-    appendFileSync(rawNdjsonPath,
-      JSON.stringify({ i: frameIdx++, dt_ms: Date.now() - t0, frame: parsed }) + "\n");
+    appendFileSync(
+      rawNdjsonPath,
+      `${JSON.stringify({ i: frameIdx++, dt_ms: Date.now() - t0, frame: parsed })}\n`,
+    );
 
     // First frame: SignalR handshake response (usually {}). Send chat next.
     if (!handshakeDone) {
@@ -253,7 +337,8 @@ ws.on("message", (data) => {
     if (Array.isArray(args)) {
       for (const a of args) {
         if (a && typeof a === "object") {
-          if (Array.isArray(a.messages)) for (const m of a.messages) m?.messageType && messageTypes.add(m.messageType);
+          if (Array.isArray(a.messages))
+            for (const m of a.messages) m?.messageType && messageTypes.add(m.messageType);
           if (a.messageType) messageTypes.add(a.messageType);
         }
       }
@@ -291,16 +376,30 @@ ws.on("close", () => {
     .slice(0, 80)
     .map(([p, v]) => ({ path: p, count: v.count, sample: v.samples[0] }));
 
-  writeFileSync(join(OUT, "keys-summary.json"), JSON.stringify({
-    summary,
-    topPaths,
-    all_paths: Object.fromEntries([...keyFreq.entries()].map(([p, v]) => [p, v])),
-  }, null, 2));
+  writeFileSync(
+    join(OUT, "keys-summary.json"),
+    JSON.stringify(
+      {
+        summary,
+        topPaths,
+        all_paths: Object.fromEntries([...keyFreq.entries()].map(([p, v]) => [p, v])),
+      },
+      null,
+      2,
+    ),
+  );
 
-  writeFileSync(join(OUT, "token-candidates.json"), JSON.stringify({
-    summary: `${deduped.length} fields whose key OR value looked token/context/usage-related`,
-    candidates: deduped,
-  }, null, 2));
+  writeFileSync(
+    join(OUT, "token-candidates.json"),
+    JSON.stringify(
+      {
+        summary: `${deduped.length} fields whose key OR value looked token/context/usage-related`,
+        candidates: deduped,
+      },
+      null,
+      2,
+    ),
+  );
 
   console.log(`\n[probe] DONE. ${frameIdx} frames in ${Date.now() - t0}ms`);
   console.log(`[probe] messageTypes seen: ${[...messageTypes].sort().join(", ") || "(none)"}`);

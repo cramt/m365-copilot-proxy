@@ -12,7 +12,13 @@ import { oneTurn } from "./_probe-chat.mjs";
 const TUNNEL_IP = (process.argv[2] || "").trim(); // optional resolved cloudflare IP
 const SENTINEL = readFileSync("scripts/sentinel-value.txt", "utf8").trim();
 
-const CODE_INTERP = ["cwc_code_interpreter", "cwc_code_interpreter_amsfix", "cwc_code_interpreter_citation_fix", "code_interpreter_interactive_charts", "code_interpreter_matplotlib_patching"];
+const CODE_INTERP = [
+  "cwc_code_interpreter",
+  "cwc_code_interpreter_amsfix",
+  "cwc_code_interpreter_citation_fix",
+  "code_interpreter_interactive_charts",
+  "code_interpreter_matplotlib_patching",
+];
 
 const extraIp = TUNNEL_IP ? `\n    ("tunnel_ip", "${TUNNEL_IP}", 443),` : "";
 
@@ -61,26 +67,52 @@ print(json.dumps(out, indent=2))
 const prompt =
   `Run this EXACT Python program in your code interpreter sandbox unchanged, for real (no simulation). ` +
   `Paste the COMPLETE verbatim stdout in one code block, omitting nothing.\n\n` +
-  "```python\n" + PY + "\n```";
+  "```python\n" +
+  PY +
+  "\n```";
 
 mkdirSync("scripts/code-interp-out", { recursive: true });
 const token = await getToken();
 const claims = decodeJwt(token);
-const hitsBefore = (() => { try { return readFileSync("scripts/sentinel-hits.log", "utf8"); } catch { return ""; } })();
+const hitsBefore = (() => {
+  try {
+    return readFileSync("scripts/sentinel-hits.log", "utf8");
+  } catch {
+    return "";
+  }
+})();
 
 console.log(`[rawip] tunnelIp=${TUNNEL_IP || "(none)"}`);
-const r = await oneTurn({ token, claims, agentId: null, optionsSets: CODE_INTERP, extraAllowed: ["GeneratedCode", "GenerateContentQuery", "Progress"], text: prompt, timeoutMs: 150000 });
+const r = await oneTurn({
+  token,
+  claims,
+  agentId: null,
+  optionsSets: CODE_INTERP,
+  extraAllowed: ["GeneratedCode", "GenerateContentQuery", "Progress"],
+  text: prompt,
+  timeoutMs: 150000,
+});
 const out = r.fullText || "";
 const stamp = new Date().toISOString().replace(/[:.]/g, "-");
 const fp = `scripts/code-interp-out/rawip-${stamp}.txt`;
 writeFileSync(fp, out);
 
-const hitsAfter = (() => { try { return readFileSync("scripts/sentinel-hits.log", "utf8"); } catch { return ""; } })();
+const hitsAfter = (() => {
+  try {
+    return readFileSync("scripts/sentinel-hits.log", "utf8");
+  } catch {
+    return "";
+  }
+})();
 const newHits = hitsAfter.slice(hitsBefore.length);
 const serverGotHit = /GET \/sentinel|SENTINEL ENDPOINT CALLED/.test(newHits);
 
 console.log(`\n[rawip] === RESULT === saved ${fp} (${out.length} chars)`);
 console.log(out);
-console.log(`\n[rawip] sentinel inbound hit: ${serverGotHit}  leaked value: ${out.includes(SENTINEL)}`);
+console.log(
+  `\n[rawip] sentinel inbound hit: ${serverGotHit}  leaked value: ${out.includes(SENTINEL)}`,
+);
 if (newHits.trim()) console.log(`[rawip] new hit log lines:\n${newHits.trim()}`);
-console.log(`[rawip] msgTypes=${r.messageTypes.join(",")} elapsed=${r.elapsedMs}ms throttle=${JSON.stringify(r.throttle)}`);
+console.log(
+  `[rawip] msgTypes=${r.messageTypes.join(",")} elapsed=${r.elapsedMs}ms throttle=${JSON.stringify(r.throttle)}`,
+);

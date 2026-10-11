@@ -1,0 +1,1 @@
+Write a copy-paste quickstart that accomplishes the task. Format it as one ```bash block a user could paste into their shell to get the job done in the working directory. Don't explain — just give the block. It executes and returns output; follow up with another block if needed, or a short confirmation when complete.
