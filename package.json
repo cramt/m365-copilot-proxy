@@ -27,7 +27,7 @@
     "test:live": "pnpm build && M365_LIVE=1 vitest run --no-isolate",
     "test:all": "pnpm test:unit && pnpm test:live"
   },
-  "packageManager": "pnpm@12.8.1",
+  "packageManager": "pnpm@12.11.2",
   "devDependencies": {
     "@biomejs/biome": "2.5.15",
     "@eslint/js": "^10.0.1",
@@ -39,12 +39,15 @@
     "eslint-plugin-import-x": "^4.17.1",
     "globals": "^17.13.0",
     "otpauth": "^9.5.2",
-    "playwright": "^1.63.0",
+    "playwright": "^1.64.0",
     "tsdown": "^0.23.0",
     "tsx": "^4.23.15",
     "typescript": "npm:@typescript/typescript6@^6.0.2",
-    "typescript-eslint": "^8.71.0",
+    "typescript-eslint": "^8.71.1",
     "vitest": "^5.0.3",
     "ws": "^8.22.0"
+  },
+  "dependencies": {
+    "m365-copilot-proxy": "link:"
   }
 }
