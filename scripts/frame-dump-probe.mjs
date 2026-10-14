@@ -27,7 +27,8 @@ import { getToken, getOrCreateAgent, decodeJwt } from "../packages/core/dist/ind
 
 // `ws` lives in @m365-copilot/core's dependencies, not the workspace root,
 // so resolve it via the pnpm store the way studio-dig.mjs does for playwright.
-const ROOT = process.cwd();
+import { pathToFileURL } from "node:url";
+const ROOT = pathToFileURL(process.cwd()).href;
 const wsMod = await import(`${ROOT}/node_modules/.pnpm/ws@8.20.0/node_modules/ws/wrapper.mjs`);
 const WebSocket = wsMod.default ?? wsMod.WebSocket;
 

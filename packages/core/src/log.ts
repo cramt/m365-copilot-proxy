@@ -1,9 +1,14 @@
 import { appendFileSync, mkdirSync } from "node:fs";
-import { join } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { homedir } from "node:os";
 
-const LOG_DIR = join(homedir(), ".config", "opencode-m365");
-const LOG_FILE = join(LOG_DIR, "debug.log");
+const CONFIG_DIR = join(homedir(), ".config", "opencode-m365");
+// M365_LOG_FILE and M365_FRAME_DIR are relative to CONFIG_DIR (an absolute path
+// is taken as is), so a bench sweep can point each proxy straight into its archive.
+const LOG_FILE = resolve(CONFIG_DIR, process.env.M365_LOG_FILE || "debug.log");
+const LOG_DIR = dirname(LOG_FILE);
+/** Where M365_DUMP_FRAMES=1 writes one `<requestId>.ndjson` per turn. */
+export const FRAME_DIR = resolve(CONFIG_DIR, process.env.M365_FRAME_DIR || "frames");
 
 // M365_TRACE implies debug logging and disables all payload truncation, so
 // every WS frame, prompt, and response is recorded in full for reverse
@@ -53,3 +58,8 @@ export function trunc(value: string, limit: number): string {
 }
 
 export const LOG_PATH = LOG_FILE;
+
+/** Whether this process writes its debug log (M365_DEBUG / M365_TRACE). */
+export function fileLoggingEnabled(): boolean {
+  return enabled;
+}

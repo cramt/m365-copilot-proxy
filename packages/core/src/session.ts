@@ -1,7 +1,7 @@
 import WebSocket from "ws";
+import type { ImageAnnotation } from "./image-input.js";
 import { appendFileSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
-import { homedir } from "node:os";
 import {
   SignalRHandshakeResponse,
   DeltaUpdate,
@@ -23,7 +23,9 @@ import {
   shouldAutoConfirm,
   ACTION_ALLOWED_MESSAGE_TYPES,
 } from "./native-actions.js";
-import { createLogger, trunc } from "./log.js";
+import { createLogger, trunc, FRAME_DIR } from "./log.js";
+import { recordThrottle, recordTurn } from "./turn-budget.js";
+import { parseMetering, meteredAllowance, METERED_BUDGETS, type MeteredBudget } from "./priority-access.js";
 
 const RS = "\x1E";
 const log = createLogger("session");
@@ -72,16 +74,16 @@ const IMAGE_GEN_OPTIONS_SETS = [
 
 // --- Optional per-request frame dumping for reverse engineering ---
 // Enabled by M365_DUMP_FRAMES=1. Every SignalR frame received is appended to a
-// per-request NDJSON file under ~/.config/opencode-m365/frames/. Cheap to run
-// in production; gives us forensic data when M365 starts emitting new fields.
+// per-request NDJSON file under FRAME_DIR (~/.config/opencode-m365/frames/, or
+// M365_FRAME_DIR). Cheap to run in production; gives us forensic data when M365
+// starts emitting new fields.
 const DUMP_FRAMES = !!process.env.M365_DUMP_FRAMES;
-const DUMP_DIR = join(homedir(), ".config", "opencode-m365", "frames");
 function dumpFrame(requestId: string, parsed: unknown, direction: "recv" | "send") {
   if (!DUMP_FRAMES) return;
   try {
-    mkdirSync(DUMP_DIR, { recursive: true });
+    mkdirSync(FRAME_DIR, { recursive: true });
     appendFileSync(
-      join(DUMP_DIR, `${requestId}.ndjson`),
+      join(FRAME_DIR, `${requestId}.ndjson`),
       JSON.stringify({ t: Date.now(), dir: direction, frame: parsed }) + "\n",
     );
   } catch {
@@ -236,6 +238,8 @@ export interface ChatTurnOptions {
    *  optionsSets + the GenerateGraphicArt allowedMessageType; the generated
    *  images surface on `stream.images`. Agent-less only. */
   generateImages?: boolean;
+  /** Uploaded images this turn's message points at (image-input.ts). */
+  images?: ImageAnnotation[];
 }
 
 export interface CopilotSessionOptions {
@@ -264,6 +268,30 @@ export function buildCopilotWebSocketUrl(
   params: URLSearchParams,
 ): string {
   return `wss://substrate.office.com/m365Copilot/Chathub/${objectId}@${tenantId}?${params}`;
+}
+
+/**
+ * Headers for the Chathub WebSocket upgrade.
+ *
+ * `X-RoutingParameter-SessionKey` pins every turn of a conversation to one
+ * backend. Each turn is a new connection, and without the key the Substrate
+ * front end spreads them over pods in two regions (`x-calculatedbetarget`:
+ * 4–6 distinct in 6 handshakes on one ConversationId, Switzerland North and
+ * Sweden Central), which keep separate copies of the conversation. The model
+ * then answers from whichever copy the turn landed on: in real pi runs 53% of
+ * turns ran on an older copy, missing the model's own earlier calls and their
+ * results (docs/hypotheses.md F85). With the key: 1 backend in 6. The query-string form
+ * doesn't pin. M365_NO_SESSION_ROUTING=1 leaves it out.
+ */
+export function buildCopilotWebSocketHeaders(conversationId: string): Record<string, string> {
+  return {
+    "Origin": "https://m365.cloud.microsoft",
+    "User-Agent": "Mozilla/5.0 (X11; Linux x86_64; rv:148.0) Gecko/20100101 Firefox/148.0",
+    "Accept-Language": "en-US,en;q=0.9",
+    "Cache-Control": "no-cache",
+    "Pragma": "no-cache",
+    ...(process.env.M365_NO_SESSION_ROUTING ? {} : { "X-RoutingParameter-SessionKey": conversationId }),
+  };
 }
 
 /**
@@ -302,17 +330,20 @@ export class CopilotSession {
     const isFirst = this._turnCount === 0;
     this._turnCount++;
     const wantImages = opts?.generateImages ?? false;
+    const images = opts?.images ?? [];
 
     log.info(`Chat turn ${this._turnCount - 1}: model=${model}, isFirst=${isFirst}, text=${JSON.stringify(trunc(text, 200))}`);
+    recordTurn(); // the throttle-avoidance bucket counts what that line counts (turn-budget.ts)
 
     const claims = decodeJwt(token);
     const requestId = crypto.randomUUID();
 
     // Resolve the tone ONCE and derive the connection's entitlement from the
-    // MODEL (not the tone alone). `scenario` is not cosmetic: the default
-    // `OfficeWebIncludedCopilot` will not serve `Claude_Opus` (canned
-    // BotConnection apology), while `OfficeWebPaidCopilot` does — and the same
-    // `Claude_Sonnet` tone is Sonnet 4.6 on one and Sonnet 5 on the other.
+    // MODEL (not the tone alone). `scenario` is not cosmetic: the same
+    // `Claude_Sonnet` tone is Sonnet 4.6 on the default `OfficeWebIncludedCopilot`
+    // and Sonnet 5.5 on `OfficeWebPaidCopilot`, the same `Claude_Opus` tone Opus
+    // 4.8 (premium only) and Opus 5.5, and some tones (`Gpt_6_Reasoning`) serve on
+    // the paid one only.
     // See getScenarioForModel / docs §5.
     const tone = getToneForModel(model);
     const { scenario, licenseType } = getScenarioForModel(model);
@@ -338,6 +369,7 @@ export class CopilotSession {
     const wsUrl = buildCopilotWebSocketUrl(claims.oid, claims.tid, params);
     const agentId = this.agentId;
     const sessionId = this.sessionId;
+    const conversationId = this.conversationId;
     const nativeActions = this.nativeActions;
 
     return new Promise((resolve, reject) => {
@@ -363,6 +395,8 @@ export class CopilotSession {
       // account is rate-limited: the turn then carries NO content frames, only a
       // BotConnection apology inside that item (#35).
       let serverResult: { value: string; errorCode?: string; message?: string } | null = null;
+      // The final item's `throttling.metering` (priority-access allowances, §24 F55).
+      let metering: Record<string, number> | null = null;
       // Generated images captured this turn (§14). Keyed by fileToken so the
       // repeated progress snapshots for one image collapse to a single entry.
       const imagesByToken = new Map<string, CapturedImage>();
@@ -479,6 +513,9 @@ export class CopilotSession {
         get result() {
           return serverResult;
         },
+        get metering() {
+          return metering;
+        },
         get images() {
           return [...imagesByToken.values()];
         },
@@ -506,15 +543,7 @@ export class CopilotSession {
         },
       };
 
-      const ws = new WebSocket(wsUrl, {
-        headers: {
-          "Origin": "https://m365.cloud.microsoft",
-          "User-Agent": "Mozilla/5.0 (X11; Linux x86_64; rv:148.0) Gecko/20100101 Firefox/148.0",
-          "Accept-Language": "en-US,en;q=0.9",
-          "Cache-Control": "no-cache",
-          "Pragma": "no-cache",
-        },
-      });
+      const ws = new WebSocket(wsUrl, { headers: buildCopilotWebSocketHeaders(conversationId) });
 
       let handshakeDone = false;
       let stopped = false;
@@ -678,6 +707,7 @@ export class CopilotSession {
                 experienceType: "Default",
                 adaptiveCards: [] as any[],
                 clientPreferences: {},
+                ...(images.length ? { messageAnnotations: images } : {}),
               },
               ...(agentId
                 ? {
@@ -814,10 +844,16 @@ export class CopilotSession {
                 ...(typeof item.result.message === "string" ? { message: item.result.message } : {}),
               };
               if (item.result.value !== "Success") log.info(`Turn result: ${item.result.value}${serverResult.errorCode ? ` (${serverResult.errorCode})` : ""}`);
+              if (item.result.value === "Throttled") recordThrottle();
             }
             if (item.turnState) turnState = item.turnState;
             if (item.throttling) {
               throttleInfo = { current: item.throttling.numUserMessagesInConversation, max: item.throttling.maxNumUserMessagesInConversation };
+              metering = parseMetering(item.throttling.metering);
+              for (const [budget, { label }] of Object.entries(METERED_BUDGETS)) {
+                const left = meteredAllowance(metering, budget as MeteredBudget);
+                if (left) log.info(`${label} priority access left: ${left.daily ?? "?"} today, ${left.weekly ?? "?"} this week`);
+              }
             }
             let resumedHere = false;
             for (const m of item.messages ?? []) {

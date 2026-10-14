@@ -10,8 +10,7 @@
 //   node scripts/da-app/native-action-ws-probe.mjs
 import { readFileSync, readdirSync, statSync } from "node:fs";
 import { join } from "node:path";
-import { homedir } from "node:os";
-import { CopilotSession, getToken, decodeJwt, buildNativeActionPrompt } from "../../packages/core/dist/index.mjs";
+import { CopilotSession, getToken, decodeJwt, buildNativeActionPrompt, FRAME_DIR as FRAMES_DIR } from "../../packages/core/dist/index.mjs";
 
 process.env.M365_DUMP_FRAMES = process.env.M365_DUMP_FRAMES ?? "1";
 const URL = readFileSync("/tmp/tunnel_url.txt", "utf8").trim().replace(/\/$/, "");
@@ -21,7 +20,6 @@ const MODEL = process.argv[2] || "gpt-5.5-think-deeper";
 const openApiUrl = `${URL}/openapi.json`;
 
 const hits = () => { try { return readFileSync(HITLOG, "utf8").split("\n").filter(l => /GET \/sentinel\b/.test(l)).length; } catch { return 0; } };
-const FRAMES_DIR = join(homedir(), ".config", "opencode-m365", "frames");
 const listFrames = () => { try { return readdirSync(FRAMES_DIR).filter(f => f.endsWith(".ndjson")).map(f => join(FRAMES_DIR, f)); } catch { return []; } };
 
 const instructions = buildNativeActionPrompt([

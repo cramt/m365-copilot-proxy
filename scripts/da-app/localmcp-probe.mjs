@@ -11,7 +11,8 @@ import { readFileSync } from "node:fs";
 import { getToken, decodeJwt } from "../../packages/core/dist/index.mjs";
 
 const RS = "\x1E";
-const ROOT = process.cwd();
+import { pathToFileURL } from "node:url";
+const ROOT = pathToFileURL(process.cwd()).href;
 const wsMod = await import(`${ROOT}/node_modules/.pnpm/ws@8.20.0/node_modules/ws/wrapper.mjs`);
 const WebSocket = wsMod.default ?? wsMod.WebSocket;
 

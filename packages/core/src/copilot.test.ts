@@ -1,16 +1,24 @@
 import { describe, expect, it, afterEach } from "vitest";
 import {
+  AGENT_CLAUDE_TONES,
   AGENTLESS_TOOL_TONES,
   getAvailableModels,
   getScenarioForModel,
   getScenarioForTone,
   getToneForModel,
+  INCLUDED_SCENARIO_MODELS,
+  isIncludedOpusModel,
+  meteredBudgetOf,
+  priorityAccessFallbackModel,
   isSonnet5Model,
+  isSonnet55Model,
   isAgentRouteAlive,
+  isPremiumOnlyModel,
   noteAgentRouteAlive,
   noteAgentRouteDead,
   PAID_SCENARIO_TONES,
   PREMIUM_ONLY_AGENT_TONES,
+  requestUsesAgent,
   resetAgentRoutes,
   toneUsesToolAgent,
   toolRequestUsesAgent,
@@ -20,15 +28,23 @@ const INCLUDED = { scenario: "OfficeWebIncludedCopilot", licenseType: "Starter" 
 const PAID = { scenario: "OfficeWebPaidCopilot", licenseType: "Premium" };
 
 describe("Sonnet routing — one tone, two models", () => {
-  // `Claude_Sonnet` is Sonnet 4.6 on the included scenario and Sonnet 5 on the
-  // paid one (tone-probe 2026-09-28), so the model ID has to pick the scenario.
+  // `Claude_Sonnet` is Sonnet 4.6 on the included scenario and Sonnet 5.5 on
+  // the paid one; `Claude_Sonnet_5` is Sonnet 5 on the paid one and Sonnet 4.6
+  // on the included one (tone-probe 2026-10-06), so the model ID has to pick.
   afterEach(() => {
     delete process.env.M365_SCENARIO;
   });
 
-  it("sends claude-sonnet-5 to the shared tone under the paid scenario", () => {
-    expect(getToneForModel("claude-sonnet-5")).toBe("Claude_Sonnet");
+  it("sends claude-sonnet-5.5 to the shared tone under the paid scenario", () => {
+    expect(getToneForModel("claude-sonnet-5.5")).toBe("Claude_Sonnet");
+    expect(getScenarioForModel("claude-sonnet-5.5")).toEqual(PAID);
+    expect(getAvailableModels()).toContain("claude-sonnet-5.5");
+  });
+
+  it("sends claude-sonnet-5 to its own tone, which is paid", () => {
+    expect(getToneForModel("claude-sonnet-5")).toBe("Claude_Sonnet_5");
     expect(getScenarioForModel("claude-sonnet-5")).toEqual(PAID);
+    expect(getScenarioForTone("Claude_Sonnet_5")).toEqual(PAID);
     expect(getAvailableModels()).toContain("claude-sonnet-5");
   });
 
@@ -39,28 +55,41 @@ describe("Sonnet routing — one tone, two models", () => {
     }
   });
 
-  it("does NOT move the tone itself onto the paid scenario", () => {
-    // That would silently turn `claude-sonnet` into Sonnet 5 as well.
+  it("does NOT move the Claude_Sonnet tone itself onto the paid scenario", () => {
+    // That would silently turn `claude-sonnet` into Sonnet 5.5 as well.
     expect(getScenarioForTone("Claude_Sonnet")).toEqual(INCLUDED);
   });
 
-  it("routes unmapped Sonnet 5 strings a client may send to Sonnet 5, not 4.6", () => {
-    for (const id of ["claude-sonnet-5[1m]", "claude-sonnet-5-20260115", "Claude-Sonnet-5"]) {
-      expect(isSonnet5Model(id)).toBe(true);
+  it("routes unmapped Sonnet 5.5 strings a client may send to Sonnet 5.5, not 4.6 or 5", () => {
+    for (const id of ["claude-sonnet-5.5[1m]", "claude-sonnet-5-5-20261001", "Claude-Sonnet-5.5", "claude-sonnet-5_5"]) {
+      expect(getToneForModel(id)).toBe("Claude_Sonnet");
+      expect(isSonnet55Model(id)).toBe(true);
+      expect(isSonnet5Model(id)).toBe(false);
       expect(getScenarioForModel(id)).toEqual(PAID);
     }
   });
 
-  it("does not mistake older Sonnet names for Sonnet 5", () => {
-    for (const id of ["claude-sonnet-4-5-20250929", "claude-3-5-sonnet", "claude-sonnet-4.5", "claude-sonnet-50"]) {
+  it("routes unmapped Sonnet 5 strings a client may send to Sonnet 5, not 4.6 or 5.5", () => {
+    for (const id of ["claude-sonnet-5[1m]", "claude-sonnet-5-20260115", "Claude-Sonnet-5"]) {
+      expect(getToneForModel(id)).toBe("Claude_Sonnet_5");
+      expect(isSonnet5Model(id)).toBe(true);
+      expect(isSonnet55Model(id)).toBe(false);
+      expect(getScenarioForModel(id)).toEqual(PAID);
+    }
+  });
+
+  it("does not mistake older Sonnet names for Sonnet 5 or 5.5", () => {
+    for (const id of ["claude-sonnet-4-5-20250929", "claude-3-5-sonnet", "claude-sonnet-4.5", "claude-sonnet-50", "claude-sonnet-5.50", "claude-sonnet-5.1"]) {
       expect(isSonnet5Model(id)).toBe(false);
+      expect(isSonnet55Model(id)).toBe(false);
       expect(getScenarioForModel(id)).toEqual(INCLUDED);
     }
   });
 
-  it("never treats a non-Sonnet tone as Sonnet 5, whatever the string says", () => {
+  it("never treats a non-Sonnet tone as Sonnet 5 or 5.5, whatever the string says", () => {
     expect(isSonnet5Model("claude-opus-5")).toBe(false);
-    expect(isSonnet5Model("gpt-sonnet-5")).toBe(false); // resolves to magic, not Claude_Sonnet
+    expect(isSonnet5Model("gpt-sonnet-5")).toBe(false); // resolves to magic, not a Claude tone
+    expect(isSonnet55Model("gpt-sonnet-5.5")).toBe(false);
   });
 
   it("still derives the paid scenario from the tone for Opus and GPT-6", () => {
@@ -74,6 +103,7 @@ describe("Sonnet routing — one tone, two models", () => {
     process.env.M365_SCENARIO = "SomeOtherScenario";
     expect(getScenarioForModel("claude-sonnet").scenario).toBe("SomeOtherScenario");
     expect(getScenarioForModel("claude-sonnet-5").scenario).toBe("SomeOtherScenario");
+    expect(getScenarioForModel("claude-sonnet-5.5").scenario).toBe("SomeOtherScenario");
   });
 });
 
@@ -126,9 +156,16 @@ describe("which tool requests carry the tool agent", () => {
     expect(usesAgent("gpt-6-think-deeper")).toBe(false);
   });
 
-  it("keeps every Claude model off the agent, mapped or not", () => {
-    for (const id of ["claude", "claude-sonnet", "claude-sonnet-5", "claude-sonnet-think-deeper", "claude-opus", "claude-opus-5[1m]", "claude-haiku-9"]) {
+  it("keeps every Claude model but Opus off the agent, mapped or not", () => {
+    for (const id of ["claude", "claude-sonnet", "claude-sonnet-5", "claude-sonnet-5.5", "claude-sonnet-5[1m]", "claude-sonnet-think-deeper", "claude-haiku-9"]) {
       expect(usesAgent(id)).toBe(false);
+    }
+  });
+
+  it("gives both Opus models the agent — agent-less, Opus 4.8 works in its own sandbox (§24, §36)", () => {
+    expect(AGENT_CLAUDE_TONES.has("Claude_Opus")).toBe(true);
+    for (const id of ["claude-opus", "claude-opus-5", "claude-opus-5.5", "claude-opus-4.8", "claude-opus-4.5", "claude-opus-5[1m]", "claude-opus-4-8-20261001"]) {
+      expect(usesAgent(id)).toBe(true);
     }
   });
 
@@ -193,11 +230,43 @@ describe("GPT-6 Sol routing (#23)", () => {
   });
 });
 
+describe("GPT-6.1 Sol routing (§27)", () => {
+  afterEach(() => {
+    resetAgentRoutes();
+  });
+
+  it("maps gpt-6.1-sol to Gpt_61_Sol_Reasoning on the INCLUDED scenario — every account, unmetered", () => {
+    expect(getToneForModel("gpt-6.1-sol")).toBe("Gpt_61_Sol_Reasoning");
+    expect(getAvailableModels()).toContain("gpt-6.1-sol");
+    expect(PAID_SCENARIO_TONES.has("Gpt_61_Sol_Reasoning")).toBe(false);
+    expect(getScenarioForModel("gpt-6.1-sol")).toEqual(INCLUDED);
+    expect(meteredBudgetOf("gpt-6.1-sol")).toBeNull();
+  });
+
+  it("takes the agent only on a premium account, learned per tone", () => {
+    expect(PREMIUM_ONLY_AGENT_TONES.has("Gpt_61_Sol_Reasoning")).toBe(true);
+    expect(toneUsesToolAgent("Gpt_61_Sol_Reasoning")).toBe(true);
+    noteAgentRouteDead("Gpt_61_Sol_Reasoning");
+    expect(toneUsesToolAgent("Gpt_61_Sol_Reasoning")).toBe(false);
+    expect(toneUsesToolAgent("Gpt_6_Sol_Reasoning")).toBe(true);
+  });
+});
+
 describe("Opus routing", () => {
+  afterEach(() => {
+    delete process.env.M365_SCENARIO;
+    delete process.env.M365_FORCE_AGENT;
+  });
+
   it("maps the advertised Opus IDs to the Claude_Opus tone", () => {
     expect(getToneForModel("claude-opus")).toBe("Claude_Opus");
     expect(getToneForModel("claude-opus-5")).toBe("Claude_Opus");
-    expect(getAvailableModels()).toContain("claude-opus");
+    expect(getToneForModel("claude-opus-5.5")).toBe("Claude_Opus");
+    expect(getToneForModel("claude-opus-4.8")).toBe("Claude_Opus");
+    expect(getToneForModel("claude-opus-4.5")).toBe("Claude_Opus");
+    for (const id of ["claude-opus", "claude-opus-5.5", "claude-opus-4.8", "claude-opus-4.5"]) {
+      expect(getAvailableModels()).toContain(id);
+    }
   });
 
   it("routes an unmapped Opus string to Opus rather than downgrading to Sonnet", () => {
@@ -207,6 +276,97 @@ describe("Opus routing", () => {
 
   it("still routes other unmapped claude-* strings to Sonnet", () => {
     expect(getToneForModel("claude-haiku-9")).toBe("Claude_Sonnet");
+  });
+
+  it("sends claude-opus-4.8 to the shared tone under the INCLUDED scenario (Opus 4.8)", () => {
+    // claude-opus-4.5 is the legacy ID of the same route (Opus 4.5 until October 2026, §36).
+    for (const id of ["claude-opus-4.8", "claude-opus-4.5"]) {
+      expect(INCLUDED_SCENARIO_MODELS.has(id)).toBe(true);
+      expect(isIncludedOpusModel(id)).toBe(true);
+      expect(getScenarioForModel(id)).toEqual(INCLUDED);
+    }
+  });
+
+  it("keeps every other Opus ID on the paid scenario (Opus 5.5)", () => {
+    for (const id of ["claude-opus", "claude-opus-5", "claude-opus-5.5", "claude-opus-5[1m]", "claude-opus-4", "claude-opus-4-1", "claude-opus-4.6", "claude-opus-4.50", "claude-opus-4.80"]) {
+      expect(isIncludedOpusModel(id)).toBe(false);
+      expect(getScenarioForModel(id)).toEqual(PAID);
+    }
+    // The tone itself stays paid; only the model ID opts out.
+    expect(getScenarioForTone("Claude_Opus")).toEqual(PAID);
+  });
+
+  it("routes unmapped Opus 4.8 (and legacy 4.5) strings a client may send to the included Opus, not Opus 5.5", () => {
+    for (const id of [
+      "claude-opus-4-8", "claude-opus-4-8-20261001", "claude-opus-4.8[1m]", "Claude-Opus-4.8", "opus_4_8",
+      "claude-opus-4-5", "claude-opus-4-5-20251101", "claude-opus-4.5[1m]", "Claude-Opus-4.5", "opus_4_5",
+    ]) {
+      expect(getToneForModel(id)).toBe("Claude_Opus");
+      expect(isIncludedOpusModel(id)).toBe(true);
+      expect(getScenarioForModel(id)).toEqual(INCLUDED);
+    }
+  });
+
+  it("never treats a non-Opus tone as the included Opus, whatever the string says", () => {
+    expect(isIncludedOpusModel("claude-sonnet-4.5")).toBe(false);
+    expect(isIncludedOpusModel("claude-sonnet-4.8")).toBe(false);
+    expect(isIncludedOpusModel("gpt-4.5")).toBe(false);
+  });
+
+  it("lets the env override win for Opus 4.8 too", () => {
+    process.env.M365_SCENARIO = "SomeOtherScenario";
+    expect(getScenarioForModel("claude-opus-4.8").scenario).toBe("SomeOtherScenario");
+  });
+
+  it("attaches the agent to Opus 4.8's tool requests only — it serves agent-less too, unlike Opus 4.5 (§36)", () => {
+    for (const id of ["claude-opus-4.8", "claude-opus-4.5", "claude-opus"]) {
+      expect(requestUsesAgent(id, false)).toBe(false);
+      expect(requestUsesAgent(id, true)).toBe(true);
+    }
+    // Unchanged for everything else: tool-less requests go agent-less.
+    expect(requestUsesAgent("gpt-5.5", false)).toBe(false);
+    expect(requestUsesAgent("claude-sonnet", true)).toBe(false);
+  });
+
+  it("knows which turns are metered — Opus 5.5's and Sonnet 5.5's, not Opus 4.8's or Sonnet 5's", () => {
+    for (const id of ["claude-opus", "claude-opus-5", "claude-opus-5.5", "claude-opus-5[1m]"]) expect(meteredBudgetOf(id)).toBe("opus");
+    for (const id of ["claude-sonnet-5.5", "claude-sonnet-5-5-20261001"]) expect(meteredBudgetOf(id)).toBe("sonnet-5.5");
+    for (const id of ["claude-opus-4.8", "claude-opus-4.5", "claude-opus-4-5-20251101", "claude-sonnet-5", "claude-sonnet", "gpt-6-think-deeper"]) {
+      expect(meteredBudgetOf(id)).toBeNull();
+    }
+  });
+
+  it("follows M365_SCENARIO: forced onto the paid scenario, claude-sonnet IS Sonnet 5.5", () => {
+    process.env.M365_SCENARIO = "OfficeWebPaidCopilot";
+    expect(meteredBudgetOf("claude-sonnet")).toBe("sonnet-5.5");
+    delete process.env.M365_SCENARIO;
+  });
+
+  it("reads each budget's fallback env var, and refuses a metered model as the fallback", () => {
+    expect(priorityAccessFallbackModel("opus")).toBeNull();
+    process.env.M365_OPUS_FALLBACK_MODEL = "claude-opus-4.8";
+    expect(priorityAccessFallbackModel("opus")).toBe("claude-opus-4.8");
+    expect(priorityAccessFallbackModel("sonnet-5.5")).toBeNull();
+    process.env.M365_OPUS_FALLBACK_MODEL = "claude-opus";
+    expect(priorityAccessFallbackModel("opus")).toBeNull();
+    process.env.M365_OPUS_FALLBACK_MODEL = "claude-sonnet-5.5";
+    expect(priorityAccessFallbackModel("opus")).toBeNull();
+    delete process.env.M365_OPUS_FALLBACK_MODEL;
+    process.env.M365_SONNET_FALLBACK_MODEL = "claude-sonnet-5";
+    expect(priorityAccessFallbackModel("sonnet-5.5")).toBe("claude-sonnet-5");
+    process.env.M365_SONNET_FALLBACK_MODEL = "claude-sonnet-5.5";
+    expect(priorityAccessFallbackModel("sonnet-5.5")).toBeNull();
+    delete process.env.M365_SONNET_FALLBACK_MODEL;
+  });
+
+  it("lets M365_FORCE_AGENT=0 take the agent off Opus 4.8 as well", () => {
+    process.env.M365_FORCE_AGENT = "0";
+    expect(requestUsesAgent("claude-opus-4.8", true)).toBe(false);
+  });
+
+  it("knows the included Opus is premium-only on either path, and nothing else is", () => {
+    for (const id of ["claude-opus-4.8", "claude-opus-4.5", "claude-opus-4-8-20261001"]) expect(isPremiumOnlyModel(id)).toBe(true);
+    for (const id of ["claude-opus", "claude-opus-5.5", "claude-sonnet", "gpt-6-sol"]) expect(isPremiumOnlyModel(id)).toBe(false);
   });
 });
 

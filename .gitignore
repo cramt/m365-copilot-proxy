@@ -19,9 +19,6 @@ scripts/output-ceiling-out/
 scripts/cancel-frame-out/
 scripts/send-cancel-out/
 .pi-local/
-
-# Windows-native proxy runtime state (logs, PIDs) — scripts/windows/*.ps1
-.local/
 scripts/code-interp-out/
 scripts/tone-out/
 scripts/sentinel-hits.log
@@ -44,3 +41,6 @@ scripts/da-app/gui-out/
 scripts/da-app/pkg/
 scripts/da-app/sentinel-agent.zip
 scripts/harness/out/
+
+# Windows-native proxy runtime state (logs, PIDs)
+.local/

@@ -4,7 +4,8 @@ import {
   createLogger,
   trunc,
   getToneForModel,
-  toolRequestUsesAgent,
+  requestUsesAgent,
+  isPremiumOnlyModel,
   noteAgentRouteDead,
   noteAgentRouteAlive,
   isAgentRouteAlive,
@@ -12,24 +13,39 @@ import {
   defaultFramingForModel,
   currentFramingVariant,
   transcriptStyleForVariant,
-  parsePriorityAccessExhaustion,
+  priorityAccessExhaustionOf,
+  notePriorityAccessExhausted,
+  activePriorityAccessExhaustion,
+  meteredAllowance,
+  METERED_BUDGETS,
+  type MeteredBudget,
+  meteredBudgetOf,
+  priorityAccessFallbackModel,
+  PRIORITY_ACCESS_FALLBACK_ENV,
   couldBePriorityAccessPrefix,
   secondsUntilReset,
   type PriorityAccessExhaustion,
   formatMessages,
+  imageUrls,
   parseToolCalls,
   looksLikeConfabulation,
   looksLikeHallucinatedCompletion,
   looksLikeRemoteArtifactCompletion,
   truncateAtFabricatedToolResponse,
+  fabricatedToolResponseAt,
   textAfterFirstToolCall,
+  longHeredocAsWrite,
+  formatToolResponse,
   isProseDocument,
   getMessageContent,
   noteRequestOutcome,
   awaitDegradationBackoff,
+  awaitTurnBudget,
+  TurnBudgetHold,
   getImageArtifactToken,
   fetchImageBytes,
   type CapturedImage,
+  type ParseResult,
 } from "@m365-copilot/core";
 import { ChatCompletionRequest } from "./schemas.js";
 import type { z } from "zod/v4";
@@ -66,6 +82,16 @@ async function renderImagesMarkdown(images: CapturedImage[]): Promise<string> {
 const CONFAB_FORCE_PROMPT =
   "The working directory and the files named in the task ARE present on a real filesystem right now. Do NOT ask me to paste anything, and do NOT say commands return no output — you have not run any command yet. Emit ONE ```bash block this turn: run `ls -la` and `cat` the relevant files. Output only the ```bash block, nothing else.";
 
+// The same give-up AFTER the model has already run tools. CONFAB_FORCE_PROMPT
+// says "you have not run any command yet" — false at that point, and the model
+// treats a prompt that contradicts its own transcript as untrustworthy: live
+// (Windows / pi / gpt-5.6-think-deeper) it answered "so I can't run `ls -la` or
+// `cat`", refusing the prompt's own instruction. The give-ups that reach here
+// follow an obstacle — no PDF tool or Word library installed — so say what is
+// true: the tools work, and a missing program is something to install.
+const MIDTASK_FORCE_PROMPT =
+  "Your tools are working: your previous command really ran on this machine, and its real output is in the last <tool_response>. Continue the task from there with ONE tool block for the next step. A missing program or library is not a missing tool — install it with the package manager (pip, npm, …) or do the job with what is already installed. Output only the tool block, nothing else.";
+
 // Forcing follow-up when the model CLAIMS it did a file change but ran no tool.
 const HALLUCINATION_FORCE_PROMPT =
   "You have NOT actually done that — no tool ran this turn, so nothing changed on disk. Do not claim a file was created, replaced, or updated until a <tool_response> confirms it. Emit ONE ```bash block now that performs the change for real (write the file with a `cat > path <<'EOF' … EOF` heredoc), and nothing else.";
@@ -95,6 +121,23 @@ function outputFinishReason(text: string): "stop" | "length" {
   return "stop";
 }
 
+/** How many chars of a model-written <tool_response> tail a tool turn may run
+ *  before the proxy stops it (runBuffered). 0 stops at the tag itself. With the
+ *  default, pi takes as many turns as when the turn runs to its end (+2%,
+ *  p = 0.74), and no runaway gets far; stopping at the tag cost 10% more turns
+ *  (hypotheses §35 F89). */
+const DEFAULT_EARLY_STOP_AFTER = 2_000;
+function earlyStopAfter(): number {
+  const v = Number(process.env.M365_EARLY_STOP_AFTER);
+  return process.env.M365_EARLY_STOP_AFTER !== undefined && Number.isFinite(v) && v >= 0 ? v : DEFAULT_EARLY_STOP_AFTER;
+}
+
+/** The longest M365_AVOID_THROTTLING holds a request that isn't streamed: it
+ *  sends nothing until the answer, and its clients give up on headers after
+ *  5 min (pi's SDK, the bench), of which a turn itself can take ~3. A streamed
+ *  request has its keepalive chunks and waits up to M365_BUDGET_MAX_WAIT_MIN. */
+const UNSTREAMED_MAX_PACE_WAIT_MS = 2 * 60_000;
+
 type ChatBody = z.infer<typeof ChatCompletionRequest>;
 type ParsedMessage = ChatBody["messages"][number];
 
@@ -107,6 +150,10 @@ interface ConversationState {
   /** Sent ahead of the next tool result when the proxy executed less than the
    *  model wrote last turn (see executedOnlyFirstNote). */
   pendingNote: string | null;
+  /** The model that last answered in this conversation. A different one (the
+   *  Opus fallback, #18) can't continue the M365 conversation — it may need
+   *  another scenario — so it starts a fresh one with the full history. */
+  servedModel?: string;
 }
 
 /**
@@ -161,10 +208,21 @@ export class SessionPool {
     const existing = this.conversations.get(fingerprint);
 
     if (existing) {
-      // Messages shrunk means client restarted this conversation — reset M365 session
-      if (messages.length < existing.sentMessageCount) {
-        log.info(`Conversation ${fingerprint}: messages shrunk (${messages.length} < ${existing.sentMessageCount}), resetting`);
-        existing.session.reset();
+      // A request that carries no more messages than this conversation already
+      // sent is not its continuation (a harness re-sends the whole history and
+      // only ever appends). It's a new session that shares the first user message
+      // — two pi sessions opened with the same prompt, even in different
+      // directories — or a re-sent request. Either way it needs a FRESH M365
+      // conversation: reset() kept the conversationId, so the full prompt went
+      // into the old thread, and at equal length nothing reset at all and
+      // "Please continue." went there. Measured (Windows / pi, 30 runs of 2
+      // prompts): later sessions answered from earlier ones — "notlar.docx was
+      // already created and verified" in an empty directory — and the pass rate
+      // fell 7/10 → 4/10 → 3/10 over the sweep. The full prompt re-sends the
+      // whole history, so nothing the harness holds is lost.
+      if (messages.length <= existing.sentMessageCount) {
+        log.info(`Conversation ${fingerprint}: not a continuation (${messages.length} <= ${existing.sentMessageCount} sent), starting a fresh M365 conversation`);
+        existing.session.newConversation();
         existing.sentMessageCount = 0;
         existing.pendingNote = null;
       }
@@ -213,9 +271,42 @@ function simpleHash(str: string): string {
   return String(hash);
 }
 
+/** Parse a tool-mode reply, with the document guard applied.
+ *
+ *  The shell-routing parser turns every ```bash block into a tool call, so a
+ *  model that ANSWERS with a markdown document full of code fences ("here's a
+ *  simplified README") would get its own answer executed as shell. That shape
+ *  (multiple fences + prose) comes back as plain text instead — unless the reply
+ *  OPENS with a tool call, which makes it an action with a speculative tail (#33).
+ *
+ *  This runs BEFORE the give-up checks, because a document runs nothing. It used
+ *  to run after them, so a refusal that came with "run these yourself" fences —
+ *  measured: "Dosya oluşturma özelliği bu oturumda devre dışı olduğu için
+ *  notlar.pdf dosyasını oluşturamıyorum" + two ```bash blocks — counted as tool
+ *  calls for the confabulation check (skipped), then as text for the user.
+ *
+ *  `judged` is the text the give-up checks read. For a document it's only the
+ *  opening paragraph: a give-up announces itself there, and everything after
+ *  is document content ("if you can't access the API…") that must not trip a
+ *  forcing retry. */
+function parseReply(text: string, tools: Parameters<typeof parseToolCalls>[1]): { parsed: ParseResult; judged: string | null } {
+  const parsed = parseToolCalls(text, tools);
+  if (isProseDocument(parsed, text, tools)) {
+    log.info(`Response is a prose document (${parsed.toolCalls.length} embedded fences), returning as text instead of executing`);
+    const opening = text.split("```")[0].trim().split(/\n\s*\n/)[0];
+    return { parsed: { hasToolCalls: false, toolCalls: [], textContent: text }, judged: opening };
+  }
+  return { parsed, judged: parsed.textContent };
+}
+
 // --- Delta message formatting ---
 
-function formatDeltaMessages(messages: ParsedMessage[]): string {
+/** Format the messages new since the last turn. `history` is the whole request:
+ *  a tool message names its call only by `tool_call_id` (pi sends no `name`),
+ *  so formatToolResponse takes the tool's name and command from the assistant
+ *  `tool_calls` that issued it — every result used to be labelled
+ *  `name="unknown"` (#50). */
+export function formatDeltaMessages(messages: ParsedMessage[], history: ParsedMessage[] = messages): string {
   const parts: string[] = [];
   for (const m of messages) {
     if (m.role === "assistant") {
@@ -223,9 +314,8 @@ function formatDeltaMessages(messages: ParsedMessage[]): string {
       // Echoing them back as a user message confuses M365.
       continue;
     } else if (m.role === "tool") {
-      const name = m.name || "unknown";
-      const callId = m.tool_call_id || "?";
-      parts.push(`<tool_response name="${name}" call_id="${callId}">\n${getMessageContent(m)}\n</tool_response>`);
+      // Same rendering as the first turn: named for the call that produced it.
+      parts.push(formatToolResponse(m, history));
     } else if (m.role === "system") {
       // Skip system messages on follow-up turns
     } else {
@@ -249,31 +339,59 @@ export async function handleChatCompletion(
   const conv = pool.resolve(body.messages);
   const { session } = conv;
   const hasTools = body.tools && body.tools.length > 0 && body.tool_choice !== "none";
-  const model = body.model;
+  const requestedModel = body.model;
 
-  // Which tool requests carry the declarative tool agent. GPT-the-chat-model won't
+  // Priority access (§15, §24 F55, §26, issue #18). Once a budget is used up
+  // every turn on it is refused until the reset, so don't start one: serve the
+  // opt-in fallback model (M365_OPUS_FALLBACK_MODEL, e.g. the unmetered
+  // claude-opus-4.8; M365_SONNET_FALLBACK_MODEL for Sonnet 5.5), or answer the
+  // 429 here. A refused turn costs no allowance, but it does cost an M365 turn
+  // and often a fresh conversation — what the account's thread-rate throttle
+  // counts.
+  const requestedBudget = meteredBudgetOf(requestedModel);
+  const knownExhaustion = activePriorityAccessExhaustion(requestedBudget ?? requestedModel);
+  const fallbackModel = knownExhaustion && requestedBudget ? priorityAccessFallbackModel(requestedBudget) : null;
+  if (knownExhaustion && !fallbackModel) {
+    log.info(`Priority access exhausted (${knownExhaustion.window}) until ${knownExhaustion.resetsAt.toISOString()} — 429 without contacting M365`);
+    return priorityAccessResponse(knownExhaustion, requestedModel);
+  }
+  let model = fallbackModel ?? requestedModel;
+  if (fallbackModel) log.info(`Priority access exhausted until ${knownExhaustion!.resetsAt.toISOString()} — serving ${requestedModel} with ${fallbackModel} (${PRIORITY_ACCESS_FALLBACK_ENV[requestedBudget!]})`);
+  if (conv.servedModel && conv.servedModel !== model) {
+    // The conversation was being served by another model (e.g. Opus 5.5 before
+    // the fallback): continue in a fresh M365 conversation with the full history.
+    log.info(`Conversation switches model ${conv.servedModel} → ${model}: fresh conversation, full history`);
+    session.newConversation();
+    conv.sentMessageCount = 0;
+  }
+
+  // Which requests carry the declarative tool agent. GPT-the-chat-model won't
   // tool-call agent-less (0/4), so it needs the agent. Claude tool-calls reliably
   // AGENT-LESS via shell-routing (F23), and on a non-premium account the agent
-  // path doesn't serve Claude at all (§22 F44). `Gpt_6_Reasoning` doesn't serve
-  // with the agent on any account (§22 F45, #41), and `Gpt_6_Sol_Reasoning` only
-  // on a premium one (learned at runtime, see the dead-route fallback in
-  // runBuffered). The rule lives in core (`toolRequestUsesAgent`);
-  // M365_FORCE_AGENT=1 / =0 forces the agent on / off.
+  // path doesn't serve Claude at all (§22 F44) — except Claude Opus, which takes
+  // it: agent-less, Opus 4.8 works in its own code interpreter unless the
+  // framing steers it out (§36). `Gpt_6_Reasoning` doesn't serve
+  // with the agent on any account (§22 F45, #41), and `Gpt_6_Sol_Reasoning` /
+  // `Gpt_61_Sol_Reasoning` only on a premium one (learned at runtime, see the
+  // dead-route fallback in runBuffered). The rule lives in core (`requestUsesAgent`);
+  // M365_FORCE_AGENT=1 / =0 forces the agent on / off for tool requests.
   // Derive it from the RESOLVED tone, not the raw model string: getToneForModel
   // routes any unmapped `claude-*` (e.g. the `claude-opus-5[1m]` a Claude Code
   // client sends) to a Claude tone, so this keeps that request on the working
   // agent-less path. The old `/claude/i.test(model)` + `magic` fallback split a
   // claude-* string into GPT-tone + agent-suppressed — the confab quadrant we
   // observed. One resolved tone drives both.
-  const tone = getToneForModel(model);
-  // Framing default follows the MODEL (defaultFramingForModel): Opus gets the
-  // lean variant (it doesn't need the anti-narration cage, and its priority-
-  // access budget is small), Claude Sonnet — 4.6 and 5 — gets `relay` (it reads
-  // the `<system>`-tagged baseline as an injected prompt), and the rest keep the
-  // bench-tuned `baseline`. Keyed on the model, not the tone, because one tone
-  // can serve two models. M365_FRAMING_* still wins.
-  const framingVariant = currentFramingVariant(defaultFramingForModel(model));
-  let useToolAgent = !!hasTools && toolRequestUsesAgent(tone);
+  let tone = getToneForModel(model);
+  // Framing default follows the MODEL (defaultFramingForModel): the Claude,
+  // GPT-6 and GPT-6 Sol tones get a user-voice relay (Sonnet reads the
+  // `<system>`-tagged baseline as an injected prompt; on Opus it trips the
+  // jailbreak classifier). Opus, Sonnet 4.6, GPT-6, GPT-6 Sol and GPT-6.1 Sol get the
+  // turn-saving `relay_batch` (§24 F60, §25, §27, §28); Sonnet 5 and Sonnet 5.5 plain `relay`. The
+  // rest keep the bench-tuned `baseline`.
+  // Keyed on the model, not the tone, because one tone can serve two models.
+  // M365_FRAMING_* still wins.
+  let framingVariant = currentFramingVariant(defaultFramingForModel(model));
+  let useToolAgent = requestUsesAgent(model, !!hasTools);
 
   // Format message: full prompt on first turn, delta on follow-ups.
   // M365 is stateful — it remembers everything from prior turns,
@@ -281,12 +399,16 @@ export async function handleChatCompletion(
   const isFirstTurn = session.turnCount === 0;
   const convId = session.conversationId;
   let text: string;
+  // Images ride on the message that carries their text (core image-input.ts).
+  let inputImages: string[];
   if (isFirstTurn || conv.sentMessageCount === 0) {
     text = formatMessages(body.messages, body.tools, body.tool_choice, convId, framingVariant);
+    inputImages = imageUrls(body.messages);
     log.info(`Chat completion: model=${model}, stream=${body.stream}, messages=${body.messages.length}, turn=${session.turnCount}, mode=full, cid=${convId}`);
   } else {
     const newMessages = body.messages.slice(conv.sentMessageCount);
-    const delta = newMessages.length > 0 ? formatDeltaMessages(newMessages) : "";
+    inputImages = imageUrls(newMessages);
+    const delta = newMessages.length > 0 ? formatDeltaMessages(newMessages, body.messages) : "";
     if (delta.length > 0) {
       text = delta;
       // Only a tool result is the thing the note corrects the model about.
@@ -320,6 +442,7 @@ export async function handleChatCompletion(
   let lastMessageType: string | null | undefined;
   let lastScores: Record<string, number> | null | undefined;
   let lastTurnCount: number | null | undefined;
+  let lastMetering: Record<string, number> | null | undefined;
 
   // `onDelta` (when provided) forwards each text delta to the caller AS IT ARRIVES,
   // for live incremental streaming. It's safe to forward without ever retracting:
@@ -332,6 +455,8 @@ export async function handleChatCompletion(
     let agentRefreshed = false;
     let disengageRetried = false;
     let agentFallbackDone = false;
+    let priorityFallbackDone = false;
+    let internalErrorFreshRetried = false;
     let originalText = text;
     // Self-imposed pacing while the account is degraded (thread-rate throttle). A
     // no-op when healthy; during backoff it sleeps a jittered delay so we stop
@@ -340,22 +465,59 @@ export async function handleChatCompletion(
     // detection profile. A single long pi thread never trips the trigger.
     await awaitDegradationBackoff();
     for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
+      // A <tool_response> the model writes after a real call is a stop sequence
+      // (truncateAtFabricatedToolResponse), but the cut in produce() only runs
+      // once M365 has finished the turn, and Sonnet 4.6 sometimes writes the rest
+      // of the session after its call: minutes of invented output (45-69k chars),
+      // long enough for pi's request timeout to fail the run (hypotheses §34). So
+      // stop the turn once the invented tail runs past M365_EARLY_STOP_AFTER
+      // chars (2,000 by default), the way a client's Stop does; the cut then keeps the head as
+      // before. Not at the tag itself: M365 keeps the whole message in the
+      // conversation, the model seems to follow a short tail as its plan, and
+      // stopping at the tag cost Sonnet 4.6 (`claude-sonnet`, agent-less) 10%
+      // more turns (§35 F89).
+      // M365_NO_EARLY_STOP=1 waits for the turn to end instead.
+      const earlyStop = hasTools && !process.env.M365_NO_EARLY_STOP ? new AbortController() : null;
+      const stopAfter = earlyStopAfter();
+      const signal = !earlyStop ? opts.signal
+        : opts.signal ? AbortSignal.any([opts.signal, earlyStop.signal]) : earlyStop.signal;
       let copilotStream;
       try {
+        // M365_AVOID_THROTTLING=1: wait until the account's turn bucket can
+        // afford this turn (turn-budget.ts, hypotheses §37). A pi session is one
+        // long thread, but every turn in it draws on the same bucket as a bench
+        // sweep (F58), so a busy enough session runs it dry and then sits out a
+        // throttle of about an hour. Every upstream turn passes here, the
+        // forcing retries included.
+        await awaitTurnBudget({ signal: opts.signal, maxWaitMs: body.stream ? undefined : UNSTREAMED_MAX_PACE_WAIT_MS });
         // Only attach the tool-calling agent when the request actually has tools.
         // The agent overrides `tone` (forces GPT-5), so tool-less requests must
         // skip it to reach the model the tone selects (e.g. Claude). See
         // ModelSession.run / docs H8.6.
-        copilotStream = await session.run(text, model, opts.signal, useToolAgent);
+        copilotStream = await session.run(text, model, signal, useToolAgent, inputImages);
       } catch (err: any) {
+        if (err instanceof TurnBudgetHold) return { error: turnBudgetHoldResponse(err) };
         return { error: jsonResponse(502, { error: { message: err.message, type: "upstream_error" } }) };
       }
 
       let fullText = "";
+      let tagAt = -1; // where the invented <tool_response> starts, once seen
       try {
         for await (const delta of copilotStream) {
           fullText += delta;
           onDelta?.(delta);
+          if (!earlyStop || earlyStop.signal.aborted) continue;
+          // Measured on the stream's composed text, which has the heads that
+          // arrive only as snapshots (#29) — a fence's opening line among them.
+          const sofar = (copilotStream.fullText?.length ?? 0) > fullText.length ? copilotStream.fullText! : fullText;
+          // Look for the tag only when this delta (or its seam with the last one) can hold it.
+          if (tagAt < 0 && /<tool_/i.test(fullText.slice(Math.max(0, fullText.length - delta.length - 16)))) {
+            tagAt = fabricatedToolResponseAt(sofar, body.tools);
+          }
+          if (tagAt >= 0 && sofar.length - tagAt >= stopAfter) {
+            log.info(`Model is writing its own <tool_response> after its call — stopping the turn ${sofar.length} chars in (tag at ${tagAt})`);
+            earlyStop.abort();
+          }
         }
         if (copilotStream.fullText && copilotStream.fullText.length > fullText.length) {
           fullText = copilotStream.fullText;
@@ -383,6 +545,7 @@ export async function handleChatCompletion(
       lastMessageType = copilotStream.messageType;
       lastScores = copilotStream.scores;
       lastTurnCount = copilotStream.turnCount;
+      lastMetering = copilotStream.metering;
 
       // M365 SAYS when it throttles: the final item's result is `Throttled` /
       // `PerUserThrottled` (#35). Checked BEFORE the content check so
@@ -420,25 +583,52 @@ export async function handleChatCompletion(
         useToolAgent = false;
         session.newConversation();
         text = formatMessages(body.messages, body.tools, body.tool_choice, session.conversationId, framingVariant);
+        inputImages = imageUrls(body.messages);
         originalText = text;
         log.info(`Agent route dead for ${tone} (InternalError) — this account isn't premium; re-sending agent-less with '${framingVariant}' framing in a fresh conversation`);
         attempt--;
         continue;
       }
 
+      // A priority-access cap (Opus 5.5, Sonnet 5.5) arrives as a turn whose
+      // text is a refusal ("You've used your available priority access…") and
+      // whose final result is `OutOfCredits` (§24 F55). Left alone, the client
+      // would receive a refusal dressed as an answer — the same hazard class as
+      // the image-quota text (§14 H14.4). Surface it as a 429 with the reset
+      // time instead, or, when the budget's fallback model is set
+      // (M365_OPUS_FALLBACK_MODEL / M365_SONNET_FALLBACK_MODEL), re-send the
+      // whole request to that model in a fresh conversation (issue #18). Either
+      // way remember it, so the next requests don't spend M365 turns on
+      // refusals until the reset.
+      const exhausted = priorityAccessExhaustionOf(copilotStream.result, fullText);
+      if (exhausted) {
+        const budget = meteredBudgetOf(model);
+        if (budget || copilotStream.result?.value === "OutOfCredits") notePriorityAccessExhausted(budget ?? model, exhausted);
+        const fallback = budget && !priorityFallbackDone ? priorityAccessFallbackModel(budget) : null;
+        if (fallback) {
+          priorityFallbackDone = true;
+          log.info(`Priority access exhausted (${exhausted.window}) — re-sending to ${fallback} (${PRIORITY_ACCESS_FALLBACK_ENV[budget!]}) in a fresh conversation`);
+          model = fallback;
+          tone = getToneForModel(model);
+          framingVariant = currentFramingVariant(defaultFramingForModel(model));
+          useToolAgent = requestUsesAgent(model, !!hasTools);
+          session.newConversation();
+          text = formatMessages(body.messages, body.tools, body.tool_choice, session.conversationId, framingVariant);
+          inputImages = imageUrls(body.messages);
+          originalText = text;
+          attempt--;
+          continue;
+        }
+        noteRequestOutcome(false, convId); // an answer, not a throttle
+        log.info(`Priority access exhausted (${exhausted.window}) — resets ${exhausted.resetsAt.toISOString()}`);
+        return { error: priorityAccessResponse(exhausted, model) };
+      }
+
       if (copilotStream.hasContent || fullText.length > 0) {
         noteRequestOutcome(false, convId); // clean response → degradation has lifted
         if (useToolAgent) noteAgentRouteAlive(tone); // the agent route answered on this account
-        // The Opus priority-access cap arrives as a SUCCESSFUL turn whose text is
-        // a refusal ("You've used your available priority access…"), so nothing
-        // above catches it and the client would receive a refusal dressed as an
-        // answer. Surface it as a 429 with the reset time instead. Same hazard
-        // class as the image-quota text (§14 H14.4).
-        const exhausted = parsePriorityAccessExhaustion(fullText);
-        if (exhausted) {
-          log.info(`Priority access exhausted (${exhausted.window}) — resets ${exhausted.resetsAt.toISOString()}`);
-          return { error: priorityAccessResponse(exhausted, model) };
-        }
+        conv.servedModel = model;
+        inputImages = []; // on the server now: a forcing retry in this conversation needn't resend them
         return { fullText };
       }
 
@@ -463,6 +653,7 @@ export async function handleChatCompletion(
           // exactly the tag that model reads as a forged system prompt.
           const retryVariant = transcriptStyleForVariant(framingVariant).framingTag === "system" ? "softened" : framingVariant;
           text = formatMessages(body.messages, body.tools, body.tool_choice, session.conversationId, retryVariant);
+          inputImages = imageUrls(body.messages);
           log.info(`Upstream Disengaged — retrying once with '${retryVariant}' framing in a fresh conversation (F22)`);
           attempt--; // free retry; bounded — disengageRetried flips once
           continue;
@@ -476,6 +667,33 @@ export async function handleChatCompletion(
             },
           }),
         };
+      }
+
+      // A content-less `InternalError` is a turn M365 dropped, and the
+      // conversation it happened in tends to stay dropped: "Please continue."
+      // into it came back `InternalError` again in 9 of 18 retries, against
+      // 28 of 89 turns overall (Gpt_6_Sol_Reasoning on a non-premium account,
+      // T3 Code driving Claude Code, 2026-10-14). The turn processed nothing,
+      // so a "continue" has nothing to continue from either: re-send the
+      // WHOLE request once in a fresh conversation instead. Not a free retry: it
+      // spends an attempt, so a tone that fails every time still ends at the
+      // premium-only / empty-response handling below. A premium-only model's
+      // InternalError is deterministic (§24), so it skips straight there.
+      if (
+        !internalErrorFreshRetried &&
+        copilotStream.result?.value === "InternalError" &&
+        !copilotStream.hasContent && fullText.length === 0 &&
+        !isPremiumOnlyModel(model) &&
+        attempt < MAX_RETRIES
+      ) {
+        internalErrorFreshRetried = true;
+        session.newConversation();
+        text = formatMessages(body.messages, body.tools, body.tool_choice, session.conversationId, framingVariant);
+        inputImages = imageUrls(body.messages);
+        originalText = text;
+        log.info(`Upstream InternalError — re-sending the whole request in a fresh conversation (attempt ${attempt + 1}/${MAX_RETRIES})`);
+        await new Promise(r => setTimeout(r, SHORT_RETRY_DELAY_MS));
+        continue;
       }
 
       // Empty response. Only an at-limit throttle warrants treating this as rate
@@ -508,6 +726,14 @@ export async function handleChatCompletion(
         await new Promise(r => setTimeout(r, SHORT_RETRY_DELAY_MS));
         text = "Please continue."; // M365 already has context
       } else {
+        // A model served only on a premium account, on a non-premium one (Opus
+        // 4.8: BotConnection, `InternalError`, every time, with the agent and
+        // without — §24, §36). Not a throttle, so it doesn't feed the degradation
+        // backoff; say what it is instead of "empty response".
+        if (isPremiumOnlyModel(model) && copilotStream.result?.value === "InternalError") {
+          log.info(`${model}: InternalError on every attempt — premium-only model on a non-premium account?`);
+          return { error: premiumOnlyModelResponse(model) };
+        }
         // Final empty after retries, and not an at-limit (per-conversation) cap:
         // this is the thread-rate throttle signature (F13). Feed the degradation-
         // backoff policy — once empties span enough distinct conversations it paces
@@ -553,7 +779,7 @@ export async function handleChatCompletion(
     let fullText = stopAtFabricatedResult(result.fullText);
 
     log.debug("Raw response (tool mode):", trunc(fullText, 1000));
-    let parsed = parseToolCalls(fullText, body.tools);
+    let { parsed, judged } = parseReply(fullText, body.tools);
     log.info(`Parse result: hasToolCalls=${parsed.hasToolCalls}, count=${parsed.toolCalls.length}`);
 
     // Salvage stochastic turn-1 confabulation: M365's chat model sometimes claims it
@@ -571,18 +797,20 @@ export async function handleChatCompletion(
       (m) => m.role === "assistant" && Array.isArray(m.tool_calls) && m.tool_calls.length > 0,
     );
     for (let attempt = 0; attempt < maxConfabRetries && !parsed.hasToolCalls; attempt++) {
-      const confab = looksLikeConfabulation(parsed.textContent);
+      const confab = looksLikeConfabulation(judged);
       const remoteArtifact = looksLikeRemoteArtifactCompletion(parsed.textContent);
-      const halluc = !everActed && looksLikeHallucinatedCompletion(parsed.textContent);
+      const halluc = !everActed && looksLikeHallucinatedCompletion(judged);
       if (!confab && !remoteArtifact && !halluc) break;
       const retryKind = remoteArtifact ? "Remote artifact completion" : confab ? "Confabulation" : "Hallucinated completion";
       log.info(`${retryKind} detected (no tool call) — forcing retry ${attempt + 1}/${maxConfabRetries}`);
-      text = remoteArtifact ? REMOTE_ARTIFACT_FORCE_PROMPT : confab ? CONFAB_FORCE_PROMPT : HALLUCINATION_FORCE_PROMPT;
+      text = remoteArtifact ? REMOTE_ARTIFACT_FORCE_PROMPT
+        : confab ? (everActed ? MIDTASK_FORCE_PROMPT : CONFAB_FORCE_PROMPT)
+        : HALLUCINATION_FORCE_PROMPT;
       const retry = await runBuffered();
       if ("error" in retry) return { kind: "error", resp: retry.error };
       conv.sentMessageCount = body.messages.length;
       fullText = stopAtFabricatedResult(retry.fullText);
-      parsed = parseToolCalls(fullText, body.tools);
+      ({ parsed, judged } = parseReply(fullText, body.tools));
       log.info(`After forcing retry: hasToolCalls=${parsed.hasToolCalls}, count=${parsed.toolCalls.length}`);
     }
 
@@ -605,17 +833,6 @@ export async function handleChatCompletion(
           },
         }),
       };
-    }
-
-    // Document guard: the shell-routing parser turns every ```bash block into a
-    // tool call, so a model that ANSWERS with a markdown document full of code
-    // fences (e.g. "here's a simplified README") would get its own answer executed
-    // as shell. Detect that shape (multiple fences + prose) and return the document
-    // as plain text instead of running it — unless the reply OPENS with a tool
-    // call, which makes it an action with a speculative tail (#33).
-    if (isProseDocument(parsed, fullText, body.tools)) {
-      log.info(`Response is a prose document (${parsed.toolCalls.length} embedded fences), returning as text instead of executing`);
-      parsed = { hasToolCalls: false, toolCalls: [], textContent: fullText };
     }
 
     // Fail-closed: if model mixed text with tool calls, strip text and re-prompt once.
@@ -666,9 +883,19 @@ export async function handleChatCompletion(
     }
 
     if (parsed.hasToolCalls && parsed.toolCalls.length > 0) {
+      // A heredoc file write past the Windows command-line cap would reach the
+      // shell cut short; run the same write through the harness's write tool.
+      const asWrite = longHeredocAsWrite(parsed.toolCalls[0], body.tools);
+      let rewriteNote: string | null = null;
+      if (asWrite) {
+        log.info(`Heredoc write to ${asWrite.path} is over the Windows command-line cap — sent as ${asWrite.call.function.name} instead`);
+        parsed.toolCalls = [asWrite.call];
+        rewriteNote = `(Note: your heredoc to \`${asWrite.path}\` was longer than the ~8,000-character Windows command-line limit and would have been cut off, so it was written with the \`${asWrite.call.function.name}\` tool instead.${asWrite.skipped ? ` The commands after the heredoc did NOT run: \`${asWrite.skipped.slice(0, 200)}\`.` : ""})`;
+      }
       // The model's server-side history holds more than what runs; say so on
       // the turn that carries the real result (executedOnlyFirstNote).
-      conv.pendingNote = executedOnlyFirstNote(cutFabricated, droppedCalls, textAfterFirstToolCall(fullText, body.tools).length);
+      const notes = [rewriteNote, executedOnlyFirstNote(cutFabricated, droppedCalls, textAfterFirstToolCall(fullText, body.tools).length)].filter(Boolean);
+      conv.pendingNote = notes.length ? notes.join("\n") : null;
       return { kind: "tools", toolCalls: parsed.toolCalls };
     }
     return { kind: "text", text: fullText };
@@ -683,7 +910,7 @@ export async function handleChatCompletion(
 
   // --- Render: JSON (non-stream) or an early-flushed SSE stream (stream) ---
   const includeUsage = !!body.stream_options?.include_usage;
-  const usage = () => buildUsage(lastThrottle, lastContentOrigin, lastMessageType, lastScores, lastTurnCount);
+  const usage = () => buildUsage(lastThrottle, lastContentOrigin, lastMessageType, lastScores, lastTurnCount, lastMetering);
 
   if (!body.stream) {
     const p = await produce();
@@ -716,7 +943,14 @@ export async function handleChatCompletion(
       const send = (obj: unknown) => controller.enqueue(enc.encode(`data: ${JSON.stringify(obj)}\n\n`));
       const base = { id: completionId, object: "chat.completion.chunk", created, model };
       send({ ...base, choices: [{ index: 0, delta: { role: "assistant" }, finish_reason: null }] });
-      const hb = setInterval(() => { try { controller.enqueue(enc.encode(": keepalive\n\n")); } catch {} }, 15000);
+      // Keepalive: a REAL empty-delta chunk, not an SSE comment. Agents that track
+      // stream liveness by data chunks (e.g. Hermes: comments don't reset its
+      // `last_chunk_time`, so a silent turn shows "N s without stream output" and can
+      // trip its stale watchdog) see this as activity. No content is added — an empty
+      // delta contributes nothing to the assembled message.
+      const hb = setInterval(() => {
+        try { send({ ...base, choices: [{ index: 0, delta: {}, finish_reason: null }] }); } catch {}
+      }, 15000);
 
       // Live token passthrough (non-tool only). Track exactly what we've sent so the
       // final render emits only the not-yet-streamed remainder. session.ts guarantees
@@ -808,6 +1042,7 @@ function buildUsage(
   messageType?: string | null,
   scores?: Record<string, number> | null,
   turnCount?: number | null,
+  metering?: Record<string, number> | null,
 ): Record<string, unknown> {
   const base: Record<string, unknown> = {
     prompt_tokens: 0,
@@ -833,6 +1068,14 @@ function buildUsage(
     if (typeof scores.dea_violation === "number") base.x_m365_dea_score = scores.dea_violation;
     if (typeof scores.BotOffense === "number") base.x_m365_offense_score = scores.BotOffense;
   }
+  // Priority access left after this turn (paid-scenario turns only, §24 F55,
+  // §26): one unit per turn, so a client can see the wall coming (issue #18).
+  // `x_m365_opus_*` for Opus 5.5, `x_m365_sonnet55_*` for Sonnet 5.5.
+  for (const [budget, { usageKey }] of Object.entries(METERED_BUDGETS)) {
+    const left = meteredAllowance(metering, budget as MeteredBudget);
+    if (left?.daily !== undefined) base[`x_m365_${usageKey}_daily_remaining`] = left.daily;
+    if (left?.weekly !== undefined) base[`x_m365_${usageKey}_weekly_remaining`] = left.weekly;
+  }
   return base;
 }
 
@@ -845,7 +1088,7 @@ function jsonResponse(status: number, body: unknown, headers: Record<string, str
   });
 }
 
-/** The Opus priority-access budget ran out. A real 429 (with `Retry-After` and
+/** A priority-access budget (Opus 5.5, Sonnet 5.5) ran out. A real 429 (with `Retry-After` and
  *  the UTC reset instant) so a client backs off to the refill instead of
  *  retrying into a wall — and so an agent loop doesn't treat the refusal text as
  *  the model's answer. Resets at midnight UTC; the weekly budget on Monday. */
@@ -904,6 +1147,25 @@ function throttledResponse(result: { errorCode?: string; message?: string }): Re
   });
 }
 
+/** M365_AVOID_THROTTLING would have had to wait longer than this request may
+ *  (a throttle hold, usually), so the turn was never sent: sending it would only
+ *  keep the throttle alive. Whatever retries the client makes are answered here
+ *  the same way, without reaching M365. */
+function turnBudgetHoldResponse(hold: TurnBudgetHold): Response {
+  const retryAfter = Math.max(1, Math.ceil(hold.waitMs / 1000));
+  return jsonResponse(
+    429,
+    {
+      error: {
+        message: `Not sent to M365 Copilot (M365_AVOID_THROTTLING): ${hold.message}.`,
+        type: "rate_limit_error",
+        code: hold.reason === "throttle hold" ? "m365_throttle_hold" : "m365_turn_budget",
+      },
+    },
+    { "Retry-After": String(retryAfter) },
+  );
+}
+
 /** Empty upstream reply that is NOT an at-limit throttle — a distinct failure
  *  (content filter, invalid agent/session, transient error) we surface clearly
  *  instead of hanging on a long retry loop. */
@@ -913,6 +1175,16 @@ function emptyResponseResponse(throttle: { current: number; max: number } | null
     error: {
       message: `M365 Copilot returned an empty response${detail} — likely a content filter, an invalid agent/session, or a transient upstream error.`,
       type: "upstream_empty_response",
+    },
+  });
+}
+
+function premiumOnlyModelResponse(model: string): Response {
+  return jsonResponse(502, {
+    error: {
+      message: `M365 Copilot didn't serve ${model}: it returned InternalError on every attempt. ${model} is served only on a premium (paid Microsoft 365 Copilot) account; on any other account use claude-sonnet.`,
+      type: "upstream_error",
+      code: "model_route_unavailable",
     },
   });
 }

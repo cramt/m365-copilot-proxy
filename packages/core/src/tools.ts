@@ -37,7 +37,7 @@ export interface ToolDef {
 
 export interface Message {
   role: string;
-  content?: string | Array<{ type: string; text?: string }> | null;
+  content?: string | Array<{ type: string; text?: string; image_url?: { url: string } }> | null;
   tool_calls?: Array<{
     id: string;
     function: { name: string; arguments: string };
@@ -124,6 +124,31 @@ function toolCallSummary(rawArgs: string): string {
   return primary.replace(/\s+/g, " ").replace(/"/g, "'").trim().slice(0, 100);
 }
 
+/** One tool result as the model is meant to read it: named for the call that
+ *  produced it, with that call's command. Without this the result is labelled
+ *  "unknown" and the model misreads it — observed: it ran `ls`, saw `README.md`,
+ *  and concluded the *file* was empty (docs §9 F15-adjacent). Shared by the
+ *  first turn (formatMessages) and every follow-up turn (the handler's delta
+ *  path), which kept the old `name="unknown"` label — and a pi session is
+ *  delta turns from turn 2 on, so nearly every result went out unattributed. */
+export function formatToolResponse(m: Message, history: Message[]): string {
+  let meta: { name: string; summary: string } | undefined;
+  if (m.tool_call_id) {
+    for (const a of history) {
+      const tc = a.role === "assistant" ? a.tool_calls?.find((c) => c.id === m.tool_call_id) : undefined;
+      if (tc) {
+        meta = { name: tc.function.name, summary: toolCallSummary(tc.function.arguments) };
+        break;
+      }
+    }
+  }
+  const name = m.name || meta?.name || "tool";
+  // Show the command/args that produced this output so the model reads it in
+  // context (a directory listing vs file contents vs a command's stdout).
+  const cmdAttr = meta?.summary ? ` command="${meta.summary}"` : "";
+  return `<tool_response tool="${name}"${cmdAttr}>\n${getMessageContent(m)}\n</tool_response>`;
+}
+
 /**
  * Inject a synthetic `reply(text)` tool that the model calls instead of
  * answering in prose. Wired by the handler (which converts `reply` back to a
@@ -182,19 +207,6 @@ export function formatMessages(
     parts.push(style.framingTag ? `<${style.framingTag}>\n${framing}\n</${style.framingTag}>` : framing);
   }
 
-  // Correlate each tool result back to the call that produced it, so the model
-  // sees WHICH command's output it's reading (e.g. `bash: ls -la`). Without this
-  // the result is labelled "unknown" and the model misreads it — observed: it ran
-  // `ls`, saw `README.md`, and concluded the *file* was empty (docs §9 F15-adjacent).
-  const callMeta = new Map<string, { name: string; summary: string }>();
-  for (const m of messages) {
-    if (m.role === "assistant" && m.tool_calls) {
-      for (const tc of m.tool_calls) {
-        if (tc.id) callMeta.set(tc.id, { name: tc.function.name, summary: toolCallSummary(tc.function.arguments) });
-      }
-    }
-  }
-
   for (const m of messages) {
     if (m.role === "assistant" && m.tool_calls && m.tool_calls.length > 0) {
       const calls = m.tool_calls.map((tc) => {
@@ -223,12 +235,7 @@ export function formatMessages(
       const content = getMessageContent(m);
       parts.push(`<assistant>${content ? "\n" + content : ""}\n${calls}\n</assistant>`);
     } else if (m.role === "tool") {
-      const meta = m.tool_call_id ? callMeta.get(m.tool_call_id) : undefined;
-      const name = m.name || meta?.name || "tool";
-      // Show the command/args that produced this output so the model reads it in
-      // context (a directory listing vs file contents vs a command's stdout).
-      const cmdAttr = meta?.summary ? ` command="${meta.summary}"` : "";
-      parts.push(`<tool_response tool="${name}"${cmdAttr}>\n${getMessageContent(m)}\n</tool_response>`);
+      parts.push(formatToolResponse(m, messages));
     } else if (m.role === "system") {
       parts.push(`<${style.systemTag}>\n${getMessageContent(m)}\n</${style.systemTag}>`);
     } else {
@@ -298,6 +305,22 @@ const CONFABULATION_PATTERNS: RegExp[] = [
   // patterns because it says the session "does not expose" the filesystem.
   /(?:session|environment|runtime)\s+(?:does\s+not|doesn.?t|cannot)\s+(?:expose|mount|provide)\s+(?:the\s+)?(?:local\s+)?(?:repository\s+)?filesystem/i,
   /(?:my|the)\s+filesystem\s+(?:only\s+)?(?:contained|contains|has)[\s\S]{0,80}\/mnt\/data/i,
+  // Turkish. The model answers in the user's language, so every pattern above was
+  // blind to a Turkish-speaking user's give-ups: "Bu oturumda ... dosya yazma aracı
+  // etkin değil", "dosya oluşturma özelliğim devre dışı ... kaydedemiyorum" both
+  // went straight to the user with no forcing retry (measured, Windows/pi/GPT-5.6).
+  // Kept FIRST-PERSON or session-scoped on purpose: this repo's own docs say things
+  // like "retry devre dışı bırakılır" and "oturum yönetimi", and a project summary
+  // in Turkish must not read as a give-up. Verb forms are 1sg only (-amıyorum,
+  // -amam, -amadım), so third-person "okuyamıyorsa"/"çalıştıramaz" don't match.
+  // Spans allow a dot not followed by whitespace — `ozet.md` is a filename, not a
+  // sentence end — and avoid \w, which is ASCII-only and stops at ı/ş/ğ.
+  /bu\s+oturumda(?:[^.\n]|\.(?=\S)){0,80}(?:devre\s*dışı|etkin\s+değil|kullanılamıyor|mevcut\s+değil)/i,
+  /(?:özelliğim|yeteneğim|aracım|araçlarım|erişimim|yetkim|iznim)(?:[^.\n]|\.(?=\S)){0,30}(?:devre\s*dışı|etkin\s+değil|yok|bulunmuyor)/i,
+  /(?:oluştur|üret|hazırla|dönüştür|tamamla|kur|güncelle|kayded|eriş|çalıştır|oku|yaz|düzenle|incele|listele|aç)y?[ae]m(?:ıyorum|iyorum|am|em|adım|edim|adığım|ediğim)/i,
+  /araç\s+çağrısı\s+yapama/i,
+  /(?:dosya|araç)\s+erişimi\s+(?:olan|etkin)(?:[^.\n]|\.(?=\S)){0,40}oturum/i,                      // "dosya erişimi etkin bir kodlama oturumunda yeniden çalıştırın"
+  /kopyala(?:[^.\n]|\.(?=\S)){0,80}kayde[dt]/i,                                                   // "kopyalayıp ozet.md olarak kaydedebilirsin" — hands the write back (kaydet → kayded- before a vowel) (kaydet/kayded-: consonant softening)
 ];
 
 // M365 sometimes creates a real patch in its Teams-hosted remote artifact
@@ -405,11 +428,17 @@ const ANY_FENCE = /```[A-Za-z0-9_.-]+[ \t]*\r?\n[\s\S]*?```/;
  * is not a model predicting ITS OWN call's result.
  */
 export function truncateAtFabricatedToolResponse(text: string, tools?: ToolDef[]): string {
+  const i = fabricatedToolResponseAt(text, tools);
+  return i < 0 ? text : text.slice(0, i).trimEnd();
+}
+
+/** Where the stop sequence starts in `text` (see truncateAtFabricatedToolResponse), or -1. */
+export function fabricatedToolResponseAt(text: string, tools?: ToolDef[]): number {
   const i = text.search(SELF_WRITTEN_RESULT);
-  if (i < 0) return text;
+  if (i < 0) return -1;
   const head = text.slice(0, i);
   const acted = tools && tools.length > 0 ? parseToolCalls(head, tools).hasToolCalls : ANY_FENCE.test(head);
-  return acted ? head.trimEnd() : text;
+  return acted ? i : -1;
 }
 
 /**

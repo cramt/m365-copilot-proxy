@@ -1,7 +1,9 @@
 // RE probe: what gates Claude Sonnet 5's NATIVE server-side tools?
 //
-// Under `scenario=OfficeWebPaidCopilot` the `Claude_Sonnet` tone serves Claude
-// Sonnet 5, and it arrives with its own function-calling toolset (bash_tool,
+// Under `scenario=OfficeWebPaidCopilot` the `Claude_Sonnet_5` tone serves Claude
+// Sonnet 5 (it was `Claude_Sonnet` until 2026-10-06, which now serves Sonnet 5.5
+// there — same sandbox, docs §26; `TONE=Claude_Sonnet` probes that one), and it
+// arrives with its own function-calling toolset (bash_tool,
 // create_file, str_replace, view) that executes in a REMOTE sandbox — cwd
 // /home/claude, uploads /mnt/user-data/uploads, outputs /mnt/user-data/outputs.
 // Those calls surface on the wire as `messageType:"Progress"` frames with
@@ -16,8 +18,9 @@
 // and the model no longer names bash_tool/create_file as its tools.
 // Falsified if the native Code frames still appear with optionsSets = [].
 //
-// Usage: node scripts/sonnet5-native-tools-probe.mjs [cell,cell,...]
-// Cost: 1 message (1 fresh thread) per cell. Run sequentially.
+// Usage: [TONE=Claude_Sonnet_5] node scripts/sonnet5-native-tools-probe.mjs [cell,cell,...]
+// Cost: 1 message (1 fresh thread) per cell. Run sequentially. With
+// TONE=Claude_Sonnet the paid cells spend Sonnet 5.5's priority access.
 
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
@@ -82,6 +85,7 @@ const CELLS = {
 };
 
 const pick = (process.argv[2] || "pwd-proxy,pwd-none").split(",");
+const TONE = process.env.TONE || "Claude_Sonnet_5";
 const TS = new Date().toISOString().replace(/[:.]/g, "-");
 const OUT = join(process.cwd(), "scripts", "tone-out", `native-tools-${TS}`);
 mkdirSync(OUT, { recursive: true });
@@ -95,7 +99,7 @@ for (const name of pick) {
   if (!cell) { console.error(`unknown cell ${name}`); continue; }
   const frames = [];
   const r = await oneTurn({
-    token, claims, text: cell.text, tone: "Claude_Sonnet",
+    token, claims, text: cell.text, tone: TONE,
     optionsSets: cell.optionsSets,
     extraAllowed: cell.extraAllowed ?? ["GeneratedCode"],
     ...(cell.baseAllowed ? { baseAllowed: cell.baseAllowed } : {}),

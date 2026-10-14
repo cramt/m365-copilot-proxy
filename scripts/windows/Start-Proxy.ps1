@@ -1,4 +1,4 @@
-﻿<#
+<#
 .SYNOPSIS
   Start the m365-copilot-proxy in a visible, persistent PowerShell window.
 
@@ -37,9 +37,10 @@ $ErrorActionPreference = "Stop"
 $RepoRoot = Resolve-Path (Join-Path $PSScriptRoot "..\..")
 Set-Location $RepoRoot
 
-$ServerEntry = Join-Path $RepoRoot "packages\proxy\.output\server\index.mjs"
-if (-not (Test-Path $ServerEntry)) {
-    Write-Host "[start-proxy] FAIL: $ServerEntry not found. Run scripts\windows\Setup-Proxy.ps1 first." -ForegroundColor Red
+$BuiltServer = Join-Path $RepoRoot "packages\proxy\.output\server\index.mjs"
+$ServerEntry = Join-Path $RepoRoot "packages\proxy\bin\m365-proxy.mjs"
+if (-not (Test-Path $BuiltServer)) {
+    Write-Host "[start-proxy] FAIL: $BuiltServer not found. Run scripts\windows\Setup-Proxy.ps1 first." -ForegroundColor Red
     exit 1
 }
 
@@ -71,7 +72,7 @@ if ($interactive) {
     Write-Host "[start-proxy] M365_ENABLE_INTERACTIVE_APPROVAL=1  -  a visible browser window will open for sign-in if no cached/automated credentials work." -ForegroundColor Yellow
 }
 
-# Build the child command. Env vars are set INSIDE the child process only  - 
+# Build the child command. Env vars are set INSIDE the child process only  -
 # never written to this script, the log file, or disk anywhere.
 $childLines = @(
     "`$env:PORT = '$Port'",

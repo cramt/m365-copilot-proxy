@@ -11,12 +11,28 @@ const scripted: {
   /** Text of every run() call, in order. */
   texts: string[];
   /** Per-call overrides, consumed front-first (e.g. a Disengaged turn, then an answer). */
-  queue: Array<{ fullText: string; messageType?: string | null; result?: { value: string; errorCode?: string } }>;
+  queue: Array<{ fullText: string; messageType?: string | null; result?: { value: string; errorCode?: string; message?: string }; metering?: Record<string, number> }>;
+  /** The model argument of every run() call, in order. */
+  models: string[];
   /** The `useAgent` argument of every run() call, in order. */
   agentFlags: Array<boolean | undefined>;
+  /** The image data URLs of every run() call, in order. */
+  images: string[][];
   /** How many times the handler rotated to a fresh conversation. */
   newConversations: number;
-} = { deltas: [], runs: 0, texts: [], queue: [], agentFlags: [], newConversations: 0 };
+  /** Held open to keep a turn silent while a test advances the clock (heartbeat tests). */
+  gate: Promise<void> | null;
+  /** The abort signal of every run() call, in order. */
+  signals: Array<AbortSignal | undefined>;
+  /** Deltas yielded by the last run() before its signal aborted it (the Stop), or null if it ran out. */
+  stoppedAfter: number | null;
+  /** Make `fullText` grow with the deltas yielded so far, like the real stream's composed answer. */
+  liveFullText?: boolean;
+  /** What awaitTurnBudget (M365_AVOID_THROTTLING) throws before every turn, or null to let it through. */
+  paceHold: Error | null;
+  /** The options of every awaitTurnBudget call, in order. */
+  paceCalls: Array<{ maxWaitMs?: number; signal?: AbortSignal }>;
+} = { deltas: [], runs: 0, texts: [], queue: [], agentFlags: [], newConversations: 0, models: [], images: [], gate: null, signals: [], stoppedAfter: null, paceHold: null, paceCalls: [] };
 
 vi.mock("@m365-copilot/core", async (importActual) => {
   const actual = await importActual<typeof import("@m365-copilot/core")>();
@@ -26,7 +42,12 @@ vi.mock("@m365-copilot/core", async (importActual) => {
     reset() {}
     newConversation() { this.conversationId = "conv-test-2"; this.turnCount = 0; scripted.newConversations++; }
     async refreshAgent() { return false; }
-    async run(text: string, _model?: string, _signal?: AbortSignal, useAgent?: boolean) {
+    async run(text: string, model?: string, signal?: AbortSignal, useAgent?: boolean, images: string[] = []) {
+      if (scripted.gate) await scripted.gate;
+      scripted.models.push(model ?? "");
+      scripted.images.push(images);
+      scripted.signals.push(signal);
+      scripted.stoppedAfter = null;
       this.turnCount++; // like the real session: later requests go down the delta path
       scripted.runs++;
       scripted.texts.push(text);
@@ -34,10 +55,12 @@ vi.mock("@m365-copilot/core", async (importActual) => {
       const next = scripted.queue.shift();
       const deltas = next ? (next.fullText ? [next.fullText] : []) : scripted.deltas;
       const full = next ? next.fullText : (scripted.fullText ?? deltas.join(""));
+      const yielded: string[] = [];
       const stream = {
-        fullText: full,
+        get fullText() { return scripted.liveFullText ? yielded.join("") : full; },
         hasContent: full.length > 0,
         result: next?.result ?? scripted.result ?? { value: "Success" },
+        metering: next?.metering ?? null,
         images: [],
         throttle: { current: 1, max: 600 },
         contentOrigin: "Claude",
@@ -49,6 +72,9 @@ vi.mock("@m365-copilot/core", async (importActual) => {
         async *[Symbol.asyncIterator]() {
           for (const d of deltas) {
             await Promise.resolve(); // yield to the event loop between deltas
+            // Like the real session: an aborted signal sends Stop and the turn ends.
+            if (signal?.aborted) { scripted.stoppedAfter = yielded.length; return; }
+            yielded.push(d);
             yield d;
           }
         },
@@ -56,11 +82,35 @@ vi.mock("@m365-copilot/core", async (importActual) => {
       return stream;
     }
   }
-  return { ...actual, ModelSession: FakeModelSession };
+  // awaitTurnBudget reads the account's real logs; script its verdict instead.
+  async function awaitTurnBudget(opts: { maxWaitMs?: number; signal?: AbortSignal } = {}) {
+    scripted.paceCalls.push(opts);
+    if (scripted.paceHold) throw scripted.paceHold;
+    return { waitedMs: 0 };
+  }
+  return { ...actual, ModelSession: FakeModelSession, awaitTurnBudget };
 });
 
 const { handleChatCompletion, SessionPool, ChatCompletionRequest } = await import("./index.js");
-const { resetAgentRoutes } = await import("@m365-copilot/core");
+const { resetAgentRoutes, resetPriorityAccessState, TurnBudgetHold } = await import("@m365-copilot/core");
+
+// The proxy remembers a priority-access wall for the process (until the reset);
+// don't let one test's refusal 429 the next test's Opus request.
+afterEach(() => resetPriorityAccessState());
+
+/** One request on a fresh pool with a fake clock: an empty upstream turn makes
+ *  the handler wait 2 s before each quick retry, and that wait is the handler's
+ *  own pacing, not what these tests check. */
+async function respond(body: ReturnType<typeof ChatCompletionRequest.parse>): Promise<Response> {
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+  try {
+    const pending = handleChatCompletion(body, new SessionPool());
+    await vi.runAllTimersAsync();
+    return await pending;
+  } finally {
+    vi.useRealTimers();
+  }
+}
 
 /** Drive one streaming request and collect the ordered content-delta strings. */
 async function streamContents(deltas: string[], fullText?: string): Promise<string[]> {
@@ -103,6 +153,51 @@ describe("incremental streaming (non-tool path)", () => {
     expect(contents.join("")).toBe("Hello world");
     // No duplicated prefix.
     expect(contents.join("").match(/Hello/g)?.length).toBe(1);
+  });
+});
+
+describe("keepalive on a silent turn (tool turns are buffered, so the stream can be quiet for minutes)", () => {
+  it("sends a data chunk, not an SSE comment, so a client's last-chunk clock keeps ticking", async () => {
+    // A stream carrying only comments looks alive at the socket but dead to a client that
+    // measures liveness by data chunks: it warns "no stream output" and can trip its stale
+    // watchdog, reconnecting (and re-sending the turn) mid-flight.
+    scripted.deltas = ["listo"];
+    scripted.fullText = "listo";
+    let release!: () => void;
+    scripted.gate = new Promise<void>((r) => { release = r; });
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
+    try {
+      const body = ChatCompletionRequest.parse({
+        model: "m365-copilot",
+        stream: true,
+        messages: [{ role: "user", content: "hello" }],
+      });
+      const pending = handleChatCompletion(body, new SessionPool()).then((res) => res.text());
+      await vi.advanceTimersByTimeAsync(16_000); // the turn has said nothing yet
+      release();
+      const text = await pending;
+
+      // At least one heartbeat, and it is a no-op data chunk (empty delta, no finish
+      // marker). A client that resets its liveness clock on data chunks sees the turn
+      // as live; the comment this replaced (`: keepalive`) it does not see at all.
+      const beats = text
+        .split("\n")
+        .filter((l) => l.startsWith("data: ") && l !== "data: [DONE]")
+        .map((l) => JSON.parse(l.slice(6)))
+        .filter((c) => c.choices?.[0]?.finish_reason === null && Object.keys(c.choices[0].delta ?? {}).length === 0);
+      expect(beats.length).toBeGreaterThan(0);
+
+      // The heartbeat is a no-op: the turn's own text is still emitted exactly once.
+      const contents = text
+        .split("\n")
+        .filter((l) => l.startsWith("data: ") && l !== "data: [DONE]")
+        .map((l) => JSON.parse(l.slice(6)).choices?.[0]?.delta?.content)
+        .filter((c) => typeof c === "string" && c.length > 0);
+      expect(contents.join("")).toBe("listo");
+    } finally {
+      scripted.gate = null;
+      vi.useRealTimers();
+    }
   });
 });
 
@@ -208,6 +303,14 @@ describe("the only-the-first-call-ran note", () => {
     const sent = await converse(["```bash\nls\n```", "Done."]);
     expect(sent[1]).not.toContain("(Note:");
   });
+
+  it("names the tool on a follow-up turn, though the tool message carries no name (#50)", async () => {
+    // Like pi: the result names its call only by tool_call_id.
+    const sent = await converse(["```bash\nls\n```", "Done."]);
+    // The same rendering as the first turn (tool and command), so the model reads one format.
+    expect(sent[1]).toMatch(/<tool_response tool="bash" command="ls">\nreal output 0\n<\/tool_response>/);
+    expect(sent[1]).not.toContain('name="unknown"');
+  });
 });
 
 describe("a reply that opens with a tool call and then writes an essay", () => {
@@ -272,6 +375,66 @@ describe("an explicitly Throttled turn (result.value = Throttled)", () => {
   });
 });
 
+describe("M365_AVOID_THROTTLING holds a turn it would have to wait too long for", () => {
+  const hold = () => new TurnBudgetHold("throttle hold", 65 * 60_000, Date.parse("2026-10-12T08:00:00.000Z"));
+
+  it("answers 429 with Retry-After and never sends the turn", async () => {
+    scripted.result = null;
+    scripted.runs = 0;
+    scripted.paceHold = hold();
+    const body = ChatCompletionRequest.parse({ model: "claude-sonnet", stream: false, messages: [{ role: "user", content: "held" }] });
+    const res = await handleChatCompletion(body, new SessionPool());
+    scripted.paceHold = null;
+    expect(res.status).toBe(429);
+    expect(res.headers.get("Retry-After")).toBe(String(65 * 60));
+    const err = (await res.json()).error;
+    expect(err.type).toBe("rate_limit_error");
+    expect(err.code).toBe("m365_throttle_hold");
+    expect(err.message).toMatch(/throttled this account at 2026-10-12T08:00:00\.000Z/);
+    expect(scripted.runs).toBe(0);
+  });
+
+  it("carries the code and retry_after through the streaming path", async () => {
+    scripted.runs = 0;
+    scripted.paceHold = new TurnBudgetHold("refill", 20 * 60_000, null);
+    const { contents, errors } = await streamRaw([], "");
+    scripted.paceHold = null;
+    expect(contents).toHaveLength(0);
+    expect(errors).toHaveLength(1);
+    expect(errors[0].code).toBe("m365_turn_budget");
+    expect(errors[0].retry_after).toBe(20 * 60);
+    expect(scripted.runs).toBe(0);
+  });
+
+  it("lets a streamed request wait as long as configured, an unstreamed one 2 min, and passes the client's signal", async () => {
+    scripted.result = null;
+    scripted.queue = [];
+    scripted.paceCalls = [];
+    await streamContents(["hi"]);
+    const ac = new AbortController();
+    const body = ChatCompletionRequest.parse({ model: "m365-copilot", stream: false, messages: [{ role: "user", content: "hi" }] });
+    await handleChatCompletion(body, new SessionPool(), { signal: ac.signal });
+    expect(scripted.paceCalls.map((c) => c.maxWaitMs)).toEqual([undefined, 2 * 60_000]);
+    expect(scripted.paceCalls[1]!.signal).toBe(ac.signal);
+  });
+
+  it("makes the forcing retry wait for the budget too: every upstream turn goes through awaitTurnBudget", async () => {
+    scripted.paceCalls = [];
+    scripted.runs = 0;
+    scripted.queue = [
+      { fullText: "I can't access your files from here. Please paste the contents of calc.py." },
+      { fullText: "```bash\ncat calc.py\n```" },
+    ];
+    const tools = [{ type: "function", function: { name: "bash", parameters: { type: "object", properties: { command: { type: "string" } } } } }];
+    const body = ChatCompletionRequest.parse({ model: "claude-sonnet", stream: false, tools, messages: [{ role: "user", content: "fix calc.py" }] });
+    const res = await handleChatCompletion(body, new SessionPool());
+    expect(res.status).toBe(200);
+    expect(scripted.runs).toBe(2);
+    expect(scripted.paceCalls).toHaveLength(2);
+    scripted.queue = [];
+  });
+});
+
 describe("Disengage retry keeps a model's <system>-free framing", () => {
   const tools = [{ type: "function", function: { name: "bash", parameters: { type: "object", properties: { command: { type: "string" } } } } }];
   async function disengageThenAnswer(model: string): Promise<string> {
@@ -292,8 +455,19 @@ describe("Disengage retry keeps a model's <system>-free framing", () => {
   it("retries Sonnet 5 with relay again, never a <system>-tagged framing", async () => {
     const retry = await disengageThenAnswer("claude-sonnet-5");
     expect(retry).not.toContain("<system>");
-    expect(retry).toContain("guide me through this from my terminal");
+    expect(retry).toContain("guide me through this from my terminal, one command at a time");
+    expect(retry).not.toContain("put as much as you can into one block");
   });
+
+  it("sends Opus, Sonnet 4.6 and GPT-6 relay_batch on the first try and keeps it on the retry (§24, §25)", async () => {
+    for (const model of ["claude-opus-4.8", "claude-opus", "claude-sonnet", "gpt-6-think-deeper"]) {
+      const retry = await disengageThenAnswer(model);
+      expect(scripted.texts[0]).toContain("put as much as you can into one block");
+      expect(scripted.texts[0]).not.toContain("<system>");
+      expect(retry).toContain("put as much as you can into one block");
+    }
+  });
+
 
   it("still retries the <system>-tagged defaults with softened (F22)", async () => {
     const retry = await disengageThenAnswer("gpt-5.5-think-deeper");
@@ -333,13 +507,23 @@ describe("which requests carry the tool agent (#41)", () => {
     expect(await agentFlagFor("m365-copilot")).toBe(true);
   });
 
-  it("still sends Claude tool requests without it", async () => {
+  it("still sends Claude Sonnet tool requests without it", async () => {
     expect(await agentFlagFor("claude-sonnet")).toBe(false);
-    expect(await agentFlagFor("claude-opus-5[1m]")).toBe(false);
+    expect(await agentFlagFor("claude-sonnet-5")).toBe(false);
   });
 
-  it("never attaches it to a request without tools", async () => {
+  it("sends both Opus models' tool requests with it (§24, §36)", async () => {
+    expect(await agentFlagFor("claude-opus")).toBe(true);
+    expect(await agentFlagFor("claude-opus-5[1m]")).toBe(true);
+    expect(await agentFlagFor("claude-opus-4.8")).toBe(true);
+    expect(await agentFlagFor("claude-opus-4.5")).toBe(true);
+  });
+
+  it("never attaches it to a request without tools — Opus 4.8 included, which serves agent-less (§36)", async () => {
     expect(await agentFlagFor("gpt-5.5-think-deeper", false)).toBe(false);
+    expect(await agentFlagFor("claude-opus", false)).toBe(false);
+    expect(await agentFlagFor("claude-opus-4.8", false)).toBe(false);
+    expect(await agentFlagFor("claude-opus-4.5", false)).toBe(false);
   });
 
   it("lets M365_FORCE_AGENT=1 put it back", async () => {
@@ -367,7 +551,7 @@ describe("GPT-6 Sol: agent on premium, learned fallback on non-premium (#23)", (
       model, stream: false, tools,
       messages: [{ role: "system", content: "sys" }, { role: "user", content: `list files ${Math.random()}` }],
     });
-    return handleChatCompletion(body, new SessionPool());
+    return respond(body);
   }
 
   afterEach(() => {
@@ -411,10 +595,13 @@ describe("GPT-6 Sol: agent on premium, learned fallback on non-premium (#23)", (
     scripted.queue = [DEAD, CALL];
     const res = await send();
     expect(res.status).toBe(200);
-    // No fresh conversation, no agent-less switch: the ordinary empty-reply retry.
-    expect(scripted.newConversations).toBe(0);
+    // No agent-less switch: the ordinary InternalError retry, which re-sends the
+    // whole request in a fresh conversation — the dropped turn processed nothing,
+    // so "Please continue." would lose the request.
+    expect(scripted.newConversations).toBe(1);
     expect(scripted.agentFlags).toEqual([true, true]);
-    expect(scripted.texts[1]).toBe("Please continue.");
+    expect(scripted.texts[1]).not.toBe("Please continue.");
+    expect(scripted.texts[1]).toBe(scripted.texts[0].replace("conv-test<", "conv-test-2<"));
     scripted.queue = [CALL];
     await send();
     expect(scripted.agentFlags).toEqual([true]);
@@ -424,7 +611,8 @@ describe("GPT-6 Sol: agent on premium, learned fallback on non-premium (#23)", (
     scripted.queue = [DEAD, CALL];
     const res = await send("gpt-5.5-think-deeper");
     expect(res.status).toBe(200);
-    expect(scripted.newConversations).toBe(0);
+    // The fresh-conversation InternalError retry, still with the agent.
+    expect(scripted.newConversations).toBe(1);
     expect(scripted.agentFlags[1]).toBe(true);
   });
 
@@ -432,7 +620,492 @@ describe("GPT-6 Sol: agent on premium, learned fallback on non-premium (#23)", (
     process.env.M365_FORCE_AGENT = "1";
     scripted.queue = [DEAD, CALL];
     await send();
-    expect(scripted.newConversations).toBe(0);
+    // The fresh-conversation InternalError retry, still with the agent.
+    expect(scripted.newConversations).toBe(1);
     expect(scripted.agentFlags).toEqual([true, true]);
+  });
+});
+
+describe("follow-up turns and give-ups (Windows / pi, measured)", () => {
+  const tools = [{ type: "function", function: { name: "bash", parameters: { type: "object", properties: { command: { type: "string" } } } } }];
+
+  async function ask(messages: any[], pool: InstanceType<typeof SessionPool>) {
+    const res = await handleChatCompletion(ChatCompletionRequest.parse({ model: "gpt-5.6-think-deeper", stream: false, tools, messages }), pool);
+    return (await res.json()).choices[0].message;
+  }
+
+  // A pi session is delta turns from turn 2 on. The delta path labelled every
+  // tool result name="unknown" with no command — the misread formatMessages was
+  // fixed for, and the turn on which live runs said "bash is not enabled".
+  it("names a follow-up tool result after the call that produced it", async () => {
+    scripted.result = null;
+    scripted.texts = [];
+    scripted.queue = [{ fullText: "```bash\nls -la\n```" }, { fullText: "Done." }];
+    const pool = new SessionPool();
+    const messages: any[] = [{ role: "user", content: `look ${Math.random()}` }];
+    const m1 = await ask(messages, pool);
+    messages.push({ role: "assistant", content: null, tool_calls: m1.tool_calls });
+    messages.push({ role: "tool", tool_call_id: m1.tool_calls[0].id, content: "README.md" });
+    await ask(messages, pool);
+    expect(scripted.texts[1]).toContain('<tool_response tool="bash" command="ls -la">');
+    expect(scripted.texts[1]).not.toContain('name="unknown"');
+    scripted.queue = [];
+  });
+
+  // Live: a refusal that came with "run these yourself" fences was parsed as two
+  // tool calls (confab check skipped), then returned to the user as a document.
+  it("forces a retry when a give-up comes dressed as a document", async () => {
+    scripted.result = null;
+    scripted.texts = [];
+    scripted.queue = [
+      // Verbatim from the live run (pdf task, Windows / pi / gpt-5.6-think-deeper).
+      { fullText: "Dosya oluşturma özelliği bu oturumda devre dışı olduğu için `notlar.pdf` dosyasını doğrudan oluşturamıyorum.\n\nYerel bilgisayarınızda Türkçe karakter desteğiyle dönüştürmek için şu komutu çalıştırabilirsiniz:\n\n```bash\nwinget install --id JohnMacFarlane.Pandoc\npandoc notlar.md -o notlar.pdf --pdf-engine=weasyprint\n```\n\n`weasyprint` eksikse:\n\n```bash\npy -m pip install weasyprint\npandoc notlar.md -o notlar.pdf --pdf-engine=weasyprint\n```\n\nHer iki komutu da `notlar.md` dosyasının bulunduğu klasörde çalıştırın. Dosyanın UTF-8 olarak kaydedilmiş olması `ç, ğ, ı, İ, ö, ş, ü` karakterlerinin doğru görünmesini sağlar." },
+      { fullText: "```bash\nls -la\n```" },
+    ];
+    const m = await ask([{ role: "user", content: `pdf ${Math.random()}` }], new SessionPool());
+    expect(scripted.texts).toHaveLength(2); // the forcing retry ran
+    expect(m.tool_calls?.[0] && JSON.parse(m.tool_calls[0].function.arguments).command).toBe("ls -la");
+    scripted.queue = [];
+  });
+
+  // Live: after a real tool result showed no PDF tool installed, the model said
+  // "bash is not enabled"; the forcing prompt then claimed "you have not run any
+  // command yet", and the model refused that too.
+  it("doesn't tell a model that already ran tools that it ran nothing", async () => {
+    scripted.result = null;
+    scripted.texts = [];
+    scripted.queue = [
+      { fullText: "```bash\ncommand -v pandoc || echo none\n```" },
+      { fullText: "Dosya oluşturma araçları şu anda etkin olmadığı için notlar.pdf dosyasını oluşturamıyorum." },
+      { fullText: "```bash\npy -m pip install fpdf2\n```" },
+    ];
+    const pool = new SessionPool();
+    const messages: any[] = [{ role: "user", content: `pdf ${Math.random()}` }];
+    const m1 = await ask(messages, pool);
+    messages.push({ role: "assistant", content: null, tool_calls: m1.tool_calls });
+    messages.push({ role: "tool", tool_call_id: m1.tool_calls[0].id, content: "none" });
+    const m2 = await ask(messages, pool);
+    expect(scripted.texts).toHaveLength(3);
+    expect(scripted.texts[2]).toContain("Your tools are working");
+    expect(scripted.texts[2]).not.toContain("you have not run any command yet");
+    expect(JSON.parse(m2.tool_calls[0].function.arguments).command).toBe("py -m pip install fpdf2");
+    scripted.queue = [];
+  });
+
+  it("leaves a real document alone even if its body sounds like a give-up", async () => {
+    scripted.result = null;
+    scripted.texts = [];
+    const doc = "Here is the README you asked for:\n\n# Setup\n\nIf you can't access the API, check the token.\n\n```bash\nnpm install\n```\n\n```bash\nnpm test\n```";
+    scripted.queue = [{ fullText: doc }];
+    const m = await ask([{ role: "user", content: `readme ${Math.random()}` }], new SessionPool());
+    expect(scripted.texts).toHaveLength(1); // no forcing retry
+    expect(m.tool_calls).toBeUndefined();
+    expect(m.content).toContain("If you can't access the API");
+    scripted.queue = [];
+  });
+});
+
+describe("a new harness session that shares the first user message", () => {
+  const tools = [{ type: "function", function: { name: "bash", parameters: { type: "object", properties: { command: { type: "string" } } } } }];
+  const ask = async (messages: any[], pool: InstanceType<typeof SessionPool>) =>
+    (await (await handleChatCompletion(ChatCompletionRequest.parse({ model: "gpt-5.6-think-deeper", stream: false, tools, messages }), pool)).json()).choices[0].message;
+
+  // Measured: pi sessions opened with the same prompt (even in different
+  // directories) were joined to the first session's M365 conversation and
+  // answered from it — "notlar.docx was already created" in an empty directory.
+  it("gets a fresh M365 conversation after a longer earlier session", async () => {
+    scripted.result = null;
+    scripted.texts = [];
+    scripted.newConversations = 0;
+    scripted.queue = [{ fullText: "```bash\nls\n```" }, { fullText: "Done." }, { fullText: "```bash\nls\n```" }];
+    const pool = new SessionPool();
+    const prompt = `make a pdf ${Math.random()}`;
+    const first: any[] = [{ role: "user", content: prompt }];
+    const m1 = await ask(first, pool);
+    first.push({ role: "assistant", content: null, tool_calls: m1.tool_calls });
+    first.push({ role: "tool", tool_call_id: m1.tool_calls[0].id, content: "notlar.md" });
+    await ask(first, pool);
+    await ask([{ role: "user", content: prompt }], pool); // a new session, same opener
+    expect(scripted.newConversations).toBe(1);
+    expect(scripted.texts[2]).toContain(prompt); // the full prompt, not a delta
+    scripted.queue = [];
+  });
+
+  it("gets one after a single-turn session too (equal length used to send 'Please continue.')", async () => {
+    scripted.result = null;
+    scripted.texts = [];
+    scripted.newConversations = 0;
+    scripted.queue = [{ fullText: "I can't do that." }, { fullText: "```bash\nls\n```" }];
+    const pool = new SessionPool();
+    const prompt = `make a docx ${Math.random()}`;
+    await ask([{ role: "user", content: prompt }], pool);
+    await ask([{ role: "user", content: prompt }], pool);
+    expect(scripted.newConversations).toBe(1);
+    expect(scripted.texts[scripted.texts.length - 1]).not.toBe("Please continue.");
+    expect(scripted.texts[scripted.texts.length - 1]).toContain(prompt);
+    scripted.queue = [];
+  });
+
+  it("still continues a real continuation in the same conversation", async () => {
+    scripted.result = null;
+    scripted.texts = [];
+    scripted.newConversations = 0;
+    scripted.queue = [{ fullText: "```bash\nls\n```" }, { fullText: "Done." }];
+    const pool = new SessionPool();
+    const msgs: any[] = [{ role: "user", content: `go ${Math.random()}` }];
+    const m1 = await ask(msgs, pool);
+    msgs.push({ role: "assistant", content: null, tool_calls: m1.tool_calls });
+    msgs.push({ role: "tool", tool_call_id: m1.tool_calls[0].id, content: "a.txt" });
+    await ask(msgs, pool);
+    expect(scripted.newConversations).toBe(0);
+    expect(scripted.texts[1]).toContain('<tool_response tool="bash"'); // a delta
+    scripted.queue = [];
+  });
+});
+
+describe("Opus 4.8 on an account that can't serve it (§24, §36)", () => {
+  const DEAD = { fullText: "", result: { value: "InternalError" } };
+  const tools = [{ type: "function", function: { name: "bash", parameters: { type: "object", properties: { command: { type: "string" } } } } }];
+
+  afterEach(() => {
+    resetAgentRoutes();
+    scripted.queue = [];
+  });
+
+  async function deadRoute(withTools: boolean) {
+    scripted.result = null;
+    scripted.agentFlags = [];
+    scripted.newConversations = 0;
+    scripted.queue = [DEAD, DEAD, DEAD];
+    const body = ChatCompletionRequest.parse({
+      model: "claude-opus-4.8", stream: false, ...(withTools ? { tools } : {}),
+      messages: [{ role: "user", content: `hello ${Math.random()}` }],
+    });
+    const res = await respond(body);
+    expect(res.status).toBe(502);
+    const err = (await res.json()).error;
+    expect(err.code).toBe("model_route_unavailable");
+    expect(err.message).toContain("premium");
+    expect(scripted.newConversations).toBe(0);
+  }
+
+  it("says the model is premium-only instead of 'empty response' on a tool-less (agent-less) request", async () => {
+    await deadRoute(false);
+    expect(scripted.agentFlags).toEqual([false, false, false]);
+  });
+
+  it("…and on a tool request, which keeps the agent: agent-less is dead too, so there's no fallback", async () => {
+    await deadRoute(true);
+    expect(scripted.agentFlags).toEqual([true, true, true]);
+  });
+
+  it("keeps the generic message for other models' empty InternalErrors", async () => {
+    scripted.result = null;
+    scripted.queue = [DEAD, DEAD, DEAD];
+    const body = ChatCompletionRequest.parse({
+      model: "claude-opus", stream: false,
+      messages: [{ role: "user", content: `hello ${Math.random()}` }],
+    });
+    const res = await respond(body);
+    expect(res.status).toBe(502);
+    expect((await res.json()).error.type).toBe("upstream_empty_response");
+  });
+});
+
+describe("Priority access (Opus 5.5, Sonnet 5.5): OutOfCredits, remembering it, metering, the opt-in fallback (#18)", () => {
+  const tools = [{ type: "function", function: { name: "bash", parameters: { type: "object", properties: { command: { type: "string" } } } } }];
+  const WEEKLY = "You\u2019ve used your available priority access to the Opus model for the week. You can choose another available model or wait until Monday to use the Opus model again.";
+  const REFUSAL = { fullText: WEEKLY, result: { value: "OutOfCredits", message: WEEKLY } };
+  const CALL = { fullText: "```bash\nls\n```", metering: { ClaudeOpusQueryDaily: 12, ClaudeOpusQuery75: 30 } };
+
+  async function send(model = "claude-opus", content = `list files ${Math.random()}`, stream = false) {
+    scripted.result = null;
+    scripted.texts = [];
+    scripted.models = [];
+    scripted.agentFlags = [];
+    scripted.newConversations = 0;
+    const body = ChatCompletionRequest.parse({
+      model, stream, tools,
+      messages: [{ role: "system", content: "sys" }, { role: "user", content }],
+    });
+    return handleChatCompletion(body, pool);
+  }
+  let pool = new SessionPool();
+
+  afterEach(() => {
+    resetPriorityAccessState();
+    scripted.queue = [];
+    delete process.env.M365_OPUS_FALLBACK_MODEL;
+    delete process.env.M365_SONNET_FALLBACK_MODEL;
+    pool = new SessionPool();
+  });
+
+  it("surfaces the Opus allowances left in usage", async () => {
+    scripted.queue = [CALL];
+    const res = await send();
+    const usage = (await res.json()).usage;
+    expect(usage.x_m365_opus_daily_remaining).toBe(12);
+    expect(usage.x_m365_opus_weekly_remaining).toBe(30);
+  });
+
+  it("429s an OutOfCredits turn with the weekly reset", async () => {
+    scripted.queue = [REFUSAL];
+    const res = await send();
+    expect(res.status).toBe(429);
+    const err = (await res.json()).error;
+    expect(err.code).toBe("priority_access_exhausted");
+    expect(err.param).toBe("week");
+    expect(Number(res.headers.get("Retry-After"))).toBeGreaterThan(0);
+  });
+
+  it("then answers later metered Opus requests itself, without an M365 turn", async () => {
+    scripted.queue = [REFUSAL];
+    await send();
+    const res = await send("claude-opus", "another task");
+    expect(res.status).toBe(429);
+    expect(scripted.models).toEqual([]); // nothing sent upstream
+    // Opus 4.8 isn't metered, so it is unaffected.
+    scripted.queue = [CALL];
+    expect((await send("claude-opus-4.8", "third task")).status).toBe(200);
+    expect(scripted.models).toEqual(["claude-opus-4.8"]);
+  });
+
+  it("with M365_OPUS_FALLBACK_MODEL, re-sends the whole request to it in a fresh conversation", async () => {
+    process.env.M365_OPUS_FALLBACK_MODEL = "claude-opus-4.8";
+    scripted.queue = [REFUSAL, { fullText: "```bash\nls\n```" }];
+    const res = await send();
+    expect(res.status).toBe(200);
+    const json = await res.json();
+    expect(json.choices[0].message.tool_calls).toHaveLength(1);
+    expect(json.model).toBe("claude-opus-4.8"); // says who answered
+    expect(scripted.models).toEqual(["claude-opus", "claude-opus-4.8"]);
+    expect(scripted.newConversations).toBe(1);
+    expect(scripted.agentFlags).toEqual([true, true]);
+    expect(scripted.texts[1]).toContain("list files"); // the whole request, not a delta
+  });
+
+  it("…and routes the next requests straight to the fallback until the reset", async () => {
+    process.env.M365_OPUS_FALLBACK_MODEL = "claude-opus-4.8";
+    scripted.queue = [REFUSAL, { fullText: "```bash\nls\n```" }];
+    await send();
+    scripted.queue = [{ fullText: "```bash\npwd\n```" }];
+    const res = await send("claude-opus", "another task");
+    expect(res.status).toBe(200);
+    expect(scripted.models).toEqual(["claude-opus-4.8"]);
+  });
+
+  it("starts a fresh conversation when an ongoing Opus 5.5 conversation moves to the fallback", async () => {
+    scripted.queue = [CALL];
+    await send("claude-opus", "long task");          // turn 1 served by Opus 5.5
+    process.env.M365_OPUS_FALLBACK_MODEL = "claude-opus-4.8";
+    scripted.queue = [REFUSAL, { fullText: "Done." }];
+    // the client continues the same conversation with a tool result
+    scripted.texts = []; scripted.models = []; scripted.newConversations = 0;
+    const body = ChatCompletionRequest.parse({
+      model: "claude-opus", stream: false, tools,
+      messages: [
+        { role: "system", content: "sys" }, { role: "user", content: "long task" },
+        { role: "assistant", content: null, tool_calls: [{ id: "c1", type: "function", function: { name: "bash", arguments: "{\"command\":\"ls\"}" } }] },
+        { role: "tool", tool_call_id: "c1", content: "a.txt" },
+      ],
+    });
+    const res = await handleChatCompletion(body, pool);
+    expect(res.status).toBe(200);
+    expect(scripted.models).toEqual(["claude-opus", "claude-opus-4.8"]);
+    expect(scripted.texts[1]).toContain("long task");   // full history for the new model
+    expect(scripted.texts[1]).toContain("a.txt");
+  });
+
+  it("never falls back for an unmetered model's refusal text", async () => {
+    process.env.M365_OPUS_FALLBACK_MODEL = "claude-opus-4.8";
+    scripted.queue = [{ fullText: WEEKLY }];
+    const res = await send("gpt-5.5-think-deeper");
+    expect(res.status).toBe(429);
+    expect(scripted.models).toEqual(["gpt-5.5-think-deeper"]);
+  });
+
+  it("falls back on the streaming path too, without leaking the refusal", async () => {
+    process.env.M365_OPUS_FALLBACK_MODEL = "claude-opus-4.8";
+    scripted.queue = [REFUSAL, { fullText: "Hello from 4.8" }];
+    scripted.result = null; scripted.models = [];
+    const body = ChatCompletionRequest.parse({ model: "claude-opus", stream: true, messages: [{ role: "user", content: `hi ${Math.random()}` }] });
+    const res = await handleChatCompletion(body, pool);
+    const text = await res.text();
+    expect(text).toContain("Hello from 4.8");
+    expect(text).not.toContain("priority access");
+    expect(scripted.models).toEqual(["claude-opus", "claude-opus-4.8"]);
+  });
+
+  // Sonnet 5.5 has a budget of its own (§26): ClaudeSonnet55QueryDaily/Weekly.
+  const SONNET_DAILY = "You\u2019ve used your available priority access to the Sonnet model for today. You can choose another available model or wait until tomorrow to use the Sonnet model again.";
+  const SONNET_REFUSAL = { fullText: SONNET_DAILY, result: { value: "OutOfCredits", message: SONNET_DAILY } };
+
+  it("surfaces Sonnet 5.5's allowances in usage, next to Opus's", async () => {
+    scripted.queue = [{ fullText: "```bash\nls\n```", metering: { ClaudeOpusQueryDaily: 12, ClaudeOpusQuery75: 30, ClaudeSonnet55QueryDaily: 79, ClaudeSonnet55QueryWeekly: 149 } }];
+    const usage = (await (await send("claude-sonnet-5.5")).json()).usage;
+    expect(usage.x_m365_sonnet55_daily_remaining).toBe(79);
+    expect(usage.x_m365_sonnet55_weekly_remaining).toBe(149);
+    expect(usage.x_m365_opus_daily_remaining).toBe(12);
+  });
+
+  it("keeps the Sonnet 5.5 and Opus walls apart", async () => {
+    scripted.queue = [SONNET_REFUSAL];
+    const res = await send("claude-sonnet-5.5");
+    expect(res.status).toBe(429);
+    expect((await res.json()).error.param).toBe("day");
+    // Sonnet 5.5 is answered locally until the reset…
+    expect((await send("claude-sonnet-5.5", "another task")).status).toBe(429);
+    expect(scripted.models).toEqual([]);
+    // …while Opus 5.5, Sonnet 5 and Sonnet 4.6 still go upstream.
+    for (const model of ["claude-opus", "claude-sonnet-5", "claude-sonnet"]) {
+      scripted.queue = [CALL];
+      expect((await send(model, `task for ${model}`)).status).toBe(200);
+      expect(scripted.models).toEqual([model]);
+    }
+  });
+
+  it("with M365_SONNET_FALLBACK_MODEL, re-sends a Sonnet 5.5 request to it", async () => {
+    process.env.M365_SONNET_FALLBACK_MODEL = "claude-sonnet-5";
+    process.env.M365_OPUS_FALLBACK_MODEL = "claude-opus-4.8"; // the other budget's, unused here
+    scripted.queue = [SONNET_REFUSAL, { fullText: "```bash\nls\n```" }];
+    const res = await send("claude-sonnet-5.5");
+    expect(res.status).toBe(200);
+    expect((await res.json()).model).toBe("claude-sonnet-5");
+    expect(scripted.models).toEqual(["claude-sonnet-5.5", "claude-sonnet-5"]);
+    expect(scripted.agentFlags).toEqual([false, false]);
+  });
+
+  it("remembers an unexpected OutOfCredits under that model alone", async () => {
+    scripted.queue = [{ fullText: "Out of credits.", result: { value: "OutOfCredits", message: "Out of credits." } }];
+    expect((await send("gpt-6-sol")).status).toBe(429);
+    expect((await send("gpt-6-sol", "again")).status).toBe(429);
+    expect(scripted.models).toEqual([]);
+    scripted.queue = [CALL];
+    expect((await send("claude-opus", "opus task")).status).toBe(200);
+  });
+});
+
+describe("image input (#39)", () => {
+  const PNG = "data:image/png;base64,iVBORw0KGgo=";
+  const tools = [{ type: "function", function: { name: "read", parameters: { type: "object", properties: { path: { type: "string" } } } } }];
+
+  it("sends a read image with the turn that carries its tool result, and only that turn", async () => {
+    scripted.result = null;
+    scripted.texts = [];
+    scripted.images = [];
+    scripted.queue = [{ fullText: "```read\npath: chart.png\n```" }, { fullText: "The title is Lot 7." }];
+    const pool = new SessionPool();
+    const messages: any[] = [{ role: "user", content: `what does chart.png say? ${Math.random()}` }];
+    const ask = async () => (await (await handleChatCompletion(ChatCompletionRequest.parse({ model: "gpt-5.6-think-deeper", stream: false, tools, messages }), pool)).json()).choices[0].message;
+    const call = (await ask()).tool_calls[0];
+    // pi's shape for a model with image input: the tool result, then the image in a user message.
+    messages.push({ role: "assistant", content: null, tool_calls: [call] });
+    messages.push({ role: "tool", tool_call_id: call.id, content: "Read image file [image/png]" });
+    messages.push({ role: "user", content: [{ type: "text", text: "Attached image(s) from tool result:" }, { type: "image_url", image_url: { url: PNG } }] });
+    expect((await ask()).content).toBe("The title is Lot 7.");
+    expect(scripted.images).toEqual([[], [PNG]]);
+    expect(scripted.texts[1]).toContain("Attached image(s) from tool result:");
+    scripted.queue = [];
+  });
+
+  it("sends the images of the whole history with a full prompt", async () => {
+    scripted.result = null;
+    scripted.images = [];
+    scripted.queue = [{ fullText: "A red square." }];
+    const body = ChatCompletionRequest.parse({
+      model: "gpt-5.6-think-deeper", stream: false,
+      messages: [{ role: "user", content: [{ type: "text", text: `what is this? ${Math.random()}` }, { type: "image_url", image_url: { url: PNG, detail: "auto" } }] }],
+    });
+    await handleChatCompletion(body, new SessionPool());
+    expect(scripted.images).toEqual([[PNG]]);
+    scripted.queue = [];
+  });
+});
+
+describe("stopping a turn that writes its own <tool_response> (early stop)", () => {
+  const tools = [{ type: "function", function: { name: "bash", parameters: { type: "object", properties: { command: { type: "string" } } } } }];
+  // A call, then the model's own result and the rest of an invented session:
+  // a short tail (~500 chars, the usual kind) and a runaway (~3,700).
+  const head = ["```bash\nls\n```\n\n", "<tool_res", "ponse>\nconfig.json\n</tool_response>\n\n"];
+  const steps = (n: number) => Array.from({ length: n }, (_, i) => `invented step ${i}\n`);
+  const short = [...head, ...steps(30)];
+  const runaway = [...head, ...steps(200)];
+  const tagAt = head[0].length;
+
+  /** How many deltas have streamed once the tail is `after` chars past the tag. */
+  function deltasUntil(deltas: string[], after: number): number {
+    let n = 0, len = 0;
+    while (len - tagAt < after) len += deltas[n++].length;
+    return n;
+  }
+
+  async function toolTurn(deltas: string[], withTools = true, env: Record<string, string> = {}): Promise<any> {
+    scripted.result = null;
+    scripted.queue = [];
+    scripted.deltas = deltas;
+    scripted.fullText = undefined;
+    scripted.liveFullText = true;
+    Object.assign(process.env, env);
+    try {
+      const res = await respond(ChatCompletionRequest.parse({
+        model: "claude-sonnet", stream: false, messages: [{ role: "user", content: `stop ${Math.random()}` }],
+        ...(withTools ? { tools } : {}),
+      }));
+      return (await res.json()).choices[0].message;
+    } finally {
+      for (const k of Object.keys(env)) delete process.env[k];
+      scripted.liveFullText = false;
+      scripted.deltas = [];
+    }
+  }
+
+  it("lets a short invented tail run to its end, then cuts it and runs the call", async () => {
+    const msg = await toolTurn(short);
+    expect(scripted.signals.at(-1)?.aborted).toBe(false);
+    expect(scripted.stoppedAfter).toBeNull();
+    expect(msg.tool_calls).toHaveLength(1);
+    expect(JSON.parse(msg.tool_calls[0].function.arguments).command).toBe("ls");
+    expect(msg.content ?? "").not.toContain("invented step");
+  });
+
+  it("stops a runaway once its tail is 2,000 chars past the tag, and runs the call", async () => {
+    const msg = await toolTurn(runaway);
+    const n = deltasUntil(runaway, 2000);
+    expect(n).toBeLessThan(runaway.length);
+    expect(scripted.signals.at(-1)?.aborted).toBe(true);
+    expect(scripted.stoppedAfter).toBe(n);
+    expect(JSON.parse(msg.tool_calls[0].function.arguments).command).toBe("ls");
+  });
+
+  it("stops at the tag itself under M365_EARLY_STOP_AFTER=0, even split across deltas", async () => {
+    const msg = await toolTurn(short, true, { M365_EARLY_STOP_AFTER: "0" });
+    expect(scripted.signals.at(-1)?.aborted).toBe(true);
+    expect(scripted.stoppedAfter).toBe(3); // the tag completes in the third delta
+    expect(JSON.parse(msg.tool_calls[0].function.arguments).command).toBe("ls");
+  });
+
+  it("honours another M365_EARLY_STOP_AFTER", async () => {
+    await toolTurn(short, true, { M365_EARLY_STOP_AFTER: "100" });
+    expect(scripted.stoppedAfter).toBe(deltasUntil(short, 100));
+  });
+
+  it("doesn't stop for a tag that follows prose rather than a call", async () => {
+    const msg = await toolTurn(["I can't run tools here. A result would look like ", "<tool_response>…</tool_response>", " and so on."], true, { M365_EARLY_STOP_AFTER: "0" });
+    expect(scripted.signals.at(-1)?.aborted ?? false).toBe(false);
+    expect(scripted.stoppedAfter).toBeNull();
+    expect(msg.tool_calls ?? []).toHaveLength(0);
+  });
+
+  it("leaves a request without tools alone", async () => {
+    await toolTurn(runaway, false);
+    expect(scripted.signals.at(-1)).toBeUndefined();
+    expect(scripted.stoppedAfter).toBeNull();
+  });
+
+  it("waits for the turn to end under M365_NO_EARLY_STOP=1, and still cuts the invented tail", async () => {
+    const msg = await toolTurn(runaway, true, { M365_NO_EARLY_STOP: "1" });
+    expect(scripted.signals.at(-1)?.aborted ?? false).toBe(false);
+    expect(scripted.stoppedAfter).toBeNull();
+    expect(JSON.parse(msg.tool_calls[0].function.arguments).command).toBe("ls");
   });
 });

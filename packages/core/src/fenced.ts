@@ -1,6 +1,6 @@
 import { readFileSync } from "node:fs";
 import { createLogger } from "./log.js";
-import { getToneForModel, isSonnet5Model } from "./copilot.js";
+import { getToneForModel, isSonnet55Model } from "./copilot.js";
 import type { ParsedToolCall, ToolDef } from "./tools.js";
 
 const log = createLogger("fenced");
@@ -74,6 +74,85 @@ const SHELL_LANGS = new Set([
 // A tool counts as "the shell" if its name looks like a run-a-command tool. pi
 // uses `bash`, opencode `bash`, hermes `shell`/`run`, openclaw `run_command` — all caught.
 const SHELL_TOOL_NAME = /^(bash|sh|shell|zsh|run|exec|execute|command|cmd|terminal|run_command|run_terminal_cmd|execute_command|execute_bash|shell_exec|system)$/i;
+
+const WRITE_PATH_PARAM = /^(path|file_path|filepath|filename|file)$/i;
+const WRITE_CONTENT_PARAM = /^(content|contents|text|body)$/i;
+
+/** The harness tool (if any) that writes a whole file from a path + content —
+ *  pi's `write`, others' `write_file`. An edit tool (old/new pair) doesn't count. */
+export function findWriteTool(tools: ToolDef[]): ToolDef | undefined {
+  return tools.find((t) => {
+    const props = Object.keys(t.function.parameters?.properties ?? {});
+    return props.some((p) => WRITE_PATH_PARAM.test(p)) &&
+      props.some((p) => WRITE_CONTENT_PARAM.test(p)) &&
+      !props.some((p) => SEARCH_KEYS.includes(p));
+  });
+}
+
+/** Longest shell command the Windows command line carries intact. pi's shell
+ *  tool cuts a longer one SILENTLY: a 12,070-char command arrived as its first
+ *  ~8,186 chars, a 7,000-char one whole (measured model-free with a scripted
+ *  tool call). Margin left below the measured edge. */
+export const WINDOWS_COMMAND_CAP = 8000;
+
+// `cat > PATH <<'DELIM'` … a line that is exactly DELIM. It may start a line or
+// follow `… && ` on one (`mkdir -p d && cat > d/f <<'EOF'`); the model also
+// bundles it after exploration commands — measured: a 13,185-char call that
+// ran `printf`/`find` first and wrote ozet.md last. Quoted delimiter only: bash
+// does no expansion in that body, so the file it writes is byte-for-byte the
+// body plus its final newline. A path bash would expand ($, `, ~) is left alone.
+const HEREDOC_WRITE = /(?:^|\n)([^\n]*?&&[ \t]*)?[ \t]*cat[ \t]*>[ \t]*(?:"([^"$`\\\n]+)"|'([^'\n]+)'|([^\s'"$`~;|&<>]+))[ \t]*<<[ \t]*(['"])([A-Za-z_][A-Za-z0-9_]*)\5[ \t]*\n([\s\S]*?)\n\6(?=\n|$)/;
+
+/** A shell call that is too long for the Windows command line AND is a single
+ *  quoted heredoc writing a file, re-expressed as the harness's write tool —
+ *  or null to leave the call as it is.
+ *
+ *  The framing teaches `cat > f <<'EOF'` for file writes, so on Windows every
+ *  file past ~8k chars (a project summary, a README) landed truncated, and the
+ *  model can't see why — bash only says "here-document delimited by
+ *  end-of-file". Telling it to use the write tool instead was measured not to
+ *  hold: it still wrote one big heredoc. The proxy holds the WHOLE command, so
+ *  it can run the same write losslessly. Only one call runs per turn, so the
+ *  rest of the command doesn't run; it's returned as `skipped` for the caller to
+ *  tell the model. That costs a re-run of cheap commands (ls, find, wc) to keep
+ *  the expensive part — the file the model just generated. */
+export function longHeredocAsWrite(
+  call: ParsedToolCall,
+  tools: ToolDef[] | undefined,
+  platform: NodeJS.Platform = process.platform,
+): { call: ParsedToolCall; path: string; skipped: string } | null {
+  if (platform !== "win32" || !tools?.length) return null;
+  const shell = findShellTool(tools);
+  const write = findWriteTool(tools);
+  if (!shell || !write || call.function.name !== shell.function.name) return null;
+  const bodyParam = deriveFencedSpec(shell).bodyParam;
+  let args: Record<string, unknown>;
+  try {
+    args = JSON.parse(call.function.arguments);
+  } catch {
+    return null;
+  }
+  const command = bodyParam ? args[bodyParam] : undefined;
+  if (typeof command !== "string" || command.length <= WINDOWS_COMMAND_CAP) return null;
+  const m = HEREDOC_WRITE.exec(command);
+  if (!m) return null;
+  const path = m[2] ?? m[3] ?? m[4];
+  const props = Object.keys(write.function.parameters?.properties ?? {});
+  const pathKey = props.find((p) => WRITE_PATH_PARAM.test(p))!;
+  const contentKey = props.find((p) => WRITE_CONTENT_PARAM.test(p))!;
+  // Everything that isn't the heredoc: commands before it (including a `… &&`
+  // on its own line) and after its delimiter.
+  const before = `${command.slice(0, m.index)}\n${(m[1] ?? "").replace(/&&[ \t]*$/, "")}`.trim();
+  const after = command.slice(m.index + m[0].length).trim();
+  // A `cd` before the heredoc moves where a relative PATH lands; the write
+  // tool resolves against the harness's cwd, so it would write elsewhere.
+  if (/(?:^|[\n;&|(])[ \t]*(?:cd|pushd)\b/.test(before)) return null;
+  return {
+    call: makeCall(write.function.name, { [pathKey]: path, [contentKey]: `${m[7]}\n` }),
+    path,
+    skipped: [before, after].filter(Boolean).join("\n"),
+  };
+}
 
 /** The harness tool (if any) that runs a shell command — the target for ```bash routing. */
 export function findShellTool(tools: ToolDef[]): ToolDef | undefined {
@@ -205,17 +284,41 @@ function renderFencedTemplate(spec: FencedToolSpec): string {
  * lever (docs/hypotheses.md §9). `M365_FRAMING_VARIANT` selects among a registry
  * of competing strategies so they can be A/B'd on the bench without rebuilding
  * the server-side agent. Default = `baseline` (the shipped framing). */
-export function formatFencedToolDefinitions(
-  tools: ToolDef[],
-  variantOverride?: string,
-  platform: NodeJS.Platform = process.platform,
-): string {
+export function formatFencedToolDefinitions(tools: ToolDef[], variantOverride?: string): string {
   const variant = variantOverride ?? currentFramingVariant();
   // `reply_tool` is a tool-injection strategy, not a framing one — it runs the
   // baseline framing plus a synthetic reply() tool (see tools.ts).
   const key = variant === "reply_tool" ? "baseline" : variant;
   const build = FRAMING_VARIANTS[key] ?? FRAMING_VARIANTS.baseline;
-  return build(tools) + hostPlatformNote(findShellTool(tools), platform);
+  return build(tools) + hostPlatformNote(findShellTool(tools), undefined, findWriteTool(tools));
+}
+
+/** Which dialect the harness's shell tool actually speaks.
+ *
+ *  `process.platform` cannot answer this — it describes the host, and on Windows
+ *  the two common agent harnesses disagree: pi gives a Git Bash-backed `bash`
+ *  tool, others give PowerShell. Guessing wrong costs the whole session, because
+ *  every shell turn fails on syntax and the model reads that as "I have no tools".
+ *
+ *  Decided from the tool definition the harness sent (name + description, which is
+ *  what the harness itself claims to run). `M365_HOST_SHELL=bash|powershell`
+ *  overrides for a harness whose tool is named misleadingly. */
+export function shellDialect(
+  shell: ToolDef | undefined,
+  platform: NodeJS.Platform = process.platform,
+): "posix" | "powershell" | undefined {
+  if (!shell) return undefined;
+  const override = process.env.M365_HOST_SHELL?.toLowerCase();
+  if (override === "bash" || override === "sh" || override === "posix") return "posix";
+  if (override === "powershell" || override === "pwsh") return "powershell";
+
+  const claim = `${shell.function.name} ${shell.function.description ?? ""}`.toLowerCase();
+  // PowerShell first: a tool described as "run a powershell command" may still be
+  // *named* something generic like `shell`, and `sh` would match it by substring.
+  if (/\b(powershell|pwsh|cmd\.exe)\b/.test(claim)) return "powershell";
+  if (/\b(bash|zsh|sh|posix|wsl)\b/.test(claim)) return "posix";
+  // Nothing declared: fall back to the host's native shell.
+  return platform === "win32" ? "powershell" : "posix";
 }
 
 /** Per-turn correction telling the model which OS it is actually driving.
@@ -234,8 +337,40 @@ export function formatFencedToolDefinitions(
 export function hostPlatformNote(
   shell: ToolDef | undefined,
   platform: NodeJS.Platform = process.platform,
+  writeTool?: ToolDef,
 ): string {
   if (platform !== "win32" || !shell) return "";
+
+  // A Windows HOST does not imply a PowerShell SHELL. pi on Windows ships a tool
+  // named `bash`, described as "Execute a bash command", backed by Git Bash — the
+  // tool_response says `/usr/bin/bash`. Telling that harness to emit ```powershell
+  // makes every shell turn come back as
+  //     /usr/bin/bash: line 2: Write-Output: command not found
+  // and after a failure or two the model concludes it has no working tools and
+  // gives up in prose — the exact "it just says it can't" report in #7, now with
+  // the shell dialect rather than the fence routing as the cause. So read the
+  // dialect off the tool the harness actually gave us, not off process.platform.
+  if (shellDialect(shell, platform) === "posix") {
+    // The Windows command line is capped near 8,190 characters and pi's shell
+    // tool CUTS a longer command silently — measured model-free against pi with
+    // a scripted tool call: a 12,070-char heredoc wrote 8,164 bytes, its trailing
+    // `wc`/`echo` never ran, and bash only said "here-document delimited by
+    // end-of-file"; a 7,000-char one was intact. pi's `write` tool took 50,000
+    // chars intact. The framing teaches heredocs for file writes, so without this
+    // every long file (a project summary, a README) lands truncated. Unmeasured
+    // for the PowerShell branch below, so it isn't claimed there.
+    const longWrite = writeTool
+      ? `write any file longer than a few thousand characters with the \`${writeTool.function.name}\` tool, never in one heredoc`
+      : "write a long file in parts: create it with the first part, then append the rest with `cat >> file <<'EOF'` in later turns";
+    return `
+
+HOST PLATFORM: Windows, but the \`${shell.function.name}\` tool is a POSIX shell on it (Git Bash or WSL), NOT PowerShell and NOT a container. Keep using \`\`\`${"bash"} blocks and POSIX idioms — \`<<'EOF'\` heredocs, \`sed -i\`, \`ls\`/\`grep\` all work. Do NOT emit PowerShell: \`Get-ChildItem\`, \`Set-Content\` and \`Write-Output\` are not commands here and the turn will fail.
+
+The Windows command line is capped near 8,000 characters and a longer command is cut off silently, so a big heredoc leaves a truncated file. Keep each command short and ${longWrite}.
+
+Only the filesystem is Windows: paths may be \`C:/Users/...\` or contain spaces, so quote them and prefer forward slashes. You are NOT in a Linux sandbox and have no \`/mnt/data\`; the working directory is the caller's real project directory — run \`pwd\` if you need to see it.`;
+  }
+
   return `
 
 HOST PLATFORM: Windows. The \`${shell.function.name}\` tool runs PowerShell on a real Windows machine — not Linux, and not a container. Any POSIX idiom named above is wrong here and will fail: there are no \`<<'EOF'\` heredocs, no \`sed -i\`, no \`ls\`/\`grep\`. Emit \`\`\`powershell blocks instead of \`\`\`bash, and use the Windows equivalents:
@@ -273,56 +408,88 @@ export function currentFramingVariant(toneDefault?: string): string {
 
 /** The framing a tone should default to when the caller hasn't overridden it.
  *
- *  `baseline` is a cage built for M365's chat-tuned GPT path: it spends most of
- *  its length forcing a model that would rather narrate into acting. Opus does
- *  not need convincing — it acts from the schema alone — so the cage is pure
- *  weight, and weight is the one thing worth economising on there: Opus is
- *  metered by a small priority-access budget (see priority-access.ts), and a
- *  proxy that prepends ~4kB of framing to every turn exhausts it far faster
- *  than hand-driving the model does. `minimal` keeps the load-bearing parts
- *  (shell-routing + anti-confabulation) at roughly a fifth of the size.
+ *  `Claude_Opus` — both models, Opus 4.8 (`claude-opus-4.8`, included scenario;
+ *  Opus 4.5 until October 2026) and Opus 5.5 (`claude-opus`, paid), both with
+ *  the tool agent — defaults to `relay_batch` (docs §24 F56, F60). Two findings
+ *  decide it, both measured on Opus 4.5:
+ *  - The JailBreak Classifier. Opus 4.5 solves almost every bench task under
+ *    any framing; the `<system>`-tagged rule framings tripped the classifier on
+ *    20 of 60 tasks (`minimal` 12/30, `baseline` 8/30), the user-voice relays
+ *    on none (relay 0/50, relay_batch 0/20). Each Disengage costs a dead turn
+ *    and a retry in a fresh conversation. User voice also avoids the `<system>`
+ *    tags Sonnet 5 reads as a prompt injection (§21).
+ *  - Turns. Opus 5.5's priority-access budget is 40 TURNS a day (§24 F55, F59,
+ *    issue #18), whatever the prompt size — which is why the old lean
+ *    `minimal` default saved nothing. relay_batch asks for as much as fits in
+ *    each block: 2.30 turns per bench task vs relay's 3.65 (20/20 each), and
+ *    3.5 vs 6.0 per real-pi run (10/10 each).
+ *  Opus 4.8 solves the bench with it too (30/30, 2.53 turns per task, §36).
+ *  The cost to watch: a batched block acts before it has seen output. In pi
+ *  every edit still followed a read. Opus 5.5 is benched under relay (10/10),
+ *  not yet under relay_batch.
  *
- *  Honest caveat: we have NOT confirmed the budget is token-weighted rather
- *  than per-message. If it is per-message this buys latency and nothing else —
- *  it is still the right default for a model that doesn't need the cage, but
- *  don't read it as a measured quota win. Override with M365_FRAMING_VARIANT.
+ *  `Claude_Sonnet` (Sonnet 4.6 on the included scenario, Sonnet 5.5 on the
+ *  paid one) and `Claude_Sonnet_5` (Sonnet 5) are user-voice because the
+ *  Sonnets read the `<system>`-tagged baseline as an injected prompt, and relay
+ *  beat baseline for each — Sonnet 5 45/50 vs 6/40, Sonnet 4.6 78/90 vs 47/76
+ *  (docs §21). `Claude_Sonnet` defaults to relay_batch, for Sonnet 4.6: same
+ *  solves, 14% fewer turns on the bench (80/80) and 21% fewer in real pi
+ *  (39/39), and every pi edit still followed a read (docs §25 F61, F62).
+ *  Sonnet 5 stays on relay — see SONNET_5_DEFAULT_FRAMING — and so does
+ *  Sonnet 5.5 (SONNET_5_5_DEFAULT_FRAMING).
  *
- *  `Claude_Sonnet` (Sonnet 4.6 on the included scenario, Sonnet 5 on the paid
- *  one) defaults to `relay`: both read the `<system>`-tagged baseline as an
- *  injected prompt, and relay beat baseline for each — Sonnet 5 45/50 vs 6/40,
- *  Sonnet 4.6 78/90 vs 47/76 (docs §21).
- *
- *  `Gpt_6_Reasoning` defaults to `relay` too. It used to keep `baseline` on the
+ *  `Gpt_6_Reasoning` defaults to relay_batch. It used to keep `baseline` on the
  *  theory that it drives M365's GPT agent path — but it never served WITH the
  *  agent (#41), so its tool requests go agent-less, where the proxy also enables
  *  M365's code interpreter. Under baseline GPT-6 worked in that sandbox
  *  (`/mnt/data`, `bash -lc …`) instead of emitting tool calls, and 12 of 30 first
  *  turns tripped the JailBreak Classifier: 0/30 solved, vs relay 30/30 (bench,
- *  2026-10-01, confab-retry off; docs §22 F47).
+ *  2026-10-01, confab-retry off; docs §22 F47). relay_batch keeps relay's
+ *  framing and cuts its turns by a third: 3.15 → 2.10 per bench task (40/40, no
+ *  sandbox turns either way), 3 turns per real-pi run, 10/10 (docs §25 F61, F63).
  *
- *  `Gpt_6_Sol_Reasoning` (gpt-6-sol) defaults to `relay` on BOTH of its paths
- *  (#23, docs §23). Agent-less (any non-premium account) it has a sandbox of its
- *  own (`bash -lc …` in /mnt/data, /home/oai) that M365_NO_CODE_INTERPRETER
- *  doesn't remove; every other framing sent it there on ~every first turn and
- *  scored 0–6/10, relay 60/60. With the agent (premium) there's no sandbox, but
- *  the other framings confabulate "I can't access your working directory" or
- *  trip the JailBreak Classifier: 3–9/10, relay 30/30. Real pi: 21/21.
+ *  `Gpt_6_Sol_Reasoning` (gpt-6-sol) defaults to `relay_batch` on BOTH of its
+ *  paths (#23, docs §23, §28). Agent-less (any non-premium account) it has a
+ *  sandbox of its own (`bash -lc …` in /mnt/data, /home/oai) that
+ *  M365_NO_CODE_INTERPRETER doesn't remove; the `<system>`-tagged framings sent it
+ *  there on ~every first turn and scored 0–6/10, relay 60/60. With the agent
+ *  (premium) there's no sandbox, but those framings confabulate "I can't access
+ *  your working directory" or trip the JailBreak Classifier: 3–9/10, relay 30/30.
+ *  relay_batch keeps relay's framing and cuts its turns by a third on both paths
+ *  (bench 3.1 → 2.1 per task, 60/60 vs 60/60 agent-less, 40/40 vs 32/32 with the
+ *  agent), and by 19–25% in real pi (30/30). F61 kept it on relay because
+ *  agent-less it went to its sandbox on 4 turns against relay's 2; the retest
+ *  found no gap (13 vs 15 in 40 tasks; pooled, 17 and 17), so it switched (docs §28).
+ *
+ *  `Gpt_61_Sol_Reasoning` (gpt-6.1-sol) defaults to `relay_batch` on both of its
+ *  paths (docs §27). Same split as GPT-6 Sol: agent-less the `<system>`-tagged
+ *  framings send it to its sandbox (baseline 0/20, minimal 2/20) and the user-voice
+ *  ones don't; with the agent everything solves, and only relay, relay_batch and
+ *  honest never tripped the JailBreak Classifier. relay_batch didn't go to the
+ *  sandbox more than relay (0 and 0), and it cut turns on both
+ *  paths: bench −17% with the agent, −36% without (40/40 vs 39/40), real pi
+ *  −29% / −47% (30/30 each). Side by side agent-less it solves and spends turns
+ *  like GPT-6 Sol under every framing, but it obeys the user-voice note about
+ *  its sandbox: under relay_batch it never went in (0 of 80 bench tasks and pi
+ *  runs, GPT-6 Sol 25 of 100), under honest 3 of 40 (GPT-6 Sol 17 of 20; docs §29).
  *
  *  Every other tone keeps the bench-tuned `baseline` byte-for-byte. */
 export function defaultFramingForTone(tone?: string): string | undefined {
-  if (tone === "Claude_Opus") return "minimal";
-  if (tone === "Claude_Sonnet") return "relay";
-  if (tone === "Gpt_6_Reasoning") return "relay";
-  if (tone === "Gpt_6_Sol_Reasoning") return "relay";
+  if (tone === "Claude_Opus") return "relay_batch";
+  if (tone === "Claude_Sonnet") return "relay_batch";
+  if (tone === "Claude_Sonnet_5") return SONNET_5_DEFAULT_FRAMING;
+  if (tone === "Gpt_6_Reasoning") return "relay_batch";
+  if (tone === "Gpt_6_Sol_Reasoning") return "relay_batch";
+  if (tone === "Gpt_61_Sol_Reasoning") return "relay_batch";
   return undefined;
 }
 
 /** The framing a MODEL ID should default to. Differs from defaultFramingForTone
  *  only where one tone serves two models: `Claude_Sonnet` is Sonnet 4.6 on the
- *  included scenario and Sonnet 5 on the paid one, so a Sonnet-5-only framing
- *  has to key on the model ID (see SONNET_5_DEFAULT_FRAMING). */
+ *  included scenario and Sonnet 5.5 on the paid one, so a Sonnet-5.5-only
+ *  framing has to key on the model ID (see SONNET_5_5_DEFAULT_FRAMING). */
 export function defaultFramingForModel(model: string): string | undefined {
-  if (isSonnet5Model(model)) return SONNET_5_DEFAULT_FRAMING;
+  if (isSonnet55Model(model)) return SONNET_5_5_DEFAULT_FRAMING;
   return defaultFramingForTone(getToneForModel(model));
 }
 
@@ -331,9 +498,15 @@ export function defaultFramingForModel(model: string): string | undefined {
 // assistant role, rather than being told it is an agent with a second tool
 // format. Under `baseline` it reads the framing as a prompt injection and works
 // in its own sandbox instead (6/40); relay: 45/50, and 5/5 through real pi.
-// Today this equals the `Claude_Sonnet` tone default; it stays separate so the
-// two models can diverge without a routing change.
+// It does NOT follow Sonnet 4.6 to relay_batch: 15% fewer turns on the bench,
+// but 6% in real pi (4.90 vs 5.20 per run, 10/10 each, p = 0.47), where relay
+// already reads, fixes and checks in ~5 turns (docs §25 F63).
 const SONNET_5_DEFAULT_FRAMING = "relay";
+
+// Sonnet 5.5 inherits Sonnet 5's `relay`, unbenched: it runs `pwd` in the same
+// remote sandbox (`/home/claude`, docs §26), which relay names as the wrong
+// machine. Whether relay_batch saves turns on its metered budget is open (§26).
+const SONNET_5_5_DEFAULT_FRAMING = "relay";
 
 /** How formatMessages wraps the framing block and the harness's own system
  *  messages. Historically both went in `<system>` tags. Claude Sonnet 5 reads a
@@ -354,6 +527,7 @@ const TRANSCRIPT_STYLES: Record<string, TranscriptStyle> = {
   honest: USER_VOICE_STYLE,
   terse_user: USER_VOICE_STYLE,
   relay: USER_VOICE_STYLE,
+  relay_batch: USER_VOICE_STYLE,
 };
 export function transcriptStyleForVariant(variant: string): TranscriptStyle {
   return TRANSCRIPT_STYLES[variant] ?? SYSTEM_STYLE;
@@ -652,8 +826,9 @@ A session usually opens by looking at the files (\`ls -la\`, then \`cat\` the re
 ${toolsBlock(tools)}`;
   },
 
-  // --- Sonnet 5 candidates (docs §21). Sonnet 5 (Claude_Sonnet on the paid
-  // scenario) has its own function-calling tools in a remote sandbox, and reads
+  // --- Sonnet 5 candidates (docs §21). Sonnet 5 (Claude_Sonnet_5 on the paid
+  // scenario; it was Claude_Sonnet's until Sonnet 5.5 took that over, §26) has
+  // its own function-calling tools in a remote sandbox, and reads
   // the framing below as an injection: a `<system>` block inside a user turn,
   // redefining its identity ("execution core … not a chat assistant") and its
   // tool format. Its CoT says so in most first turns. Each candidate attacks a
@@ -703,6 +878,24 @@ Each time you want something run or looked at, reply with just the command in a 
 
 ${toolsBlock(tools)}`;
   },
+
+  // Turn-saving relay (issue #18). Opus 5.5's priority-access budget counts
+  // TURNS (§24 F55). `relay_batch` — relay asking outright for as much as fits
+  // in each block — is the default for Claude_Opus (2.30 turns per bench task
+  // vs relay's 3.65, same solve rate, §24 F60), and since §25 for Sonnet 4.6
+  // and GPT-6 too (−14% and −33% bench turns, F61–F63).
+  // Batching means a script, so it needs a shell tool. Without one it is relay
+  // byte-for-byte: asked for a script it couldn't run, Sonnet 4.6 announced it
+  // had no tools but its own sandbox ones — 3/7 shell-less checks, relay 6/6
+  // (§25 H25b).
+  relay_batch(tools) {
+    if (!findShellTool(tools)) return FRAMING_VARIANTS.relay(tools);
+    return `Before the task, a note on how we'll work: I'd like you to guide me through this from my terminal. Please don't use your own sandbox tools (${BUILT_IN_SANDBOX}) — that's a separate cloud machine (${SANDBOX_PATHS}) and my project isn't on it.
+
+Each time you want something run, reply with just a single \`\`\`bash block (or one of the other tool blocks below). I'll run it in my project directory right away and paste the real output back to you as a <tool_response>. Each round trip takes me a while, so put as much as you can into one block: a script can look at the files, make the change and check the result all at once. The files the task mentions are already there. When the task is complete, tell me in a sentence instead of sending a block.
+
+${toolsBlock(tools)}`;
+  },
 };
 
 // Names of the framing strategies under test, for tooling/bench discovery.
@@ -710,14 +903,135 @@ export const FRAMING_VARIANT_NAMES = Object.keys(FRAMING_VARIANTS);
 
 // --- Parsing -----------------------------------------------------------------
 
-// Match a fenced block with a tool-like info-string. Dots and hyphens are allowed
-// so namespaced runtime tool names (```container.exec) can be recognised and
-// routed; an info-string that resolves to no spec is left in prose by
-// parseFencedToolCalls, so widening this costs nothing. Non-greedy body; the
-// closing fence is a line that is exactly ``` (start of line).
-const FENCE_REGEX = /```([A-Za-z0-9_.-]+)[ \t]*\r?\n([\s\S]*?)\r?\n?```/g;
+// Info-string of a fence that can be a tool call. Dots and hyphens are allowed so
+// namespaced runtime tool names (```container.exec) can be recognised and routed;
+// an info-string that resolves to no spec is left in prose by
+// parseFencedToolCalls, so widening this costs nothing.
+const FENCE_OPEN = /^[ \t]*```([A-Za-z0-9_.-]*)[ \t]*$/;
+const FENCE_CLOSE = /^[ \t]*```[ \t]*$/;
+// The looser shapes the pre-scanner regex also took, and the model does emit:
+// prose then an opener on one line ("Running it: ```bash"), and a closer glued
+// to the last line of the body ("ls -la```"). Only honoured at the outermost
+// level, where they can't be mistaken for nesting.
+const FENCE_OPEN_MIDLINE = /```([A-Za-z0-9_.-]+)[ \t]*$/;
+const FENCE_CLOSE_GLUED = /\S```[ \t]*$/;
+
+interface FenceBlock {
+  info: string;
+  inner: string;
+  start: number;
+  end: number;
+}
+
+/** Top-level fenced blocks, with nesting counted.
+ *
+ *  The model nests same-length fences — a ```markdown document containing
+ *  ```bash examples, or a write_file whose body is a README with code in it —
+ *  and means them as nested. The old regex closed a fence at the first ``` it
+ *  met, including the backticks that OPEN an inner ```bash, so the outer block
+ *  ended early and every later inner block surfaced at the top level as a real
+ *  tool call. Measured: a ```markdown answer holding 3 illustrative ```bash
+ *  examples parsed as 2 executable bash calls — illustration run as a command;
+ *  an `rm -rf` in a code sample would have run.
+ *
+ *  So: an opener WITH an info-string inside an open fence nests; a bare ```
+ *  line closes the innermost; only depth-0 blocks are returned. Inner fences
+ *  stay part of their parent's body, which also lets a write_file carry a body
+ *  containing balanced fences — the limitation noted at the top of this file.
+ *  An unterminated fence at end of text is dropped, as the regex did. */
+function scanFences(text: string): FenceBlock[] {
+  const blocks: FenceBlock[] = [];
+  let depth = 0;
+  let open: { info: string; start: number; bodyStart: number } | null = null;
+  let offset = 0;
+  for (const raw of text.split("\n")) {
+    const line = raw.endsWith("\r") ? raw.slice(0, -1) : raw;
+    const lineEnd = offset + raw.length;
+    const opener = FENCE_OPEN.exec(line)?.[1];
+    if (depth === 0) {
+      const midline = opener ? null : FENCE_OPEN_MIDLINE.exec(line);
+      if (opener || midline) {
+        open = { info: opener || midline![1], start: offset + (midline?.index ?? 0), bodyStart: lineEnd + 1 };
+        depth = 1;
+      }
+    } else if (FENCE_CLOSE.test(line)) {
+      if (--depth === 0 && open) {
+        let inner = text.slice(open.bodyStart, Math.max(open.bodyStart, offset - 1));
+        if (inner.endsWith("\r")) inner = inner.slice(0, -1);
+        blocks.push({ info: open.info, inner, start: open.start, end: lineEnd });
+        open = null;
+      }
+    } else if (opener) {
+      depth++;
+    } else if (depth === 1 && open && FENCE_CLOSE_GLUED.test(line)) {
+      const inner = text.slice(open.bodyStart, offset + line.trimEnd().length - 3);
+      blocks.push({ info: open.info, inner, start: open.start, end: lineEnd });
+      open = null;
+      depth = 0;
+    }
+    offset = lineEnd + 1;
+  }
+  return blocks;
+}
+
+// A fence opening with a tool-like info-string, for findUnclosedToolFence.
+const FENCE_OPEN_REGEX = /```([A-Za-z0-9_.-]+)[ \t]*\r?\n/g;
 const SEARCH_REPLACE_REGEX =
   /<{5,}\s*SEARCH\s*\r?\n([\s\S]*?)\r?\n={5,}\s*\r?\n([\s\S]*?)\r?\n>{5,}\s*REPLACE/;
+
+// Claude Opus sometimes ends a fenced call the way its native function-calling
+// format ends one: a line `</parameter>`, `</invoke>` or `</write_file>` (the
+// tool's own name), or several (`</parameter>` / `</invoke>` /
+// `</function_calls>`), sometimes followed by more native markup
+// (`<parameter name="path">count.sh</parameter>`) or a stray symbol line (`∂`,
+// a zero-width joiner). Then either the closing ``` follows — and the markup
+// used to be written into the file, or run as the command's last line — or it
+// never comes, and the call was lost as prose (Opus 4.5: 11 replies, all on
+// the count-lines task, docs §24 F57). That trailing block is dropped only
+// when EVERY line of it is native markup or short junk and it holds a closer,
+// so a file that merely mentions `</invoke>` mid-way keeps it. Native
+// parameters are dropped, not applied: every one seen repeated a header the
+// fence already had.
+const escapeRegExp = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+const NATIVE_TRAILER_LINE = String.raw`(?:<\/?(?:invoke|function_calls|parameter)\b[^\r\n]*|[^\p{L}\p{N}\r\n]{0,3})`;
+function nativeCloserRegex(name: string): RegExp {
+  return new RegExp(
+    String.raw`(?:\r?\n<\/?parameter\b[^\r\n]*)*\r?\n<\/(?:invoke|function_calls|parameter|${escapeRegExp(name)})>[ \t]*(?:\r?\n${NATIVE_TRAILER_LINE})*\s*$`,
+    "u",
+  );
+}
+
+/** The fence body without a trailing native-call closer line, or null if it has none. */
+function stripNativeCloser(inner: string, name: string): string | null {
+  const m = nativeCloserRegex(name).exec(inner);
+  return m ? inner.slice(0, m.index) : null;
+}
+
+/** A tool fence that is never closed with ``` but ends in a native-call closer
+ *  (see nativeCloserRegex). Only the last fence opening in the text, with no
+ *  ``` after it, can be one. */
+function findUnclosedToolFence(
+  text: string,
+  specs: Map<string, FencedToolSpec>,
+): { start: number; end: number; spec: FencedToolSpec; inner: string } | null {
+  let last: RegExpExecArray | null = null;
+  const re = new RegExp(FENCE_OPEN_REGEX.source, "g");
+  for (let m = re.exec(text); m !== null; m = re.exec(text)) last = m;
+  if (!last) return null;
+  const spec = specs.get(last[1]);
+  if (!spec) return null;
+  const bodyStart = last.index + last[0].length;
+  const tail = text.slice(bodyStart);
+  if (tail.includes("```")) return null; // closed: scanFences' case
+  const inner = stripNativeCloser(tail, last[1]);
+  if (inner === null) return null; // no end marker: maybe a truncated reply
+  return { start: last.index, end: text.length, spec, inner };
+}
+
+/** A closed fence's body, minus a trailing native-call closer line. */
+function fenceInner(name: string, raw: string): string {
+  return stripNativeCloser(raw, name) ?? raw;
+}
 
 function makeCall(name: string, args: Record<string, unknown>): ParsedToolCall {
   return {
@@ -777,6 +1091,171 @@ function coerceHeaderValue(value: string, declaredType: string | undefined): unk
   }
 }
 
+// --- YAML block values (#50) -------------------------------------------------
+// The tools block shows an array param as `edits: <edits>`, and models fill it
+// in two ways. Opus writes inline JSON (`edits: [{"oldText": …}]`), which
+// coerceHeaderValue parses. Sonnet 4.6 mostly writes a YAML block list:
+//
+//   edits:
+//     - oldText: "    return a - b"
+//       newText: "    return a + b"
+//
+// which used to become `edits: []` (the empty `edits:` line) with the list
+// dropped — 44 of its 47 edits in real pi, each answered by pi with "edits must
+// contain at least one replacement". This reads the subset models write:
+// sequences, mappings, double- and single-quoted and plain scalars, inline JSON
+// values, and `|` / `>` block scalars for multi-line text. Mapping values stay
+// strings (no YAML booleans or numbers: `oldText: 5` is the text "5"); scalar
+// list items are left for coerceHeaderValue's array path to see as strings.
+// Anything it can't read returns undefined and the old reading stands.
+
+const indentOf = (line: string): number => line.length - line.trimStart().length;
+
+/** End (exclusive) of the YAML block under an empty `key:` header line at
+ *  `from - 1`: the following lines that are indented — or, for an array, start
+ *  a `- ` item at the key's own column, as YAML allows. Blank lines inside the
+ *  block belong to it; trailing ones don't (they end the header). */
+function yamlBlockEnd(lines: string[], from: number, isArray: boolean): number {
+  let end = from;
+  for (let j = from; j < lines.length; j++) {
+    const line = lines[j];
+    if (line.trim() === "") continue;
+    if (/^[ \t]/.test(line) || (isArray && /^-([ \t]|$)/.test(line))) end = j + 1;
+    else break;
+  }
+  return end;
+}
+
+/** A YAML block (the lines under an empty `key:`) as the declared type, or undefined. */
+function parseYamlBlockValue(block: string[], declaredType: string): unknown {
+  let value: unknown;
+  try {
+    value = parseYamlNode(block.map((l) => l.replace(/\t/g, "  ")));
+  } catch {
+    return undefined;
+  }
+  if (declaredType === "array") return Array.isArray(value) ? value : undefined;
+  return value !== null && typeof value === "object" && !Array.isArray(value) ? value : undefined;
+}
+
+class YamlSubsetError extends Error {}
+
+/** Parse lines holding one YAML node (a sequence, a mapping or a scalar). */
+function parseYamlNode(lines: string[]): unknown {
+  const first = lines.findIndex((l) => l.trim() !== "");
+  if (first < 0) throw new YamlSubsetError("empty block");
+  const body = lines.slice(first);
+  const indent = indentOf(body[0]);
+  const head = body[0].trimStart();
+  if (/^-([ \t]|$)/.test(head)) return parseYamlSequence(body, indent);
+  if (YAML_KEY.test(head)) return parseYamlMapping(body, indent);
+  if (body.slice(1).some((l) => l.trim() !== "")) throw new YamlSubsetError("multi-line plain scalar");
+  return parseYamlScalar(head);
+}
+
+const YAML_KEY = /^("(?:[^"\\]|\\.)*"|'(?:[^']|'')*'|[^\s:#'"\-][^:]*?):(?:[ \t]+(.*)|[ \t]*)$/;
+
+/** Children of the entry at lines[0]: the lines below it until one at `indent` or less. */
+function childLines(lines: string[], from: number, indent: number): { lines: string[]; next: number } {
+  let j = from;
+  for (; j < lines.length; j++) {
+    if (lines[j].trim() !== "" && indentOf(lines[j]) <= indent) break;
+  }
+  return { lines: lines.slice(from, j), next: j };
+}
+
+function parseYamlSequence(lines: string[], indent: number): unknown[] {
+  const items: unknown[] = [];
+  let i = 0;
+  while (i < lines.length) {
+    const line = lines[i];
+    if (line.trim() === "") { i++; continue; }
+    if (indentOf(line) !== indent || !/^-([ \t]|$)/.test(line.trimStart())) throw new YamlSubsetError(`bad sequence line: ${line}`);
+    const rest = line.trimStart().slice(1);
+    const kids = childLines(lines, i + 1, indent);
+    if (rest.trim() === "") {
+      items.push(parseYamlNode(kids.lines));
+    } else {
+      // `- key: value` opens a mapping whose keys sit one column past the dash's text.
+      const itemIndent = indent + 1 + (rest.length - rest.trimStart().length);
+      const itemLines = [" ".repeat(itemIndent) + rest.trimStart(), ...kids.lines];
+      items.push(YAML_KEY.test(rest.trimStart()) ? parseYamlMapping(itemLines, itemIndent) : parseYamlValue(rest.trim(), kids.lines, indent));
+    }
+    i = kids.next;
+  }
+  return items;
+}
+
+function parseYamlMapping(lines: string[], indent: number): Record<string, unknown> {
+  const out: Record<string, unknown> = {};
+  let i = 0;
+  while (i < lines.length) {
+    const line = lines[i];
+    if (line.trim() === "") { i++; continue; }
+    const m = indentOf(line) === indent ? line.trimStart().match(YAML_KEY) : null;
+    if (!m) throw new YamlSubsetError(`bad mapping line: ${line}`);
+    const key = String(parseYamlScalar(m[1]));
+    // A value's block may start at the key's own column when it is a sequence.
+    let j = i + 1;
+    for (; j < lines.length; j++) {
+      const l = lines[j];
+      if (l.trim() === "") continue;
+      const ind = indentOf(l);
+      if (ind > indent || (ind === indent && /^-([ \t]|$)/.test(l.trimStart()) && !(m[2] ?? "").trim())) continue;
+      break;
+    }
+    out[key] = parseYamlValue((m[2] ?? "").trim(), lines.slice(i + 1, j), indent);
+    i = j;
+  }
+  return out;
+}
+
+/** The value after `key:` or `- ` (`inline`), with the lines nested under it. */
+function parseYamlValue(inline: string, nested: string[], parentIndent: number): unknown {
+  const block = inline.match(/^([|>])([-+]?)$/);
+  if (block) return parseYamlBlockScalar(nested, parentIndent, block[1] === ">", block[2]);
+  if (inline === "") return nested.some((l) => l.trim() !== "") ? parseYamlNode(nested) : "";
+  if (nested.some((l) => l.trim() !== "")) throw new YamlSubsetError("value with both inline text and nested lines");
+  return parseYamlScalar(inline);
+}
+
+function parseYamlScalar(raw: string): unknown {
+  const s = raw.trim();
+  if (s.startsWith('"') && s.endsWith('"') && s.length >= 2) {
+    try {
+      return JSON.parse(s);
+    } catch {
+      return s.slice(1, -1);
+    }
+  }
+  if (s.startsWith("'") && s.endsWith("'") && s.length >= 2) return s.slice(1, -1).replace(/''/g, "'");
+  if ((s.startsWith("[") && s.endsWith("]")) || (s.startsWith("{") && s.endsWith("}"))) {
+    try {
+      return JSON.parse(s);
+    } catch {
+      // not JSON — keep it as text
+    }
+  }
+  return s;
+}
+
+/** `|` keeps line breaks, `>` folds them into spaces; `-` strips the final
+ *  newline, `+` keeps trailing blank lines, the default keeps exactly one. */
+function parseYamlBlockScalar(lines: string[], parentIndent: number, folded: boolean, chomp: string): string {
+  const content = lines.filter((l) => l.trim() !== "");
+  if (!content.length) return "";
+  const indent = Math.min(...content.map(indentOf));
+  if (indent <= parentIndent) throw new YamlSubsetError("block scalar not indented");
+  const rows = lines.map((l) => (l.trim() === "" ? "" : l.slice(indent)));
+  let text = folded
+    ? rows.reduce((acc, row, k) => (k === 0 ? row : row === "" || rows[k - 1] === "" ? `${acc}\n${row}` : `${acc} ${row}`), "")
+    : rows.join("\n");
+  const trailing = text.match(/\n*$/)![0].length;
+  if (chomp === "+") return `${text}\n`;
+  text = text.slice(0, text.length - trailing);
+  return chomp === "-" ? text : `${text}\n`;
+}
+
 /** Parse the inner text of one fenced block into an arguments object, schema-aware. */
 function parseFencedInner(spec: FencedToolSpec, inner: string): Record<string, unknown> | null {
   const lines = inner.split("\n");
@@ -784,6 +1263,8 @@ function parseFencedInner(spec: FencedToolSpec, inner: string): Record<string, u
 
   // Header: contiguous "key: value" lines whose key is a known header param,
   // terminated by a blank line (consumed) or the first non-header line (kept).
+  // An array- or object-typed param may instead hold an indented YAML block
+  // under an empty `key:` line (#50, see parseYamlBlockValue).
   let i = 0;
   if (spec.headerParams.length) {
     for (; i < lines.length; i++) {
@@ -792,7 +1273,17 @@ function parseFencedInner(spec: FencedToolSpec, inner: string): Record<string, u
       const m = line.match(/^([A-Za-z0-9_]+):[ \t]?(.*)$/);
       if (m && spec.headerParams.includes(m[1])) {
         const key = m[1];
-        args[key] = coerceHeaderValue(m[2].trim(), spec.parameterTypes[key]);
+        const type = spec.parameterTypes[key];
+        if (m[2].trim() === "" && (type === "array" || type === "object")) {
+          const end = yamlBlockEnd(lines, i + 1, type === "array");
+          const value = end > i + 1 ? parseYamlBlockValue(lines.slice(i + 1, end), type) : undefined;
+          if (value !== undefined) {
+            args[key] = value;
+            i = end - 1;
+            continue;
+          }
+        }
+        args[key] = coerceHeaderValue(m[2].trim(), type);
       } else {
         break;
       }
@@ -830,15 +1321,22 @@ export function parseFencedToolCalls(
   const calls: ParsedToolCall[] = [];
   let leftover = text;
 
-  const re = new RegExp(FENCE_REGEX.source, "g");
-  let match: RegExpExecArray | null;
-  while ((match = re.exec(text)) !== null) {
-    const spec = specs.get(match[1]);
+  for (const block of scanFences(text)) {
+    const spec = specs.get(block.info);
     if (!spec) continue; // ```python illustration etc. — not a tool, leave in prose
-    const args = parseFencedInner(spec, match[2]);
+    const args = parseFencedInner(spec, fenceInner(block.info, block.inner));
     if (!args) continue;
     calls.push(makeCall(spec.name, args));
-    leftover = leftover.replace(match[0], "");
+    leftover = leftover.replace(text.slice(block.start, block.end), "");
+  }
+
+  if (calls.length === 0) {
+    const open = findUnclosedToolFence(text, specs);
+    const args = open && parseFencedInner(open.spec, open.inner);
+    if (open && args) {
+      calls.push(makeCall(open.spec.name, args));
+      leftover = text.slice(0, open.start);
+    }
   }
 
   return { calls, leftover };
@@ -850,11 +1348,11 @@ export function findFirstToolFence(
   text: string,
   specs: Map<string, FencedToolSpec>,
 ): { start: number; end: number } | null {
-  const re = new RegExp(FENCE_REGEX.source, "g");
-  let match: RegExpExecArray | null;
-  while ((match = re.exec(text)) !== null) {
-    const spec = specs.get(match[1]);
-    if (spec && parseFencedInner(spec, match[2])) return { start: match.index, end: match.index + match[0].length };
+  for (const block of scanFences(text)) {
+    const spec = specs.get(block.info);
+    if (spec && parseFencedInner(spec, fenceInner(block.info, block.inner))) return { start: block.start, end: block.end };
   }
+  const open = findUnclosedToolFence(text, specs);
+  if (open && parseFencedInner(open.spec, open.inner)) return { start: open.start, end: open.end };
   return null;
 }

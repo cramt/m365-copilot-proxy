@@ -74,8 +74,8 @@ if (-not $pnpmCmd) {
     $pnpmCmd = "npx --yes pnpm@$pnpmVersion"
 }
 
-function Invoke-Pnpm([string]$Args) {
-    $full = "$pnpmCmd $Args"
+function Invoke-Pnpm([string]$PnpmArguments) {
+    $full = "$pnpmCmd $PnpmArguments"
     Write-Host "[setup] > $full"
     $p = Start-Process -FilePath "powershell.exe" -ArgumentList @("-NoProfile", "-Command", $full) -NoNewWindow -Wait -PassThru
     if ($p.ExitCode -ne 0) {

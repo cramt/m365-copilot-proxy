@@ -21,6 +21,8 @@ export {
   type ImageGenFailureReason,
 } from "./image.js";
 
+export { uploadImage, imageUrls, type ImageAnnotation } from "./image-input.js";
+
 export {
   noteRequestOutcome,
   awaitDegradationBackoff,
@@ -39,16 +41,25 @@ export {
   getScenarioForTone,
   getScenarioForModel,
   isSonnet5Model,
+  isSonnet55Model,
+  isIncludedOpusModel,
   toneUsesToolAgent,
   toolRequestUsesAgent,
+  isPremiumOnlyModel,
+  requestUsesAgent,
+  meteredBudgetOf,
+  priorityAccessFallbackModel,
+  PRIORITY_ACCESS_FALLBACK_ENV,
   noteAgentRouteDead,
   noteAgentRouteAlive,
   isAgentRouteAlive,
   resetAgentRoutes,
   AGENTLESS_TOOL_TONES,
+  AGENT_CLAUDE_TONES,
   PREMIUM_ONLY_AGENT_TONES,
   PAID_SCENARIO_TONES,
   PAID_SCENARIO_MODELS,
+  INCLUDED_SCENARIO_MODELS,
   type ScenarioRouting,
   type CopilotStream,
   type CapturedImage,
@@ -58,6 +69,14 @@ export {
   parsePriorityAccessExhaustion,
   couldBePriorityAccessPrefix,
   secondsUntilReset,
+  parseMetering,
+  meteredAllowance,
+  METERED_BUDGETS,
+  priorityAccessExhaustionOf,
+  notePriorityAccessExhausted,
+  activePriorityAccessExhaustion,
+  resetPriorityAccessState,
+  type MeteredBudget,
   type PriorityAccessExhaustion,
   type PriorityAccessWindow,
 } from "./priority-access.js";
@@ -68,6 +87,7 @@ export {
   defaultFramingForModel,
   transcriptStyleForVariant,
   FRAMING_VARIANT_NAMES,
+  longHeredocAsWrite,
   type TranscriptStyle,
 } from "./fenced.js";
 
@@ -104,8 +124,10 @@ export {
   looksLikeHallucinatedCompletion,
   looksLikeRemoteArtifactCompletion,
   truncateAtFabricatedToolResponse,
+  fabricatedToolResponseAt,
   textAfterFirstToolCall,
   isProseDocument,
+  formatToolResponse,
   type Message,
   type ToolDef,
   type ToolFunction,
@@ -114,4 +136,24 @@ export {
   type ParseResult,
 } from "./tools.js";
 
-export { createLogger, trunc, LOG_PATH } from "./log.js";
+export { createLogger, trunc, LOG_PATH, FRAME_DIR, fileLoggingEnabled } from "./log.js";
+export {
+  budgetConfig,
+  parseEvents,
+  findLogs,
+  readLogEvents,
+  replay,
+  decide,
+  budgetStatus,
+  paceStatus,
+  awaitTurnBudget,
+  recordTurn,
+  recordThrottle,
+  resetTurnBudget,
+  TurnBudgetHold,
+  type BudgetConfig,
+  type BudgetEvent,
+  type BudgetState,
+  type BudgetDecision,
+  type AwaitTurnBudgetOptions,
+} from "./turn-budget.js";

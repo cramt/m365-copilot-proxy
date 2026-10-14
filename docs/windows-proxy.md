@@ -140,15 +140,11 @@ profile rather than touching your real `~/.pi` config.
 ## Agent/tool behavior and Copilot Studio agent creation
 
 The fenced-tool-call and shell-routing behavior (`formatFencedToolDefinitions`,
-`parseFencedToolCalls`) is unchanged by this Windows work. One real bug
-*was* found and fixed while running the suite natively on Windows for the
-first time: `hostPlatformNote()` correctly detects `process.platform ===
-"win32"` and injects Windows-specific tool guidance, but
-`formatFencedToolDefinitions()` had no way to override that platform for
-testing, so its own unit test asserting POSIX-only output could never
-actually exercise Windows - it happened to pass only because CI ran on
-Linux. Fixed by threading an optional `platform` parameter through
-(`packages/core/src/fenced.ts`); see the git log for the exact diff.
+`parseFencedToolCalls`) is unchanged by this Windows work. Upstream #44
+already fixed platform-sensitive testing and detects the shell dialect from
+the harness tool, so a Windows host does not imply a PowerShell shell.
+Upstream #68 fixed the launcher's Windows file-URL import; `Start-Proxy.ps1`
+uses that standard launcher, `packages/proxy/bin/m365-proxy.mjs`.
 
 **GPT tones (`gpt-5.5-think-deeper`, `m365-copilot`, etc.) attach a Copilot
 Studio agent on first use** via the PowerPlatform API (creates+publishes a
