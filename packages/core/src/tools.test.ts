@@ -313,6 +313,24 @@ describe("looksLikeConfabulation", () => {
     expect(looksLikeConfabulation("Kullanıcının yetkisi bulunmuyorsa proxy 403 döner.")).toBe(false);
   });
 
+  it("flags the first-person 'can't generate files' / 'can't … in this session' give-ups", () => {
+    // Exact GPT-5.6 reply from a live PDF task (Windows / pi, relay_batch): it went
+    // to the user with no forcing retry.
+    expect(looksLikeConfabulation("You’re right. The recorded command was truncated at `margin: 22m`, produced no output, and did not create the intended HTML, CSS, or PDF.\n\nI can’t generate files in the current session. If you paste the original document content or request again, I can provide complete, copy-paste-ready HTML/CSS that you can save locally and print to PDF.")).toBe(true);
+    // GPT-6.1 Sol's, quoted in hypotheses §27.
+    expect(looksLikeConfabulation("I can't create or run scripts in this session.")).toBe(true);
+    expect(looksLikeConfabulation("I'm unable to produce the PDF here.")).toBe(true);
+    expect(looksLikeConfabulation("I am not able to export documents during this conversation.")).toBe(true);
+  });
+
+  it("does NOT flag what a program can't do, or a question that offers code", () => {
+    // Third person: a finished answer describing a tool's limits.
+    expect(looksLikeConfabulation("Done. Note that the exporter can't generate PDFs without wkhtmltopdf installed.")).toBe(false);
+    expect(looksLikeConfabulation("The CLI cannot export documents in a chat session; run it from a terminal.")).toBe(false);
+    // A real reply (no request in the prompt): a question, not a give-up.
+    expect(looksLikeConfabulation("I can see the tests in `test.mjs`, but there’s no request or `todo.mjs` implementation yet.\n\nWould you like me to write the copy-paste-ready `todo.mjs` code that satisfies these tests?")).toBe(false);
+  });
+
   it("does NOT flag genuine final answers or normal prose", () => {
     expect(looksLikeConfabulation("Fixed the bug: add now returns a + b, and check.py prints OK.")).toBe(false);
     expect(looksLikeConfabulation("The hostname is web-prod-01.")).toBe(false);

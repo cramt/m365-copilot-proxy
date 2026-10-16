@@ -98,6 +98,8 @@ than "we eyeballed one run." See §M (Methods) for the experimental rig.
   turn (F93); with it set on the proxy alone, 144 pi turns in 40 min, 42 at the floor, no throttle (F94);
   the bucket doesn't refill at 00:00Z like the priority-access budgets: without it, the account
   throttled 31 turns after 00:00Z (F95)
+- §41 — a give-up no detector caught, "I can't generate files in the current session": two first-person
+  English patterns catch it and nothing else in 334 replies with no tool call (F104)
 
 ---
 
@@ -5613,3 +5615,32 @@ bursty. Falsifier: fresh-conversation retries failing at the same rate as same-c
 Cost to watch: each such retry starts a conversation, which is what the F13 thread-rate throttle
 counts. Bounded to one per dropped turn, but on a bad `InternalError` day it adds up; the same
 afternoon's benching (one conversation per run) did trip `PerUserThrottled`.
+
+---
+
+## 41. Oct 15 2026 — a give-up no detector caught: "I can't generate files in the current session"
+
+### F104 — two first-person English patterns catch it, and nothing else in 334 replies with no tool call 🟢
+**Seen** in #70's document runs (GPT-5.6 Think Deeper, `relay_batch`, real pi on Windows). After misreading a
+cut label (#70's §39 F98), the model answered "You're right. The recorded command was truncated … I can't
+generate files in the current session. If you paste the original document content …". That went to the
+user with no forcing retry: no confabulation pattern has `generate`, and none has an English give-up scoped
+to "the current session" (the Turkish ones have "bu oturumda").
+
+**Added**, both first person:
+- "I can't / I'm unable to / I'm not able to generate, produce, export, create or make files, documents or
+  PDFs";
+- "I can't / I'm unable to … in the current session / in this chat / in this conversation", within 60
+  characters.
+
+First person, because a finished answer may say what a program can't do ("the exporter can't generate PDFs
+without wkhtmltopdf") without giving up. The existing "can't create files" pattern, which has no subject,
+stays as it was.
+
+**Checked** against every distinct reply with no tool call on disk: 334, of which 269 are logged raw replies
+(whole ones only) and 65 are assistant texts from pi sessions. The detector on main calls 65 of them
+give-ups, this branch 66: the one new hit is the reply above, and none is lost. Over the 1,060 paragraphs of
+this repo's own docs, which a project summary resembles, there is one new hit: a give-up of GPT-6.1 Sol's
+quoted in §27 ("I can't create or run scripts in this session").
+**Not measured:** how often the forcing retry then turns this give-up. It is the mid-task prompt, sent after
+a real call.
