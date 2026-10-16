@@ -98,6 +98,9 @@ than "we eyeballed one run." See §M (Methods) for the experimental rig.
   turn (F93); with it set on the proxy alone, 144 pi turns in 40 min, 42 at the floor, no throttle (F94);
   the bucket doesn't refill at 00:00Z like the priority-access budgets: without it, the account
   throttled 31 turns after 00:00Z (F95)
+- §39 — document input: a document attached in the web client goes to the user's OneDrive and rides as
+  a `LocalFile` annotation, not through `UploadFile` like an image; the proxy's token can do the same
+  upload (F97, shipped in `file-upload.ts`)
 
 ---
 
@@ -5588,3 +5591,32 @@ bursty. Falsifier: fresh-conversation retries failing at the same rate as same-c
 Cost to watch: each such retry starts a conversation, which is what the F13 thread-rate throttle
 counts. Bounded to one per dropped turn, but on a bad `InternalError` day it adds up; the same
 afternoon's benching (one conversation per run) did trip `PerUserThrottled`.
+
+---
+
+## 39. Oct 16 2026 — document input: the web client's upload goes through OneDrive
+
+§33 gave images a path (`UploadFile` → `docId` → `ImageFile` annotation). Is there one like it for a
+document (a PDF, an Office file), or does Copilot only read a file it can reach in OneDrive?
+
+### F97 — the web client's document upload goes to OneDrive; the proxy's token can do it too 🟢
+A capture of the web client attaching a local PDF through its file input (headless Edge on a copy
+of the login profile, every HTTP request plus the Chathub frames):
+
+1. `POST graph.microsoft.com/v1.0/me/drive/special/copilotuploads:/<name>:/createUploadSession`,
+   `Prefer: ExtractTextOnCommit`, body `{item: {"@microsoft.graph.conflictBehavior": "replace", name}}`.
+2. `PUT <uploadUrl>` (the bytes, on `…-my.sharepoint.com`). The file lands in
+   `Documents/Microsoft Copilot Chat Files/` (the `copilotuploads` special folder; the name is localized).
+3. The chat message: `messageAnnotations: [{ id: "SPO_<base64, unpadded, of siteId,webId,listId>_<itemId>",
+   text: <name>, url: <webUrl>, messageAnnotationType: "LocalFile" }]`.
+
+`UploadFile` isn't used for a document at all. The file input accepts Office files, PDF, text,
+code and images. The proxy's client (`c0ab8ce9…`, the web client's) gets a Graph token silently
+from the cached login, with `Files.ReadWrite.All` and `Sites.ReadWrite.All`, and the same upload
+works with it (create session 200, PUT 201).
+
+**Shipped (`file-upload.ts`):** an OpenAI `file` content part (`file_data` as a data URL,
+`filename`) is uploaded that way and sent as a `LocalFile` annotation, beside the images. A dummy
+one-page PDF with an unguessable lot code and gain, `gpt-5.6-think-deeper`: both read back
+agent-less and with the tool agent (n = 1 each). No extra optionsSets. The file stays in the user's
+OneDrive (same name is replaced). Not covered: `file_id` parts (there is no `/v1/files`).
