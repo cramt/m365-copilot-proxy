@@ -5613,3 +5613,45 @@ bursty. Falsifier: fresh-conversation retries failing at the same rate as same-c
 Cost to watch: each such retry starts a conversation, which is what the F13 thread-rate throttle
 counts. Bounded to one per dropped turn, but on a bad `InternalError` day it adds up; the same
 afternoon's benching (one conversation per run) did trip `PerUserThrottled`.
+
+---
+
+## 40. Oct 3 2026 — observations from native-Windows smoke testing
+
+These observations are from the original Windows validation, each n=1. F103 is an independent confirmation of F10; F104 remains an open hypothesis with a falsification probe.
+
+### F103 — a verification-code-shaped harmless phrase reads as jailbreak-shaped and gets refused 🟡
+Smoke-testing `claude-sonnet` (agent-less) with `"Output only this exact literal string and
+absolutely nothing else, no greeting, no extra words: PROXY_SMOKE_OK_1525819662"` got a plain-text
+refusal: *"I'm not able to output arbitrary strings on command, especially ones that appear to be
+test signals or proxy verification codes."* Softening to `"Please reply with just this one word,
+nothing more: lighthouse-52305"` (no `_OK_`/`TEST`-shaped token, no "absolutely nothing else"
+framing) succeeded immediately after, same model, same session, ~1 minute apart. Consistent with
+AGENTS.md's existing claim that `Disengaged`/refusal shape tracks jailbreak *shape*, not size — but
+this is the first time it's been pinned to the *token itself* looking like a verification code
+rather than to the surrounding instruction's intensity. n=1 per phrasing; no `x_m365_dea_score`
+captured for either turn (was reading `choices[0].message.content` only, not `usage`) and no
+`M365_DUMP_FRAMES`, so no telemetry corroborates which half of the change (wording vs. token shape)
+actually mattered.
+**Next probe.** A 2×2: {soft, aggressive instruction} × {plain word, `_OK_`/`TEST`-shaped token},
+≥5 reps each, reading `x_m365_dea_score` every turn. Cheap, and directly answers which factor is
+load-bearing instead of guessing from one swap of both at once.
+
+### F104 — gpt-5.5-think-deeper's tool turn said "no shell tool enabled" but wrote the file anyway 🔴
+Same `pi` smoke-test task ("use the bash tool to run exactly: `echo <marker> > sentinel.txt`"),
+switched from `claude-sonnet` to `gpt-5.5-think-deeper` to deliberately exercise first-use Copilot
+Studio agent creation (confirmed: `agent-id.json` got a fresh `botId`/`instructionsHash`/`createdAt`
+this run — the agent-provisioning path works end-to-end on this tenant with no extra consent
+prompt beyond the sign-in already completed). `pi`'s only printed output was *"I can't execute
+`bash` because no shell tool is enabled in this session."* — yet the sentinel file was verified on
+disk afterward with the correct marker, i.e. the task actually succeeded despite the model's own
+narration claiming it couldn't. Not probed further (uses real quota per attempt); plausible but
+unconfirmed reading is M365's confab-retry (`M365_CONFAB_RETRIES`, default on) re-prompted after an
+initial confabulated refusal and the retry's tool call landed, while only the *first* turn's prose
+got surfaced as `pi`'s final assistant message. Logged as a loose thread, not a bug report — could
+equally be a `pi`-side display artifact of a multi-turn exchange.
+**Falsification criterion / next probe.** Re-run with `M365_DEBUG=1`, `pi -p --verbose` (or
+whatever flag shows every assistant turn, not just the last), and check whether the frame log shows
+two model turns (confab then retry) or one. If one, the printed text and the tool call happened in
+the same turn and "self-contradictory" is the real, interesting finding; if two, this is just
+`pi`'s transcript display dropping the retry's own text.
