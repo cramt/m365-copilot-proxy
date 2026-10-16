@@ -26,7 +26,7 @@ import {
   secondsUntilReset,
   type PriorityAccessExhaustion,
   formatMessages,
-  imageUrls,
+  attachmentUrls,
   parseToolCalls,
   looksLikeConfabulation,
   looksLikeHallucinatedCompletion,
@@ -399,15 +399,15 @@ export async function handleChatCompletion(
   const isFirstTurn = session.turnCount === 0;
   const convId = session.conversationId;
   let text: string;
-  // Images ride on the message that carries their text (core image-input.ts).
-  let inputImages: string[];
+  // Images and files ride on the message that carries their text (core image-input.ts, file-upload.ts).
+  let inputAttachments: string[];
   if (isFirstTurn || conv.sentMessageCount === 0) {
     text = formatMessages(body.messages, body.tools, body.tool_choice, convId, framingVariant);
-    inputImages = imageUrls(body.messages);
+    inputAttachments = attachmentUrls(body.messages);
     log.info(`Chat completion: model=${model}, stream=${body.stream}, messages=${body.messages.length}, turn=${session.turnCount}, mode=full, cid=${convId}`);
   } else {
     const newMessages = body.messages.slice(conv.sentMessageCount);
-    inputImages = imageUrls(newMessages);
+    inputAttachments = attachmentUrls(newMessages);
     const delta = newMessages.length > 0 ? formatDeltaMessages(newMessages, body.messages) : "";
     if (delta.length > 0) {
       text = delta;
@@ -494,7 +494,7 @@ export async function handleChatCompletion(
         // The agent overrides `tone` (forces GPT-5), so tool-less requests must
         // skip it to reach the model the tone selects (e.g. Claude). See
         // ModelSession.run / docs H8.6.
-        copilotStream = await session.run(text, model, signal, useToolAgent, inputImages);
+        copilotStream = await session.run(text, model, signal, useToolAgent, inputAttachments);
       } catch (err: any) {
         if (err instanceof TurnBudgetHold) return { error: turnBudgetHoldResponse(err) };
         return { error: jsonResponse(502, { error: { message: err.message, type: "upstream_error" } }) };
@@ -583,7 +583,7 @@ export async function handleChatCompletion(
         useToolAgent = false;
         session.newConversation();
         text = formatMessages(body.messages, body.tools, body.tool_choice, session.conversationId, framingVariant);
-        inputImages = imageUrls(body.messages);
+        inputAttachments = attachmentUrls(body.messages);
         originalText = text;
         log.info(`Agent route dead for ${tone} (InternalError) — this account isn't premium; re-sending agent-less with '${framingVariant}' framing in a fresh conversation`);
         attempt--;
@@ -614,7 +614,7 @@ export async function handleChatCompletion(
           useToolAgent = requestUsesAgent(model, !!hasTools);
           session.newConversation();
           text = formatMessages(body.messages, body.tools, body.tool_choice, session.conversationId, framingVariant);
-          inputImages = imageUrls(body.messages);
+          inputAttachments = attachmentUrls(body.messages);
           originalText = text;
           attempt--;
           continue;
@@ -628,7 +628,7 @@ export async function handleChatCompletion(
         noteRequestOutcome(false, convId); // clean response → degradation has lifted
         if (useToolAgent) noteAgentRouteAlive(tone); // the agent route answered on this account
         conv.servedModel = model;
-        inputImages = []; // on the server now: a forcing retry in this conversation needn't resend them
+        inputAttachments = []; // on the server now: a forcing retry in this conversation needn't resend them
         return { fullText };
       }
 
@@ -653,7 +653,7 @@ export async function handleChatCompletion(
           // exactly the tag that model reads as a forged system prompt.
           const retryVariant = transcriptStyleForVariant(framingVariant).framingTag === "system" ? "softened" : framingVariant;
           text = formatMessages(body.messages, body.tools, body.tool_choice, session.conversationId, retryVariant);
-          inputImages = imageUrls(body.messages);
+          inputAttachments = attachmentUrls(body.messages);
           log.info(`Upstream Disengaged — retrying once with '${retryVariant}' framing in a fresh conversation (F22)`);
           attempt--; // free retry; bounded — disengageRetried flips once
           continue;
@@ -689,7 +689,7 @@ export async function handleChatCompletion(
         internalErrorFreshRetried = true;
         session.newConversation();
         text = formatMessages(body.messages, body.tools, body.tool_choice, session.conversationId, framingVariant);
-        inputImages = imageUrls(body.messages);
+        inputAttachments = attachmentUrls(body.messages);
         originalText = text;
         log.info(`Upstream InternalError — re-sending the whole request in a fresh conversation (attempt ${attempt + 1}/${MAX_RETRIES})`);
         await new Promise(r => setTimeout(r, SHORT_RETRY_DELAY_MS));

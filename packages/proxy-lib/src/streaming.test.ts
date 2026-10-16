@@ -1020,6 +1020,22 @@ describe("image input (#39)", () => {
     expect(scripted.images).toEqual([[PNG]]);
     scripted.queue = [];
   });
+
+  it("sends a document file part along with the images, its name folded into the data URL", async () => {
+    scripted.result = null;
+    scripted.images = [];
+    scripted.queue = [{ fullText: "Revision C." }];
+    const body = ChatCompletionRequest.parse({
+      model: "gpt-5.6-think-deeper", stream: false,
+      messages: [{ role: "user", content: [
+        { type: "text", text: `what revision? ${Math.random()}` },
+        { type: "file", file: { filename: "spec.pdf", file_data: "data:application/pdf;base64,JVBERi0=" } },
+      ] }],
+    });
+    await handleChatCompletion(body, new SessionPool());
+    expect(scripted.images).toEqual([["data:application/pdf;name=spec.pdf;base64,JVBERi0="]]);
+    scripted.queue = [];
+  });
 });
 
 describe("stopping a turn that writes its own <tool_response> (early stop)", () => {
