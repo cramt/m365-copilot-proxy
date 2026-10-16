@@ -11,6 +11,7 @@ import {
   shellDialect,
   findWriteTool,
   longHeredocAsWrite,
+  longCommandAsScript,
   currentFramingVariant,
   defaultFramingForTone,
   defaultFramingForModel,
@@ -567,6 +568,36 @@ describe("longHeredocAsWrite", () => {
     expect(args(r!.call).path).toBe("docs/a.md");
     expect(r?.skipped).toBe("mkdir -p docs");
   });
+
+  // Everything the heredoc rewrite can't carry: here a Python heredoc, the shape
+  // of a long analysis script (`py - <<'EOF'`), which reached Python cut short.
+  describe("longCommandAsScript", () => {
+    const script = `cd data && py - <<'EOF'\n${"print('ı ş ğ', 1)\n".repeat(600)}EOF`;
+
+    it("saves the whole command with the write tool and runs it from there", () => {
+      const r = longCommandAsScript(shellCall(script), tools, "win32", "C:\\Users\\O'Neil\\Temp");
+      expect(r?.path).toMatch(/^C:\/Users\/O'Neil\/Temp\/m365-cmd-[0-9a-f]{8}\.sh$/);
+      expect(r?.write.function.name).toBe("write");
+      expect(args(r!.write)).toEqual({ path: r!.path, content: `${script}\n` });
+      const q = `'${r!.path.replace("'", "'\\''")}'`;
+      expect(args(r!.run)).toEqual({ command: `bash ${q}; s=$?; rm -f ${q}; exit $s` });
+      expect(r?.length).toBe(script.length);
+    });
+
+    it("keeps the call's other arguments on the run", () => {
+      const call = { ...shellCall(script), function: { name: "bash", arguments: JSON.stringify({ command: script, timeout: 600 }) } };
+      expect(args(longCommandAsScript(call, tools, "win32", "C:/t")!.run).timeout).toBe(600);
+    });
+
+    it("leaves alone what the command line carries, or a host it can't run on", () => {
+      expect(longCommandAsScript(shellCall("py - <<'EOF'\nprint(1)\nEOF"), tools, "win32")).toBeNull();
+      expect(longCommandAsScript(shellCall(script), tools, "linux")).toBeNull();
+      expect(longCommandAsScript(shellCall(script), [bash], "win32")).toBeNull();
+      const ps: ToolDef = { type: "function", function: { name: "shell", description: "Run a PowerShell command", parameters: { type: "object", properties: { command: { type: "string" } } } } };
+      const psCall = { ...shellCall(script), function: { name: "shell", arguments: JSON.stringify({ command: script }) } };
+      expect(longCommandAsScript(psCall, [ps, write], "win32")).toBeNull();
+    });
+  });
 });
 
 describe("formatFencedToolDefinitions", () => {
@@ -649,6 +680,16 @@ describe("defaultFramingForTone", () => {
     // and saved turns on both paths, bench and real pi alike.
     expect(defaultFramingForTone("Gpt_61_Sol_Reasoning")).toBe("relay_batch");
     expect(defaultFramingForModel("gpt-6.1-sol")).toBe("relay_batch");
+  });
+
+  it("gives GPT-5.6 Think Deeper relay_batch — baseline's <system> block conflicts with M365's 'file generation is disabled' (§39 F97)", () => {
+    // Real pi, PDF + .docx: runs with any give-up turn baseline 12/14, relay 0/14,
+    // relay_batch 0/8 with 3.4 calls a run vs relay's 5.6; bench 20/20 each at −19% turns.
+    expect(defaultFramingForTone("Gpt_5_6_Reasoning")).toBe("relay_batch");
+    expect(defaultFramingForModel("gpt-5.6-think-deeper")).toBe("relay_batch");
+    // Measured on the reasoning tone only; the chat tone keeps baseline.
+    expect(defaultFramingForTone("Gpt_5_6_Chat")).toBeUndefined();
+    expect(defaultFramingForModel("gpt-5.6")).toBeUndefined();
   });
 
   it("keeps the minimal variant materially shorter than baseline (not a default any more, still selectable)", () => {

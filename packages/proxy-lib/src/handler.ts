@@ -35,6 +35,7 @@ import {
   fabricatedToolResponseAt,
   textAfterFirstToolCall,
   longHeredocAsWrite,
+  longCommandAsScript,
   formatToolResponse,
   isProseDocument,
   getMessageContent,
@@ -46,6 +47,7 @@ import {
   fetchImageBytes,
   type CapturedImage,
   type ParseResult,
+  type ParsedToolCall,
 } from "@m365-copilot/core";
 import { ChatCompletionRequest } from "./schemas.js";
 import type { z } from "zod/v4";
@@ -154,6 +156,21 @@ interface ConversationState {
    *  Opus fallback, #18) can't continue the M365 conversation — it may need
    *  another scenario — so it starts a fresh one with the full history. */
   servedModel?: string;
+  /** replyKey of the last reply this conversation gave the client. */
+  lastReply: string | null;
+  /** A turn is in flight, so no other request is its continuation. */
+  busy: boolean;
+  /** The second half of a long command (longCommandAsScript): sent, without a
+   *  turn on M365, when the result of the write call `writeId` comes back. */
+  chain: { writeId: string; run: ParsedToolCall } | null;
+}
+
+
+/** What a client echoes back of a reply in its next request: the tool-call ids
+ *  (they pair the results, so they come back verbatim), else the text. */
+function replyKey(m: ParsedMessage | undefined): string | null {
+  if (m?.role !== "assistant") return null;
+  return m.tool_calls?.length ? m.tool_calls.map((c) => c.id).join(" ") : getMessageContent(m).trim();
 }
 
 /**
@@ -190,7 +207,10 @@ export function executedOnlyFirstNote(fabricated: boolean, droppedCalls: number,
 const MAX_IDLE_MS = 30 * 60 * 1000; // evict after 30 min idle
 
 export class SessionPool {
-  private conversations = new Map<string, ConversationState>();
+  /** Keyed by fingerprint (first user message + tool names). Several can share
+   *  one: two pi sessions opened with "merhaba", parallel subagents given one
+   *  prompt, a session resumed after another started the same way. */
+  private conversations = new Map<string, ConversationState[]>();
   private sessionOptions: ModelSessionOptions;
 
   constructor(sessionOptions: ModelSessionOptions = {}) {
@@ -200,46 +220,53 @@ export class SessionPool {
   /**
    * Resolve the conversation state for an incoming request.
    * Fingerprint is the hash of the first user message and the request's tool
-   * names — same opener and same tool set = same conversation.
+   * names — same opener and same tool set = same conversation family.
+   *
+   * A harness re-sends the whole history and only ever appends, so a
+   * continuation carries more messages than its conversation has sent, and at
+   * that position it echoes the conversation's last reply (replyKey). The echo
+   * tells apart conversations that share a fingerprint. Without a match it
+   * falls back to the most recent one, so a client that rewrites old replies
+   * still continues (one conversation per fingerprint works as before).
    */
   resolve(messages: ParsedMessage[], tools?: ChatBody["tools"]): ConversationState {
     this.evictStale();
 
     const fingerprint = this.fingerprint(messages, tools);
-    const existing = this.conversations.get(fingerprint);
-
-    if (existing) {
-      // A request that carries no more messages than this conversation already
-      // sent is not its continuation (a harness re-sends the whole history and
-      // only ever appends). It's a new session that shares the first user message
-      // — two pi sessions opened with the same prompt, even in different
-      // directories — or a re-sent request. Either way it needs a FRESH M365
-      // conversation: reset() kept the conversationId, so the full prompt went
-      // into the old thread, and at equal length nothing reset at all and
-      // "Please continue." went there. Measured (Windows / pi, 30 runs of 2
-      // prompts): later sessions answered from earlier ones — "notlar.docx was
-      // already created and verified" in an empty directory — and the pass rate
-      // fell 7/10 → 4/10 → 3/10 over the sweep. The full prompt re-sends the
-      // whole history, so nothing the harness holds is lost.
-      if (messages.length <= existing.sentMessageCount) {
-        log.info(`Conversation ${fingerprint}: not a continuation (${messages.length} <= ${existing.sentMessageCount} sent), starting a fresh M365 conversation`);
-        existing.session.newConversation();
-        existing.sentMessageCount = 0;
-        existing.pendingNote = null;
-      }
-      existing.lastAccessedAt = Date.now();
-      return existing;
+    const bucket = this.conversations.get(fingerprint) ?? [];
+    const candidates = bucket.filter((s) => !s.busy && messages.length > s.sentMessageCount);
+    const own = candidates.find((s) => s.lastReply !== null && s.lastReply === replyKey(messages[s.sentMessageCount]))
+      ?? candidates.sort((a, b) => b.lastAccessedAt - a.lastAccessedAt)[0];
+    if (own) {
+      own.lastAccessedAt = Date.now();
+      return own;
     }
 
-    // New conversation
-    log.info(`New conversation ${fingerprint}, ${this.conversations.size} active`);
+    // Not a continuation of any of them: a new session that shares the first
+    // user message — two pi sessions opened with the same prompt, even in
+    // different directories — or a re-sent request. Either way it needs a FRESH
+    // M365 conversation, and the others stay as they are, because their sessions
+    // may still be running. Measured (Windows / pi, 30 runs of 2 prompts): joined
+    // to an earlier session's thread, later sessions answered from it —
+    // "notlar.docx was already created and verified" in an empty directory — and
+    // the pass rate fell 7/10 → 4/10 → 3/10 over the sweep. Resetting that thread
+    // instead (F84) broke the earlier session when it was still alive: two
+    // measurement jobs that ran at once threw each other's conversations away
+    // every turn (F98). The full prompt re-sends the whole history, so nothing
+    // the harness holds is lost.
+    if (bucket.length) log.info(`Conversation ${fingerprint}: not a continuation of the ${bucket.length} on this first message, starting a fresh M365 conversation`);
+    else log.info(`New conversation ${fingerprint}, ${this.size} active`);
     const state: ConversationState = {
       session: new ModelSession(this.sessionOptions),
       sentMessageCount: 0,
       pendingNote: null,
+      lastReply: null,
+      busy: false,
+      chain: null,
       lastAccessedAt: Date.now(),
     };
-    this.conversations.set(fingerprint, state);
+    bucket.push(state);
+    this.conversations.set(fingerprint, bucket);
     return state;
   }
 
@@ -261,16 +288,18 @@ export class SessionPool {
 
   private evictStale() {
     const now = Date.now();
-    for (const [key, state] of this.conversations) {
-      if (now - state.lastAccessedAt > MAX_IDLE_MS) {
-        log.info(`Evicting idle conversation ${key}`);
-        this.conversations.delete(key);
-      }
+    for (const [key, bucket] of this.conversations) {
+      const live = bucket.filter((s) => s.busy || now - s.lastAccessedAt <= MAX_IDLE_MS);
+      if (live.length < bucket.length) log.info(`Evicting ${bucket.length - live.length} idle conversation(s) ${key}`);
+      if (live.length) this.conversations.set(key, live);
+      else this.conversations.delete(key);
     }
   }
 
   get size(): number {
-    return this.conversations.size;
+    let n = 0;
+    for (const bucket of this.conversations.values()) n += bucket.length;
+    return n;
   }
 }
 
@@ -308,6 +337,19 @@ function parseReply(text: string, tools: Parameters<typeof parseToolCalls>[1]): 
     return { parsed: { hasToolCalls: false, toolCalls: [], textContent: text }, judged: opening };
   }
   return { parsed, judged: parsed.textContent };
+}
+
+/** M365's web client renders `<File>notlar.docx</File>` as a file chip, and its
+ *  models write that markup into answers: 58 times in the 245 distinct final
+ *  answers of the pi transcripts (Oct 2–5), plus `<document>`, `<Files>`,
+ *  `<file>`, `<FILE>` and "< File>". An API client shows the raw tags, so a prose
+ *  answer gets the bare name. Code is left as it is: fenced blocks, and inline
+ *  code (`<file>a.txt</file>` written as an example of the markup). */
+export function plainFileNames(text: string): string {
+  return text
+    .split(/(```[\s\S]*?```|`[^`\n]+`)/)
+    .map((part, i) => (i % 2 ? part : part.replace(/<\s*(file|files|document)\s*>([^<>\n]{1,200}?)<\/\s*\1\s*>/gi, "$2")))
+    .join("");
 }
 
 // --- Delta message formatting ---
@@ -349,6 +391,11 @@ export async function handleChatCompletion(
 ): Promise<Response> {
   const conv = pool.resolve(body.messages, body.tools);
   const { session } = conv;
+  // The harness saved a long command to a script (longCommandAsScript); run it.
+  const last = body.messages[body.messages.length - 1];
+  const run = conv.chain && last?.role === "tool" && last.tool_call_id === conv.chain.writeId ? conv.chain.run : null;
+  if (conv.chain && !run) conv.pendingNote = null; // its note says the script ran
+  conv.chain = null;
   const hasTools = body.tools && body.tools.length > 0 && body.tool_choice !== "none";
   const requestedModel = body.model;
 
@@ -396,9 +443,10 @@ export async function handleChatCompletion(
   // Framing default follows the MODEL (defaultFramingForModel): the Claude,
   // GPT-6 and GPT-6 Sol tones get a user-voice relay (Sonnet reads the
   // `<system>`-tagged baseline as an injected prompt; on Opus it trips the
-  // jailbreak classifier). Opus, Sonnet 4.6, GPT-6, GPT-6 Sol and GPT-6.1 Sol get the
-  // turn-saving `relay_batch` (§24 F60, §25, §27, §28); Sonnet 5 and Sonnet 5.5 plain `relay`. The
-  // rest keep the bench-tuned `baseline`.
+  // jailbreak classifier). Opus, Sonnet 4.6, GPT-6, GPT-6 Sol, GPT-6.1 Sol and
+  // GPT-5.6 Think Deeper get the turn-saving `relay_batch` (§24 F60, §25, §27, §28,
+  // §39 F97); Sonnet 5 and Sonnet 5.5 plain `relay`. The rest keep the bench-tuned
+  // `baseline`.
   // Keyed on the model, not the tone, because one tone can serve two models.
   // M365_FRAMING_* still wins.
   let framingVariant = currentFramingVariant(defaultFramingForModel(model));
@@ -411,8 +459,11 @@ export async function handleChatCompletion(
   const convId = session.conversationId;
   let text: string;
   // Images ride on the message that carries their text (core image-input.ts).
-  let inputImages: string[];
-  if (isFirstTurn || conv.sentMessageCount === 0) {
+  let inputImages: string[] = [];
+  if (run) {
+    text = "";
+    log.info(`Running the saved long command: ${trunc(run.function.arguments, 200)} (no M365 turn), cid=${convId}`);
+  } else if (isFirstTurn || conv.sentMessageCount === 0) {
     text = formatMessages(body.messages, body.tools, body.tool_choice, convId, framingVariant);
     inputImages = imageUrls(body.messages);
     log.info(`Chat completion: model=${model}, stream=${body.stream}, messages=${body.messages.length}, turn=${session.turnCount}, mode=full, cid=${convId}`);
@@ -434,7 +485,7 @@ export async function handleChatCompletion(
       log.info(`Chat completion: model=${model}, stream=${body.stream}, messages=${body.messages.length}, turn=${session.turnCount}, mode=retry, cid=${convId}`);
     }
   }
-  conv.pendingNote = null; // one turn only: consumed above, or stale
+  if (!run) conv.pendingNote = null; // one turn only: consumed above, or stale (kept past the script run)
 
   log.debug("Formatted prompt:", trunc(text, 1000));
 
@@ -770,7 +821,7 @@ export async function handleChatCompletion(
   // `onDelta` streams text to the client live (non-tool path only — see produce's
   // caller). Tool mode ignores it: the raw text is parsed for tool-call fences and
   // can't be shown verbatim, so it stays fully buffered.
-  async function produce(onDelta?: (delta: string) => void): Promise<Produced> {
+  async function produceTurn(onDelta?: (delta: string) => void): Promise<Produced> {
   // When tools are present, buffer full response to detect tool calls
   if (hasTools) {
     // A <tool_response> the model wrote itself is a stop sequence: everything
@@ -894,14 +945,23 @@ export async function handleChatCompletion(
     }
 
     if (parsed.hasToolCalls && parsed.toolCalls.length > 0) {
-      // A heredoc file write past the Windows command-line cap would reach the
-      // shell cut short; run the same write through the harness's write tool.
-      const asWrite = longHeredocAsWrite(parsed.toolCalls[0], body.tools);
+      // A command past the Windows command-line cap would reach the shell cut
+      // short. A lone heredoc file write goes through the harness's write tool;
+      // anything else (other commands with it, `py - <<'EOF'`, `py -c`) is saved
+      // to a script by the write tool and run whole on the next request.
+      const heredoc = longHeredocAsWrite(parsed.toolCalls[0], body.tools);
+      const asWrite = heredoc && !heredoc.skipped ? heredoc : null;
+      const asScript = asWrite ? null : longCommandAsScript(parsed.toolCalls[0], body.tools);
       let rewriteNote: string | null = null;
       if (asWrite) {
         log.info(`Heredoc write to ${asWrite.path} is over the Windows command-line cap — sent as ${asWrite.call.function.name} instead`);
         parsed.toolCalls = [asWrite.call];
-        rewriteNote = `(Note: your heredoc to \`${asWrite.path}\` was longer than the ~8,000-character Windows command-line limit and would have been cut off, so it was written with the \`${asWrite.call.function.name}\` tool instead.${asWrite.skipped ? ` The commands after the heredoc did NOT run: \`${asWrite.skipped.slice(0, 200)}\`.` : ""})`;
+        rewriteNote = `(Note: your heredoc to \`${asWrite.path}\` was longer than the ~8,000-character Windows command-line limit and would have been cut off, so it was written with the \`${asWrite.call.function.name}\` tool instead.)`;
+      } else if (asScript) {
+        log.info(`Command of ${asScript.length} chars is over the Windows command-line cap — saving it to ${asScript.path}, run on the next request`);
+        parsed.toolCalls = [asScript.write];
+        conv.chain = { writeId: asScript.write.id, run: asScript.run };
+        rewriteNote = `(Note: your command was ${asScript.length.toLocaleString("en-US")} characters, longer than the ~8,000 the Windows command line carries, so it would have been cut off. It was saved unchanged to \`${asScript.path}\` and run from there; this is its output:)`;
       }
       // The model's server-side history holds more than what runs; say so on
       // the turn that carries the real result (executedOnlyFirstNote).
@@ -909,7 +969,7 @@ export async function handleChatCompletion(
       conv.pendingNote = notes.length ? notes.join("\n") : null;
       return { kind: "tools", toolCalls: parsed.toolCalls };
     }
-    return { kind: "text", text: fullText };
+    return { kind: "text", text: plainFileNames(fullText) };
   } else {
     // No tools — stream deltas live (onDelta) while buffering for the retry logic.
     const result = await runBuffered(onDelta);
@@ -917,7 +977,27 @@ export async function handleChatCompletion(
     conv.sentMessageCount = body.messages.length;
     return { kind: "text", text: result.fullText };
   }
-  } // end produce()
+  } // end produceTurn()
+
+  // The turn holds its conversation until it ends, so a request from another
+  // session that opened with the same message can't join it mid-turn (resolve).
+  // Both renders below call this synchronously after resolve(): nothing slips in.
+  async function produce(onDelta?: (delta: string) => void): Promise<Produced> {
+    if (run) {
+      // M365 never saw the write; the next delta starts at the run's result.
+      conv.sentMessageCount = body.messages.length;
+      conv.lastReply = run.id;
+      return { kind: "tools", toolCalls: [run] };
+    }
+    conv.busy = true;
+    try {
+      const p = await produceTurn(onDelta);
+      if (p.kind !== "error") conv.lastReply = p.kind === "tools" ? p.toolCalls.map((c) => c.id).join(" ") : p.text.trim();
+      return p;
+    } finally {
+      conv.busy = false;
+    }
+  }
 
   // --- Render: JSON (non-stream) or an early-flushed SSE stream (stream) ---
   const includeUsage = !!body.stream_options?.include_usage;

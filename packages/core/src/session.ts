@@ -189,10 +189,13 @@ export function cursorMessageId(j: string | undefined): string | null {
 export class TurnTextComposer {
   private texts = new Map<string, string>();
   private target: string | null = null;
+  /** No delta has arrived since the last cursor (see delta). */
+  private afterCursor = false;
 
   /** A cursor frame: subsequent deltas extend message `id`. */
   cursor(id: string): void {
     this.target = id;
+    this.afterCursor = true;
   }
 
   /** A full-text snapshot of one message. Before any cursor has been seen, the
@@ -203,10 +206,23 @@ export class TurnTextComposer {
     this.texts.set(key, foldStreamText(this.texts.get(key) ?? "", text).answer);
   }
 
-  /** A token delta for the message the cursor last named. */
+  /** A token delta for the message the cursor last named.
+   *
+   *  The first delta after a cursor can restate the head snapshot that came with
+   *  it. A message that opens with "<" streams the snapshot "<" and then the delta
+   *  "<document" (M365 holds the "<" back until it knows the tag), so appending
+   *  gave "<<document>notlar.docx…", and the final snapshot, one character
+   *  shorter, never replaced it. 9 of 1,061 cursor frames in the Oct 2–5 debug
+   *  logs, each one a "<"; in the rest the first delta continues the snapshot.
+   *  Only that "<" counts as restated: a head of "*" or "`" followed by a delta
+   *  that starts the same way is a continuation ("*" + "*Summary**" is bold,
+   *  "`" + "``bash" a fence), and dropping it would break the markdown. */
   delta(text: string): void {
     const key = this.target ?? "";
-    this.texts.set(key, (this.texts.get(key) ?? "") + text);
+    const current = this.texts.get(key) ?? "";
+    const restated = this.afterCursor && current === "<" && text.startsWith("<");
+    this.texts.set(key, restated ? text : current + text);
+    this.afterCursor = false;
   }
 
   get text(): string {

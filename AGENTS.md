@@ -171,11 +171,16 @@ pnpm test:live      # M365_LIVE=1; live tests that hit real M365 (uses quota)
   would delete the agent another host/PC is still using mid-conversation. A few orphaned
   lightweight bots are harmless. `updateBotInstructions()` is still dead code — we re-create
   rather than update in place. See API doc §10.
-- **Reasoning tones don't work with the agent.** `*-think-deeper` (and bare `gpt-5.4`) route through
-  the `DeepLeo` reasoning pipeline, which meta-analyzes the injected prompt instead of
-  obeying it. Only the default `magic` and the chat tones (`*_Chat`, what the `*-quick` IDs
-  resolve to) behave. The model can't be bound
-  to our (declarative `minimalBots`) agent type at all — see API doc §10 *Agent types*.
+- **Reasoning tones work with the agent; the framing decides whether they obey it.** `*-think-deeper`
+  (and bare `gpt-5.4`) route through the `DeepLeo` reasoning pipeline, which meta-analyzes the injected
+  prompt, and this note used to say they don't work with the agent at all. They do: GPT-5.5 Think Deeper
+  tool-calls with the agent under baseline, and GPT-5.6 Think Deeper under the user-voice framings
+  (`relay_batch` by default). Under baseline 5.6 gave up on file-producing turns (runs with a give-up turn
+  12/14, relay 0/14, relay_batch 0/8, §39 F97): on the agent path
+  M365's own instructions say file generation is disabled, and baseline's `<system>`-tagged block says
+  create the file. When a reasoning tone refuses, read its chain-of-thought frames before blaming the
+  tone. What still holds: the model can't be bound to our (declarative `minimalBots`) agent type as its
+  own model — see API doc §10 *Agent types*.
 - **The `*_Quick` tones are retired — `*_Chat` replaced them. Don't map or probe a `*_Quick` tone.**
   The validator now rejects `Gpt_Quick` and `Gpt_5_{2,3,4}_Quick`, and the unversioned `Gpt_Chat` /
   `Gpt_Reasoning` too. The `quick` / `*-quick` model IDs stay as aliases (never remove

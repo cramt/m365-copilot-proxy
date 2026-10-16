@@ -301,6 +301,29 @@ describe("looksLikeConfabulation", () => {
     // Missed live on the final build (pdf task, after a real tool call).
     expect(looksLikeConfabulation("PDF oluşturma işlemini bu oturumda tamamlayamıyorum. Alternatif olarak Markdown dosyasını Visual Studio Code’da açabilirsiniz.")).toBe(true);
     expect(looksLikeConfabulation("`pandoc` sistemde kurulu olmadığı için PDF oluşturma komutu başarısız oldu. Bu oturumda yeni araç kurma veya indirilebilir PDF oluşturma yetkim bulunmuyor.")).toBe(true);
+    // Missed in the framing sweep's turn audit (baseline arm, real pi).
+    expect(looksLikeConfabulation("Dosya oluşturma özelliğim şu anda kullanılamıyor. Alternatif olarak, `notlar.md` içeriğini Microsoft Word’e yapıştırmaya hazır biçimde düzenleyebilirim.")).toBe(true);
+    expect(looksLikeConfabulation("Şu anda dosya sistemine erişip `notlar.pdf` dosyasını kontrol edemiyorum.")).toBe(true);
+    // Missed in the long-session sweep (step 2, baseline).
+    expect(looksLikeConfabulation("Bu oturumda dosya sistemi ve komut çalıştırma araçları şu anda erişilebilir değil. Bu nedenle dosyaları güvenilir biçimde düzenleyip testleri gerçekten çalıştırdığımı gösteremem.")).toBe(true);
+    // Missed on the fixed build (pdf, baseline): passive, after one missing library; no file was made.
+    expect(looksLikeConfabulation("PDF oluşturma işlemi tamamlanamadı. WeasyPrint kurulumu, gerekli `libgobject-2.0-0` sistem kitaplığını bulamadı.")).toBe(true);
+    expect(looksLikeConfabulation("notlar.pdf oluşturulamadı.")).toBe(true);
+    // Missed with 308 skills listed: it asks for the file instead of reading it.
+    expect(looksLikeConfabulation("Bunu hazırlayabilmem için **data.csv dosyasının içeriğine erişmem gerekiyor**. Dosyayı buraya yüklediğinizde kısa raporu şu yapıda sunabilirim:")).toBe(true);
+  });
+
+  it("flags GPT-5.6's English give-ups (it answers a Turkish prompt in English now and then)", () => {
+    // Exact strings from live Windows/pi runs that went straight to the user.
+    expect(looksLikeConfabulation("I’m sorry, but I wasn’t able to complete and verify the code change in this run.")).toBe(true);
+    expect(looksLikeConfabulation("I can’t issue a tool block because no execution tool is enabled in this turn, and the file/content to process has not been specified.")).toBe(true);
+    expect(looksLikeConfabulation("I can’t create or inspect files in the current directory because file tools aren’t enabled in this chat. To create `ozet.md`, copy the contents of `note.txt` here, and I’ll provide a one-line summary ready to paste into the file.")).toBe(true);
+  });
+
+  it("does NOT flag an honest partial report or prose about tool settings", () => {
+    expect(looksLikeConfabulation("I couldn't complete the integration tests because they need Docker; the 12 unit tests pass.")).toBe(false);
+    expect(looksLikeConfabulation("The bash tool is enabled by default; set M365_HOST_SHELL to override the dialect.")).toBe(false);
+    expect(looksLikeConfabulation("Tools are not enabled for requests without a tools array, so the proxy answers in plain text.")).toBe(false);
   });
 
   it("does NOT flag a Turkish project summary that merely talks about sessions or disabled flags", () => {
@@ -311,6 +334,13 @@ describe("looksLikeConfabulation", () => {
     expect(looksLikeConfabulation("ozet.md oluşturuldu: 18 bölüm, paket mimarisi ve araç çağrısı akışı.")).toBe(false);
     // Third person ("yetkisi"), not first ("yetkim"): describes the code, not a give-up.
     expect(looksLikeConfabulation("Kullanıcının yetkisi bulunmuyorsa proxy 403 döner.")).toBe(false);
+    // Third person / conditional: the harness or a tool, not the model, can't do it.
+    expect(looksLikeConfabulation("Harness dosyayı kontrol edemiyorsa proxy hata döner.")).toBe(false);
+    expect(looksLikeConfabulation("Bu araç kullanılamıyorsa kurulum adımlarına bakın.")).toBe(false);
+    // Suffixed passives describe code paths, not this task.
+    expect(looksLikeConfabulation("Kurulum tamamlanamadıysa proxy 502 döner.")).toBe(false);
+    expect(looksLikeConfabulation("Dosya oluşturulamadığında hata günlüğe yazılır.")).toBe(false);
+    expect(looksLikeConfabulation("Proxy'nin M365'e erişmesi gerekir; token süresi dolarsa yeniden giriş yapılır.")).toBe(false);
   });
 
   it("does NOT flag genuine final answers or normal prose", () => {
@@ -389,6 +419,37 @@ describe("tool-result labelling", () => {
       tools,
     );
     expect(out).toContain('<tool_response tool="tool">');
+  });
+
+  // GPT-5.6's CoT in a long pi session: "the tool is responding with an unexpected
+  // label" — an edit labelled command="todo.mjs", a command shown re-quoted.
+  it("labels a file tool by its path, not as a command", async () => {
+    const { formatToolResponse } = await import("./tools.js");
+    const history = [{ role: "assistant", tool_calls: [{ id: "e1", function: { name: "edit", arguments: '{"path":"todo.mjs","edits":[]}' } }] }];
+    const out = formatToolResponse({ role: "tool", tool_call_id: "e1", content: "Successfully replaced 1 block(s) in todo.mjs." }, history);
+    expect(out).toContain('<tool_response tool="edit" path="todo.mjs">');
+    expect(out).not.toContain("command=");
+  });
+
+  it("shows a command with its own quotes (escaped), not swapped for single quotes", async () => {
+    const { formatToolResponse } = await import("./tools.js");
+    const cmd = `for f in a.mjs; do printf '%s\\n' "$f"; done`;
+    const history = [{ role: "assistant", tool_calls: [{ id: "b1", function: { name: "bash", arguments: JSON.stringify({ command: cmd }) } }] }];
+    const out = formatToolResponse({ role: "tool", tool_call_id: "b1", content: "a.mjs" }, history);
+    expect(out).toContain(`command="for f in a.mjs; do printf '%s\\\\n' \\"$f\\"; done"`);
+    expect(out).not.toContain("'$f'"); // "$f" and '$f' are different shell commands
+  });
+
+  // Live (GPT-5.6, relay_batch, a PDF task): a label cut silently at 100 chars,
+  // `command="… margin: 22m"`, was read as the command itself cut there.
+  it("marks a long command it shortens, so the label doesn't read as a cut command", async () => {
+    const { formatToolResponse } = await import("./tools.js");
+    const cmd = `set -eu\ncss=".notlar-pdf.css"\nprintf '%s\\n' '@page { size: A4; margin: 22mm 20mm; }' 'body { font-family: "Segoe UI", Arial }' > "$css"`;
+    const history = [{ role: "assistant", tool_calls: [{ id: "b2", function: { name: "bash", arguments: JSON.stringify({ command: cmd }) } }] }];
+    const label = formatToolResponse({ role: "tool", tool_call_id: "b2", content: "(no output)" }, history).split("\n")[0];
+    expect(label).toMatch(/…">$/);
+    const short = [{ role: "assistant", tool_calls: [{ id: "b3", function: { name: "bash", arguments: '{"command":"ls -la"}' } }] }];
+    expect(formatToolResponse({ role: "tool", tool_call_id: "b3", content: "x" }, short)).toContain('command="ls -la">');
   });
 });
 
