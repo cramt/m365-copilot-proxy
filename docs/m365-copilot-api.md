@@ -166,6 +166,19 @@ Nothing else is needed: no GPT-V `optionsSets` on the turn, and it works with th
 (hypotheses §33 F86). `core/src/image-input.ts`; the handler sends the OpenAI `image_url` (data URL)
 parts of the messages a turn carries.
 
+### Documents in a turn
+
+A document doesn't go to `UploadFile`. The web client puts it in the user's OneDrive and points the
+message at it (hypotheses §39 F97):
+
+1. `POST https://graph.microsoft.com/v1.0/me/drive/special/copilotuploads:/<name>:/createUploadSession`
+   with a Graph token (`Prefer: ExtractTextOnCommit`), then `PUT` the bytes to the returned `uploadUrl`.
+2. The chat invocation's `message.messageAnnotations: [{ id: "SPO_<base64 siteId,webId,listId>_<itemId>",
+   text: <name>, url: <webUrl>, messageAnnotationType: "LocalFile" }]`; the ids come from the item's
+   `sharepointIds`.
+
+`core/src/file-upload.ts`; the handler sends the OpenAI `file` parts (`file_data` data URL, `filename`).
+
 ### The mandatory Metrics frame (`type: 1`, `target: "Metrics"`)
 ```json
 {

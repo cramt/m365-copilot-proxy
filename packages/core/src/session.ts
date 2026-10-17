@@ -1,5 +1,6 @@
 import WebSocket from "ws";
 import type { ImageAnnotation } from "./image-input.js";
+import type { FileAnnotation } from "./file-upload.js";
 import { appendFileSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
 import {
@@ -238,8 +239,9 @@ export interface ChatTurnOptions {
    *  optionsSets + the GenerateGraphicArt allowedMessageType; the generated
    *  images surface on `stream.images`. Agent-less only. */
   generateImages?: boolean;
-  /** Uploaded images this turn's message points at (image-input.ts). */
-  images?: ImageAnnotation[];
+  /** Uploaded images and documents this turn's message points at (image-input.ts,
+   *  file-upload.ts). */
+  images?: (ImageAnnotation | FileAnnotation)[];
 }
 
 export interface CopilotSessionOptions {
