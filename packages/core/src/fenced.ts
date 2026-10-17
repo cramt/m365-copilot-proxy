@@ -903,24 +903,78 @@ export const FRAMING_VARIANT_NAMES = Object.keys(FRAMING_VARIANTS);
 
 // --- Parsing -----------------------------------------------------------------
 
-// Info-string of a fence that can be a tool call. Dots and hyphens are allowed so
-// namespaced runtime tool names (```container.exec) can be recognised and routed;
-// an info-string that resolves to no spec is left in prose by
-// parseFencedToolCalls, so widening this costs nothing.
-const FENCE_OPEN = /^[ \t]*```([A-Za-z0-9_.-]*)[ \t]*$/;
-const FENCE_CLOSE = /^[ \t]*```[ \t]*$/;
-// The looser shapes the pre-scanner regex also took, and the model does emit:
-// prose then an opener on one line ("Running it: ```bash"), and a closer glued
-// to the last line of the body ("ls -la```"). Only honoured at the outermost
-// level, where they can't be mistaken for nesting.
-const FENCE_OPEN_MIDLINE = /```([A-Za-z0-9_.-]+)[ \t]*$/;
-const FENCE_CLOSE_GLUED = /\S```[ \t]*$/;
+// A fence line, as CommonMark has it plus what the models write: any
+// indentation, a run of 3+ backticks or tildes, then the info string. Its first
+// word names the tool — dots and hyphens allowed, so a leaked runtime tool
+// (```container.exec) is recognised and routed — and anything after it
+// (`title="x"`) is ignored. A backtick fence's info string can't hold a
+// backtick: "```bash ls -la```" is inline code, not a fence. An info word that
+// resolves to no spec is left in prose by parseFencedToolCalls.
+const FENCE_LINE = /^([ \t]*)(`{3,}|~{3,})[ \t]*(.*?)[ \t]*$/;
+// Two shapes the models write that aren't CommonMark, taken at the outermost
+// level only, where they can't be mistaken for nesting: prose then an opener on
+// one line ("Running it: ```bash"), and a closer glued to the last line of the
+// body ("ls -la```").
+const FENCE_OPEN_MIDLINE = /(`{3,})([A-Za-z0-9_.-]+)[ \t]*$/;
+const FENCE_CLOSE_GLUED = /[^`\s](`{3,})[ \t]*$/;
+// And a closer with the next sentence glued on: "```Raporu hazırlayabilmem için
+// önce…" (3 of 1,153 whole logged replies, every one a call that was dropped;
+// docs §40 F103).
+// It reads as an opener, so it is taken only when what follows the backticks
+// reads as prose — three or more words, no attribute syntax — never as
+// "```python title=x".
+const looksLikeProse = (after: string): boolean => after.trim().split(/\s+/).length >= 3 && !/[={]/.test(after);
+const FENCE_RUN_THEN_TEXT = /^([ \t]*)(`{3,}|~{3,})(.*)$/;
+
+/** Whether a body leaves a shell heredoc open: a `<<EOF`, `<<'EOF'` or `<<-EOF`
+ *  whose delimiter line never comes. The shell would read on to the end, so a
+ *  fallback closer inside it ("```Then run the following commands") is the
+ *  heredoc's text cut short, not the end of the call. Errs toward "open" (a
+ *  `<<` in a quoted string counts too): that only costs asking again. */
+function openHeredoc(body: string): boolean {
+  const pending: Array<{ delim: string; tabs: boolean }> = [];
+  for (const raw of body.split("\n")) {
+    const line = raw.endsWith("\r") ? raw.slice(0, -1) : raw;
+    if (pending.length) {
+      if ((pending[0].tabs ? line.replace(/^\t+/, "") : line) === pending[0].delim) pending.shift();
+      continue;
+    }
+    for (const m of line.matchAll(/<<(-?)[ \t]*(['"]?)([A-Za-z_][A-Za-z0-9_]*)\2/g)) {
+      if (m.index > 0 && line[m.index - 1] === "<") continue; // `<<<` is a here-string
+      pending.push({ delim: m[3], tabs: m[1] === "-" });
+    }
+  }
+  return pending.length > 0;
+}
+
+interface FenceLine {
+  indent: number;
+  char: string;
+  len: number;
+  info: string;
+  /** No info string: a closing line, or an info-less opener at the top level. */
+  bare: boolean;
+}
+
+function fenceLine(line: string): FenceLine | null {
+  const m = FENCE_LINE.exec(line);
+  if (!m) return null;
+  const [, indent, run, after] = m;
+  if (run[0] === "`" && after.includes("`")) return null;
+  return { indent: indent.length, char: run[0], len: run.length, info: after.split(/[ \t]/)[0], bare: after === "" };
+}
 
 interface FenceBlock {
   info: string;
   inner: string;
   start: number;
   end: number;
+}
+
+interface FenceScan {
+  blocks: FenceBlock[];
+  /** A top-level fence still open when the text ends, with everything after its opening line. */
+  unclosed: { info: string; start: number; inner: string } | null;
 }
 
 /** Top-level fenced blocks, with nesting counted.
@@ -934,48 +988,101 @@ interface FenceBlock {
  *  examples parsed as 2 executable bash calls — illustration run as a command;
  *  an `rm -rf` in a code sample would have run.
  *
- *  So: an opener WITH an info-string inside an open fence nests; a bare ```
- *  line closes the innermost; only depth-0 blocks are returned. Inner fences
- *  stay part of their parent's body, which also lets a write_file carry a body
- *  containing balanced fences — the limitation noted at the top of this file.
- *  An unterminated fence at end of text is dropped, as the regex did. */
-function scanFences(text: string): FenceBlock[] {
+ *  So: inside an open fence, an opener with an info string and the same
+ *  character and length nests; a bare line of the same character, at least as
+ *  long, closes the innermost (CommonMark's rule, so a ````bash block keeps
+ *  its ``` lines and ```` closes it); any other fence line is body. Only
+ *  depth-0 blocks are returned, their body without the opener's indentation
+ *  (a block in a list item). Inner fences stay part of their parent's body,
+ *  which also lets a write_file carry a body containing balanced fences — the
+ *  limitation noted at the top of this file.
+ *
+ *  A glued closer ("ls -la```"), or one with prose glued after it ("```Raporu
+ *  hazırlayabilmem için…"), ends a block only when nothing else does by the
+ *  end of the text, so a body line that merely ends in ``` (a README showing
+ *  inline code) doesn't cut a write short — and never inside an open heredoc,
+ *  where it is the heredoc's text in a truncated reply. A line whose text after
+ *  the backticks reads as prose ("```Here is the plan for you") doesn't open a
+ *  block unless its first word names a tool (`isTool`): taken as an opener, it
+ *  swallowed the real tool block after it. A block still open at the end is
+ *  returned as `unclosed`: a native-call closer may end it (unclosedToolCall),
+ *  and otherwise unreadableToolFence reports it. */
+function scanFences(text: string, isTool: (info: string) => boolean, from = 0): FenceScan {
   const blocks: FenceBlock[] = [];
-  let depth = 0;
-  let open: { info: string; start: number; bodyStart: number } | null = null;
-  let offset = 0;
-  for (const raw of text.split("\n")) {
+  const stack: FenceLine[] = [];
+  let open: { info: string; start: number; bodyStart: number; indent: number } | null = null;
+  // Where a glued closer, or a closer with prose glued on, could end the open
+  // top-level block if nothing else does: the first such line.
+  let glued: { bodyEnd: number; end: number; next: number } | null = null;
+  const body = (start: number, end: number, indent: number): string => {
+    let inner = text.slice(start, Math.max(start, end));
+    if (inner.endsWith("\r")) inner = inner.slice(0, -1);
+    if (!indent) return inner;
+    const dent = new RegExp(`^[ \\t]{0,${indent}}`);
+    return inner.split("\n").map((l) => l.replace(dent, "")).join("\n");
+  };
+  let offset = from;
+  for (const raw of text.slice(from).split("\n")) {
     const line = raw.endsWith("\r") ? raw.slice(0, -1) : raw;
     const lineEnd = offset + raw.length;
-    const opener = FENCE_OPEN.exec(line)?.[1];
-    if (depth === 0) {
-      const midline = opener ? null : FENCE_OPEN_MIDLINE.exec(line);
-      if (opener || midline) {
-        open = { info: opener || midline![1], start: offset + (midline?.index ?? 0), bodyStart: lineEnd + 1 };
-        depth = 1;
+    const f = fenceLine(line);
+    if (!open) {
+      const prose = f && !f.bare && !isTool(f.info) && looksLikeProse(line.slice(f.indent + f.len));
+      const mid = f ? null : FENCE_OPEN_MIDLINE.exec(line);
+      if (f && !prose) {
+        open = { info: f.info, start: offset, bodyStart: lineEnd + 1, indent: f.indent };
+        stack.push(f);
+      } else if (mid) {
+        open = { info: mid[2], start: offset + mid.index, bodyStart: lineEnd + 1, indent: 0 };
+        stack.push({ indent: 0, char: "`", len: mid[1].length, info: mid[2], bare: false });
       }
-    } else if (FENCE_CLOSE.test(line)) {
-      if (--depth === 0 && open) {
-        let inner = text.slice(open.bodyStart, Math.max(open.bodyStart, offset - 1));
-        if (inner.endsWith("\r")) inner = inner.slice(0, -1);
-        blocks.push({ info: open.info, inner, start: open.start, end: lineEnd });
-        open = null;
+    } else {
+      const top = stack[stack.length - 1];
+      if (f && f.char === top.char && f.bare && f.len >= top.len) {
+        stack.pop();
+        if (stack.length === 0) {
+          blocks.push({ info: open.info, inner: body(open.bodyStart, offset - 1, open.indent), start: open.start, end: lineEnd });
+          open = null;
+          glued = null;
+        }
+      } else {
+        // The fallback closers, at the outermost level. The prose one is checked
+        // apart from fenceLine: its sentence may hold inline code ("`data.csv`"),
+        // which makes the line no fence line at all.
+        if (stack.length === 1 && !glued) {
+          const t = FENCE_RUN_THEN_TEXT.exec(line);
+          const g = top.char === "`" ? FENCE_CLOSE_GLUED.exec(line) : null;
+          if (t && t[2][0] === top.char && t[2].length === top.len && looksLikeProse(t[3])) {
+            const runEnd = offset + t[1].length + t[2].length;
+            glued = { bodyEnd: offset - 1, end: runEnd, next: runEnd };
+          } else if (g && g[1].length >= top.len) {
+            glued = { bodyEnd: offset + line.trimEnd().length - g[1].length, end: lineEnd, next: lineEnd + 1 };
+          }
+        }
+        if (f && f.char === top.char && !f.bare && f.len === top.len) stack.push(f);
       }
-    } else if (opener) {
-      depth++;
-    } else if (depth === 1 && open && FENCE_CLOSE_GLUED.test(line)) {
-      const inner = text.slice(open.bodyStart, offset + line.trimEnd().length - 3);
-      blocks.push({ info: open.info, inner, start: open.start, end: lineEnd });
-      open = null;
-      depth = 0;
     }
     offset = lineEnd + 1;
   }
-  return blocks;
+  if (open && glued && !openHeredoc(text.slice(open.bodyStart, Math.max(open.bodyStart, glued.bodyEnd)))) {
+    blocks.push({ info: open.info, inner: body(open.bodyStart, glued.bodyEnd, open.indent), start: open.start, end: glued.end });
+    const rest = scanFences(text, isTool, glued.next);
+    return { blocks: [...blocks, ...rest.blocks], unclosed: rest.unclosed };
+  }
+  return { blocks, unclosed: open && { info: open.info, start: open.start, inner: body(open.bodyStart, text.length, open.indent) } };
 }
 
-// A fence opening with a tool-like info-string, for findUnclosedToolFence.
-const FENCE_OPEN_REGEX = /```([A-Za-z0-9_.-]+)[ \t]*\r?\n/g;
+/** The spec a fence's info word names: exact, else the one name that matches it
+ *  ignoring case (```Bash, ```PowerShell). */
+function resolveSpec(specs: Map<string, FencedToolSpec>, info: string): FencedToolSpec | undefined {
+  if (!info) return undefined;
+  const exact = specs.get(info);
+  if (exact) return exact;
+  const lower = info.toLowerCase();
+  const hits = new Set([...specs].filter(([k]) => k.toLowerCase() === lower).map(([, v]) => v));
+  return hits.size === 1 ? [...hits][0] : undefined;
+}
+
 const SEARCH_REPLACE_REGEX =
   /<{5,}\s*SEARCH\s*\r?\n([\s\S]*?)\r?\n={5,}\s*\r?\n([\s\S]*?)\r?\n>{5,}\s*REPLACE/;
 
@@ -1027,25 +1134,21 @@ function stripNativeCloser(inner: string, name: string): string | null {
   return m ? rest : null;
 }
 
-/** A tool fence that is never closed with ``` but ends in a native-call closer
- *  (see nativeCloserRegex). Only the last fence opening in the text, with no
- *  ``` after it, can be one. */
-function findUnclosedToolFence(
-  text: string,
+/** The top-level fence left open at the end of the text, as a tool call, when
+ *  it names a tool and ends in a native-call closer instead of ``` (see
+ *  nativeCloserRegex). Without that end marker it may be a truncated reply, and
+ *  unreadableToolFence reports it. */
+function unclosedToolCall(
+  scan: FenceScan,
   specs: Map<string, FencedToolSpec>,
+  textLength: number,
 ): { start: number; end: number; spec: FencedToolSpec; inner: string } | null {
-  let last: RegExpExecArray | null = null;
-  const re = new RegExp(FENCE_OPEN_REGEX.source, "g");
-  for (let m = re.exec(text); m !== null; m = re.exec(text)) last = m;
-  if (!last) return null;
-  const spec = specs.get(last[1]);
-  if (!spec) return null;
-  const bodyStart = last.index + last[0].length;
-  const tail = text.slice(bodyStart);
-  if (tail.includes("```")) return null; // closed: scanFences' case
-  const inner = stripNativeCloser(tail, last[1]);
-  if (inner === null) return null; // no end marker: maybe a truncated reply
-  return { start: last.index, end: text.length, spec, inner };
+  const u = scan.unclosed;
+  const spec = u && resolveSpec(specs, u.info);
+  if (!u || !spec) return null;
+  const inner = stripNativeCloser(u.inner, spec.name);
+  if (inner === null) return null;
+  return { start: u.start, end: textLength, spec, inner };
 }
 
 function makeCall(name: string, args: Record<string, unknown>): ParsedToolCall {
@@ -1414,12 +1517,16 @@ function restates(prev: ToolFence, next: ToolFence, gap: string): boolean {
 
 /** The closed tool fences in `text`, in order, a restated call replacing the
  *  one it corrects (its span then covers both copies and the gap). */
-function toolFences(text: string, specs: Map<string, FencedToolSpec>): ToolFence[] {
+function toolFences(
+  text: string,
+  specs: Map<string, FencedToolSpec>,
+  scan = scanFences(text, (info) => resolveSpec(specs, info) !== undefined),
+): ToolFence[] {
   const fences: ToolFence[] = [];
-  for (const block of scanFences(text)) {
-    const spec = specs.get(block.info);
+  for (const block of scan.blocks) {
+    const spec = resolveSpec(specs, block.info);
     if (!spec) continue; // ```python illustration etc. — not a tool, leave in prose
-    const stripped = stripNativeCloser(block.inner, block.info);
+    const stripped = stripNativeCloser(block.inner, spec.name);
     const args = parseFencedInner(spec, stripped ?? block.inner);
     if (!args) continue;
     const fence: ToolFence = { start: block.start, end: block.end, name: spec.name, args, hadNativeCloser: stripped !== null };
@@ -1441,14 +1548,15 @@ export function parseFencedToolCalls(
 ): FencedParseResult {
   const calls: ParsedToolCall[] = [];
   let leftover = text;
+  const scan = scanFences(text, (info) => resolveSpec(specs, info) !== undefined);
 
-  for (const fence of toolFences(text, specs)) {
+  for (const fence of toolFences(text, specs, scan)) {
     calls.push(makeCall(fence.name, fence.args));
     leftover = leftover.replace(text.slice(fence.start, fence.end), "");
   }
 
   if (calls.length === 0) {
-    const open = findUnclosedToolFence(text, specs);
+    const open = unclosedToolCall(scan, specs, text.length);
     const args = open && parseFencedInner(open.spec, open.inner);
     if (open && args) {
       calls.push(makeCall(open.spec.name, args));
@@ -1467,9 +1575,44 @@ export function findFirstToolFence(
   text: string,
   specs: Map<string, FencedToolSpec>,
 ): { start: number; end: number } | null {
-  const first = toolFences(text, specs)[0];
+  const scan = scanFences(text, (info) => resolveSpec(specs, info) !== undefined);
+  const first = toolFences(text, specs, scan)[0];
   if (first) return { start: first.start, end: first.end };
-  const open = findUnclosedToolFence(text, specs);
+  const open = unclosedToolCall(scan, specs, text.length);
   if (open && parseFencedInner(open.spec, open.inner)) return { start: open.start, end: open.end };
   return null;
+}
+
+/** Why a reply that tried to call a tool produced no call — or null when a call
+ *  parses, or nothing in it was a tool call.
+ *
+ *  A dropped call is the worst failure here: the reply goes to the client as
+ *  prose, the harness ends the turn, and the model reads the silence as having
+ *  no tools. parseFencedToolCalls takes every shape it can read without
+ *  guessing; this names the ones it can't, so the caller can ask the model to
+ *  send the call again instead: a tool fence never closed (a reply that stopped
+ *  mid-call, or a closer with text after it), an edit fence without its
+ *  SEARCH/REPLACE markers, and a reply that is nothing but a one-line fence
+ *  ("```bash ls -la```" — inline code anywhere else). */
+export function unreadableToolFence(
+  text: string,
+  specs: Map<string, FencedToolSpec>,
+): { name: string; reason: string } | null {
+  const scan = scanFences(text, (info) => resolveSpec(specs, info) !== undefined);
+  let found: { name: string; reason: string } | null = null;
+  for (const block of scan.blocks) {
+    const spec = resolveSpec(specs, block.info);
+    if (!spec) continue;
+    const stripped = stripNativeCloser(block.inner, spec.name);
+    if (parseFencedInner(spec, stripped ?? block.inner)) return null;
+    found ??= { name: block.info, reason: spec.editPair ? "its SEARCH/REPLACE markers are missing" : "it could not be read" };
+  }
+  const open = unclosedToolCall(scan, specs, text.length);
+  if (open && parseFencedInner(open.spec, open.inner)) return null;
+  if (scan.unclosed && resolveSpec(specs, scan.unclosed.info)) {
+    found ??= { name: scan.unclosed.info, reason: "its closing ``` never came on a line of its own" };
+  }
+  const oneLine = /^`{3,}([A-Za-z0-9_.-]+)[ \t]+[^`\n]+?`{3,}$/.exec(text.trim());
+  if (oneLine && resolveSpec(specs, oneLine[1])) found ??= { name: oneLine[1], reason: "it was written on one line" };
+  return found;
 }

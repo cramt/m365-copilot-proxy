@@ -4,6 +4,7 @@ import {
   currentFramingVariant,
   deriveFencedSpec,
   findFirstToolFence,
+  unreadableToolFence,
   formatFencedToolDefinitions,
   parseFencedToolCalls,
   renderFencedCall,
@@ -487,6 +488,12 @@ export function isProseDocument(parsed: ParseResult, text?: string, tools?: Tool
  *  lead-in like "I'll inspect the files first."? */
 function looksLikeDocumentPreamble(preamble: string): boolean {
   return /^#{1,6}\s/m.test(preamble) || preamble.includes("```") || preamble.trim().length >= 200;
+}
+
+/** Why a reply that tried to call one of these tools produced no call, or null
+ *  (see unreadableToolFence). */
+export function unreadableToolCall(text: string, tools?: ToolDef[]): { name: string; reason: string } | null {
+  return tools && tools.length > 0 ? unreadableToolFence(text, buildSpecMap(tools)) : null;
 }
 
 /** The text a reply carries after its first tool call (trimmed), or "" —

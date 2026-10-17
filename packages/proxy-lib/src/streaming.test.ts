@@ -266,6 +266,51 @@ describe("priority-access exhaustion on the streaming path", () => {
   });
 });
 
+describe("a tool call the proxy can't read", () => {
+  const tools = [{ type: "function", function: { name: "bash", parameters: { type: "object", properties: { command: { type: "string" } } } } }];
+  const UNCLOSED = "Let me look at the files.\n```bash\nls -la";
+
+  async function ask(replies: string[]) {
+    scripted.result = null;
+    scripted.texts = [];
+    scripted.queue = replies.map((fullText) => ({ fullText }));
+    const body = ChatCompletionRequest.parse({ model: "gpt-5.6-think-deeper", stream: false, tools, messages: [{ role: "user", content: `list files ${Math.random()}` }] });
+    const msg = (await (await handleChatCompletion(body, new SessionPool())).json()).choices[0].message;
+    scripted.queue = [];
+    return msg;
+  }
+  afterEach(() => { delete process.env.M365_NO_FENCE_RETRY; });
+
+  it("asks for it again, saying what was wrong, and runs the call it gets", async () => {
+    const msg = await ask([UNCLOSED, "```bash\nls -la\n```"]);
+    expect(JSON.parse(msg.tool_calls[0].function.arguments)).toEqual({ command: "ls -la" });
+    expect(scripted.texts).toHaveLength(2);
+    expect(scripted.texts[1]).toContain("couldn't be read as a tool call — its closing ``` never came on a line of its own");
+  });
+
+  it("asks once: a second unreadable reply goes out as text", async () => {
+    const msg = await ask([UNCLOSED, UNCLOSED, "```bash\nls\n```"]);
+    expect(msg.tool_calls).toBeUndefined();
+    expect(scripted.texts).toHaveLength(2);
+  });
+
+  it("doesn't force a call after asking again, whatever the answer to that was", async () => {
+    // The re-ask told the model it could reply without the call; a confab retry
+    // on that reply would force the call anyway (review, #71).
+    const msg = await ask([UNCLOSED, "I don't have access to your project files or the ability to run commands here.", "```bash\nls\n```"]);
+    expect(msg.tool_calls).toBeUndefined();
+    expect(scripted.texts).toHaveLength(2);
+  });
+
+  it("doesn't ask when nothing in the reply was a tool call, or when turned off", async () => {
+    await ask(["Done. The function is:\n\n```python\ndef f():\n    return 1"]);
+    expect(scripted.texts).toHaveLength(1);
+    process.env.M365_NO_FENCE_RETRY = "1";
+    await ask([UNCLOSED, "```bash\nls\n```"]);
+    expect(scripted.texts).toHaveLength(1);
+  });
+});
+
 describe("the only-the-first-call-ran note", () => {
   const tools = [{ type: "function", function: { name: "bash", parameters: { type: "object", properties: { command: { type: "string" } } } } }];
   const NOTE = "(Note: only the first tool call in your previous reply was actually run.";

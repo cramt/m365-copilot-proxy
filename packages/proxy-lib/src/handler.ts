@@ -34,6 +34,7 @@ import {
   truncateAtFabricatedToolResponse,
   fabricatedToolResponseAt,
   textAfterFirstToolCall,
+  unreadableToolCall,
   longHeredocAsWrite,
   formatToolResponse,
   isProseDocument,
@@ -91,6 +92,14 @@ const CONFAB_FORCE_PROMPT =
 // true: the tools work, and a missing program is something to install.
 const MIDTASK_FORCE_PROMPT =
   "Your tools are working: your previous command really ran on this machine, and its real output is in the last <tool_response>. Continue the task from there with ONE tool block for the next step. A missing program or library is not a missing tool — install it with the package manager (pip, npm, …) or do the job with what is already installed. Output only the tool block, nothing else.";
+
+// Sent (in the same conversation) when the reply tried to call a tool but the
+// call couldn't be read (unreadableToolCall): a fence never closed, an edit
+// without its markers. Passed on as prose instead, it ends the harness's turn,
+// and the model reads the silence as having no tools.
+function unreadableCallPrompt(bad: { name: string; reason: string }): string {
+  return `(Note: your last reply had a \`\`\`${bad.name} block that couldn't be read as a tool call — ${bad.reason} — so nothing ran. If you meant to run it, send it again as one block: \`\`\`${bad.name} on its own line, then its content, then \`\`\` on a line of its own. If you didn't mean to, reply without it.)`;
+}
 
 // Forcing follow-up when the model CLAIMS it did a file change but ran no tool.
 const HALLUCINATION_FORCE_PROMPT =
@@ -793,6 +802,21 @@ export async function handleChatCompletion(
     let { parsed, judged } = parseReply(fullText, body.tools);
     log.info(`Parse result: hasToolCalls=${parsed.hasToolCalls}, count=${parsed.toolCalls.length}`);
 
+    // The reply tried to call a tool, but the call couldn't be read: ask for it
+    // once more, saying what was wrong, before any give-up handling (§40 F103). Off with
+    // M365_NO_FENCE_RETRY=1.
+    const unreadable = parsed.hasToolCalls || process.env.M365_NO_FENCE_RETRY ? null : unreadableToolCall(fullText, body.tools);
+    if (unreadable) {
+      log.info(`A \`\`\`${unreadable.name} call couldn't be read (${unreadable.reason}) — asking for it again`);
+      text = unreadableCallPrompt(unreadable);
+      const retry = await runBuffered();
+      if ("error" in retry) return { kind: "error", resp: retry.error };
+      conv.sentMessageCount = body.messages.length;
+      fullText = stopAtFabricatedResult(retry.fullText);
+      ({ parsed, judged } = parseReply(fullText, body.tools));
+      log.info(`After asking again: hasToolCalls=${parsed.hasToolCalls}, count=${parsed.toolCalls.length}`);
+    }
+
     // Salvage stochastic turn-1 confabulation: M365's chat model sometimes claims it
     // "can't access the files / commands return no output" and asks the user to paste
     // them, WITHOUT calling a tool — even though the environment is real (the bench +
@@ -807,7 +831,9 @@ export async function handleChatCompletion(
     const everActed = (body.messages ?? []).some(
       (m) => m.role === "assistant" && Array.isArray(m.tool_calls) && m.tool_calls.length > 0,
     );
-    for (let attempt = 0; attempt < maxConfabRetries && !parsed.hasToolCalls; attempt++) {
+    // Not after asking again: the model was just told it could reply without the
+    // call, and a forcing retry would override the answer it gave to that.
+    for (let attempt = 0; attempt < (unreadable ? 0 : maxConfabRetries) && !parsed.hasToolCalls; attempt++) {
       const confab = looksLikeConfabulation(judged);
       const remoteArtifact = looksLikeRemoteArtifactCompletion(parsed.textContent);
       const halluc = !everActed && looksLikeHallucinatedCompletion(judged);
