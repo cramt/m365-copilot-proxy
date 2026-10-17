@@ -1,11 +1,11 @@
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { appendFileSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   awaitTurnBudget,
   budgetConfig,
-  paceStatus,
+  proxyBudgetStatus,
   readLogEvents,
   recordThrottle,
   recordTurn,
@@ -48,7 +48,7 @@ function clock(start = T0) {
   };
 }
 
-afterEach(() => resetTurnBudget());
+afterEach(() => { vi.useRealTimers(); resetTurnBudget(); });
 
 describe("readLogEvents", () => {
   it("reads only what was appended since the last read", () => {
@@ -130,9 +130,9 @@ describe("awaitTurnBudget", () => {
     await awaitTurnBudget({ cfg, logged: k.logged, now: k.now, sleep: k.sleep });
     expect(k.c.slept.length).toBeGreaterThan(0); // waited for the first one's turn
     // The grant is consumed when the turn starts, not counted twice.
-    const before = paceStatus(k.now(), cfg, false).turns;
+    const before = proxyBudgetStatus(k.now(), cfg, false).turns;
     recordTurn(k.now());
-    expect(paceStatus(k.now(), cfg, false).turns).toBe(before);
+    expect(proxyBudgetStatus(k.now(), cfg, false).turns).toBe(before);
   });
 
   it("decides one request at a time", async () => {
@@ -153,10 +153,10 @@ describe("awaitTurnBudget", () => {
     const { dir } = logDir();
     const cfg = cfgFor(dir);
     for (let i = 0; i < 85; i++) recordTurn(at - 85 + i);
-    const st = paceStatus(at, cfg, false);
+    const st = proxyBudgetStatus(at, cfg, false);
     expect(st.turns).toBe(85);
     expect(st.level).toBeLessThan(21);
-    expect(paceStatus(at, cfg, true).turns).toBe(0);
+    expect(proxyBudgetStatus(at, cfg, true).turns).toBe(0);
   });
 
   it("answers a throttle hold with TurnBudgetHold instead of waiting it out", async () => {
@@ -210,5 +210,86 @@ describe("awaitTurnBudget", () => {
     await expect(waiting).rejects.toThrow("client gone");
     const res = await awaitTurnBudget({ cfg, logged: k.logged, now: k.now, sleep: k.sleep });
     expect(res.waitedMs).toBeGreaterThan(0);
+  });
+});
+
+describe("awaitTurnBudget's line (#77)", () => {
+  // 85 turns in the 85 s before T0: ~2.3 min to the first turn, ~37 s more to the next.
+  const drained = () => logDir(Array.from({ length: 85 }, (_, i) => turnLine(T0 - 85_000 + i * 1000, i)));
+
+  /** A front request whose sleep hangs until `release`, which also moves the clock past its wait. */
+  function heldFront(k: ReturnType<typeof clock>, cfg: BudgetConfig) {
+    let release!: () => void;
+    const gate = new Promise<void>((res) => { release = () => { k.c.t += 10 * 60_000; res(); }; });
+    const done = awaitTurnBudget({ cfg, logged: k.logged, now: k.now, sleep: () => gate });
+    return { done, release };
+  }
+
+  const settled = async (p: Promise<unknown>) => {
+    let out = false;
+    void p.then(() => { out = true; }, () => { out = true; });
+    for (let i = 0; i < 20; i++) await Promise.resolve();
+    return out;
+  };
+
+  it("counts the time behind another request toward its own wait and limit", async () => {
+    const { dir } = drained();
+    const cfg = cfgFor(dir);
+    // Both arrive at T0: the clock moves only once the first call has returned its promise.
+    const later = (k: ReturnType<typeof clock>) => async (ms: number, signal?: AbortSignal) => { await null; await k.sleep(ms, signal); };
+    const k = clock();
+    const [a, b] = await Promise.all([
+      awaitTurnBudget({ cfg, logged: k.logged, now: k.now, sleep: later(k) }),
+      awaitTurnBudget({ cfg, logged: k.logged, now: k.now, sleep: later(k) }),
+    ]);
+    expect(Math.round(a.waitedMs / 1000)).toBe(140);
+    expect(Math.round((b.waitedMs - a.waitedMs) / 100) / 10).toBe(37.5); // one more turn's refill, on top of a's wait
+    // 37.5 s from the front fits in 2.75 min; with the 140 s in line it doesn't.
+    resetTurnBudget();
+    const k2 = clock();
+    const [, err] = await Promise.all([
+      awaitTurnBudget({ cfg, logged: k2.logged, now: k2.now, sleep: later(k2) }),
+      awaitTurnBudget({ cfg, maxWaitMs: 2.75 * 60_000, logged: k2.logged, now: k2.now, sleep: later(k2) }).catch((e) => e),
+    ]);
+    expect(err).toBeInstanceOf(TurnBudgetHold);
+    expect(err.reason).toBe("refill");
+  });
+
+  it("leaves the line at its own limit while the request ahead keeps waiting", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    const { dir } = drained();
+    const cfg = cfgFor(dir);
+    const k = clock();
+    const front = heldFront(k, cfg);
+    const queued = awaitTurnBudget({ cfg, maxWaitMs: 2 * 60_000, logged: k.logged, now: k.now, sleep: k.sleep }).catch((e) => e);
+    await vi.advanceTimersByTimeAsync(2 * 60_000 - 1);
+    expect(await settled(queued)).toBe(false);
+    await vi.advanceTimersByTimeAsync(1);
+    const err = await queued;
+    expect(err).toBeInstanceOf(TurnBudgetHold);
+    expect(err.reason).toBe("refill");
+    // The 429's Retry-After covers both turns: the front's and its own.
+    expect(err.waitMs).toBeGreaterThan(2.5 * 60_000);
+    front.release();
+    expect((await front.done).waitedMs).toBe(10 * 60_000);
+    // Its leaving didn't break the line for the next request.
+    expect((await awaitTurnBudget({ cfg, logged: k.logged, now: k.now, sleep: k.sleep })).waitedMs).toBe(0);
+  });
+
+  it("leaves the line at once when its client goes away, and the next one still waits for the front", async () => {
+    const { dir } = drained();
+    const cfg = cfgFor(dir);
+    const k = clock();
+    const front = heldFront(k, cfg);
+    const ac = new AbortController();
+    const gone = awaitTurnBudget({ cfg, signal: ac.signal, logged: k.logged, now: k.now, sleep: k.sleep });
+    const next = awaitTurnBudget({ cfg, logged: k.logged, now: k.now, sleep: k.sleep });
+    ac.abort(new Error("client gone"));
+    await expect(gone).rejects.toThrow("client gone");
+    expect(await settled(next)).toBe(false); // didn't jump ahead of the front, which is still deciding
+    expect(k.c.slept).toEqual([]);
+    front.release();
+    expect((await front.done).waitedMs).toBe(10 * 60_000);
+    expect((await next).waitedMs).toBe(10 * 60_000); // decided only once the front had
   });
 });

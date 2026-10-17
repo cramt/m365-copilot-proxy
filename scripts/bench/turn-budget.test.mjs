@@ -48,8 +48,8 @@ describe("turn-budget", () => {
     expect(Math.round(d.waitMs / 60_000)).toBe(40);
   });
 
-  it("starts the replay full only after a quiet stretch, so a long paced sweep doesn't get its opening burst back", () => {
-    // A paced sweep: 70 turns in its first 10 min, then exactly the refill rate
+  it("starts the replay full only after a quiet stretch, so a long sweep waiting on the bucket doesn't get its opening burst back", () => {
+    // A sweep waiting on the bucket: 70 turns in its first 10 min, then exactly the refill rate
     // for 7 h. The bucket really sits at ~46 the whole time (100 - 70 + 16).
     const evs = [...turns(70, T0, 8_500), ...turns(672, T0 + 10 * 60_000, 37_500)];
     const now = T0 + 7 * 3_600_000;
@@ -113,8 +113,8 @@ describe("turn-budget", () => {
     expect(slept.every((ms) => ms <= 60_000)).toBe(true);
     expect(res.waitedMs).toBeGreaterThan(10 * 60_000);
     expect(res.waitedMs).toBeLessThan(14 * 60_000);
-    expect(lines[0]).toMatch(/^\[t\] pacing: bucket ~1\d\/100 turns, need 12 \+ reserve 20 — waiting/);
-    expect(lines.at(-1)).toMatch(/^\[t\] pacing: resumed after/);
+    expect(lines[0]).toMatch(/^\[t\] turn budget: bucket ~1\d\/100 turns, need 12 \+ reserve 20 — waiting/);
+    expect(lines.at(-1)).toMatch(/^\[t\] turn budget: resumed after/);
   });
 
   it("is off unless M365_AVOID_THROTTLING is set, and then never waits", async () => {

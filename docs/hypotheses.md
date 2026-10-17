@@ -53,7 +53,7 @@ than "we eyeballed one run." See §M (Methods) for the experimental rig.
   4.8 since Oct 2026, agent-less too (§36)
 - §25 — `relay` vs `relay_batch` for the other user-voice tones (Sonnet 4.6/5, GPT-6, GPT-6 Sol):
   batching saves ~33% of turns on the GPT-6 tones and ~15% on the Sonnets (F61); the F58 bucket
-  predicts throttles on non-premium accounts too, and the bench can pace itself by it
+  predicts throttles on non-premium accounts too, and the bench can wait on it
   (`M365_AVOID_THROTTLING=1`)
 - §26 — `Claude_Sonnet` @ paid is now Sonnet 5.5 and Sonnet 5 has its own tone, `Claude_Sonnet_5`
   (F64); Sonnet 5.5 has its own priority-access budget, 80/day and 150/week (F65), and Sonnet 5's
@@ -3983,17 +3983,17 @@ of A-4, ~10 min before the window, with the model's bucket at **3.5**. So all th
 onsets came with the model at +3.5, +5.9 and −1.3: about right, a few turns optimistic. Either the
 bucket holds ~95 rather than 100, or a few turns a day are invisible to the logs.
 
-**Shipped (bench only, opt-in): pacing.** With `M365_AVOID_THROTTLING=1`,
+**Shipped (bench only, opt-in): throttle avoidance.** With `M365_AVOID_THROTTLING=1`,
 `scripts/bench/turn-budget.mjs` replays every recent proxy debug log on the account (`[session] Chat
 turn` and `Turn result: Throttled` lines) through this bucket, and `run.mjs` / `pi-reliability.sh`
 wait before each task until it covers a whole task (12 turns) plus a reserve of 20, and for an hour
 of quiet after a throttled turn. Off by default; the `M365_BUDGET_*` variables tune the model.
 Replayed over the premium account's 2026-10-05 logs, the gate closes at ~07:40Z (bucket 31), an hour
 before the 08:45Z onset. pi arms now stop on a throttle too, as bench arms already did. Nothing in the
-proxy changed: a real pi session still isn't paced.
+proxy changed: a real pi session still doesn't wait on the bucket.
 
 **The hour's hold was too short once: the throttle isn't the bucket.** The premium account sent nothing
-after its 08:45:47Z throttled turn (all logs checked), the pacer resumed at 09:45:47Z with the bucket
+after its 08:45:47Z throttled turn (all logs checked), the bench stopped waiting at 09:45:47Z with the bucket
 modeled at ~96, and the first turn was throttled again (09:45:50Z). The non-premium accounts were
 served again 56.6 min (T) and 60.1 min (P) after their last throttled turns, 74 and 83 min after their
 onsets. So the throttle is a state with its own clock, not an empty bucket: lifting 60–74 min after the
@@ -4234,7 +4234,7 @@ Live (opencode 2.0.30, `claude-sonnet-5`, premium account): a four-line `oldStri
 that shape arrived whole and the edit applied on the first try.
 
 ### F63 — real pi on the premium account: GPT-6 batches cleanly, Sonnet 5 doesn't save turns → the decision 🟢
-Paced runs (`M365_AVOID_THROTTLING=1`), 11:00–11:56Z, confab retry off, no throttled or Disengaged run.
+Runs with `M365_AVOID_THROTTLING=1`, 11:00–11:56Z, confab retry off, no throttled or Disengaged run.
 
 | model | framing | fix-bug | multi | turns per run | sandbox turns |
 |---|---|---|---|---|---|
@@ -4448,7 +4448,7 @@ it now reads a two-digit run as major.minor.
 
 ### Framing: design and pre-registered decision rule
 **Phase A (screen, 18:36Z on):** `phase-sweep.sh`, `MODEL=gpt-6.1-sol`, 10 bench tasks per arm, confab
-retry off, paced (`M365_AVOID_THROTTLING=1`), seven framings on each account — baseline, minimal,
+retry off, `M365_AVOID_THROTTLING=1`, seven framings on each account — baseline, minimal,
 demo_only (GPT-6 Sol's runners-up, F51), the four user-voice framings honest, terse_user, relay,
 relay_batch — in a different order per account. The agent path is the premium account's; the
 agent-less path is the two non-premium accounts', reached the way a real client reaches it (the first
@@ -4552,8 +4552,8 @@ so both must pass to switch `gpt-6-sol` to relay_batch; otherwise it keeps relay
 Turns are M365 turns per task or run, without the dead agent turn an agent-less proxy spends once
 before it falls back.
 
-**Design.** `phase-sweep.sh`, `MODEL=gpt-6-sol`, the 10 bench tasks per arm, confab retry off, paced
-(`M365_AVOID_THROTTLING=1`), the shipped routing (the first tool request tries the agent; the
+**Design.** `phase-sweep.sh`, `MODEL=gpt-6-sol`, the 10 bench tasks per arm, confab retry off,
+`M365_AVOID_THROTTLING=1`, the shipped routing (the first tool request tries the agent; the
 non-premium accounts fall back to agent-less), one sweep per account, all three at once:
 - premium (agent): bench relay_batch, relay, relay, relay_batch (F61's order mirrored); real pi
   fix-bug + multi, 5 runs each, under relay, then relay_batch;
@@ -4715,7 +4715,7 @@ keeps Sonnet 5.5 agent-less. Non-premium accounts would stay agent-less through
 `PREMIUM_ONLY_AGENT_TONES`, the learned fallback.
 
 **Design.** `phase-sweep.sh`, all 17 framing variants, the 10 bench tasks per arm, confab retry off,
-paced (`M365_AVOID_THROTTLING=1`), `COOLDOWN=PHASE_COOLDOWN=20`. Each arm is its own phase, so the two
+`M365_AVOID_THROTTLING=1`, `COOLDOWN=PHASE_COOLDOWN=20`. Each arm is its own phase, so the two
 tones alternate arm by arm (ABBA by framing), with `@MODEL=` (new: a per-phase bench model) and the
 scenario pinned to included for both (`M365_SCENARIO=OfficeWebIncludedCopilot`,
 `M365_LICENSE_TYPE=Starter`; `claude-sonnet-5` would otherwise route to the paid scenario, i.e. to
@@ -4729,9 +4729,9 @@ agent-less is also premium vs non-premium account. If the verdict hinges on a sm
 agent-less control (relay_batch, both tones) follows.
 
 **Run notes.** Launched 09:48Z on all three accounts. The premium sweep throttled at 15:59:36Z
-(`PerUserThrottled`, 6 h 11 min in, arm 21 of 34, `claude-sonnet` relay task 6), with pacing on. Cause:
+(`PerUserThrottled`, 6 h 11 min in, arm 21 of 34, `claude-sonnet` relay task 6), with `M365_AVOID_THROTTLING` on. Cause:
 `turn-budget.mjs` replayed the logs of the last 6 h from a FULL bucket, which is exact only if the
-account was quiet when the window opened. A paced sweep isn't: from 15:40Z its 09:48–10:05Z opening burst
+account was quiet when the window opened. A sweep waiting on the bucket isn't: from 15:40Z its 09:48–10:05Z opening burst
 (~70 turns over the refill) left the window, the replay handed those turns back (15:59Z: ~52 left by the
 old replay, ~−9 by a replay from the last quiet hour), and the bench stopped waiting. That is also a
 good fit for F58's bucket: the throttle came when the corrected replay said the bucket was empty.
@@ -4756,7 +4756,7 @@ The main sweep (results below) passes the decision rule on relay_batch for both 
 criterion 3, on a small gap: tasks with a sandbox turn, 6 of 40 agent-less vs 0 of 20 with the agent.
 As fixed in advance, that calls for the premium agent-less control. Two more questions decide what can
 ship, since a tone can't carry the agent for one of its models only without new code (Reach, above).
-All on the premium account, one sweep, paced, one arm per phase:
+All on the premium account, one sweep, `M365_AVOID_THROTTLING=1`, one arm per phase:
 
 - **H30c — account vs path.** Agent-less on the premium account, Sonnet 4.6 goes to its code
   interpreter as often as on the non-premium ones, i.e. the 0 sandbox tasks with the agent are the
@@ -4778,7 +4778,7 @@ All on the premium account, one sweep, paced, one arm per phase:
   four ~125 of the ~141 left this week (last read 2026-10-06 23:59Z: 71 / 141) — more than a day's 80,
   so it spans two budget days as a Latin square: before midnight UTC relay/agent then
   relay_batch/agent-less (the first two arms of the sweep), after it relay_batch/agent then
-  relay/agent-less (the last two, ≥ 4 h of paced turns later). Each day holds one cell of each
+  relay/agent-less (the last two, ≥ 4 h of sweep later). Each day holds one cell of each
   framing and each path, so a day effect can't pass for either. Agent vs agent-less: H30d's
   prediction and criteria, on relay and on relay_batch. relay vs relay_batch answers H26b on the bench
   (the budget counts turns): F61's rule, criteria 1–3, per path. n = 10 per cell can fail criterion 1
@@ -5193,7 +5193,7 @@ week is used up until Monday) and GPT-6 Sol / GPT-6.1 Sol with the agent (real p
 Sonnet 4.6 re-judged against F75 (it would also need a reason to take the agent at all).
 
 **Design.** `claude-sonnet` (relay_batch, its default), real pi fix-bug + multi, `PI_N=5` per task per
-arm, paced. Premium account, one phase per arm: agent `default`, `batch`, `shell`, agent-less control,
+arm, `M365_AVOID_THROTTLING=1`. Premium account, one phase per arm: agent `default`, `batch`, `shell`, agent-less control,
 `defer`, `minimal`, agent-less + `M365_NO_CODE_INTERPRETER=1` (70 runs). H34b replicated on a non-premium
 account, agent-less control vs no-CI, ABBA (40 runs). (A run on another non-premium account was stopped
 during its first pi run, at the user's request — the account was needed — and is left out.)
@@ -5275,7 +5275,7 @@ per solved run don't go up (an increase at task-stratified permutation p < 0.05 
 traces back to a stopped turn (an error or confused reply on the turn after it). Wall time per run is
 reported, not decisive.
 
-**Design.** `claude-sonnet` (relay_batch), real pi fix-bug + multi, `PI_N=5` per task per arm, paced,
+**Design.** `claude-sonnet` (relay_batch), real pi fix-bug + multi, `PI_N=5` per task per arm, `M365_AVOID_THROTTLING=1`,
 ABBA by arm. A non-premium account, agent-less (the shipped path): on, off, off, on (20 runs each). Premium,
 with the agent (`M365_FORCE_AGENT=1`, where the runaways clustered): off, on, on, off (20 each).
 
@@ -5454,14 +5454,14 @@ sole route (F53). The probes above already falsify that for Opus 4.8, so it goes
 tool-less turns (`proxy-verify` without `--tools`) fail agent-less.
 
 **Design.** `phase-sweep.sh`, `MODEL=claude-opus-4.8`, premium account, included scenario, 10 bench tasks
-per arm, confab retry off, paced (`M365_AVOID_THROTTLING=1`), one arm per phase, `M365_FORCE_AGENT`
+per arm, confab retry off, `M365_AVOID_THROTTLING=1`, one arm per phase, `M365_FORCE_AGENT`
 says the path. Order: relay_batch agent, agent-less; baseline agent-less, agent; relay_batch agent-less,
 agent, agent, agent-less; then real pi (relay_batch, its default) fix-bug agent, agent-less, multi
 agent-less, agent. 30 relay_batch tasks per path. No account confound this time: both paths run on the
 one account that serves the model.
 
 **Run notes.** `opus48-agent`, 05:07–07:13Z, 12 arms, 271 M365 turns, none throttled, every arm mapped
-onto its log. Services `1.0.03571.57831` … `57845`. The pacer waited from arm 6 on.
+onto its log. Services `1.0.03571.57831` … `57845`. The bench waited on the bucket from arm 6 on.
 
 ### F90 — the agent stays: relay_batch ties on the bench, and agent-less costs 22% more turns in real pi 🟢
 | config (premium, Opus 4.8) | solved | turns per task | sandbox / Disengaged / jailbreak turns |
@@ -5600,6 +5600,17 @@ budget carries over 00:00Z; only the priority-access budgets reset there. It als
 really sat at the reserve: without the variable, it ran dry in under 3 min. One account, one 00:00Z: a reset at
 some other hour isn't excluded. Replayed through M0, the 12 onsets in the three accounts' logs stand at
 −9 to +31, and this one at −2.9 sits among them.
+
+**Follow-up (#77): two gaps in the proxy's wait, closed Oct 14.** (1) A request's limit was counted
+from when it reached the front of the line, so an unstreamed request queued behind a streamed one's
+long wait could sit past its 2-min limit, and past its client's 5-min header timeout. A client that hung
+up kept its place too. The limit now counts from arrival, and the wait in line ends at that limit or
+when the client goes away. (2) `ModelSession.run`'s reconnect after a session error (the path F95 saw
+fire) sent a second turn without waiting. Its `recordTurn` then took the grant of a turn another request
+had been let through for. The reconnect now waits like any other turn, with the handler's limit and
+signal. Live check, premium account, no turn sent (reserve set above capacity): a streamed request
+waited on keepalives, an unstreamed one queued behind it got its 429 at 2.0 min (`Retry-After` 278 s,
+both turns' refill), and a client that hung up at 22 s had left the line ("behind 1 other request", not 2).
 
 ## 38. Oct 14 2026 — a content-less `InternalError` drops the turn; "Please continue." loses the request
 

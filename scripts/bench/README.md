@@ -56,7 +56,7 @@ fresh login doesn't clear it. `--task-gap S` (phase-sweep: `TASK_GAP=S`) slows a
 To avoid the throttle instead, set **`M365_AVOID_THROTTLING=1`** (off by default). The bench then waits
 before every task (and every real-pi run) until the proxy's debug logs say the bucket covers a whole
 task plus a reserve of 20 turns, and for 75 minutes of quiet after a throttled turn (`turn-budget.mjs`).
-A long sweep then runs at the account's pace, ~1.6 turns a minute once the bucket is low. It needs a
+A long sweep then runs at the bucket's refill rate, ~1.6 turns a minute once the bucket is low. It needs a
 proxy with `M365_DEBUG=1`, which phase-sweep always sets; turns it can't see (the web client, another
 host, a proxy without debug logs) aren't counted. `node scripts/bench/turn-budget.mjs status` shows
 where the bucket stands, and the `M365_BUDGET_*` variables tune the model. The model lives in the

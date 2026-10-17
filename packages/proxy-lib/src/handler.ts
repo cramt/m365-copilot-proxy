@@ -136,7 +136,7 @@ function earlyStopAfter(): number {
  *  sends nothing until the answer, and its clients give up on headers after
  *  5 min (pi's SDK, the bench), of which a turn itself can take ~3. A streamed
  *  request has its keepalive chunks and waits up to M365_BUDGET_MAX_WAIT_MIN. */
-const UNSTREAMED_MAX_PACE_WAIT_MS = 2 * 60_000;
+const UNSTREAMED_BUDGET_WAIT_LIMIT_MS = 2 * 60_000;
 
 type ChatBody = z.infer<typeof ChatCompletionRequest>;
 type ParsedMessage = ChatBody["messages"][number];
@@ -499,13 +499,14 @@ export async function handleChatCompletion(
         // long thread, but every turn in it draws on the same bucket as a bench
         // sweep (F58), so a busy enough session runs it dry and then sits out a
         // throttle of about an hour. Every upstream turn passes here, the
-        // forcing retries included.
-        await awaitTurnBudget({ signal: opts.signal, maxWaitMs: body.stream ? undefined : UNSTREAMED_MAX_PACE_WAIT_MS });
+        // forcing retries included; run() calls the same wait before its reconnect.
+        const waitForBudget = () => awaitTurnBudget({ signal: opts.signal, maxWaitMs: body.stream ? undefined : UNSTREAMED_BUDGET_WAIT_LIMIT_MS });
+        await waitForBudget();
         // Only attach the tool-calling agent when the request actually has tools.
         // The agent overrides `tone` (forces GPT-5), so tool-less requests must
         // skip it to reach the model the tone selects (e.g. Claude). See
         // ModelSession.run / docs H8.6.
-        copilotStream = await session.run(text, model, signal, useToolAgent, inputImages);
+        copilotStream = await session.run(text, model, signal, useToolAgent, inputImages, waitForBudget);
       } catch (err: any) {
         if (err instanceof TurnBudgetHold) return { error: turnBudgetHoldResponse(err) };
         return { error: jsonResponse(502, { error: { message: err.message, type: "upstream_error" } }) };

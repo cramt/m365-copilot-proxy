@@ -284,7 +284,10 @@ const ownEvents: BudgetEvent[] = [];
 const grants: number[] = [];
 const GRANT_TTL_MS = 5 * 60_000;
 let ownSeq = 0;
-let queue: Promise<unknown> = Promise.resolve();
+// Requests waiting to decide, in arrival order. The first is deciding (and may
+// be sleeping on the bucket); the rest wait for it. `go` moves one to the front.
+interface InLine { go: () => void }
+const line: InLine[] = [];
 
 function pruneOwn(nowMs: number): void {
   const keepFrom = nowMs - MAX_WINDOW_MIN * 60_000;
@@ -308,7 +311,7 @@ export function recordThrottle(nowMs = Date.now()): void {
  * The bucket as the proxy sees it: the logs, this process's grants, and its own
  * turns unless `logged` says its debug log already holds them.
  */
-export function paceStatus(nowMs = Date.now(), cfg: BudgetConfig = budgetConfig(), logged = fileLoggingEnabled()): ReturnType<typeof budgetStatus> {
+export function proxyBudgetStatus(nowMs = Date.now(), cfg: BudgetConfig = budgetConfig(), logged = fileLoggingEnabled()): ReturnType<typeof budgetStatus> {
   pruneOwn(nowMs);
   const extra: BudgetEvent[] = [
     ...(logged ? [] : ownEvents),
@@ -323,7 +326,7 @@ export function resetTurnBudget(): void {
   ownEvents.length = 0;
   grants.length = 0;
   logCache.clear();
-  queue = Promise.resolve();
+  line.length = 0;
 }
 
 const abortableSleep = (ms: number, signal?: AbortSignal) => new Promise<void>((res, rej) => {
@@ -353,30 +356,66 @@ export interface AwaitTurnBudgetOptions {
  * Throws TurnBudgetHold instead of waiting longer than `maxWaitMs` — in a
  * throttle hold, typically — so the caller can answer 429 without sending a turn
  * that would only keep the throttle alive. Requests decide one at a time, so two
- * can't both take the last turn above the reserve.
+ * can't both take the last turn above the reserve. The wait counts from the
+ * call, time behind other requests included, and the signal and the limit end it
+ * there too: a request queued behind a long wait leaves the line at its own
+ * limit, and one whose client went away doesn't keep its place (#77).
  */
-export function awaitTurnBudget(opts: AwaitTurnBudgetOptions = {}): Promise<{ waitedMs: number }> {
+export async function awaitTurnBudget(opts: AwaitTurnBudgetOptions = {}): Promise<{ waitedMs: number }> {
   const cfg = opts.cfg ?? budgetConfig();
-  if (!cfg.enabled) return Promise.resolve({ waitedMs: 0 });
-  const mine = queue.then(() => waitForTurn(cfg, opts));
-  queue = mine.catch(() => {});
-  return mine;
-}
-
-async function waitForTurn(cfg: BudgetConfig, opts: AwaitTurnBudgetOptions): Promise<{ waitedMs: number }> {
+  if (!cfg.enabled) return { waitedMs: 0 };
   const now = opts.now ?? Date.now;
-  const sleep = opts.sleep ?? abortableSleep;
   const maxWaitMs = Math.min(cfg.maxWaitMin * 60_000, opts.maxWaitMs ?? Infinity);
   const t0 = now();
+  const me: InLine = { go: () => {} };
+  const front = new Promise<void>((res) => { me.go = res; });
+  line.push(me);
+  try {
+    if (line[0] !== me && !(await untilFront(front, maxWaitMs, opts.signal))) {
+      const at = now();
+      const ahead = line.indexOf(me);
+      const st = proxyBudgetStatus(at, cfg, opts.logged);
+      // What the requests ahead and this one need; at least the front's next re-read.
+      const d = decide(st, 1 + ahead, at, cfg);
+      log.info(`Turn budget: ${fmtWait(at - t0)} in line behind ${ahead} other request(s), bucket ~${st.level.toFixed(0)}/${cfg.capacity} — more than this request may wait (${fmtWait(maxWaitMs)}), answering 429`);
+      throw new TurnBudgetHold(d.reason, Math.max(d.waitMs, 15_000), st.lastThrottle);
+    }
+    return await waitForTurn(cfg, opts, t0, maxWaitMs);
+  } finally {
+    const i = line.indexOf(me);
+    if (i >= 0) line.splice(i, 1);
+    if (i === 0) line[0]?.go();
+  }
+}
+
+/**
+ * Resolves true once this request is at the front of the line, false if `ms`
+ * pass first; rejects when `signal` aborts. A real timer: the requests ahead own
+ * the clock (their sleeps), and this one must leave whatever they do.
+ */
+function untilFront(front: Promise<void>, ms: number, signal?: AbortSignal): Promise<boolean> {
+  return new Promise<boolean>((res, rej) => {
+    if (signal?.aborted) return rej(signal.reason);
+    const done = (settle: () => void) => { clearTimeout(t); signal?.removeEventListener("abort", onAbort); settle(); };
+    const onAbort = () => done(() => rej(signal!.reason));
+    const t = setTimeout(() => done(() => res(false)), Math.min(ms, 2 ** 31 - 1));
+    signal?.addEventListener("abort", onAbort, { once: true });
+    void front.then(() => done(() => res(true)));
+  });
+}
+
+async function waitForTurn(cfg: BudgetConfig, opts: AwaitTurnBudgetOptions, t0: number, maxWaitMs: number): Promise<{ waitedMs: number }> {
+  const now = opts.now ?? Date.now;
+  const sleep = opts.sleep ?? abortableSleep;
   let announced = false;
   for (;;) {
     opts.signal?.throwIfAborted();
     const at = now();
-    const st = paceStatus(at, cfg, opts.logged);
+    const st = proxyBudgetStatus(at, cfg, opts.logged);
     const d = decide(st, 1, at, cfg);
     if (d.ok) {
       grants.push(at);
-      if (announced) log.info(`Turn budget: sending after a ${fmtWait(at - t0)} wait (bucket ~${st.level.toFixed(0)}/${cfg.capacity})`);
+      if (announced || at - t0 >= 1000) log.info(`Turn budget: sending after a ${fmtWait(at - t0)} wait (bucket ~${st.level.toFixed(0)}/${cfg.capacity})`);
       return { waitedMs: at - t0 };
     }
     if (at - t0 + d.waitMs > maxWaitMs) {

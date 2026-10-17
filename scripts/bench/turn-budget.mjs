@@ -41,11 +41,11 @@ export async function waitForBudget({ need = 12, label = "bench", log = console.
     const st = budgetStatus(now(), cfg);
     const d = decide(st, need, now(), cfg);
     if (d.ok) {
-      if (announced) log(`[${label}] pacing: resumed after ${fmtMin(now() - t0)} (bucket ~${st.level.toFixed(0)})`);
+      if (announced) log(`[${label}] turn budget: resumed after ${fmtMin(now() - t0)} (bucket ~${st.level.toFixed(0)})`);
       return { waitedMs: now() - t0 };
     }
     if (!announced) {
-      log(`[${label}] pacing: bucket ~${st.level.toFixed(0)}/${cfg.capacity} turns, need ${need} + reserve ${cfg.reserve}` +
+      log(`[${label}] turn budget: bucket ~${st.level.toFixed(0)}/${cfg.capacity} turns, need ${need} + reserve ${cfg.reserve}` +
         `${d.reason === "throttle hold" ? `, throttled at ${new Date(st.lastThrottle).toISOString()}` : ""} — waiting ~${fmtMin(d.waitMs)} (${d.reason})`);
       announced = true;
     }
