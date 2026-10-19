@@ -4,6 +4,7 @@ import {
   renderFencedCall,
   parseFencedToolCalls,
   findFirstToolFence,
+  unreadableToolFence,
   buildSpecMap,
   formatFencedToolDefinitions,
   findShellTool,
@@ -237,6 +238,115 @@ describe("parseFencedToolCalls", () => {
 
 // Opus ends some fenced calls with its native function-call closer (docs §24 F56).
 // These are the replies it actually sent on the count-lines task, verbatim.
+// Every shape here is one a model writes; each used to drop the call or change
+// it. A dropped call ends the harness's turn and reads to the model as having
+// no tools, so what can be read without guessing is read, and the rest is
+// reported (unreadableToolFence) for the caller to ask again.
+describe("fence shapes the models write", () => {
+  const cmds = (text: string, s = specs) => parseFencedToolCalls(text, s).calls.map((c) => JSON.parse(c.function.arguments));
+
+  it("reads a tool name in any case when only one tool has it", () => {
+    expect(cmds("```Bash\nls -la\n```")).toEqual([{ command: "ls -la" }]);
+    expect(cmds("```WRITE_FILE\npath: a.md\n\nhi\n```")).toEqual([{ path: "a.md", content: "hi" }]);
+    // Two tools whose names differ only in case: not guessed.
+    const two = buildSpecMap([readFile, { ...readFile, function: { ...readFile.function, name: "Read_File" } }]);
+    expect(cmds("```READ_FILE\npath: a.md\n```", two)).toEqual([]);
+  });
+
+  it("reads a space before the info word, and ignores what follows it", () => {
+    expect(cmds("``` bash\nls -la\n```")).toEqual([{ command: "ls -la" }]);
+    expect(cmds('```bash title="list"\nls -la\n```')).toEqual([{ command: "ls -la" }]);
+  });
+
+  it("reads tilde fences, whose body may hold backtick fences", () => {
+    expect(cmds("~~~bash\nls -la\n~~~")).toEqual([{ command: "ls -la" }]);
+    const readme = "# Notes\n\n```bash\nnpm test\n```";
+    expect(cmds(`~~~write_file\npath: README.md\n\n${readme}\n~~~`)).toEqual([{ path: "README.md", content: readme }]);
+  });
+
+  it("closes a longer fence only with one at least as long (it used to leave a backtick in the command)", () => {
+    expect(cmds("````bash\nls -la\n````")).toEqual([{ command: "ls -la" }]);
+    const body = "intro\n```\nnot a closer here\n```";
+    expect(cmds(`\`\`\`\`write_file\npath: a.md\n\n${body}\n\`\`\`\``)).toEqual([{ path: "a.md", content: body }]);
+  });
+
+  it("takes an indented block's body without the opener's indentation", () => {
+    expect(cmds("1. List the files:\n\n   ```bash\n   ls -la\n   ```")).toEqual([{ command: "ls -la" }]);
+    expect(cmds("- Save it:\n  ```write_file\n  path: a.py\n\n  def f():\n      return 1\n  ```")).toEqual([
+      { path: "a.py", content: "def f():\n    return 1" },
+    ]);
+  });
+
+  it("keeps the call after an example whose language has symbols in its name (```c++)", () => {
+    expect(cmds("Example:\n```c++\nint main() {}\n```\n```bash\nls -la\n```")).toEqual([{ command: "ls -la" }]);
+  });
+
+  it("reads CRLF line endings", () => {
+    expect(cmds("```bash\r\nls -la\r\n```")).toEqual([{ command: "ls -la" }]);
+  });
+
+  it("reads a closer with the next sentence glued to it", () => {
+    // Real replies (3 of 1,153 whole ones in the logs), every one a dropped call.
+    expect(cmds("```read_file\nSKILL.md\n```Raporu hazırlayabilmem için önce yönergeleri incelemem gerekiyor.")).toEqual([{ path: "SKILL.md" }]);
+    expect(cmds("```bash\nls -la\n``` and that's it")).toEqual([{ command: "ls -la" }]);
+    expect(cmds("```bash\ncommand -v pandoc\n```Word belgesi oluşturamıyorum, ama `notlar.md` hazır.")).toEqual([{ command: "command -v pandoc" }]);
+  });
+
+  it("uses a glued closer only when nothing else closes the block, so a body line ending in ``` isn't cut", () => {
+    const body = "Use `x` like this: ```inline```\nmore text";
+    expect(cmds(`\`\`\`write_file\npath: a.md\n\n${body}\n\`\`\``)).toEqual([{ path: "a.md", content: body }]);
+    // …and after a glued closer, the scan goes on.
+    expect(cmds("```bash\nls -la```\n```bash\npwd\n```")).toEqual([{ command: "ls -la" }, { command: "pwd" }]);
+  });
+
+  it("doesn't take a nested opener for a closer in a block that never closes", () => {
+    // A write cut short mid-document: nothing to run, and no truncated file written.
+    expect(cmds("```write_file\npath: a.md\n\n# Title\n\n```python title=x\nprint(1)\n```\nmore")).toEqual([]);
+  });
+
+  // Review (#71): two cases where a fallback turned prose or partial input into a wrong call.
+  it("never closes a block with a fallback closer inside an open heredoc (a truncated write)", () => {
+    const cut = "```bash\ncat > README.md <<'EOF'\n# Title\n```Then run the following commands\nmake install";
+    expect(cmds(cut)).toEqual([]); // main dropped it; it must not run `cat > README.md` on a cut body
+    expect(unreadableToolFence(cut, specs)?.name).toBe("bash"); // asked again instead
+    expect(cmds("```bash\ncat > a.md <<-EOF\n\t# Title\n\tEOF\necho done```")).toEqual([{ command: "cat > a.md <<-EOF\n\t# Title\n\tEOF\necho done" }]);
+    expect(cmds("```bash\ncat > a.md <<EOF\n# Title```")).toEqual([]); // a glued closer counts the same
+    expect(cmds("```bash\ncat <<<'x' > a\n```Then I will check the file contents.")).toEqual([{ command: "cat <<<'x' > a" }]);
+  });
+
+  it("doesn't take a line that reads as prose for an opener, unless it names a tool", () => {
+    expect(cmds("```Here is the plan for you\n1. List the files\n```bash\nls -la\n```")).toEqual([{ command: "ls -la" }]);
+    expect(cmds("```bash run this one first\nls -la\n```")).toEqual([{ command: "ls -la" }]);
+  });
+
+  it("leaves inline code and a one-line fence inside prose alone", () => {
+    expect(cmds("Run ```bash ls -la``` to see them, then tell me.")).toEqual([]);
+  });
+});
+
+describe("unreadableToolFence", () => {
+  const why = (text: string) => unreadableToolFence(text, specs);
+
+  it("names a tool fence that never closed", () => {
+    expect(why("Let me look.\n```bash\nls -la")).toEqual({ name: "bash", reason: "its closing ``` never came on a line of its own" });
+    // One word after the closer could be an info string; three or more read as prose (above).
+    expect(why("```bash\nls -la\n``` done")?.name).toBe("bash");
+  });
+
+  it("names an edit fence without its markers, and a reply that is one line of fence", () => {
+    expect(why("```edit_file\npath: a.py\njust some text\n```")?.reason).toBe("its SEARCH/REPLACE markers are missing");
+    expect(why("```bash ls -la```")).toEqual({ name: "bash", reason: "it was written on one line" });
+  });
+
+  it("is null when a call parses, or when nothing was a tool call", () => {
+    expect(why("```bash\nls\n```")).toBeNull();
+    expect(why("```bash\nls\n```\n```bash\npwd")).toBeNull(); // one call is enough
+    expect(why("Done. Here is the function:\n\n```python\ndef f():\n    return 1")).toBeNull();
+    expect(why("All done: the tests pass.")).toBeNull();
+    expect(why("Run ```bash ls``` yourself if you want to check.")).toBeNull();
+  });
+});
+
 describe("native call closer leaking into a fence (Opus)", () => {
   const SCRIPT = "#!/bin/bash\nwc -l < data.txt | tr -d ' ' > count.txt";
   function argsOf(text: string) {
