@@ -1,4 +1,5 @@
 import { readFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { createLogger } from "./log.js";
 import { getToneForModel, isSonnet55Model } from "./copilot.js";
 import type { ParsedToolCall, ToolDef } from "./tools.js";
@@ -121,6 +122,54 @@ export function longHeredocAsWrite(
   tools: ToolDef[] | undefined,
   platform: NodeJS.Platform = process.platform,
 ): { call: ParsedToolCall; path: string; skipped: string } | null {
+  const c = overCapCommand(call, tools, platform);
+  if (!c) return null;
+  const { command } = c;
+  const m = HEREDOC_WRITE.exec(command);
+  if (!m) return null;
+  const path = m[2] ?? m[3] ?? m[4];
+  // Everything that isn't the heredoc: commands before it (including a `… &&`
+  // on its own line) and after its delimiter.
+  const before = `${command.slice(0, m.index)}\n${(m[1] ?? "").replace(/&&[ \t]*$/, "")}`.trim();
+  const after = command.slice(m.index + m[0].length).trim();
+  // A `cd` before the heredoc moves where a relative PATH lands; the write
+  // tool resolves against the harness's cwd, so it would write elsewhere.
+  if (/(?:^|[\n;&|(])[ \t]*(?:cd|pushd)\b/.test(before)) return null;
+  return {
+    call: makeCall(c.write.function.name, { [c.pathKey]: path, [c.contentKey]: `${m[7]}\n` }),
+    path,
+    skipped: [before, after].filter(Boolean).join("\n"),
+  };
+}
+
+/** Any other shell call too long for the Windows command line — `py - <<'EOF'`,
+ *  a long `py -c "…"`, a heredoc among other commands — run whole in two steps:
+ *  the write tool saves the command to a script (the write tool has no length
+ *  cap), then the shell runs it with `bash` and deletes it. The caller sends
+ *  `write` now and `run` once the write's result comes back.
+ *  ponytail: the script lives in the proxy host's temp dir, so this assumes the
+ *  harness shares the host and its shell is Git Bash (WSL bash can't see C:/). */
+export function longCommandAsScript(
+  call: ParsedToolCall,
+  tools: ToolDef[] | undefined,
+  platform: NodeJS.Platform = process.platform,
+  dir: string = tmpdir(),
+): { write: ParsedToolCall; run: ParsedToolCall; path: string; length: number } | null {
+  const c = overCapCommand(call, tools, platform);
+  if (!c || shellDialect(c.shell, platform) !== "posix") return null;
+  const path = `${dir.replace(/\\/g, "/")}/m365-cmd-${crypto.randomUUID().slice(0, 8)}.sh`;
+  const q = `'${path.replace(/'/g, `'\\''`)}'`;
+  return {
+    write: makeCall(c.write.function.name, { [c.pathKey]: path, [c.contentKey]: `${c.command}\n` }),
+    run: makeCall(c.shell.function.name, { ...c.args, [c.bodyParam]: `bash ${q}; s=$?; rm -f ${q}; exit $s` }),
+    path,
+    length: c.command.length,
+  };
+}
+
+/** A call to the harness's shell whose command is past the Windows cap, with
+ *  the write tool that can carry it instead — or null. */
+function overCapCommand(call: ParsedToolCall, tools: ToolDef[] | undefined, platform: NodeJS.Platform) {
   if (platform !== "win32" || !tools?.length) return null;
   const shell = findShellTool(tools);
   const write = findWriteTool(tools);
@@ -133,24 +182,12 @@ export function longHeredocAsWrite(
     return null;
   }
   const command = bodyParam ? args[bodyParam] : undefined;
-  if (typeof command !== "string" || command.length <= WINDOWS_COMMAND_CAP) return null;
-  const m = HEREDOC_WRITE.exec(command);
-  if (!m) return null;
-  const path = m[2] ?? m[3] ?? m[4];
+  if (!bodyParam || typeof command !== "string" || command.length <= WINDOWS_COMMAND_CAP) return null;
   const props = Object.keys(write.function.parameters?.properties ?? {});
-  const pathKey = props.find((p) => WRITE_PATH_PARAM.test(p))!;
-  const contentKey = props.find((p) => WRITE_CONTENT_PARAM.test(p))!;
-  // Everything that isn't the heredoc: commands before it (including a `… &&`
-  // on its own line) and after its delimiter.
-  const before = `${command.slice(0, m.index)}\n${(m[1] ?? "").replace(/&&[ \t]*$/, "")}`.trim();
-  const after = command.slice(m.index + m[0].length).trim();
-  // A `cd` before the heredoc moves where a relative PATH lands; the write
-  // tool resolves against the harness's cwd, so it would write elsewhere.
-  if (/(?:^|[\n;&|(])[ \t]*(?:cd|pushd)\b/.test(before)) return null;
   return {
-    call: makeCall(write.function.name, { [pathKey]: path, [contentKey]: `${m[7]}\n` }),
-    path,
-    skipped: [before, after].filter(Boolean).join("\n"),
+    shell, write, bodyParam, args, command,
+    pathKey: props.find((p) => WRITE_PATH_PARAM.test(p))!,
+    contentKey: props.find((p) => WRITE_CONTENT_PARAM.test(p))!,
   };
 }
 
@@ -473,6 +510,20 @@ export function currentFramingVariant(toneDefault?: string): string {
  *  its sandbox: under relay_batch it never went in (0 of 80 bench tasks and pi
  *  runs, GPT-6 Sol 25 of 100), under honest 3 of 40 (GPT-6 Sol 17 of 20; docs §29).
  *
+ *  `Gpt_5_6_Reasoning` (gpt-5.6-think-deeper) defaults to `relay_batch` (docs §39 F97).
+ *  It serves with the agent, and M365's own instructions there tell it file
+ *  generation is disabled; baseline's `<system>` block, which the model calls
+ *  "the user's embedded system", tells it to create files. Its chain of thought
+ *  names the conflict and resolves it either way, so file-producing turns gave up
+ *  ("Dosya oluşturma özelliğim devre dışı") at random. Real pi, PDF + .docx,
+ *  interleaved: runs with any give-up turn baseline 12/14, relay 0/14 (0 of 89
+ *  turns), p ≈ 10⁻⁵; a note explaining the restriction's scope fixed .docx but
+ *  not PDF (7/14). Relay asks for commands the user runs — the model still notices
+ *  the restriction but resolves it toward the harness. relay_batch keeps that and
+ *  costs what baseline does: bench 20/20 each, 2.30 turns per task vs relay's 2.85
+ *  (−19%, p = 7·10⁻⁴) and baseline's 2.15 (19/20; p = 0.42); the same PDF + .docx
+ *  pi runs 8/8 with no give-up, 3.4 calls per run vs relay's 5.6.
+ *
  *  Every other tone keeps the bench-tuned `baseline` byte-for-byte. */
 export function defaultFramingForTone(tone?: string): string | undefined {
   if (tone === "Claude_Opus") return "relay_batch";
@@ -481,6 +532,7 @@ export function defaultFramingForTone(tone?: string): string | undefined {
   if (tone === "Gpt_6_Reasoning") return "relay_batch";
   if (tone === "Gpt_6_Sol_Reasoning") return "relay_batch";
   if (tone === "Gpt_61_Sol_Reasoning") return "relay_batch";
+  if (tone === "Gpt_5_6_Reasoning") return "relay_batch";
   return undefined;
 }
 

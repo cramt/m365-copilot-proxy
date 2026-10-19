@@ -88,6 +88,7 @@ export {
   transcriptStyleForVariant,
   FRAMING_VARIANT_NAMES,
   longHeredocAsWrite,
+  longCommandAsScript,
   type TranscriptStyle,
 } from "./fenced.js";
 

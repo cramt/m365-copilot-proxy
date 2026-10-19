@@ -204,6 +204,24 @@ describe("TurnTextComposer (multi-message turns)", () => {
     expect(r.text).toBe("one!\n\ntwo more");
   });
 
+  it("doesn't double a head that the first delta restates (\"<<document>\")", () => {
+    // Live (GPT-5.5 Think Deeper, Oct 5): the snapshot "<", then the delta "<document".
+    const r = compose([
+      { cursor: cur("m1"), s: "<", id: "m1" },
+      { d: "<document" }, { d: ">notlar.docx</document>" }, { d: " oluşturuldu." },
+      { s: "<document>notlar.docx</document> oluşturuldu.", id: "m1" },
+    ]);
+    expect(r.text).toBe("<document>notlar.docx</document> oluşturuldu.");
+    expect(r.streamed).toBe(r.text);
+  });
+
+  it("keeps a one-character head that the first delta continues (\"**bold**\", a ``` fence)", () => {
+    const bold = compose([{ cursor: cur("m1"), s: "*", id: "m1" }, { d: "*Summary**" }, { d: " done." }]);
+    expect(bold.text).toBe("**Summary** done.");
+    const fence = compose([{ cursor: cur("m1"), s: "`", id: "m1" }, { d: "``bash\nls\n```" }]);
+    expect(fence.text).toBe("```bash\nls\n```");
+  });
+
   it("falls back to the snapshot's message when no cursor was ever sent", () => {
     const r = compose([{ s: "x", id: "m1" }, { d: "yz" }]);
     expect(r.text).toBe("xyz");
