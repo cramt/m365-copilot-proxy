@@ -560,18 +560,18 @@ Two behaviours of the chat-tuned model distort any naïve "is it tool-calling ye
 ### Creating the agent (`agent.ts`)
 1. **Discover the environment** via the BAP API:
    `GET https://api.bap.microsoft.com/providers/Microsoft.BusinessAppPlatform/environments/~default?api-version=2023-06-01`
-   → `name` like `Default-<tenantGuid>`.
-2. **Build the Power Platform host.** `envId` is the tenant GUID with dashes stripped. Power Platform splits it across **two DNS labels**: everything but the last two characters, then those two characters as a label of their own —
+   → `name` like `Default-<tenantGuid>` or a bare environment GUID.
+2. **Build the Power Platform host.** Strip dashes and lowercase the ID. Use the `default` host prefix only when the name starts with `Default-`; a bare GUID has no prefix. Power Platform splits the ID across **two DNS labels**: everything but the last two characters, then those two characters as a label of their own —
 
    ```
-   default<envId[..-2]>.<envId[-2..]>.environment.api.powerplatform.com
+   [default]<envId[..-2]>.<envId[-2..]>.environment.api.powerplatform.com
    ```
 
    e.g. `…9a0eeaa273df` → `default…9a0eeaa273.df.environment.api.powerplatform.com`.
 
    **This was previously documented (and implemented) as a hardcoded `.df.` plus a "trim the last 2 characters" DNS quirk.** That is wrong, and it was invisible here because this tenant's env ID *ends in* `df` — so the trimmed candidate landed on the correct host by coincidence. Any tenant whose env ID ends in something else got two names that don't resolve, and provisioning failed outright. Measured (@FreemindTrader, [#8](https://github.com/cramt/m365-copilot-proxy/issues/8)): for an ID ending `df` the old and new forms hit the same host (200, byte-identical bot list); the full-length label `ENOTFOUND` either way. Implemented in `getEnvironmentUrl()`.
 3. **Create a bot** via the Copilot Studio `minimalBots` API (`…/copilotstudio/minimalBots/api?api-version=2022-03-01-preview`), with the tool-calling instructions as the GPT component's `instructions` text.
-4. **Publish** it → returns a `TitleId`.
+4. **Publish** it → returns a `TitleId`. A `CopilotExtensibilityNotEnabled` denial during creation or publication is treated as a tenant-policy block for the process lifetime: subsequent resolution returns no agent, including forced refresh. A policy-denied publish is not deleted and recreated; ordinary publish failures retain the existing delete-and-recreate recovery. Restart after the policy changes.
 5. The usable **agent id** is `T_{titleId}.{botId}.gpt.default`, cached in `~/.config/opencode-m365/agent-id.json`.
 
 ### Referencing the agent in a chat turn
