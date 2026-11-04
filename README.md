@@ -167,6 +167,36 @@ Contributed by [@EatonWu](https://github.com/EatonWu). Two honest caveats:
 > `client_secret` only Microsoft holds. No tenant admin can grant it. Measured, with the
 > sign-in actually completed, in [§13 H13.2](docs/hypotheses.md).
 
+#### On WSL: sign in through Windows Edge
+
+With Windows Edge installed, you can use its existing profile for sign-in instead
+of storing credentials in `secrets.json`. Set `M365_EDGE_LOGIN=1` to explicitly
+opt in to opening Edge. Alternatively, on WSL with Edge detected,
+`M365_ENABLE_INTERACTIVE_APPROVAL=1` permits this path. `M365_NO_INTERACTIVE=1`
+always vetoes it, and `M365_EDGE_LOGIN=0` disables it. Without either opt-in,
+the existing headless/automated login policy is unchanged. Edge may ask you to
+choose an account or complete MFA; silent sign-in depends on your tenant and session.
+
+This path requires Node.js 22.13 or newer with `node:sqlite` available. It copies
+the selected Edge History database and, if present, its write-ahead log into a
+temporary directory while polling for the matching OAuth redirect. The copy can
+contain your browsing history and authorization codes; it is removed after each
+read, but may remain after a crash. The redirect may also remain in Edge history.
+Access to your temporary directory and Edge profile should be restricted.
+
+| Variable | Default |
+|---|---|
+| `M365_EDGE_PROFILE` | `Default` (profile directory name, e.g. `Profile 1`) |
+| `M365_EDGE_PATH` | standard Edge install path (Linux/WSL executable path) |
+| `M365_EDGE_USER_DATA` | Windows Edge user-data root discovered from `%LOCALAPPDATA%` |
+
+Set `M365_EDGE_USER_DATA` to a **Linux/WSL filesystem path**, e.g.
+`/mnt/c/Users/Alice/AppData/Local/Microsoft/Edge/User Data`, not a Windows
+`C:\Users\...` string and not the `Default` / `Profile 1` subdirectory.
+The resolved root is used both for History lookup and, after conversion with
+`wslpath -w`, Edge's `--user-data-dir`; `M365_EDGE_PROFILE` selects the same
+profile within that root. `wslpath` and Windows interop must be available.
+
 #### First run
 
 On first run, the system does an automated browser login (via Playwright/Chromium) to get OAuth tokens. After that, tokens refresh silently from the MSAL cache.

@@ -34,6 +34,7 @@ export function getImageArtifactToken(): Promise<string | null> {
 }
 
 import { createLogger } from "./log.js";
+import { edgeLoginEnabled, getAuthCodeViaEdge } from "./edge-login.js";
 const log = createLogger("auth");
 
 const CONFIG_DIR = join(homedir(), ".config", "opencode-m365");
@@ -102,15 +103,26 @@ function getApp(): msal.PublicClientApplication {
 async function buildAuthUrlForScopes(app: msal.PublicClientApplication, scopes: string[]) {
   const cryptoProvider = new msal.CryptoProvider();
   const { verifier, challenge } = await cryptoProvider.generatePkceCodes();
+  const state = cryptoProvider.createNewGuid();
 
   const authUrl = await app.getAuthCodeUrl({
     scopes,
     redirectUri: REDIRECT_URI,
     codeChallenge: challenge,
     codeChallengeMethod: "S256",
+    state,
   });
 
-  return { authUrl, verifier };
+  return { authUrl, verifier, state };
+}
+
+async function loginViaEdge(scopes: string[]): Promise<string> {
+  const app = getApp();
+  const { authUrl, verifier, state } = await buildAuthUrlForScopes(app, scopes);
+  const code = await getAuthCodeViaEdge(authUrl, state, interactiveTimeoutMs());
+  const result = await app.acquireTokenByCode({ code, scopes, redirectUri: REDIRECT_URI, codeVerifier: verifier });
+  saveCache(app);
+  return result.accessToken;
 }
 
 // --- Shared automated browser login ---
@@ -588,6 +600,10 @@ async function doForceReauth(): Promise<boolean> {
       log.info("forceReauth: refreshed silently — no interactive login needed");
       return true;
     }
+    if (edgeLoginEnabled()) {
+      await loginViaEdge(SCOPES);
+      return true;
+    }
     const secrets = loadSecrets();
     const canPromptHuman = interactiveApprovalEnabled() && interactiveAllowed();
     if (!secrets) {
@@ -651,6 +667,7 @@ export async function getTokenForScope(scopes: string[]): Promise<string | null>
 
   // Silent unavailable — fall back to automated browser login with stored creds,
   // then to a human if that's enabled (§13).
+  if (edgeLoginEnabled()) return loginViaEdge(scopes);
   const secrets = loadSecrets();
   const canPromptHuman = interactiveApprovalEnabled() && interactiveAllowed();
   if (!secrets) return canPromptHuman ? loginInteractiveForScopes(scopes) : null;
@@ -679,6 +696,8 @@ async function doGetToken(): Promise<string> {
     log.info("Token refreshed silently");
     return silent;
   }
+
+  if (edgeLoginEnabled()) return loginViaEdge(SCOPES);
 
   const secrets = loadSecrets();
   // Automated (headless) login by default. A headless host (systemd, CI, second
