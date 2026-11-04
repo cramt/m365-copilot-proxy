@@ -262,6 +262,62 @@ That should be everything you need to get going quickly.`;
   it("returns false when there are no tool calls at all", () => {
     expect(isProseDocument(parse("The answer is 42."))).toBe(false);
   });
+
+  // A long headed answer to "what else could we add?" ending in an example command:
+  // running it threw the answer away and started a stack nobody asked for.
+  const recommendations = [
+    "Here's what I'd add next for local dev, roughly in order of value.",
+    "",
+    "## Highest value next additions",
+    "",
+    "| Area | Addition | Why |",
+    "|---|---|---|",
+    ...Array.from({ length: 14 }, (_, i) =>
+      `| Area ${i} | A seed script, health checks or a Make target for piece ${i} | Saves a few minutes on every fresh checkout and every onboarding |`),
+    "",
+    "## Observability",
+    "Grafana, Loki and Tempo are already in the compose file behind a profile. To try them:",
+    "",
+  ].join("\n");
+  const answerWithExample = `${recommendations}\`\`\`bash\ndocker compose --profile observability up -d\n\`\`\``;
+
+  it("flags a long headed answer whose only fence is a trailing example", () => {
+    expect(recommendations.length).toBeGreaterThan(1500);
+    expect(isProseDocument(parse(answerWithExample), answerWithExample, bashTool)).toBe(true);
+  });
+
+  it("does NOT flag a single action with a long but unstructured lead-in", () => {
+    const lead = `${"I looked at the failing test and the stack trace points at the date parser. ".repeat(25)}\n`;
+    const text = `${lead}\`\`\`bash\nsed -i 's/%d/%e/' src/date.ts && pnpm test\n\`\`\``;
+    expect(isProseDocument(parse(text), text, bashTool)).toBe(false);
+  });
+
+  it("does NOT flag a single action with a short headed lead-in", () => {
+    const text = "## Step 2\nNow run the migration.\n```bash\npnpm db:migrate\n```";
+    expect(isProseDocument(parse(text), text, bashTool)).toBe(false);
+  });
+
+  it("does NOT flag a single call when the raw text isn't given", () => {
+    expect(isProseDocument(parse(answerWithExample))).toBe(false);
+  });
+
+  it.each(["# Heading", "| Area | Value |"])("uses the 1500-character trimmed boundary for %s", (structure) => {
+    const prefix = (length: number) => structure + "\n" + "x".repeat(length - structure.length - 1);
+    for (const [length, expected] of [[1499, false], [1500, true], [1501, true]] as const) {
+      const text = `${prefix(length)}\n\n\`\`\`bash\nprintf example\n\`\`\``;
+      expect(isProseDocument(parse(text), text, bashTool)).toBe(expected);
+    }
+  });
+
+  it("does not require the call to end the response", () => {
+    const text = `${recommendations}\`\`\`bash\nprintf example\n\`\`\`\nMore prose follows.`;
+    expect(isProseDocument(parse(text), text, bashTool)).toBe(true);
+  });
+
+  it("keeps an opening call despite a long structured tail", () => {
+    const text = `\`\`\`bash\nprintf example\n\`\`\`\n${recommendations}`;
+    expect(isProseDocument(parse(text), text, bashTool)).toBe(false);
+  });
 });
 
 describe("a call the model restates as a correction", () => {

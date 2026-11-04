@@ -450,8 +450,8 @@ export function fabricatedToolResponseAt(text: string, tools?: ToolDef[]): numbe
  * prose; a document is multiple fences surrounded by substantial prose.
  *
  * Chosen empirically (scripts guard-experiment, README-about-bash fixture):
- * ≥2 fences AND (≥120 chars of surrounding prose OR ≥4 fences). A SINGLE action
- * is never reclassified regardless of prose, so the coding loop is untouched.
+ * Multi-call replies use the existing document heuristic below. For one call,
+ * a document-length structured preamble is also returned as prose.
  *
  * With `text` + `tools`, one more rule runs first: a reply that OPENS with a
  * tool call is an action, whatever follows it. A tool-calling model stops at
@@ -464,7 +464,8 @@ export function fabricatedToolResponseAt(text: string, tools?: ToolDef[]): numbe
  * decides.
  */
 export function isProseDocument(parsed: ParseResult, text?: string, tools?: ToolDef[]): boolean {
-  if (!parsed.hasToolCalls || parsed.toolCalls.length < 2) return false;
+  if (!parsed.hasToolCalls) return false;
+  if (parsed.toolCalls.length === 1) return isAnswerWithTrailingExample(text, tools);
   if (text !== undefined && tools && tools.length > 0) {
     const first = findFirstToolFence(text, buildSpecMap(tools));
     if (first && !looksLikeDocumentPreamble(text.slice(0, first.start))) return false;
@@ -480,6 +481,18 @@ export function isProseDocument(parsed: ParseResult, text?: string, tools?: Tool
   // Flag only documents. (Old heuristic was prose≥120, which ate Claude's preambles.)
   const hasMarkdownHeaders = /^#{1,6}\s/m.test(prose);
   return parsed.toolCalls.length >= 4 || hasMarkdownHeaders || prose.length >= 300;
+}
+
+/** A single call after a document-length, structured preamble is treated as
+ *  part of an answer. The triggering example trailed the answer, but this
+ *  heuristic does not inspect what follows the call. */
+function isAnswerWithTrailingExample(text?: string, tools?: ToolDef[]): boolean {
+  if (text === undefined || !tools || tools.length === 0) return false;
+  const first = findFirstToolFence(text, buildSpecMap(tools));
+  if (!first) return false;
+  const preamble = text.slice(0, first.start);
+  if (preamble.trim().length < 1500) return false;
+  return /^#{1,6}\s/m.test(preamble) || /^\s*\|.*\|\s*$/m.test(preamble);
 }
 
 /** Is the text before a reply's first tool call the opening of a written
