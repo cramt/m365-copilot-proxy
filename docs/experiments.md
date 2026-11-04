@@ -12,6 +12,21 @@ thinking lives in [`hypotheses.md`](hypotheses.md), confirmed facts in
 > A/Bs. Pace requests; if `Disengaged`/empty spikes across *fresh* conversations,
 > stop and wait ~15 min.
 
+## E-SOL56 — compare picker labels with candidate wire tones
+
+- **Hypothesis:** the reported "GPT-5.6 Sol" labels use the existing `Gpt_5_6_Chat` /
+  `Gpt_5_6_Reasoning` tones, not a new `*_Sol_*` tone (hypotheses H-SOL56).
+- **Run:** after building and configuring auth, inside `nix develop`:
+  `M365_NO_INTERACTIVE=1 node scripts/model-sweep-probe.mjs --gap=8000 --only=Gpt_5_6_Chat,Gpt_5_6_Reasoning,Gpt_56_Sol_Chat`.
+  Omit `--only` for the full candidate list. This makes real M365 requests and uses quota.
+- **Read:** `REJECTED` is a validator error, `DEAD` is a BotConnection deflection, and
+  `LIVE` only establishes a DeepLeo response, not that the requested model actually served.
+  A self-ID is not authoritative model identification; compare the first-party picker data too.
+- **Cost/limits:** one fresh conversation per selected cell, strictly sequential, with an
+  8-second default gap; stops on the explicit throttle verdict. Repeated unknown-tone guesses
+  still cost requests. The contributor's cache/sweep observations are recorded separately
+  from the offline control-flow tests; no new live sweep is claimed here.
+
 ## Setup
 
 ```sh
