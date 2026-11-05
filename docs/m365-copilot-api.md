@@ -69,6 +69,20 @@ wss://substrate.office.com/m365Copilot/Chathub/{oid}@{tid}?{query}
 ### Flow: MSAL PKCE
 We use `@azure/msal-node` `PublicClientApplication` with PKCE. The token cache is persisted to `~/.config/opencode-m365/msal-cache.json` and refreshed silently when possible.
 
+MSAL and agent-ID cache snapshots are published through exclusive same-directory
+0600 temporary files: write the full snapshot, fsync and close it, then rename.
+New parent directories are 0700; existing shared parents are not chmodded. Replacing
+an old cache also replaces its permissions. Local publication failures throw
+`CachePersistenceError` (without paths, cache bytes or underlying OS error details),
+not an authentication miss: they must not trigger browser login or optional-agent
+fallback. A failure before rename leaves the previous complete cache intact;
+a directory-fsync failure after rename reports failure but leaves the new complete
+snapshot published. Directory fsync is attempted where supported, not on Windows.
+This is atomic snapshot publication, **not cross-process MSAL merging or guaranteed
+power-loss durability on every OS/filesystem**. Configured ancestor directories must
+be trusted: a destination symlink is replaced rather than followed, an immediate
+symlink parent is rejected, and hostile ancestor swaps are outside this guarantee.
+
 > **The cache is disposable (tested June 2026, `scripts/token-regen-probe.mjs`).** Delete `msal-cache.json` and the next `getToken()` self-heals: silent fails → automated browser login (stored creds + TOTP) → a fresh, working token in **~12s**, no human in the loop. The regenerated token is **functionally identical** — same `aud`/`appid`/`tid`/`oid`/scopes, only `iat`/`exp`/`uti` change. Point auth at a throwaway cache with `M365_CACHE_FILE` to test this without touching the real one.
 >
 > **Re-auth does NOT clear account throttling** — the fresh token carries the same `oid`, so it lands in the same account-keyed throttle bucket. Throttling is identity-level, not token-level.
