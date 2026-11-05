@@ -115,10 +115,11 @@ Opus 4.5 (`claude-opus-4.5`, with the tool agent) solved ~100% of the bench unde
 tried — so the solve rate couldn't rank them. The jailbreak classifier could: the `<system>`-tagged
 rule framings tripped it on 20 of 60 tasks (`minimal` 12/30, `baseline` 8/30), relay and `softened`
 on 0 of 80 (p = 5×10⁻⁹; hyp §24 F56), always on "find the secret" / "edit the config" prompts. The
-proxy's retry rescues those, but each one is a dead turn plus a fresh conversation — thread budget,
-and on metered Opus 5.5 possibly a priority-access unit. Two smaller lessons from the same sweep:
-- **A framing without `<system>` tags needs to stay clear of the classifier by itself.** The retry
-  swaps only `<system>`-tagged framings for `softened`; `retag` and `terse_user` were retried as
+proxy's historical F22 retry rescued those, but each one cost a dead turn plus a fresh
+conversation. The current handler instead returns a terminal refusal and never automatically
+softens or reframes Disengaged requests (see API doc §9). Two lessons from that historical sweep:
+- **A framing without `<system>` tags needs to stay clear of the classifier by itself.** The historical retry
+  swapped only `<system>`-tagged framings for `softened`; `retag` and `terse_user` were retried as
   themselves, disengaged again and failed (4 tasks). relay never needed the retry.
 - **A shorter prompt doesn't save Opus quota.** `minimal` was the default for that reason; the
   budget counts turns (hyp §24 F55). Choose for fewer turns and fewer Disengages instead.

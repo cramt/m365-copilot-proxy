@@ -1,5 +1,7 @@
 import { describe, it, expect, vi, afterEach } from "vitest";
 
+const accountLifecycle = { active: 0 };
+
 // Replace core's ModelSession with a scripted fake so we can exercise the handler's
 // streaming path with no auth/WebSocket. Everything else in core stays real.
 const scripted: {
@@ -94,8 +96,14 @@ vi.mock("@m365-copilot/core", async (importActual) => {
     if (scripted.budgetHold) throw scripted.budgetHold;
     return { waitedMs: 0 };
   }
-  return { ...actual, ModelSession: FakeModelSession, awaitTurnBudget };
+  return { ...actual, ModelSession: FakeModelSession, awaitTurnBudget, withAccountContext: async (_opts: unknown, callback: (key: string) => unknown) => { accountLifecycle.active++; try { return await callback("synthetic-account"); } finally { accountLifecycle.active--; } } };
 });
+
+vi.mock("../../proxy/server-pool", async () => {
+  const { SessionPool } = await import("./handler.js");
+  return { pool: new SessionPool() };
+});
+vi.mock("@m365-copilot/proxy-lib", async () => import("./index.js"));
 
 /** Which fake ModelSession (by creation order) served every run() call, in order. */
 const servedBy: number[] = [];
@@ -145,6 +153,106 @@ async function streamContents(deltas: string[], fullText?: string): Promise<stri
   }
   return contents;
 }
+
+describe("ownership and explicit idempotency", () => {
+  it("forwards explicit idempotency and affinity through the native Nitro route", async () => {
+    vi.stubGlobal("defineEventHandler", (handler: unknown) => handler);
+    vi.stubGlobal("readBody", (event: any) => event.body);
+    vi.stubGlobal("getHeader", (event: any, name: string) => event.headers[name]);
+    try {
+      const routePath = "../../proxy/routes/v1/chat/completions.post.js";
+      const { default: route } = await import(routePath);
+      scripted.deltas = ["visible"]; scripted.fullText = "visible";
+      const event: any = { body: { messages: [{ role: "user", content: "native" }] }, headers: { "x-opencode-session": "native", "idempotency-key": "native-key" } };
+      const before = scripted.runs;
+      const first = await route(event); const second = await route(event);
+      expect(await second.text()).toBe(await first.text());
+      expect(scripted.runs).toBe(before + 1);
+      event.body.session_id = "conflicting";
+      expect((await route(event)).status).toBe(400);
+    } finally { vi.unstubAllGlobals(); }
+  });
+  it("routes validated headers through createApp and allows CORS preflight", async () => {
+    const { createApp } = await import("./index.js");
+    const app = createApp();
+    const options = await app.fetch(new Request("http://local/v1/chat/completions", { method: "OPTIONS" }));
+    expect(options.headers.get("Access-Control-Allow-Headers")).toContain("Idempotency-Key");
+    const conflict = await app.fetch(new Request("http://local/v1/chat/completions", { method: "POST", headers: { "x-opencode-session": "B", "Content-Type": "application/json" }, body: JSON.stringify({ session_id: "A", messages: [{ role: "user", content: "x" }] }) }));
+    expect(conflict.status).toBe(400);
+  });
+  it("waits for producer completion, and aborts an independent queued waiter", async () => {
+    scripted.deltas = ["visible"]; scripted.fullText = "visible";
+    let release!: () => void;
+    scripted.gate = new Promise<void>(r => { release = r; });
+    const pool = new SessionPool();
+    const body = ChatCompletionRequest.parse({ stream: true, messages: [{ role: "user", content: "same" }] });
+    const before = scripted.runs;
+    try {
+      const first = await handleChatCompletion(body, pool, { sessionHint: "owner" });
+      const abort = new AbortController();
+      const second = handleChatCompletion(body, pool, { sessionHint: "owner", signal: abort.signal });
+      abort.abort();
+      expect((await second).status).toBe(499);
+      expect(scripted.runs).toBe(before);
+      release(); scripted.gate = null;
+      await first.text();
+      expect(scripted.runs).toBe(before + 1);
+      const third = await handleChatCompletion(body, pool, { sessionHint: "owner" });
+      await third.text();
+      expect(scripted.runs).toBe(before + 2);
+    } finally { release(); scripted.gate = null; }
+  });
+  it("does not cache canceled producer output or oversized streaming replies", async () => {
+    scripted.deltas = ["visible"]; scripted.fullText = "visible";
+    let release!: () => void; scripted.gate = new Promise<void>(r => { release = r; });
+    const pool = new SessionPool();
+    const body = ChatCompletionRequest.parse({ stream: true, messages: [{ role: "user", content: "same" }] });
+    try {
+      const first = await handleChatCompletion(body, pool, { idempotencyKey: "canceled" });
+      await first.body!.cancel();
+      release(); scripted.gate = null;
+      await new Promise(r => setTimeout(r, 0));
+      expect(pool.receipts.size).toBe(0);
+      scripted.deltas = ["x".repeat(1024 * 1024 + 1)]; scripted.fullText = scripted.deltas[0];
+      const big = await handleChatCompletion(body, pool, { idempotencyKey: "big" });
+      expect((await big.text()).length).toBeGreaterThan(1024 * 1024);
+      expect(pool.receipts.size).toBe(0);
+    } finally { release(); scripted.gate = null; }
+  });
+  it("replays an explicit completed key, rejects mismatch, and never implicitly deduplicates", async () => {
+    scripted.deltas = ["visible"]; scripted.fullText = "visible";
+    const pool = new SessionPool();
+    const body = ChatCompletionRequest.parse({ messages: [{ role: "user", content: "same" }] });
+    const before = scripted.runs;
+    const first = await handleChatCompletion(body, pool, { idempotencyKey: "retry-one" });
+    const text = await first.text();
+    const replay = await handleChatCompletion(body, pool, { idempotencyKey: "retry-one" });
+    expect(await replay.text()).toBe(text);
+    expect(scripted.runs - before).toBe(1);
+    const mismatch = await handleChatCompletion({ ...body, temperature: 0.4 }, pool, { idempotencyKey: "retry-one" });
+    expect(mismatch.status).toBe(409);
+    await handleChatCompletion(body, pool);
+    expect(scripted.runs - before).toBe(2);
+  });
+  it("reserves ownership until the full streaming producer completes", async () => {
+    scripted.deltas = ["visible"]; scripted.fullText = "visible";
+    let release!: () => void;
+    scripted.gate = new Promise<void>(r => { release = r; });
+    const pool = new SessionPool();
+    const body = ChatCompletionRequest.parse({ stream: true, messages: [{ role: "user", content: "same" }] });
+    try {
+      const first = await handleChatCompletion(body, pool, { idempotencyKey: "pending" });
+      expect(accountLifecycle.active).toBeGreaterThan(0); // headers do not close core policy resources
+      const pending = await handleChatCompletion(body, pool, { idempotencyKey: "pending" });
+      expect(pending.status).toBe(409);
+      expect(pending.headers.get("Retry-After")).toBe("1");
+      release(); scripted.gate = null;
+      const text = await first.text();
+      const replay = await handleChatCompletion(body, pool, { idempotencyKey: "pending" });
+      expect(await replay.text()).toBe(text);
+    } finally { release(); scripted.gate = null; }
+  });
+});
 
 describe("incremental streaming (non-tool path)", () => {
   it("forwards deltas as separate chunks, not one buffered blob", async () => {
@@ -451,7 +559,8 @@ describe("M365_AVOID_THROTTLING holds a turn it would have to wait too long for"
     const body = ChatCompletionRequest.parse({ model: "m365-copilot", stream: false, messages: [{ role: "user", content: "hi" }] });
     await handleChatCompletion(body, new SessionPool(), { signal: ac.signal });
     expect(scripted.awaitTurnBudgetCalls.map((c) => c.maxWaitMs)).toEqual([undefined, 2 * 60_000]);
-    expect(scripted.awaitTurnBudgetCalls[1]!.signal).toBe(ac.signal);
+    ac.abort();
+    expect(scripted.awaitTurnBudgetCalls[1]!.signal?.aborted).toBe(true);
   });
 
   it("makes the forcing retry wait for the budget too: every upstream turn goes through awaitTurnBudget", async () => {
@@ -483,13 +592,15 @@ describe("M365_AVOID_THROTTLING holds a turn it would have to wait too long for"
     expect(scripted.awaitTurnBudgetCalls).toHaveLength(2);
     expect(scripted.awaitTurnBudgetCalls[1]).toEqual(scripted.awaitTurnBudgetCalls[0]);
     expect(scripted.awaitTurnBudgetCalls[1]!.maxWaitMs).toBe(2 * 60_000);
-    expect(scripted.awaitTurnBudgetCalls[1]!.signal).toBe(ac.signal);
+    ac.abort();
+    expect(scripted.awaitTurnBudgetCalls[1]!.signal?.aborted).toBe(true);
   });
 });
 
-describe("Disengage retry keeps a model's <system>-free framing", () => {
+// Intentional migration: terminal refusal replaces F22 automatic softened retries.
+describe("Disengaged is terminal while initial model framing is preserved", () => {
   const tools = [{ type: "function", function: { name: "bash", parameters: { type: "object", properties: { command: { type: "string" } } } } }];
-  async function disengageThenAnswer(model: string): Promise<string> {
+  async function disengageWithoutRetry(model: string): Promise<string> {
     scripted.result = null;
     scripted.texts = [];
     scripted.queue = [{ fullText: "", messageType: "Disengaged" }, { fullText: "```bash\nls\n```" }];
@@ -498,22 +609,24 @@ describe("Disengage retry keeps a model's <system>-free framing", () => {
       messages: [{ role: "system", content: "sys" }, { role: "user", content: `do it ${model}` }],
     });
     const res = await handleChatCompletion(body, new SessionPool());
-    expect(res.status).toBe(200);
-    expect(scripted.texts).toHaveLength(2);
+    expect(res.status).toBe(403);
+    expect(res.headers.get("x-should-retry")).toBe("false");
+    expect((await res.json()).error).toMatchObject({ code: "m365_request_declined", retryable: false });
+    expect(scripted.texts).toHaveLength(1);
     scripted.queue = [];
-    return scripted.texts[1];
+    return scripted.texts[0];
   }
 
-  it("retries Sonnet 5 with relay again, never a <system>-tagged framing", async () => {
-    const retry = await disengageThenAnswer("claude-sonnet-5");
+  it("declines Sonnet 5 without retry, preserving initial relay framing", async () => {
+    const retry = await disengageWithoutRetry("claude-sonnet-5");
     expect(retry).not.toContain("<system>");
     expect(retry).toContain("guide me through this from my terminal, one command at a time");
     expect(retry).not.toContain("put as much as you can into one block");
   });
 
-  it("sends Opus, Sonnet 4.6 and GPT-6 relay_batch on the first try and keeps it on the retry (§24, §25)", async () => {
+  it("sends Opus, Sonnet 4.6 and GPT-6 relay_batch once (§24, §25)", async () => {
     for (const model of ["claude-opus-4.8", "claude-opus", "claude-sonnet", "gpt-6-think-deeper"]) {
-      const retry = await disengageThenAnswer(model);
+      const retry = await disengageWithoutRetry(model);
       expect(scripted.texts[0]).toContain("put as much as you can into one block");
       expect(scripted.texts[0]).not.toContain("<system>");
       expect(retry).toContain("put as much as you can into one block");
@@ -521,10 +634,11 @@ describe("Disengage retry keeps a model's <system>-free framing", () => {
   });
 
 
-  it("still retries the <system>-tagged defaults with softened (F22)", async () => {
-    const retry = await disengageThenAnswer("gpt-5.5-think-deeper");
+  it("does not soften or retry the <system>-tagged defaults", async () => {
+    const retry = await disengageWithoutRetry("gpt-5.5-think-deeper");
     expect(retry).toContain("<system>");
-    expect(retry).toContain("You are an automated coding agent working in a real working directory");
+    expect(retry).toContain("You are the execution core of an automated agent");
+    expect(retry).not.toContain("You are an automated coding agent working in a real working directory");
   });
 });
 
@@ -778,7 +892,7 @@ describe("a new harness session that shares the first user message", () => {
     first.push({ role: "tool", tool_call_id: m1.tool_calls[0].id, content: "notlar.md" });
     await ask(first, pool);
     await ask([{ role: "user", content: prompt }], pool); // a new session, same opener
-    expect(scripted.newConversations).toBe(1);
+    expect(servedBy.at(-1)).not.toBe(servedBy.at(-2)); // immutable branch, not a reset of A
     expect(scripted.texts[2]).toContain(prompt); // the full prompt, not a delta
     scripted.queue = [];
   });
@@ -792,7 +906,7 @@ describe("a new harness session that shares the first user message", () => {
     const prompt = `make a docx ${Math.random()}`;
     await ask([{ role: "user", content: prompt }], pool);
     await ask([{ role: "user", content: prompt }], pool);
-    expect(scripted.newConversations).toBe(1);
+    expect(servedBy.at(-1)).not.toBe(servedBy.at(-2)); // distinct session, old branch preserved
     expect(scripted.texts[scripted.texts.length - 1]).not.toBe("Please continue.");
     expect(scripted.texts[scripted.texts.length - 1]).toContain(prompt);
     scripted.queue = [];
@@ -901,11 +1015,11 @@ describe("Opus 4.8 on an account that can't serve it (§24, §36)", () => {
     expect(res.status).toBe(502);
     const err = (await res.json()).error;
     expect(err.code).toBe("model_route_unavailable");
-    expect(err.message).toContain("premium");
+    expect(err.message).toContain("does not establish this account\'s licence entitlement");
     expect(scripted.newConversations).toBe(0);
   }
 
-  it("says the model is premium-only instead of 'empty response' on a tool-less (agent-less) request", async () => {
+  it("reports ambiguous route unavailability rather than asserting a licence on a tool-less request", async () => {
     await deadRoute(false);
     expect(scripted.agentFlags).toEqual([false, false, false]);
   });
@@ -1214,7 +1328,7 @@ describe("stopping a turn that writes its own <tool_response> (early stop)", () 
 
   it("leaves a request without tools alone", async () => {
     await toolTurn(runaway, false);
-    expect(scripted.signals.at(-1)).toBeUndefined();
+    expect(scripted.signals.at(-1)?.aborted).toBe(false); // owns cancellation without early-stopping ordinary prose
     expect(scripted.stoppedAfter).toBeNull();
   });
 

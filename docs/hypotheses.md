@@ -8,6 +8,13 @@ behaviour; this is the messy "we haven't shipped it yet" layer.
 Status legend: 🟢 confirmed · 🟡 partially tested · 🔴 untested guess ·
 ⚫ disproved.
 
+**Current proxy contract:** historical F22 softened-retry experiments below do
+not describe today's handler: `Disengaged` is terminal, with explicit final
+results taking precedence (API doc §9). Standard usage counters are now labeled
+visible-context character estimates, not discovered upstream token telemetry
+([README](../README.md#usage--context-window--in-responses)). This policy change
+and its synthetic regression tests do not establish new live-service findings.
+
 Findings should carry **n** (sample size), **service version under test**,
 and **falsification criteria** wherever they're claiming something stronger
 than "we eyeballed one run." See §M (Methods) for the experimental rig.
@@ -5107,6 +5114,26 @@ conversations; the run did not trip the throttle.
 **What this re-opens.** Before the fix, every multi-turn measurement ran with about half its turns on a
 partial history. A/B comparisons stay fair (their arms forked alike), but absolute numbers — turns per
 task, give-up rates, follow-ups that drift back to the first request — are worth re-measuring.
+
+### H-RST — mid-conversation `WS error: read ECONNRESET`, then a hung request 🟡
+**Contributor report, 2026-11-03, n=1 session; not rerun live for this handoff.** In an agent-less
+`gpt-5.6-think-deeper` thread, the contributor reported repeated `ECONNRESET` errors 15–17 seconds
+after sending a 5.4k-character tool response, followed by a silent attempt. Later they reported
+`EAI_AGAIN` / `ENOTFOUND` alongside resets, and that a subsequent resend succeeded after an idle
+timeout. These observations suggest a possible local network contribution, but do not establish
+the cause of each reset or exclude content, conversation, or upstream factors. The client now
+has an idle timeout, preserves the attempted-turn count on same-conversation reconnects, and
+delays recognized network-error retries. A controlled comparison of the same text in a fresh
+conversation remains open.
+
+The supplied chronology names opencode turn 9, with four sends (two proxy reconnect attempts
+and two client attempts), no bot frame before the resets, and an `npm install` response in
+`<tool_response>`. The contributor observed a DigiCert TLS issuer; that alone does not prove
+all network intermediaries absent. At 19:59–20:08Z the resets recurred alongside DNS errors
+for `substrate.office.com`. The contributed timeout logged "No response from M365 for 120s",
+then the client's next resend succeeded. The original question remains falsifiable: compare
+the same response text in a fresh conversation against the existing conversation, with local
+DNS/connectivity observed independently. No causal verdict is inferred from this one session.
 
 ---
 

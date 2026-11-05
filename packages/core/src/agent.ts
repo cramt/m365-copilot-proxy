@@ -3,6 +3,7 @@ import { join } from "node:path";
 import { homedir } from "node:os";
 import { createHash } from "node:crypto";
 import { createLogger } from "./log.js";
+import { currentAccountContext, assertAccountToken, AccountPolicyError } from "./account-policy.js";
 import { getTokenForScope } from "./auth.js";
 
 const log = createLogger("agent");
@@ -70,6 +71,10 @@ When the message has no <tools> block, respond normally as a helpful assistant i
  * (e.g. "Default-fa7f56d8-49c4-4327-b816-9a0eeaa273df"). Pure — no network.
  */
 export function environmentUrlFromName(envName: string): string {
+  // The `default` host prefix comes from the name, not from being the tenant's
+  // default environment: some tenants' `~default` is a plain GUID, and its host
+  // has no prefix (`default<id>` is NXDOMAIN there).
+  const prefix = /^Default-/i.test(envName) ? "default" : "";
   const envId = envName
     .replace(/^Default-/i, "")
     .replace(/-/g, "")
@@ -92,7 +97,7 @@ export function environmentUrlFromName(envName: string): string {
     throw new Error(`Unexpected Power Platform environment ID: ${envId}`);
   }
   return (
-    `https://default${envId.slice(0, -2)}.${envId.slice(-2)}` +
+    `https://${prefix}${envId.slice(0, -2)}.${envId.slice(-2)}` +
     `.environment.api.powerplatform.com`
   );
 }
@@ -140,7 +145,11 @@ interface CachedAgent {
   createdAt: string;
 }
 
+const scopedAgents = new Map<string, { agent: CachedAgent; expires: number }>();
+const scopedDenials = new Map<string, number>();
 function loadCachedAgent(): CachedAgent | null {
+  const ctx = currentAccountContext();
+  if (ctx) { const cached = scopedAgents.get(ctx.key); return cached && cached.expires > Date.now() ? cached.agent : null; }
   if (!existsSync(AGENT_CACHE_FILE)) return null;
   try {
     return JSON.parse(readFileSync(AGENT_CACHE_FILE, "utf-8"));
@@ -150,6 +159,11 @@ function loadCachedAgent(): CachedAgent | null {
 }
 
 function saveCachedAgent(data: CachedAgent): void {
+  const ctx = currentAccountContext();
+  if (ctx) {
+    if (scopedAgents.size >= 1000) scopedAgents.delete(scopedAgents.keys().next().value!);
+    scopedAgents.set(ctx.key, { agent: data, expires: Date.now() + 15 * 60000 }); return;
+  }
   writeFileSync(AGENT_CACHE_FILE, JSON.stringify(data, null, 2));
 }
 
@@ -302,6 +316,9 @@ async function publishBot(
   return titleId;
 }
 
+/** Set once publishing is refused by tenant policy; no retries this process. */
+let agentBlockedByPolicy = false;
+
 /**
  * Get or create the tool-calling agent for the CURRENT instructions.
  * The agent is versioned by name (AGENT_BASE_NAME-<instructionsHash>), so editing
@@ -314,6 +331,13 @@ export async function getOrCreateAgent(
 ): Promise<string | null> {
   const wantHash = getInstructionsHash();
   const wantName = getAgentName();
+  const ctx = currentAccountContext();
+  if (ctx ? (scopedDenials.get(ctx.key) ?? 0) > Date.now() : agentBlockedByPolicy) return null;
+  const blockPolicy = () => {
+    if (!ctx) { agentBlockedByPolicy = true; return; }
+    if (scopedDenials.size >= 1000) scopedDenials.delete(scopedDenials.keys().next().value!);
+    scopedDenials.set(ctx.key, Date.now() + 15 * 60000);
+  };
 
   // Fast path: cached agent built from the same instructions.
   // Skipped on forceRefresh: that path re-validates against the tenant to
@@ -338,6 +362,8 @@ export async function getOrCreateAgent(
     return null;
   }
 
+  assertAccountToken(bapToken);
+
   // Need PowerPlatform token for Copilot Studio APIs
   const ppToken = await getTokenForScope(POWERPLATFORM_SCOPES);
   if (!ppToken) {
@@ -345,6 +371,7 @@ export async function getOrCreateAgent(
     return null;
   }
 
+  assertAccountToken(ppToken);
   const envUrl = await getEnvironmentUrl(bapToken);
 
   try {
@@ -370,6 +397,14 @@ export async function getOrCreateAgent(
     try {
       titleId = await publishBot(envUrl, ppToken, botId);
     } catch (pubErr: any) {
+      // An account policy, not a broken bot: recreating can't fix it and would
+      // leave a fresh unpublished bot in the tenant on every attempt.
+      if (/CopilotExtensibilityNotEnabled/.test(pubErr.message)) {
+        blockPolicy();
+        throw new Error(
+          "Copilot extensibility is not enabled for this account (tenant policy) — tool agent unavailable",
+        );
+      }
       // If publish fails (e.g. missing icon/instructions on legacy bot), delete and recreate
       log.info(
         `Publish failed (${pubErr.message.slice(0, 100)}), deleting and recreating bot...`,
@@ -396,6 +431,9 @@ export async function getOrCreateAgent(
     saveCachedAgent({ agentId, botId, instructionsHash: wantHash, createdAt: new Date().toISOString() });
     return agentId;
   } catch (err: any) {
+    // Includes create failures and the second create/publish after ordinary recovery.
+    if (err instanceof AccountPolicyError) throw err;
+    if (/CopilotExtensibilityNotEnabled/.test(err.message)) blockPolicy();
     log.error("Agent creation failed:", err.message, err.cause?.message || "");
     return null;
   }

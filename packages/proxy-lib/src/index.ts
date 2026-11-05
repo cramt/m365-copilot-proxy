@@ -1,8 +1,10 @@
 import { type ModelSessionOptions, getAvailableModels } from "@m365-copilot/core";
 import { ChatCompletionRequest } from "./schemas.js";
 import { SessionPool, handleChatCompletion } from "./handler.js";
+import { requestContext, RequestContextError } from "./request-context.js";
 
 export { SessionPool, handleChatCompletion } from "./handler.js";
+export { requestContext, RequestContextError, type RequestContext } from "./request-context.js";
 export { ChatCompletionRequest, ChatMessage, ToolCall, ToolDefinition } from "./schemas.js";
 
 // Re-export tool utilities from core
@@ -60,7 +62,7 @@ export function buildModelsPayload() {
 const CORS_HEADERS: Record<string, string> = {
   "Access-Control-Allow-Origin": "*",
   "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
-  "Access-Control-Allow-Headers": "Content-Type, Authorization",
+  "Access-Control-Allow-Headers": "Content-Type, Authorization, X-Claude-Code-Session-Id, X-OpenCode-Session, Idempotency-Key",
 };
 
 function withCors(res: Response): Response {
@@ -118,7 +120,12 @@ export function createApp(sessionOptions: ModelSessionOptions = {}): FetchApp {
         );
       }
       // req.signal aborts when the client disconnects → cancels the M365 turn.
-      return withCors(await handleChatCompletion(body, pool, { signal: req.signal }));
+      try {
+        return withCors(await handleChatCompletion(body, pool, { ...requestContext(body, req.headers), signal: req.signal }));
+      } catch (err) {
+        if (err instanceof RequestContextError) return withCors(json(err.status, { error: { message: err.message, type: "invalid_request_error", code: err.code } }));
+        throw err;
+      }
     }
 
     return withCors(

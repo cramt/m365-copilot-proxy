@@ -250,7 +250,7 @@ Two things worth separating, because conflating them wastes probes:
 - **`scenario` is the lever.** Flipping it to `OfficeWebPaidCopilot` is what makes `Claude_Opus` serve a real answer instead of the canned BotConnection apology. This also rewrites the old F23 reading of "Opus is a dead tone, 0/3": that measurement was taken on the included scenario, where the observation was correct and the conclusion wasn't. (On a premium account the included scenario has served a different model there since October 2026, Opus 4.8: hypotheses §36.)
 - **`licenseType` is not.** `Premium` is simply the value the paid scenario travels with; setting `licenseType` alone does **not** grant access to different models. We send the pair for coherence with the real client, not because both halves do work.
 
-This is an entitlement, not a bypass: the account has to actually hold the paid/premium access. On a seat that doesn't, the paid scenario is refused outright: the final item carries `result.value: "ForbiddenRequest"`, `errorCode: "InvalidCopilotLicense"`, and a BotConnection reply *"It looks like you don't have a valid licence. To get access, please check with your administrator…"* (~2.5 s). It is about the account, not the tone: `Gpt_5_6_Chat`, `Claude_Sonnet` and `Claude_Opus` were all refused this way (6/6 across two runs, agent attached, 2026-10-01; hypotheses §22 F46), and `Gpt_5_6_Chat` serves on the same account under the included scenario. One exception: with the agent attached, `Gpt_6_Reasoning` returns its dead-route `InternalError` instead (2/2), so an `InternalError` on the paid scenario doesn't prove the account is licensed. The licence refusal is a different wire state from the dead route's `InternalError` + "Sorry, I wasn't able to respond to that". The proxy has no handling for it yet.
+This is an entitlement, not a bypass: the account has to actually hold the paid/premium access. On a seat that doesn't, the paid scenario is refused outright: the final item carries `result.value: "ForbiddenRequest"`, `errorCode: "InvalidCopilotLicense"`, and a BotConnection reply *"It looks like you don't have a valid licence. To get access, please check with your administrator…"* (~2.5 s). It is about the account, not the tone: `Gpt_5_6_Chat`, `Claude_Sonnet` and `Claude_Opus` were all refused this way (6/6 across two runs, agent attached, 2026-10-01; hypotheses §22 F46), and `Gpt_5_6_Chat` serves on the same account under the included scenario. One exception: with the agent attached, `Gpt_6_Reasoning` returns its dead-route `InternalError` instead (2/2), so an `InternalError` on the paid scenario doesn't prove the account is licensed. The licence refusal is a different wire state from the dead route's `InternalError` + "Sorry, I wasn't able to respond to that". The proxy maps this explicit account denial to HTTP 403 `m365_account_not_licensed`; known model-specific denial codes map separately to `m365_model_not_licensed`, and unknown codes stay generic (`m365_forbidden`). See the terminal translation contract in §9.
 
 **The gate is not a budget.** Opus is both entitlement-gated *and* metered by priority access (below), and while it was the only paid-scenario tone those two properties were indistinguishable — it was easy to read "paid scenario" as shorthand for "scarce". `Gpt_6_Reasoning` separates them: same gate, no priority-access allowance, throttled by the ordinary per-conversation cap and thread-rate governor like everything else. Sonnet 5 (`Claude_Sonnet_5`) is the same, and Sonnet 5.5 (`Claude_Sonnet` @ paid) is metered like Opus. So membership of `PAID_SCENARIO_TONES` says what a tone needs to *reach* a model and nothing about what it costs once it does. Downstream code should not infer one from the other — the metered models are listed on their own (`meteredBudgetOf`), the priority-access detector keys on `OutOfCredits` (so it simply never fires for GPT-6), and the framing default is decided per model (`defaultFramingForModel`). Opus and GPT-6 both end up on user-voice relays, for unrelated reasons: on Opus the `<system>`-tagged framings trip the jailbreak classifier and its budget counts turns, hence `relay_batch` (hypotheses §24 F56, F60); GPT-6 runs agent-less, next to M365's code interpreter, hence a relay (§22 F47) — batched, as `relay_batch`, since it cut a third of its turns without sending it to that sandbox (§25 F61).
 
@@ -413,6 +413,14 @@ The final `type:2` frame carries the canonical state of the whole conversation i
 - This is why we **reuse one conversation** across an agent session and send **only new messages** on follow-up turns (delta mode) — every `Please continue.` retry also counts against the 600.
 - There is also opaque **account-level throttling** (rapid-fire requests can start returning empties). It recovers on its own.
 
+**Current interpretation:** the earlier thread-only explanation is not an established
+limit. F58's later observations, including a mid-conversation onset, fit a per-turn
+bucket better. The fitted capacity/refill and post-throttle hold are configurable
+client policy, not Microsoft-published limits or guaranteed reset timestamps.
+Account admission counts attempted sends, including reconnects; thread creation and
+full-history replay are separate diagnostics. A new local conversation ID is not
+itself an upstream request. Explicit throttle stops recovery on that account.
+
 ### Account degradation under sustained use (observed June 13 2026)
 
 A full session of heavy use (~80+ messages across probes, bench runs, and logins
@@ -452,9 +460,30 @@ conversation at `1/600`). Characterised behaviour:
 
 - A "conversation" = a stable `ConversationId` (+ `X-SessionId`). M365 keeps **server-side context** for it.
 - Each **turn opens a fresh WebSocket** (with `invocationId:"0"`), but reuses the same `ConversationId`/`sessionId`, so the server threads them together. `isStartOfSession:true` only on turn 0.
+- The client retains its local attempted-turn count when rebuilding a session for the same conversation, including agent switches, refresh and reset; a new conversation resets it. An idle watchdog starts before handshake and restarts on every received frame. It fails the handshake promise or, after handshake, the stream after `M365_TURN_IDLE_MS` of silence (default 120 seconds). Recognized pre-stream network failures wait `M365_RECONNECT_DELAY_MS` (default 5 seconds, 0 disables the delay) before the existing budget-gated retry; abort cancels that delay and prevents the resend. These are client-side safeguards, not proof of why a server was silent.
 - **Send `X-RoutingParameter-SessionKey: <ConversationId>` as a header on every upgrade.** Without it the front end spreads a conversation's connections over backends in two regions (`x-calculatedbetarget` in the upgrade response names the one you got), which keep separate copies of the conversation: the turns fork, the server's `turnCount` steps back (1,2,3,2,4,…), and the model answers from a partial history. The query-string form does not pin. See hypotheses §32 F85 and `scripts/fork-probe.mjs`.
 - Because the server remembers prior turns, follow-ups should send **only the new messages** (the delta), not the whole history. Re-sending the full history confuses it and burns quota. See `ModelSession`/`CopilotSession` and `SessionPool` (`handler.ts`).
 - The proxy adds `disableMemory=1` to the Chathub URL **by default** — M365's temporary-chat control. Both halves are verified (§16 F28/F29, `scripts/temporary-chat-probe.mjs`): the live `ConversationId` still retains multi-turn context across turns, and the thread never appears in the Copilot history sidebar. Without it the proxy leaves one saved thread per prompt in the user's history. The trade is that a proxy conversation can't be recovered from the UI afterwards; `M365_SAVE_HISTORY=1` opts back into saved history.
+
+**Client identity is distinct from upstream placement.** The proxy validates a
+SHA-256 chain of the canonical client transcript, including tool calls, their
+results and image descriptors. It compares against the assistant response actually
+returned to the client, not raw model output discarded by tool filtering. Divergent
+histories fork rather than resetting another caller's state. Producer admission
+remains owned until completion/cancellation, including after SSE headers return.
+
+Explicit session hints travel through both HTTP entrypoints. They do not authorize
+access or replace an authenticated embedding's trusted principal scope. Identical
+anonymous transcripts are inherently indistinguishable; exact-prefix matching is
+a compatibility fallback, not a multi-tenant security boundary. Upstream bindings
+remain credential-account-specific, retaining the backend routing header above.
+
+Request replay requires an explicit `Idempotency-Key`; identical content alone
+does not distinguish a retry from intentional regeneration. In-memory bounded
+receipts do not promise exactly-once execution across crashes. Neither the low-level
+constructor's ID options nor in-process reconnect tests establish safe remote
+conversation restoration after restart. The proxy starts fresh and replays the
+caller-supplied history instead of sending a delta into uncertain remote state.
 
 ---
 
@@ -477,6 +506,36 @@ When M365 dislikes a prompt — **looks like a jailbreak / prompt injection**, o
 **What triggers it (observed):**
 - Large injected tool blocks. Empirically: ~1 tool is fine; **~12 tools is borderline** (disengages once, recovers on retry); a full coding-agent toolset (~15+, e.g. opencode's) disengages **persistently**. (opencode's count has since dropped to 9 — see "Trimming a heavy harness" below.)
 - Aggressive, jailbreak-shaped instructions: fake `<system>`/`<user>`/`<assistant>` turns, "output ONLY JSON", "STRICT RULES", "never describe your intent". These read as manipulation.
+
+### Proxy terminal translation contract
+
+This is a proxy policy, not a new live-service measurement. `handler.ts` checks
+explicit `ForbiddenRequest`, `Throttled` and priority-access `OutOfCredits`
+before the generic `Disengaged` marker, image/content success or ambiguous
+`InternalError` recovery. `Throttled` preserves degradation bookkeeping for the
+current conversation, without a model fallback or invented reset. `OutOfCredits`
+retains the existing configured priority fallback. Refusal prose alone cannot
+enable that fallback past `Disengaged`.
+
+A remaining `Disengaged` returns 403 `m365_request_declined`, with no automatic
+softened-framing retry; the marker alone is not proof of a content-policy
+violation. Historical F22 retry experiments remain historical evidence, not the
+current handler contract. `M365_NO_DISENGAGE_RETRY` has no effect now.
+`ForbiddenRequest` distinguishes known model licence codes
+(`PremiumModelUnavailableForLicense`, `ClaudeUnavailableForLicense`), account
+licence code `InvalidCopilotLicense`, and unknown/generic denials. Upstream
+free-form refusal prose is not copied into these error messages, and only
+bounded identifier-shaped error codes are exposed. Exhausted `InternalError`
+route failures do not establish an account's licence entitlement.
+
+Terminal JSON responses include `error.retryable: false` and
+`x-should-retry: false`, including explicit throttles, priority quota/budget holds
+and exhausted ordinary empty retries. SSE already committed to HTTP 200 carries
+the structured error in-stream, then `[DONE]`, never a success finish. A late
+refusal cannot retract earlier streamed text. `retry_after` is carried only from
+an actual `Retry-After` header. See the [README](../README.md#terminal-refusals-and-client-retries)
+for status/code mappings and the separately labeled visible-context usage estimate;
+that estimate is not upstream telemetry, billing or a measured token window.
 
 **Mitigations:**
 - Keep the **toolset lean** (a handful of tools). Lean harnesses like [pi](https://pi.dev/) stay under the threshold; heavy ones trip it.
@@ -560,18 +619,18 @@ Two behaviours of the chat-tuned model distort any naïve "is it tool-calling ye
 ### Creating the agent (`agent.ts`)
 1. **Discover the environment** via the BAP API:
    `GET https://api.bap.microsoft.com/providers/Microsoft.BusinessAppPlatform/environments/~default?api-version=2023-06-01`
-   → `name` like `Default-<tenantGuid>`.
-2. **Build the Power Platform host.** `envId` is the tenant GUID with dashes stripped. Power Platform splits it across **two DNS labels**: everything but the last two characters, then those two characters as a label of their own —
+   → `name` like `Default-<tenantGuid>` or a bare environment GUID.
+2. **Build the Power Platform host.** Strip dashes and lowercase the ID. Use the `default` host prefix only when the name starts with `Default-`; a bare GUID has no prefix. Power Platform splits the ID across **two DNS labels**: everything but the last two characters, then those two characters as a label of their own —
 
    ```
-   default<envId[..-2]>.<envId[-2..]>.environment.api.powerplatform.com
+   [default]<envId[..-2]>.<envId[-2..]>.environment.api.powerplatform.com
    ```
 
    e.g. `…9a0eeaa273df` → `default…9a0eeaa273.df.environment.api.powerplatform.com`.
 
    **This was previously documented (and implemented) as a hardcoded `.df.` plus a "trim the last 2 characters" DNS quirk.** That is wrong, and it was invisible here because this tenant's env ID *ends in* `df` — so the trimmed candidate landed on the correct host by coincidence. Any tenant whose env ID ends in something else got two names that don't resolve, and provisioning failed outright. Measured (@FreemindTrader, [#8](https://github.com/cramt/m365-copilot-proxy/issues/8)): for an ID ending `df` the old and new forms hit the same host (200, byte-identical bot list); the full-length label `ENOTFOUND` either way. Implemented in `getEnvironmentUrl()`.
 3. **Create a bot** via the Copilot Studio `minimalBots` API (`…/copilotstudio/minimalBots/api?api-version=2022-03-01-preview`), with the tool-calling instructions as the GPT component's `instructions` text.
-4. **Publish** it → returns a `TitleId`.
+4. **Publish** it → returns a `TitleId`. A `CopilotExtensibilityNotEnabled` denial during creation or publication is treated as a tenant-policy block for the process lifetime: subsequent resolution returns no agent, including forced refresh. A policy-denied publish is not deleted and recreated; ordinary publish failures retain the existing delete-and-recreate recovery. Restart after the policy changes.
 5. The usable **agent id** is `T_{titleId}.{botId}.gpt.default`, cached in `~/.config/opencode-m365/agent-id.json`.
 
 ### Referencing the agent in a chat turn
