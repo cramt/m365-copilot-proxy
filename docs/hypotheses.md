@@ -3121,6 +3121,24 @@ the patterns is a separate change and needs false-positive tests ("Replaced X wi
 calc.py" is a genuine completion). Afterwards, re-run with the retry on and compare against
 this table to measure what it recovers.
 
+### H-SOL56 — "GPT-5.6 Sol" in the web picker is `Gpt_5_6_Chat` / `Gpt_5_6_Reasoning` ✅
+**Provenance:** contributor-reported observations supplied with the patch; the raw cache and
+session captures are not part of this contribution. These live results were not re-run during
+upstream preparation. The probe's offline tests establish its control flow, not model identity.
+**2026-11-03, non-premium tenant.** The picker shows "GPT-5.6 Sol Quick response" / "GPT-5.6 Sol Think
+deeper". Seven guessed tone names (`Gpt_56_Sol_*`, `Gpt_5_6_Sol_*`, …) were **REJECTED** (`type:3`). The
+picker's menu JSON, read from Edge's HTTP cache (gzip bodies in `Cache_Data/data_2`), maps them:
+`{"id":"Gpt_5_6_Chat","menuItemTitle":"GPT-5.6 Sol Quick response"}`, `{"id":"Gpt_5_6_Reasoning",
+"menuItemTitle":"GPT-5.6 Sol Think deeper"}`. So "Sol" is a display rename of the already-mapped
+`gpt-5.6` / `gpt-5.6-think-deeper`; nothing to add. Reading the cache costs no quota: try it first next
+time a picker label doesn't match a known tone.
+Same sweep (`scripts/model-sweep-probe.mjs`, n=1 per cell): `Gpt_6_Sol_Reasoning`, `Gpt_61_Sol_Reasoning`,
+`Gpt_6_Sol_Chat` answered "This model requires a Premium license" on the *included* scenario, so "GPT-6
+Sol works on every account" (§23, §27) does not hold on this tenant; `Claude_*` answered "Claude isn't
+available with your current license". The bundle's tone enum also lists `Gpt_6_Astra` (REJECTED here),
+`Grok_Auto`, `Grok_Reasoning`, `Muse_Spark`, `Gpt_5_2_Auto`: these are accepted, but each self-IDs as
+"the GPT-5 chat model". Self-ID can't tell a real model from a fallback (§19), so they are unconfirmed.
+
 ### Side observations (uninterpreted, n=3 each)
 
 - **Latency signatures drifted.** Rejections took 1.3–1.6s and the `BotConnection` deflection
