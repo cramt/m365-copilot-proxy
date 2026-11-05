@@ -57,7 +57,7 @@ const log = createLogger("handler");
 // fetch the bytes ourselves and embed a self-contained data URI — a bare URL would
 // be useless to the client. On fetch failure we fall back to the raw URL so the
 // response is never silently empty.
-async function renderImagesMarkdown(images: CapturedImage[]): Promise<string> {
+async function renderImagesMarkdown(images: CapturedImage[], signal?: AbortSignal): Promise<string> {
   if (images.length === 0) return "";
   let artifactToken: string | null = null;
   try { artifactToken = await getImageArtifactToken(); } catch (e: any) { log.info(`image token failed: ${e.message}`); }
@@ -67,7 +67,7 @@ async function renderImagesMarkdown(images: CapturedImage[]): Promise<string> {
     if (!url) continue;
     if (artifactToken) {
       try {
-        const { data, contentType } = await fetchImageBytes(url, artifactToken);
+        const { data, contentType } = await fetchImageBytes(url, artifactToken, signal);
         parts.push(`![generated image](data:${contentType};base64,${data.toString("base64")})`);
         continue;
       } catch (e: any) { log.info(`image fetch failed: ${e.message}`); }
@@ -544,7 +544,7 @@ export async function handleChatCompletion(
       // emit the markdown as a trailing delta so the client isn't left with nothing.
       const images = copilotStream.images ?? [];
       if (images.length > 0) {
-        const imageMd = await renderImagesMarkdown(images);
+        const imageMd = await renderImagesMarkdown(images, opts.signal);
         if (imageMd) {
           const addition = fullText.length > 0 ? `\n\n${imageMd}` : imageMd;
           fullText += addition;
