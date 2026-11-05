@@ -52,6 +52,8 @@ export const ChatCompletionRequest = z.object({
   // high-variance at turn-1 tool-calling (see docs/hypotheses.md F24 + correction:
   // magic swung 0/2 → 2/2 across probes; explicit tones pin a specific backend).
   model: z.string().optional().default("gpt-5.5-think-deeper"),
+  session_id: z.string().regex(/^[A-Za-z0-9_.:-]{1,200}$/).optional(),
+  metadata: z.object({ user_id: z.string().max(1024).optional() }).optional(),
   messages: z.array(ChatMessage).min(1),
   stream: z.boolean().optional().default(false),
   // OpenAI streaming option: include_usage=true → emit a final chunk with `usage`.

@@ -219,11 +219,12 @@ pi --models "gpt-5.5-think-deeper" -p --tools read,list,edit,write "your task"
 
 This is verified working end-to-end, including multi-tool calls and real file edits.
 
-**Long sessions.** Every turn draws on the account's throttle budget, about 100 turns refilled at
-~1.6 a minute. A busy pi session can run it dry, and M365 then refuses every turn for about an hour
-(`PerUserThrottled`). Start the proxy with `M365_AVOID_THROTTLING=1` (and `M365_DEBUG=1`, so it can
-read the budget from its logs) and it slows the session down instead. Once the budget is down to a
-reserve, it waits before each turn, inside the open stream so pi doesn't time out. See
+**Long sessions.** The account throttle is separate from the conversation-message cap.
+F58 fits observed onsets with a roughly 100-turn bucket refilling at 1.6 turns/minute;
+those are configurable model parameters, not Microsoft-published limits. A busy long
+conversation can throttle too. `M365_AVOID_THROTTLING=1` enables predictive pacing:
+once its estimate reaches the reserve it waits before each turn, inside the open
+stream. It cannot account for all traffic from other hosts or the first-party UI. See
 [`M365_AVOID_THROTTLING`](#environment-variables).
 
 ### 4. Use with OpenClaw
@@ -237,7 +238,41 @@ m365-openclaw-setup
 m365-proxy 4141
 ```
 
-The proxy uses session reuse and delta messages — follow-up turns only send new messages, saving M365 quota. New conversations are detected automatically when the message array shrinks or the first user message changes.
+The proxy reuses an upstream conversation only when the incoming history matches
+the previously returned client-visible transcript. A changed prefix, ambiguous
+match, changed account or model placement starts a fresh upstream session with the
+full history; an opener and message count are not sufficient proof of continuity.
+
+Send a stable `x-claude-code-session-id` or `x-opencode-session` header, or a body
+`session_id`, to distinguish client sessions. Recognized Claude `metadata.user_id`
+session suffixes are also supported. Supplied identifiers must agree; conflicting
+or oversized values are rejected. Task and title requests remain separated by
+their tool-name set. Without an explicit identifier, reuse requires a unique exact
+transcript-prefix match; indistinguishable clients cannot be identified from
+content alone. These identifiers are **affinity hints, not authentication**. Keep
+the standalone proxy inside a trusted boundary; an embedding can supply a trusted
+principal scope rather than treating a caller's claimed ID as authorization.
+
+`Idempotency-Key` explicitly marks a retry of the same normalized request. A
+completed bounded response can be replayed without another upstream turn; using
+the key for a different payload is a conflict. A still-running request returns a
+pending conflict rather than dispatching twice. Without a key, an identical
+request remains a deliberate regeneration. Receipts are memory-only and bounded;
+oversized responses still complete normally but are not retained for replay.
+
+Before account lookup or state admission, requests are checked for bounded
+canonicalization: depth 64, 100000 visited values and a 4 MiB estimated serialized
+UTF-8 budget. Exceeding these limits returns 413 `request_structure_limit`;
+non-JSON native embedding inputs, such as cycles, return 400
+`invalid_request_structure`. This check runs after HTTP JSON parsing; it is not a
+streaming upload-size limit. These are client-input bounds, not generated-output
+limits: an answer too large for bounded lineage hashing still completes, but its
+lineage is retired rather than reused. SSE publication/encoding failures retire
+the pending receipt and cannot publish an incomplete answer as a successful replay.
+
+After a process restart there is no assumed remote-thread restoration: the next
+request sends its full history into a fresh upstream session. Durable account
+policy is separate from conversation contents and does not persist prompts.
 
 ### 5. Use as standalone proxy
 
@@ -394,12 +429,13 @@ sends nothing special for it.
 
 **The tool agent depends on the account.** With the Copilot Studio tool agent attached, GPT-6 Sol
 serves on a premium (paid Copilot) account and returns a canned apology on a non-premium one.
-Nothing in the login token tells the two apart, so the proxy tries: the first tool request carries
-the agent, and if it comes back as that dead route the proxy remembers it for the rest of the
-process and re-sends the request without the agent. Your client never sees the failure; a
-non-premium account spends one ~3 s turn per proxy start, which `M365_FORCE_AGENT=0` avoids. A
-premium account occasionally returns the same apology as a one-off; once the agent has answered,
-the proxy treats that as a transient and retries instead of dropping the agent.
+The login token does not establish route entitlement. The proxy learns bounded,
+account-and-route-scoped observations: one ambiguous `InternalError` records a
+suspect route, not a permanent licence verdict. Positive and negative observations
+expire, and revalidation is serialized. A successful route is protected against
+one-off failures while its observation is fresh, not forever. Any configured
+fallback or retry still spends the same request's attempt allowance; explicit
+licence refusals are terminal instead of entering this heuristic recovery.
 
 **Without the agent it has a sandbox of its own.** It runs `bash` in a remote machine (`/mnt/data`,
 `/home/oai`), finds none of your files there, and asks you to upload them, or hands back a Teams link
@@ -607,11 +643,15 @@ Three token scopes are acquired:
 | `M365_EARLY_STOP_AFTER` | How many chars of a model-written `<tool_response>` tail a tool turn may run before the proxy stops it (default `2000`; `0` stops at the tag). M365 keeps a short tail in the conversation and the model seems to follow it: stopping at the tag cost Sonnet 4.6 10% more turns in real pi, the default none measurable ([hypotheses §35](docs/hypotheses.md)) |
 | `M365_INJECT_REPLY_TOOL` | Set to `1` to inject a synthetic `reply(text)` tool. Forces every turn to be a tool call, including pure-prose answers. Cleaner contract for the model, +1 tool to the prompt (watch the Disengaged threshold). Confirmed 5/5 compliance on June 9 2026 ([hypotheses §1.1](docs/hypotheses.md)). |
 | `M365_NO_CONFAB_RETRY` / `M365_CONFAB_RETRIES` | M365's chat model sometimes produces prose instead of a tool call when it should act — either confabulating an inability ("I can't access the files, please paste them") **or** claiming a completion it never did ("I've replaced the README", with no tool call). By default the proxy detects both and re-prompts forcefully **in the same conversation** (`M365_CONFAB_RETRIES`, default `1`) to force a real action. Set `M365_NO_CONFAB_RETRY=1` to disable. |
-| `M365_NO_BACKOFF` (alias `M365_NO_AUTO_REAUTH`) | Set to `1` to disable degradation backoff. By default, when empty/throttled responses span several **distinct conversations** in a short window (the thread-rate-throttle signature, [F13](docs/hypotheses.md)), the proxy **paces subsequent turns** (a jittered delay before starting new backend conversations) to let the account self-heal. This replaced the old auto-reauth: a fresh login does **not** clear this throttle (it's `oid`-keyed — [§11 H-R1](docs/hypotheses.md)) and raised our detection profile. A single long pi thread never trips the trigger. |
+| `M365_NO_BACKOFF` (alias `M365_NO_AUTO_REAUTH`) | Set to `1` to disable the legacy distinct-conversation empty-response pacing heuristic. This does not disable the credential-account-scoped hold after an explicit throttle. Empty replies alone do not identify the account governor; refreshing credentials does not clear an account-level limit. |
 | `M365_BACKOFF_THRESHOLD` / `M365_BACKOFF_WINDOW_MS` / `M365_BACKOFF_BASE_MS` / `M365_BACKOFF_MAX_MS` | Tune backoff: distinct-conversation empties to trigger (default `3`), the window they must fall in (default `120000`), the initial pacing window (default `90000`), and its escalation cap (default `600000`). |
-| `M365_AVOID_THROTTLING` | Set to `1` to keep the account clear of M365's `PerUserThrottled` throttle. A long pi session or a bench sweep trips it by running the account's turn budget dry (~100 turns, refilled at ~1.6 a minute, [hypotheses §24 F58](docs/hypotheses.md)), and it then refuses every turn for about an hour. With this set, the proxy waits before each upstream turn until the budget holds that turn plus a reserve of 20. A streamed request waits on its keepalive chunks, so pi doesn't time out, and the session runs at ~1.6 turns a minute once the budget is low. After a throttled turn the proxy holds new turns for 75 minutes and answers them with a 429 (`m365_throttle_hold`, with `Retry-After`) instead of sending them: each one would keep the throttle alive. The budget is read from the debug logs under `~/.config/opencode-m365`, so with `M365_DEBUG=1` it also counts the bench's and other proxies' turns and survives a restart. Without it, only this process's turns since it started count. The bench uses the same variable ([scripts/bench/README.md](scripts/bench/README.md)). Off by default. [Hypotheses §37](docs/hypotheses.md). |
-| `M365_BUDGET_MAX_WAIT_MIN` | The longest `M365_AVOID_THROTTLING` holds a streamed request (default `15`, enough to refill an empty budget). A longer wait, usually a throttle hold, gets the 429 instead. A request that isn't streamed waits at most 2 minutes, since it sends nothing until the answer and clients give up on it after 5. Both limits count the time a request spends behind others waiting their turn. A larger value (e.g. `90`) lets a streamed request sit out a throttle hold instead of failing: pi has no time limit on a stream that keeps sending data. |
-| `M365_BUDGET_CAPACITY` / `M365_BUDGET_REFILL` / `M365_BUDGET_RESERVE` / `M365_BUDGET_HOLD_MIN` / `M365_BUDGET_LOGS` | Tune `M365_AVOID_THROTTLING`'s budget model: its size (default `100` turns), refill rate (`1.6` a minute), the reserve kept back (`20`), the hold after a throttled turn (`75` minutes), and more log files or directories to read (`:`-separated). |
+| `M365_AVOID_THROTTLING` | Enable approximate per-turn pacing using the configurable F58 model. Credential-scoped chat uses a transactional SQLite journal, including reconnects, rather than importing prompt-bearing debug logs. This is an estimate, not a guarantee against upstream throttle. Off by default; a learned explicit-throttle hold is enforced regardless. |
+| `M365_BUDGET_MAX_WAIT_MIN` | Maximum native account-admission wait when predictive pacing is enabled (default `15` minutes). Cancellation interrupts the wait; waits exceeding the limit return a local 429 with a policy retry hint instead of dispatching. |
+| `M365_BUDGET_CAPACITY` / `M365_BUDGET_REFILL` / `M365_BUDGET_RESERVE` / `M365_BUDGET_HOLD_MIN` | Approximate capacity (`100`), refill turns/minute (`1.6`), reserve (`20`) and explicit-throttle cooldown (`75` minutes). These are bounded operator-policy parameters, not Microsoft-published limits or reset guarantees. |
+| `M365_BUDGET_LOGS` | Extra paths for legacy log-replay callers such as existing bench tooling. Authenticated chat admission does not mix these unscoped logs into its account journal. |
+| `M365_ACCOUNT_POLICY_PATH` | Private policy SQLite path; defaults to `~/.config/opencode-m365/account-policy/state.sqlite`. Persists account-scoped counters and expiring facts, never prompts or tokens. |
+| `M365_REQUEST_MAX_ATTEMPTS` | Total attempted upstream sends in one request, including reconnects and internal recovery; default `3`, clamped to `1`–`10`. |
+| `M365_ROUTE_FACT_TTL_MS` | Freshness for positive, suspect and negative route observations; default `900000` ms, bounded from 1 ms to 24 hours. |
 | `M365_BROWSER_PROFILE` / `M365_LOGIN_UA` | Override the persistent browser-profile dir and the login User-Agent used for the (rare) automated interactive login. The persistent profile keeps AAD SSO/device cookies so repeat logins are silent and look like a familiar device ([§11 H-R3](docs/hypotheses.md)). |
 | `M365_ENABLE_INTERACTIVE_APPROVAL` | Set to `1` to allow a **visible** browser window for sign-in when the automated login can't work or fails — the fallback for tenants with no TOTP option (push-only MFA, FIDO2, Okta/Ping/Duo). You complete SSO/MFA by hand once; tokens refresh silently afterwards. Off by default so headless hosts fail loudly rather than hang. See [If your tenant has no TOTP option](#if-your-tenant-has-no-totp-option). |
 | `M365_NO_INTERACTIVE` | Set to `1` to hard-disable any visible browser login, overriding the flag above. For systemd/CI hosts where a window must never open. |
@@ -716,7 +756,8 @@ All stored in `~/.config/opencode-m365/`:
 |---|---|
 | `secrets.json` | Login credentials (email, password, mfaSecret) |
 | `msal-cache.json` | MSAL token cache (auto-managed) |
-| `agent-id.json` | Cached Copilot Studio agent ID |
+| `agent-id.json` | Legacy unscoped agent cache; authenticated account-scoped requests do not reuse it across principals |
+| `account-policy/state.sqlite` | Private principal-scoped attempted-turn journal, priority walls and expiring route observations; no conversation text or credentials |
 | `debug.log` | Debug log (when `M365_DEBUG=1`; renamed by `M365_LOG_FILE`) |
 | `frames/` | WebSocket frame dumps (when `M365_DUMP_FRAMES=1`; moved by `M365_FRAME_DIR`) |
 

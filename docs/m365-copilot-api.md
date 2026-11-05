@@ -413,6 +413,14 @@ The final `type:2` frame carries the canonical state of the whole conversation i
 - This is why we **reuse one conversation** across an agent session and send **only new messages** on follow-up turns (delta mode) — every `Please continue.` retry also counts against the 600.
 - There is also opaque **account-level throttling** (rapid-fire requests can start returning empties). It recovers on its own.
 
+**Current interpretation:** the earlier thread-only explanation is not an established
+limit. F58's later observations, including a mid-conversation onset, fit a per-turn
+bucket better. The fitted capacity/refill and post-throttle hold are configurable
+client policy, not Microsoft-published limits or guaranteed reset timestamps.
+Account admission counts attempted sends, including reconnects; thread creation and
+full-history replay are separate diagnostics. A new local conversation ID is not
+itself an upstream request. Explicit throttle stops recovery on that account.
+
 ### Account degradation under sustained use (observed June 13 2026)
 
 A full session of heavy use (~80+ messages across probes, bench runs, and logins
@@ -456,6 +464,26 @@ conversation at `1/600`). Characterised behaviour:
 - **Send `X-RoutingParameter-SessionKey: <ConversationId>` as a header on every upgrade.** Without it the front end spreads a conversation's connections over backends in two regions (`x-calculatedbetarget` in the upgrade response names the one you got), which keep separate copies of the conversation: the turns fork, the server's `turnCount` steps back (1,2,3,2,4,…), and the model answers from a partial history. The query-string form does not pin. See hypotheses §32 F85 and `scripts/fork-probe.mjs`.
 - Because the server remembers prior turns, follow-ups should send **only the new messages** (the delta), not the whole history. Re-sending the full history confuses it and burns quota. See `ModelSession`/`CopilotSession` and `SessionPool` (`handler.ts`).
 - The proxy adds `disableMemory=1` to the Chathub URL **by default** — M365's temporary-chat control. Both halves are verified (§16 F28/F29, `scripts/temporary-chat-probe.mjs`): the live `ConversationId` still retains multi-turn context across turns, and the thread never appears in the Copilot history sidebar. Without it the proxy leaves one saved thread per prompt in the user's history. The trade is that a proxy conversation can't be recovered from the UI afterwards; `M365_SAVE_HISTORY=1` opts back into saved history.
+
+**Client identity is distinct from upstream placement.** The proxy validates a
+SHA-256 chain of the canonical client transcript, including tool calls, their
+results and image descriptors. It compares against the assistant response actually
+returned to the client, not raw model output discarded by tool filtering. Divergent
+histories fork rather than resetting another caller's state. Producer admission
+remains owned until completion/cancellation, including after SSE headers return.
+
+Explicit session hints travel through both HTTP entrypoints. They do not authorize
+access or replace an authenticated embedding's trusted principal scope. Identical
+anonymous transcripts are inherently indistinguishable; exact-prefix matching is
+a compatibility fallback, not a multi-tenant security boundary. Upstream bindings
+remain credential-account-specific, retaining the backend routing header above.
+
+Request replay requires an explicit `Idempotency-Key`; identical content alone
+does not distinguish a retry from intentional regeneration. In-memory bounded
+receipts do not promise exactly-once execution across crashes. Neither the low-level
+constructor's ID options nor in-process reconnect tests establish safe remote
+conversation restoration after restart. The proxy starts fresh and replays the
+caller-supplied history instead of sending a delta into uncertain remote state.
 
 ---
 
