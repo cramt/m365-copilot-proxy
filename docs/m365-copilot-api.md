@@ -250,7 +250,7 @@ Two things worth separating, because conflating them wastes probes:
 - **`scenario` is the lever.** Flipping it to `OfficeWebPaidCopilot` is what makes `Claude_Opus` serve a real answer instead of the canned BotConnection apology. This also rewrites the old F23 reading of "Opus is a dead tone, 0/3": that measurement was taken on the included scenario, where the observation was correct and the conclusion wasn't. (On a premium account the included scenario has served a different model there since October 2026, Opus 4.8: hypotheses §36.)
 - **`licenseType` is not.** `Premium` is simply the value the paid scenario travels with; setting `licenseType` alone does **not** grant access to different models. We send the pair for coherence with the real client, not because both halves do work.
 
-This is an entitlement, not a bypass: the account has to actually hold the paid/premium access. On a seat that doesn't, the paid scenario is refused outright: the final item carries `result.value: "ForbiddenRequest"`, `errorCode: "InvalidCopilotLicense"`, and a BotConnection reply *"It looks like you don't have a valid licence. To get access, please check with your administrator…"* (~2.5 s). It is about the account, not the tone: `Gpt_5_6_Chat`, `Claude_Sonnet` and `Claude_Opus` were all refused this way (6/6 across two runs, agent attached, 2026-10-01; hypotheses §22 F46), and `Gpt_5_6_Chat` serves on the same account under the included scenario. One exception: with the agent attached, `Gpt_6_Reasoning` returns its dead-route `InternalError` instead (2/2), so an `InternalError` on the paid scenario doesn't prove the account is licensed. The licence refusal is a different wire state from the dead route's `InternalError` + "Sorry, I wasn't able to respond to that". The proxy has no handling for it yet.
+This is an entitlement, not a bypass: the account has to actually hold the paid/premium access. On a seat that doesn't, the paid scenario is refused outright: the final item carries `result.value: "ForbiddenRequest"`, `errorCode: "InvalidCopilotLicense"`, and a BotConnection reply *"It looks like you don't have a valid licence. To get access, please check with your administrator…"* (~2.5 s). It is about the account, not the tone: `Gpt_5_6_Chat`, `Claude_Sonnet` and `Claude_Opus` were all refused this way (6/6 across two runs, agent attached, 2026-10-01; hypotheses §22 F46), and `Gpt_5_6_Chat` serves on the same account under the included scenario. One exception: with the agent attached, `Gpt_6_Reasoning` returns its dead-route `InternalError` instead (2/2), so an `InternalError` on the paid scenario doesn't prove the account is licensed. The licence refusal is a different wire state from the dead route's `InternalError` + "Sorry, I wasn't able to respond to that". The proxy maps this explicit account denial to HTTP 403 `m365_account_not_licensed`; known model-specific denial codes map separately to `m365_model_not_licensed`, and unknown codes stay generic (`m365_forbidden`). See the terminal translation contract in §9.
 
 **The gate is not a budget.** Opus is both entitlement-gated *and* metered by priority access (below), and while it was the only paid-scenario tone those two properties were indistinguishable — it was easy to read "paid scenario" as shorthand for "scarce". `Gpt_6_Reasoning` separates them: same gate, no priority-access allowance, throttled by the ordinary per-conversation cap and thread-rate governor like everything else. Sonnet 5 (`Claude_Sonnet_5`) is the same, and Sonnet 5.5 (`Claude_Sonnet` @ paid) is metered like Opus. So membership of `PAID_SCENARIO_TONES` says what a tone needs to *reach* a model and nothing about what it costs once it does. Downstream code should not infer one from the other — the metered models are listed on their own (`meteredBudgetOf`), the priority-access detector keys on `OutOfCredits` (so it simply never fires for GPT-6), and the framing default is decided per model (`defaultFramingForModel`). Opus and GPT-6 both end up on user-voice relays, for unrelated reasons: on Opus the `<system>`-tagged framings trip the jailbreak classifier and its budget counts turns, hence `relay_batch` (hypotheses §24 F56, F60); GPT-6 runs agent-less, next to M365's code interpreter, hence a relay (§22 F47) — batched, as `relay_batch`, since it cut a third of its turns without sending it to that sandbox (§25 F61).
 
@@ -477,6 +477,36 @@ When M365 dislikes a prompt — **looks like a jailbreak / prompt injection**, o
 **What triggers it (observed):**
 - Large injected tool blocks. Empirically: ~1 tool is fine; **~12 tools is borderline** (disengages once, recovers on retry); a full coding-agent toolset (~15+, e.g. opencode's) disengages **persistently**. (opencode's count has since dropped to 9 — see "Trimming a heavy harness" below.)
 - Aggressive, jailbreak-shaped instructions: fake `<system>`/`<user>`/`<assistant>` turns, "output ONLY JSON", "STRICT RULES", "never describe your intent". These read as manipulation.
+
+### Proxy terminal translation contract
+
+This is a proxy policy, not a new live-service measurement. `handler.ts` checks
+explicit `ForbiddenRequest`, `Throttled` and priority-access `OutOfCredits`
+before the generic `Disengaged` marker, image/content success or ambiguous
+`InternalError` recovery. `Throttled` preserves degradation bookkeeping for the
+current conversation, without a model fallback or invented reset. `OutOfCredits`
+retains the existing configured priority fallback. Refusal prose alone cannot
+enable that fallback past `Disengaged`.
+
+A remaining `Disengaged` returns 403 `m365_request_declined`, with no automatic
+softened-framing retry; the marker alone is not proof of a content-policy
+violation. Historical F22 retry experiments remain historical evidence, not the
+current handler contract. `M365_NO_DISENGAGE_RETRY` has no effect now.
+`ForbiddenRequest` distinguishes known model licence codes
+(`PremiumModelUnavailableForLicense`, `ClaudeUnavailableForLicense`), account
+licence code `InvalidCopilotLicense`, and unknown/generic denials. Upstream
+free-form refusal prose is not copied into these error messages, and only
+bounded identifier-shaped error codes are exposed. Exhausted `InternalError`
+route failures do not establish an account's licence entitlement.
+
+Terminal JSON responses include `error.retryable: false` and
+`x-should-retry: false`, including explicit throttles, priority quota/budget holds
+and exhausted ordinary empty retries. SSE already committed to HTTP 200 carries
+the structured error in-stream, then `[DONE]`, never a success finish. A late
+refusal cannot retract earlier streamed text. `retry_after` is carried only from
+an actual `Retry-After` header. See the [README](../README.md#terminal-refusals-and-client-retries)
+for status/code mappings and the separately labeled visible-context usage estimate;
+that estimate is not upstream telemetry, billing or a measured token window.
 
 **Mitigations:**
 - Keep the **toolset lean** (a handful of tools). Lean harnesses like [pi](https://pi.dev/) stay under the threshold; heavy ones trip it.
