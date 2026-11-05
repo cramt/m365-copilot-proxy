@@ -327,7 +327,7 @@ function useSeleniumBrowser(): boolean {
 }
 
 function seleniumServerUrl(): string {
-  return process.env.M365_SELENIUM_URL ?? "http://192.168.2.251:4444";
+  return process.env.M365_SELENIUM_URL ?? "http://localhost:4444";
 }
 
 async function runSeleniumBrowserLogin(
