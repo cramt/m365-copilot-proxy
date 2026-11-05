@@ -88,6 +88,8 @@ export {
   transcriptStyleForVariant,
   FRAMING_VARIANT_NAMES,
   longHeredocAsWrite,
+  findShellTool,
+  toolsBlock,
   type TranscriptStyle,
 } from "./fenced.js";
 

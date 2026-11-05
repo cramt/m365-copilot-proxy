@@ -35,6 +35,8 @@ import {
   fabricatedToolResponseAt,
   textAfterFirstToolCall,
   longHeredocAsWrite,
+  findShellTool,
+  toolsBlock,
   formatToolResponse,
   isProseDocument,
   getMessageContent,
@@ -140,6 +142,32 @@ const UNSTREAMED_BUDGET_WAIT_LIMIT_MS = 2 * 60_000;
 
 type ChatBody = z.infer<typeof ChatCompletionRequest>;
 type ParsedMessage = ChatBody["messages"][number];
+
+/** Adapt only existing recovery triggers, never infer a trigger from a tool name. */
+function recoveryPrompt(body: ChatBody, reason: "confab" | "remote" | "halluc", everActed: boolean): string {
+  const choice = body.tool_choice;
+  const tools = typeof choice === "object"
+    ? (body.tools ?? []).filter(t => t.function.name === choice.function.name)
+    : (body.tools ?? []);
+  if (choice === "none") return "Do NOT call tools. Text only.";
+  // Preserve the measured shell prompts byte-for-byte when shell routing is permitted.
+  if (findShellTool(tools)) {
+    return reason === "remote" ? REMOTE_ARTIFACT_FORCE_PROMPT
+      : reason === "confab" ? (everActed ? MIDTASK_FORCE_PROMPT : CONFAB_FORCE_PROMPT)
+      : HALLUCINATION_FORCE_PROMPT;
+  }
+  if (!tools.length) return "The requested tool is not provided. Explain that limitation without claiming the action completed.";
+  const correction = reason === "remote"
+    ? "A remote artifact or download link is not evidence that the requested change was applied. Do not offer a remote patch or artifact as a completed change; use only a provided tool whose definition supports the requested action."
+    : reason === "confab"
+      ? "Continue using only the capabilities declared by the provided tools; do not assume filesystem or shell access beyond their definitions."
+      : "No tool ran this turn. Do not claim the requested action completed without a confirming <tool_response>.";
+  // Reuse the canonical fenced templates, not a second argument-format renderer.
+  // Only the definitions are needed: framing variants can assert shell/file access.
+  const definitions = toolsBlock(tools);
+  return `${correction}\n\nUse ONE fenced tool call with an exact tool name and the argument format below, then wait for its <tool_response>. Output only that single tool block, nothing else.\n\n${definitions}`;
+}
+
 
 // --- Per-conversation state ---
 
@@ -815,9 +843,7 @@ export async function handleChatCompletion(
       if (!confab && !remoteArtifact && !halluc) break;
       const retryKind = remoteArtifact ? "Remote artifact completion" : confab ? "Confabulation" : "Hallucinated completion";
       log.info(`${retryKind} detected (no tool call) — forcing retry ${attempt + 1}/${maxConfabRetries}`);
-      text = remoteArtifact ? REMOTE_ARTIFACT_FORCE_PROMPT
-        : confab ? (everActed ? MIDTASK_FORCE_PROMPT : CONFAB_FORCE_PROMPT)
-        : HALLUCINATION_FORCE_PROMPT;
+      text = recoveryPrompt(body, remoteArtifact ? "remote" : confab ? "confab" : "halluc", everActed);
       const retry = await runBuffered();
       if ("error" in retry) return { kind: "error", resp: retry.error };
       conv.sentMessageCount = body.messages.length;

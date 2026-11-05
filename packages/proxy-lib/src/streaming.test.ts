@@ -11,7 +11,7 @@ const scripted: {
   /** Text of every run() call, in order. */
   texts: string[];
   /** Per-call overrides, consumed front-first (e.g. a Disengaged turn, then an answer). */
-  queue: Array<{ fullText: string; messageType?: string | null; result?: { value: string; errorCode?: string; message?: string }; metering?: Record<string, number> }>;
+  queue: Array<{ fullText: string; onRun?: (signal?: AbortSignal) => void; messageType?: string | null; result?: { value: string; errorCode?: string; message?: string }; metering?: Record<string, number> }>;
   /** The model argument of every run() call, in order. */
   models: string[];
   /** The `useAgent` argument of every run() call, in order. */
@@ -59,6 +59,7 @@ vi.mock("@m365-copilot/core", async (importActual) => {
       scripted.agentFlags.push(useAgent);
       servedBy.push(this.uid);
       const next = scripted.queue.shift();
+      next?.onRun?.(signal);
       const deltas = next ? (next.fullText ? [next.fullText] : []) : scripted.deltas;
       const full = next ? next.fullText : (scripted.fullText ?? deltas.join(""));
       const yielded: string[] = [];
@@ -1224,4 +1225,154 @@ describe("stopping a turn that writes its own <tool_response> (early stop)", () 
     expect(scripted.stoppedAfter).toBeNull();
     expect(JSON.parse(msg.tool_calls[0].function.arguments).command).toBe("ls");
   });
+});
+
+// Synthetic ModelSession transport, real handler/parser/renderer: no credentials or network.
+describe("capability-aware existing recovery", () => {
+  const stage = { type: "function", function: { name: "stage_skill", description: "Stage a skill by name", parameters: { type: "object", properties: { skill: { type: "string" }, enabled: { type: "boolean" } } } } };
+  const shell = { type: "function", function: { name: "execute_job", parameters: { type: "object", properties: { command: { type: "string" } } } } };
+  const reasons = {
+    confab: "I can't access the files. Please paste them here.",
+    remote: "I created the patch: [download](sandbox:/mnt/data/fix.patch). Apply it to update the local file.",
+    halluc: "I have updated the file and saved the changes.",
+  };
+  const legacy = {
+    confab: "The working directory and the files named in the task ARE present on a real filesystem right now. Do NOT ask me to paste anything, and do NOT say commands return no output — you have not run any command yet. Emit ONE ```bash block this turn: run `ls -la` and `cat` the relevant files. Output only the ```bash block, nothing else.",
+    remote: "The patch or download link you produced exists only in M365's remote environment and is NOT a file in the caller's working directory. Do NOT create, download, or apply a patch, and do NOT use a Teams artifact link. Use the provided local edit/write tool directly; if needed, emit ONE ```bash block that modifies the named local file in place. Output only that single local tool call, nothing else.",
+    halluc: "You have NOT actually done that — no tool ran this turn, so nothing changed on disk. Do not claim a file was created, replaced, or updated until a <tool_response> confirms it. Emit ONE ```bash block now that performs the change for real (write the file with a `cat > path <<'EOF' … EOF` heredoc), and nothing else.",
+  };
+  const corrections = {
+    confab: "Continue using only the capabilities declared by the provided tools; do not assume filesystem or shell access beyond their definitions.",
+    remote: "A remote artifact or download link is not evidence that the requested change was applied. Do not offer a remote patch or artifact as a completed change; use only a provided tool whose definition supports the requested action.",
+    halluc: "No tool ran this turn. Do not claim the requested action completed without a confirming <tool_response>.",
+  };
+  async function send(stream: boolean, tools: any[], reply: string, choice: any = "auto", followup = "All set.", messages: any[] = [{ role: "user", content: "Use stage_skill for the requested task." }]) {
+    scripted.result = null;
+    scripted.fullText = undefined;
+    scripted.deltas = [];
+    scripted.texts = [];
+    scripted.queue = [{ fullText: reply }, { fullText: followup }];
+    const res = await handleChatCompletion(ChatCompletionRequest.parse({ model: "gpt-5.6-think-deeper", stream, tools, tool_choice: choice, messages }), new SessionPool());
+    const wire = await res.text();
+    const chunks = stream ? wire.split("\n").filter(l => l.startsWith("data: ") && l !== "data: [DONE]").map(l => JSON.parse(l.slice(6))) : [JSON.parse(wire)];
+    return { res, wire, chunks };
+  }
+  afterEach(() => { scripted.queue = []; vi.unstubAllEnvs(); });
+
+  for (const stream of [false, true]) {
+    for (const [reason, reply] of Object.entries(reasons)) {
+      for (const hasShell of [false, true]) {
+        it(`${stream ? "SSE" : "JSON"} ${reason} ${hasShell ? "shell" : "shellless"}: exact existing recovery and one call`, async () => {
+          const tools = hasShell ? [shell, stage] : [stage];
+          const { chunks } = await send(stream, tools, reply, "auto", hasShell ? "```bash\nprintf ok\n```" : "```stage_skill\nskill: example\nenabled: true\n```\n```stage_skill\nskill: ignored\n```" );
+          expect(scripted.texts).toHaveLength(2);
+          if (!hasShell) {
+            const definitions = "<tools>\nstage_skill — Stage a skill by name\n```stage_skill\nskill: <skill>\nenabled: <enabled>\n```\n</tools>";
+            expect(scripted.texts[1]).toBe(`${corrections[reason as keyof typeof corrections]}\n\nUse ONE fenced tool call with an exact tool name and the argument format below, then wait for its <tool_response>. Output only that single tool block, nothing else.\n\n${definitions}`);
+            expect(scripted.texts[1]).not.toMatch(/```bash|ls -la|cat >|working directory|install it/);
+          } else {
+            expect(scripted.texts[1]).toBe(legacy[reason as keyof typeof legacy]);
+          }
+          const calls = chunks.flatMap(c => c.choices?.[0]?.message?.tool_calls ?? c.choices?.[0]?.delta?.tool_calls ?? []);
+          expect(calls).toHaveLength(1);
+          expect(calls[0].function.name).toBe(hasShell ? "execute_job" : "stage_skill");
+          expect(JSON.parse(calls[0].function.arguments)).toEqual(hasShell ? { command: "printf ok" } : { skill: "example", enabled: true });
+        });
+      }
+      it(`${stream ? "SSE" : "JSON"} ${reason}: explicit non-shell choice excludes the available shell`, async () => {
+        await send(stream, [shell, stage], reply, { type: "function", function: { name: "stage_skill" } });
+        expect(scripted.texts).toHaveLength(2);
+        expect(scripted.texts[1]).toContain("```stage_skill");
+        expect(scripted.texts[1]).not.toMatch(/```bash|execute_job/);
+      });
+    }
+    for (const [reason, reply] of Object.entries(reasons)) {
+      it(`${stream ? "SSE" : "JSON"} ${reason}: literal delimiters preserve complete recovery templates`, async () => {
+        const marked = { ...stage, function: { ...stage.function,
+          description: "Stage literal <tools> and </tools> markers without truncation",
+          parameters: { type: "object", properties: {
+            skill: { type: "string", description: "Accept <tools> and </tools> as literal skill text" },
+            enabled: { type: "boolean", description: "Keep </tools> and <tools> literal here too" },
+          } },
+        } };
+        const inspect = { type: "function", function: { name: "inspect_skill", description: "Inspect after the literal markers", parameters: { type: "object", properties: { skill: { type: "string" }, verbose: { type: "boolean" } } } } };
+        const { res, chunks, wire } = await send(stream, [marked, inspect], reply, "auto", "```inspect_skill\nskill: example\nverbose: true\n```");
+        expect(res.status).toBe(200);
+        if (stream) expect(wire).toContain("data: [DONE]");
+        expect(scripted.texts).toHaveLength(2);
+        const definitions = "<tools>\nstage_skill — Stage literal <tools> and </tools> markers without truncation\n```stage_skill\nskill: <skill>\nenabled: <enabled>\n```\n\ninspect_skill — Inspect after the literal markers\n```inspect_skill\nskill: <skill>\nverbose: <verbose>\n```\n</tools>";
+        expect(scripted.texts[1]).toBe(`${corrections[reason as keyof typeof corrections]}\n\nUse ONE fenced tool call with an exact tool name and the argument format below, then wait for its <tool_response>. Output only that single tool block, nothing else.\n\n${definitions}`);
+        expect(scripted.texts[1]).not.toMatch(/```bash|WRITING A SHELL SCRIPT|HOST PLATFORM|real filesystem|install it/);
+        const calls = chunks.flatMap(c => c.choices?.[0]?.message?.tool_calls ?? c.choices?.[0]?.delta?.tool_calls ?? []);
+        expect(calls).toHaveLength(1);
+        expect(calls[0].function.name).toBe("inspect_skill");
+        expect(JSON.parse(calls[0].function.arguments)).toEqual({ skill: "example", verbose: true });
+      });
+    }
+    it(`${stream ? "SSE" : "JSON"}: explicit shell choice retains legacy recovery`, async () => {
+      await send(stream, [shell, stage], reasons.confab, { type: "function", function: { name: "execute_job" } });
+      expect(scripted.texts).toHaveLength(2);
+      expect(scripted.texts[1]).toBe(legacy.confab);
+    });
+    it(`${stream ? "SSE" : "JSON"}: unknown explicit choice never invents a tool`, async () => {
+      await send(stream, [stage], reasons.confab, { type: "function", function: { name: "missing" } });
+      expect(scripted.texts).toHaveLength(2);
+      expect(scripted.texts[1]).toBe("The requested tool is not provided. Explain that limitation without claiming the action completed.");
+    });
+    it(`${stream ? "SSE" : "JSON"}: cancellation during recovery propagates without another attempt`, async () => {
+      const controller = new AbortController();
+      scripted.result = null;
+      scripted.texts = [];
+      scripted.queue = [{ fullText: reasons.confab }, { fullText: "", onRun(signal) {
+        controller.abort();
+        expect(signal?.aborted).toBe(true);
+        throw new Error("synthetic cancellation");
+      } }];
+      const res = await handleChatCompletion(ChatCompletionRequest.parse({ model: "gpt-5.6-think-deeper", stream, tools: [stage], messages: [{ role: "user", content: "Stage a skill" }] }), new SessionPool(), { signal: controller.signal });
+      const wire = await res.text();
+      expect(scripted.texts).toHaveLength(2);
+      expect(wire).toContain("synthetic cancellation");
+      expect(res.status).toBe(stream ? 200 : 502);
+    });
+    it(`${stream ? "SSE" : "JSON"}: none never enters recovery`, async () => {
+      await send(stream, [stage], reasons.confab, "none");
+      expect(scripted.texts).toHaveLength(1);
+    });
+    for (const choice of ["auto", "required", { type: "function", function: { name: "stage_skill" } }]) {
+      it(`${stream ? "SSE" : "JSON"}: named-tool prose alone does not introduce a retry (${JSON.stringify(choice)})`, async () => {
+        const prose = "The stage_skill tool stages a skill by name.";
+        const { wire } = await send(stream, [stage], prose, choice);
+        expect(scripted.texts).toHaveLength(1);
+        expect(wire).toContain(prose);
+      });
+    }
+    it(`${stream ? "SSE" : "JSON"}: required recovers only with declared tools`, async () => {
+      await send(stream, [stage], reasons.confab, "required");
+      expect(scripted.texts).toHaveLength(2);
+      expect(scripted.texts[1]).toContain("```stage_skill");
+      expect(scripted.texts[1]).not.toContain("```bash");
+    });
+    it(`${stream ? "SSE" : "JSON"}: exhausted remote artifact still fails closed at the existing budget`, async () => {
+      vi.stubEnv("M365_CONFAB_RETRIES", "1");
+      const { res, wire } = await send(stream, [stage], reasons.remote, "auto", reasons.remote);
+      expect(scripted.texts).toHaveLength(2);
+      expect(res.status).toBe(stream ? 200 : 502);
+      expect(wire).toContain("file_mutation_without_local_tool");
+    });
+    it(`${stream ? "SSE" : "JSON"}: disabled recovery does not dispatch`, async () => {
+      vi.stubEnv("M365_NO_CONFAB_RETRY", "1");
+      await send(stream, [stage], reasons.confab);
+      expect(scripted.texts).toHaveLength(1);
+    });
+    it(`${stream ? "SSE" : "JSON"}: prior non-shell call does not assert commands ran or suggest installs`, async () => {
+      await send(stream, [stage], reasons.confab, "auto", "All set.", [
+        { role: "user", content: "Stage the skill" },
+        { role: "assistant", content: null, tool_calls: [{ id: "previous", type: "function", function: { name: "stage_skill", arguments: '{"skill":"old"}' } }] },
+        { role: "tool", tool_call_id: "previous", content: "staged" },
+        { role: "user", content: "Stage another skill" },
+      ]);
+      expect(scripted.texts).toHaveLength(2);
+      expect(scripted.texts[1]).not.toMatch(/command really ran|install|```bash/);
+    });
+  }
 });
