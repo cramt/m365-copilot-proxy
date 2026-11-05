@@ -174,7 +174,12 @@ export interface FencedToolSpec {
   /** The free-form param carried as the fence body (mutually exclusive with editPair). */
   bodyParam?: string;
   /** An (old → new) pair rendered as a SEARCH/REPLACE diff. */
-  editPair?: { search: string; replace: string };
+  editPair?: {
+    search: string;
+    replace: string;
+    /** Neither half is required; a call may supply ordinary headers instead. */
+    optional?: boolean;
+  };
 }
 
 /** Derive how a single OpenAI tool maps onto the fenced shape. */
@@ -194,11 +199,14 @@ export function deriveFencedSpec(tool: ToolDef): FencedToolSpec {
   const search = props.find((p) => SEARCH_KEYS.includes(p));
   const replace = props.find((p) => REPLACE_KEYS.includes(p));
   if (search && replace) {
+    // Only a schema that declares `required` and leaves both halves out of it counts as optional.
+    const required: string[] | undefined = tool.function.parameters?.required;
+    const optional = Array.isArray(required) && !required.includes(search) && !required.includes(replace);
     return {
       name,
       description,
       parameterTypes,
-      editPair: { search, replace },
+      editPair: { search, replace, ...(optional ? { optional } : {}) },
       headerParams: props.filter((p) => p !== search && p !== replace),
     };
   }
@@ -246,7 +254,12 @@ export function renderFencedCall(spec: FencedToolSpec, args: Record<string, unkn
     if (args[h] !== undefined) lines.push(`${h}: ${scalarToString(args[h])}`);
   }
 
-  if (spec.editPair) {
+  if (spec.editPair?.optional &&
+      (args[spec.editPair.search] === undefined || args[spec.editPair.replace] === undefined)) {
+    for (const key of [spec.editPair.search, spec.editPair.replace]) {
+      if (args[key] !== undefined) lines.push(`${key}: ${scalarToString(args[key])}`);
+    }
+  } else if (spec.editPair) {
     lines.push("<<<<<<< SEARCH");
     lines.push(scalarToString(args[spec.editPair.search]));
     lines.push("=======");
@@ -275,7 +288,10 @@ function renderFencedTemplate(spec: FencedToolSpec): string {
     lines.push(`<${spec.bodyParam}>`);
   }
   const header = spec.description ? `${spec.name} — ${spec.description}` : spec.name;
-  return `${header}\n\`\`\`${spec.name}\n${lines.join("\n")}\n\`\`\``;
+  const optionalNote = spec.editPair?.optional
+    ? "\nThe SEARCH/REPLACE block is optional; omit it when those arguments are not supplied. Optional arguments may also use key: value headers."
+    : "";
+  return `${header}\n\`\`\`${spec.name}\n${lines.join("\n")}\n\`\`\`${optionalNote}`;
 }
 
 /** The fenced equivalent of formatToolDefinitions' <tools> block.
@@ -976,8 +992,18 @@ function scanFences(text: string): FenceBlock[] {
 
 // A fence opening with a tool-like info-string, for findUnclosedToolFence.
 const FENCE_OPEN_REGEX = /```([A-Za-z0-9_.-]+)[ \t]*\r?\n/g;
-const SEARCH_REPLACE_REGEX =
-  /<{5,}\s*SEARCH\s*\r?\n([\s\S]*?)\r?\n={5,}\s*\r?\n([\s\S]*?)\r?\n>{5,}\s*REPLACE/;
+// Keep admission and extraction on the same literal marker grammar. These
+// deliberately retain the legacy unanchored tokens and \s* (including newlines).
+// Any recognized token reserves the fence for edits, even if the edit is incomplete.
+const EDIT_MARKERS = {
+  search: String.raw`<{5,}\s*SEARCH`,
+  separator: String.raw`={5,}`,
+  replace: String.raw`>{5,}\s*REPLACE`,
+};
+const EDIT_MARKER_REGEX = new RegExp(Object.values(EDIT_MARKERS).join("|"));
+const SEARCH_REPLACE_REGEX = new RegExp(
+  String.raw`${EDIT_MARKERS.search}\s*\r?\n([\s\S]*?)\r?\n${EDIT_MARKERS.separator}\s*\r?\n([\s\S]*?)\r?\n${EDIT_MARKERS.replace}`,
+);
 
 // Claude Opus sometimes ends a fenced call the way its native function-calling
 // format ends one: a line `</parameter>`, `</invoke>` or `</write_file>` (the
@@ -1313,18 +1339,26 @@ function parseFencedInner(spec: FencedToolSpec, inner: string): Record<string, u
   // indentation, and reading one line per value cut `oldString` to its first
   // line and lost `newString` below it. Header-only fences without such lines
   // read as before (47 of 47 pi `read` fences in the dumps).
-  const headerOnly = !spec.editPair && spec.bodyParam === undefined;
+  // Optional pairs also permit ordinary headers. An incomplete marker sequence
+  // is an attempted edit, not a headers-only call: never turn truncation into action.
+  const editPair = spec.editPair;
+  const hasEditMarker = EDIT_MARKER_REGEX.test(inner);
+  const plainHeaders = !!editPair?.optional && !hasEditMarker;
+  const headerParams = plainHeaders && editPair
+    ? [...spec.headerParams, editPair.search, editPair.replace]
+    : spec.headerParams;
+  const headerOnly = (!spec.editPair || plainHeaders) && spec.bodyParam === undefined;
   let open: { key: string; inline: string; more: string[] } | null = null;
   const closeOpen = () => {
     if (open?.more.length) args[open.key] = headerTextValue(open.inline, open.more);
     open = null;
   };
   let i = 0;
-  if (spec.headerParams.length) {
+  if (headerParams.length) {
     for (; i < lines.length; i++) {
       const line = lines[i];
       const m = line.match(/^([A-Za-z0-9_]+):[ \t]?(.*)$/);
-      if (m && spec.headerParams.includes(m[1])) {
+      if (m && headerParams.includes(m[1])) {
         closeOpen();
         const key = m[1];
         const type = spec.parameterTypes[key];
@@ -1353,7 +1387,7 @@ function parseFencedInner(spec: FencedToolSpec, inner: string): Record<string, u
 
   const rest = lines.slice(i).join("\n");
 
-  if (spec.editPair) {
+  if (spec.editPair && !plainHeaders) {
     const sr = rest.match(SEARCH_REPLACE_REGEX);
     if (!sr) {
       log.error(`edit tool "${spec.name}" missing SEARCH/REPLACE markers`);
