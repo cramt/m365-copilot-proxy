@@ -1,4 +1,5 @@
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
+import { atomicWritePrivate } from "./storage.js";
 import { join } from "node:path";
 import { homedir } from "node:os";
 import { createHash } from "node:crypto";
@@ -150,7 +151,7 @@ function loadCachedAgent(): CachedAgent | null {
 }
 
 function saveCachedAgent(data: CachedAgent): void {
-  writeFileSync(AGENT_CACHE_FILE, JSON.stringify(data, null, 2));
+  atomicWritePrivate(AGENT_CACHE_FILE, JSON.stringify(data, null, 2));
 }
 
 async function ppFetch(
@@ -347,6 +348,7 @@ export async function getOrCreateAgent(
 
   const envUrl = await getEnvironmentUrl(bapToken);
 
+  let published: CachedAgent;
   try {
     log.info(`PowerPlatform env URL: ${envUrl}, agent name: ${wantName}`);
     // Look for an agent that already matches the current instructions hash.
@@ -389,14 +391,15 @@ export async function getOrCreateAgent(
     const agentId = `${titleId}.${botId}.gpt.default`;
     log.info(`Full agent ID: ${agentId}`);
 
-    // Cache it. Stale older-version agents are intentionally LEFT in place — never
-    // deleted — so a second proxy (other PC / build) sharing this tenant can't have
-    // the agent it's mid-conversation with pulled out from under it. A few orphaned
-    // lightweight bots are harmless; a deleted in-use agent breaks the other host.
-    saveCachedAgent({ agentId, botId, instructionsHash: wantHash, createdAt: new Date().toISOString() });
-    return agentId;
+    published = { agentId, botId, instructionsHash: wantHash, createdAt: new Date().toISOString() };
   } catch (err: any) {
     log.error("Agent creation failed:", err.message, err.cause?.message || "");
     return null;
   }
+
+  // Local persistence is not optional-agent recovery. Publish only after remote
+  // provisioning succeeds and let persistence errors reach the caller unchanged.
+  // Leave older agents intact so other clients can finish using them.
+  saveCachedAgent(published);
+  return published.agentId;
 }

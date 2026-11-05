@@ -1,4 +1,5 @@
 import { getToken } from "./auth.js";
+import { CachePersistenceError } from "./storage.js";
 import { getOrCreateAgent } from "./agent.js";
 import { CopilotSession } from "./session.js";
 import { uploadImage, type ImageAnnotation } from "./image-input.js";
@@ -125,7 +126,8 @@ export class ModelSession {
         this.cachedAgentId = await getOrCreateAgent();
         if (this.cachedAgentId) log.info(`Using agent: ${this.cachedAgentId}`);
         else log.info("No agent available");
-      } catch {
+      } catch (error) {
+        if (error instanceof CachePersistenceError) throw error;
         this.cachedAgentId = null;
       }
     }
@@ -187,6 +189,7 @@ export class ModelSession {
         return true;
       }
     } catch (err: any) {
+      if (err instanceof CachePersistenceError) throw err;
       log.info(`Agent refresh failed: ${err.message}`);
     }
     return false;
