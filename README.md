@@ -621,21 +621,66 @@ Three token scopes are acquired:
 | `M365_OPUS_FALLBACK_MODEL` | Model to serve `claude-opus` (Opus 5.5) requests with once its priority-access budget is used up, instead of returning a 429 — typically `claude-opus-4.8`, which isn't metered (premium accounts only). Applies until the budget resets; the response's `model` field names the model that answered. Unset by default. |
 | `M365_SONNET_FALLBACK_MODEL` | The same for `claude-sonnet-5.5` (Sonnet 5.5) once its priority-access budget is used up — e.g. `claude-sonnet-5` (unmetered) or `claude-sonnet` (Sonnet 4.6, any account). A fallback naming a metered model is ignored. Unset by default. |
 | `M365_SCENARIO` / `M365_LICENSE_TYPE` | Override the entitlement the WebSocket is opened under (defaults: `OfficeWebIncludedCopilot` / `Starter`, switching to `OfficeWebPaidCopilot` / `Premium` for the entitlement-gated models — `claude-opus`, `gpt-6-think-deeper`, `claude-sonnet-5` and `claude-sonnet-5.5`; `claude-opus-4.8` and `gpt-6.1-sol` stay on the included one). `scenario` is what gates the model list (and picks Sonnet 4.6 vs 5.5 for the `Claude_Sonnet` tone, Sonnet 4.6 vs 5 for `Claude_Sonnet_5`, Opus 4.8 vs 5.5 for `Claude_Opus`); `licenseType` rides along and unlocks nothing by itself. Forcing the paid scenario on `gpt-6.1-sol` spends its separate GPT-6.1 Sol allowance (40 turns a day, 75 a week), which the proxy doesn't track. |
+| `M365_TURN_IDLE_MS` | Maximum silence between received frames, including before handshake (default `120000` ms); invalid, nonpositive or timer-overflow values fall back to the default. |
+| `M365_RECONNECT_DELAY_MS` | Delay before retrying a recognized network error (default `5000` ms; `0` disables the delay). Invalid, negative or timer-overflow values fall back to the default. |
 | `M365_CACHE_FILE` | Override MSAL token cache location |
 | `M365_SECRETS_FILE` | Override credentials file location |
 | `CHROMIUM_PATH` | Path to Chromium binary for automated login |
 
+### Terminal refusals and client retries
+
+The proxy returns structured errors rather than treating explicit refusals as
+answers or ordinary empty replies:
+
+| Upstream signal | JSON status / `error.code` |
+|---|---|
+| `ForbiddenRequest` + `PremiumModelUnavailableForLicense` or `ClaudeUnavailableForLicense` | 403 / `m365_model_not_licensed` (`param` names the requested model) |
+| `ForbiddenRequest` + `InvalidCopilotLicense` | 403 / `m365_account_not_licensed` |
+| Other `ForbiddenRequest` | 403 / `m365_forbidden` (no model-entitlement inference) |
+| `Disengaged` without an authoritative result above it | 403 / `m365_request_declined` |
+| `Throttled` | 429 / `m365_throttled` (no invented retry duration) |
+| `OutOfCredits` | 429 / `priority_access_exhausted`, unless the existing opt-in priority fallback serves another model |
+
+Explicit results take precedence over a simultaneous `Disengaged` marker. The
+marker alone does not establish a content-policy violation. It is terminal: the
+proxy does not retry with softened framing or a fresh prompt;
+`M365_NO_DISENGAGE_RETRY` is no longer needed and has no effect.
+Exhaustion of a premium-only model route remains a 502 `model_route_unavailable`.
+An ambiguous `InternalError` is not proof of the account's licence entitlement.
+
+These terminal responses, quota/budget holds and exhausted ordinary empty retries
+include `error.retryable: false` and the HTTP header `x-should-retry: false` so
+clients that honor that header do not multiply the proxy's attempts. This does
+not permanently disable later user requests. Once SSE HTTP 200 has started,
+errors instead appear in an `error` frame with structured fields and
+`retryable: false`, followed by `[DONE]`, without a success finish. Already
+forwarded text cannot be retracted if a refusal arrives only at the end.
+`retry_after` is included only when the error response has `Retry-After`.
+
 ### Usage / context-window % in responses
 
-The OpenAI `usage` block in every chat completion response now includes M365
-extension fields with the **per-conversation message quota** — the closest
-proxy we have to "context-window utilisation" since M365 hides token counts:
+Successful JSON completions include `usage`; SSE includes it on the final success
+chunk only when `stream_options.include_usage` is true. Standard counters are
+**estimates**, not upstream token telemetry: each side is the ceiling of its
+visible Unicode code-point count divided by four. Prompt estimates use the full
+client-supplied history (even when only a continuation delta goes upstream),
+message names, prior tool names/arguments and serialized tool definitions.
+Completion estimates use returned text or emitted tool names/arguments.
+Retries, server-only history, hidden reasoning and model-specific framing/token
+costs are not measured. These numbers are not billing data or an authoritative
+context-window percentage. Image payloads are excluded, and unsupported modalities
+are listed in `x_m365_usage_unestimated_modalities` when present.
+
+Separate M365 extension fields report the **per-conversation message quota**;
+that quota is not token-window utilisation. Example (illustrative counters):
 
 ```json
 "usage": {
-  "prompt_tokens": 0,
-  "completion_tokens": 0,
-  "total_tokens": 0,
+  "prompt_tokens": 120,
+  "completion_tokens": 20,
+  "total_tokens": 140,
+  "x_m365_usage_estimated": true,
+  "x_m365_usage_basis": "visible_context_chars_div_4",
   "x_m365_conversation_messages": 42,
   "x_m365_conversation_max": 600,
   "x_m365_conversation_pct": 7,
