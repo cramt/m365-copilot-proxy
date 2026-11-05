@@ -106,6 +106,18 @@ prompt is tuned. The layers, in handler order:
 - **Hallucinated-completion retry** (`looksLikeHallucinatedCompletion`): if the model CLAIMS
   a file mutation ("I've replaced the README") with **no tool call all conversation**, force a
   real write. Gated on "never acted," so it won't misfire on a genuine post-write summary.
+- **Capability-aware recovery prompts:** the existing confabulation,
+  hallucinated-completion, and remote-artifact retries use only the request's
+  permitted tool definitions. Without a permitted shell, the follow-up names the
+  actual tools and reuses their canonical fenced argument templates; it does not
+  assert filesystem access, suggest package installation, or request shell commands.
+  An explicit named choice limits the follow-up to that provided tool (including
+  when another tool is a shell); `none` bypasses tool recovery. Shell-enabled
+  requests retain the existing shell follow-ups unchanged. A tool name appearing
+  in ordinary prose is **not** a new retry trigger. Retry counts, existing detectors,
+  the remote-artifact fail-closed check, and one-call-per-turn are unchanged.
+  This is covered by offline synthetic-handler JSON/SSE tests, not a new live
+  model-compliance measurement.
 - **Tool-result labelling:** each `<tool_response>` is tagged with the command that produced
   it (`<tool_response tool="bash" command="ls -la">`) by correlating `tool_call_id` back to
   the call — so the model reads output in context (a listing vs file contents vs stdout)

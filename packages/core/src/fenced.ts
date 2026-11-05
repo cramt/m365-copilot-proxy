@@ -543,7 +543,7 @@ type FramingBuilder = (tools: ToolDef[]) => string;
 
 /** Shared `<tools>` definition block — identical across every framing variant so
  *  the experiment isolates the *framing*, not the tool schema rendering. */
-function toolsBlock(tools: ToolDef[]): string {
+export function toolsBlock(tools: ToolDef[]): string {
   const defs = tools.map((t) => renderFencedTemplate(deriveFencedSpec(t))).join("\n\n");
   return `<tools>\n${defs}\n</tools>`;
 }
