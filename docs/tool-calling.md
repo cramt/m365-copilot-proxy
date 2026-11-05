@@ -18,6 +18,26 @@ Per-tool shape: the fence info-string is the tool name, scalar args are `key: va
 header lines, one free-form arg is the fence body, and an `old`/`new` pair renders as an
 aider-style `SEARCH/REPLACE` diff.
 
+If a tool explicitly declares a `required` list that contains neither edit-pair
+field, the pair is optional. Such a tool can use ordinary `key: value` headers
+without a diff block—for example, a create operation on a tool that also supports
+patching. Multiline header values remain intact only when they contain no
+reserved edit token. Admission and extraction share the legacy literal grammar:
+`<{5,}\s*SEARCH`, `={5,}`, and `>{5,}\s*REPLACE` (case-sensitive). Marker runs
+may have different lengths; `\s*` allows zero or more whitespace characters,
+including tabs and newlines. Tokens are not line-anchored. A complete block has
+a newline before and after each captured value, with optional whitespace after
+SEARCH and the separator; CRLF is accepted. Complete blocks still parse normally.
+Any recognized token anywhere in the fence reserves it for edit parsing; an
+incomplete block is rejected, never reinterpreted as a headers-only action.
+Consequently literal marker text, including a bare `=======` Setext heading
+underline in a multiline header, cannot be represented in this headers-only
+mode. There is no escape syntax for these reserved tokens. This conservative
+ambiguity rule preserves truncation safety rather than guessing create intent.
+If either pair field is required, or the schema
+does not declare `required`, the existing marker requirement is preserved.
+Rendering a concrete call does not invent empty optional edit arguments.
+
 **Shell-routing (the load-bearing trick).** M365's chat model won't "act as an agent" on
 demand but *will* reflexively write a ` ```bash ` block. When the toolset includes a shell
 tool (`bash`/`shell`/`run`/`run_command`/… — any name), the proxy injects "do the whole step
