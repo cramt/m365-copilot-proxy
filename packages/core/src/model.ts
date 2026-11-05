@@ -1,3 +1,5 @@
+import { withAccountContext, currentAccountContext, assertAccountToken, AccountPolicyError } from "./account-policy.js";
+import { TurnBudgetHold } from "./turn-budget.js";
 import { getToken } from "./auth.js";
 import { getOrCreateAgent } from "./agent.js";
 import { CopilotSession } from "./session.js";
@@ -32,6 +34,8 @@ export interface ModelSessionOptions {
    * Defaults to true. Set false only when persistent Copilot history is wanted.
    */
   temporaryChat?: boolean;
+  /** Stable route protocol/agent/scenario configuration identity (never a credential). */
+  accountRouteScope?: string;
 }
 
 /**
@@ -50,6 +54,8 @@ export class ModelSession {
   private copilotSession: CopilotSession | null = null;
   private cachedAgentId: string | null | undefined = undefined;
   private savedTurnCount = 0;
+  private accountKey: string | undefined;
+  private options: ModelSessionOptions;
 
   /** Stable IDs reused across CopilotSession reconnections. */
   readonly sessionId: string = crypto.randomUUID();
@@ -69,6 +75,7 @@ export class ModelSession {
   }
 
   constructor(options: ModelSessionOptions = {}) {
+    this.options = { ...options };
     this.resolveToken = options.getToken ?? getToken;
     this.useAgent = options.useAgent !== false;
     this.temporaryChat =
@@ -120,7 +127,12 @@ export class ModelSession {
     images: string[] = [],
     waitForBudget: () => Promise<{ waitedMs: number }> = () => awaitTurnBudget({ signal }),
   ): Promise<CopilotStream> {
-    let token = await this.resolveToken();
+    if (!currentAccountContext()) return withAccountContext(this.options, () => this.run(text, model, signal, useAgent, images, waitForBudget));
+    const context = currentAccountContext()!;
+    if (this.accountKey && this.accountKey !== context.key) throw new AccountPolicyError(409, "account_changed");
+    this.accountKey = context.key;
+    let token = context.token;
+    signal?.throwIfAborted();
     // Image input (#39): upload each image for this conversation; the message points at them.
     // A failed upload is said in the text, so the model doesn't answer about an image it never got.
     const annotations: ImageAnnotation[] = [];
@@ -137,12 +149,13 @@ export class ModelSession {
     const wantAgent = this.useAgent && useAgent;
 
     // Resolve agent ID lazily (persists across resets), only when wanted.
-    if (wantAgent && this.cachedAgentId === undefined) {
+    if (wantAgent) {
       try {
         this.cachedAgentId = await getOrCreateAgent();
         if (this.cachedAgentId) log.info(`Using agent: ${this.cachedAgentId}`);
         else log.info("No agent available");
-      } catch {
+      } catch (err) {
+        if (err instanceof AccountPolicyError) throw err;
         this.cachedAgentId = null;
       }
     }
@@ -166,8 +179,10 @@ export class ModelSession {
     const turnOpts = { generateImages: !agentForTurn && !process.env.M365_NO_IMAGE_GEN, images: annotations };
 
     try {
+      assertAccountToken(token);
       return await this.copilotSession.chat(token, text, model, signal, turnOpts);
     } catch (err: any) {
+      if (err instanceof AccountPolicyError || err instanceof TurnBudgetHold || err?.name === "AbortError" || err?.name === "ZodError" || err instanceof SyntaxError || err?.status === 401 || err?.status === 403) throw err;
       // Session might be stale — reconnect with same IDs
       log.info("Session error, reconnecting:", err.message);
       if (signal?.aborted) throw new DOMException("Aborted", "AbortError");
@@ -180,6 +195,7 @@ export class ModelSession {
       // wait may be near its end, so fetch it again.
       if ((await waitForBudget()).waitedMs > 0) token = await this.resolveToken();
       if (signal?.aborted) throw new DOMException("Aborted", "AbortError");
+      assertAccountToken(token);
       this.copilotSession = this.createCopilotSession(agentForTurn);
       this.currentAgentId = agentForTurn;
       return await this.copilotSession.chat(token, text, model, signal, turnOpts);
@@ -199,6 +215,8 @@ export class ModelSession {
    */
   async refreshAgent(): Promise<boolean> {
     if (!this.useAgent) return false;
+    if (!currentAccountContext()) return withAccountContext(this.options, () => this.refreshAgent());
+    if (this.accountKey && this.accountKey !== currentAccountContext()!.key) throw new AccountPolicyError(409, "account_changed");
     try {
       const fresh = await getOrCreateAgent({ forceRefresh: true });
       if (fresh !== this.cachedAgentId) {
@@ -210,6 +228,7 @@ export class ModelSession {
         return true;
       }
     } catch (err: any) {
+      if (err instanceof AccountPolicyError) throw err;
       log.info(`Agent refresh failed: ${err.message}`);
     }
     return false;
