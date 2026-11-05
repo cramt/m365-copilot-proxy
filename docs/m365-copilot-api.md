@@ -66,6 +66,30 @@ wss://substrate.office.com/m365Copilot/Chathub/{oid}@{tid}?{query}
   - `https://api.powerplatform.com/.default` (Copilot Studio)
   - `https://api.bap.microsoft.com/.default` (environment discovery)
 
+### Generated-image artifact boundary
+
+Image artifacts use a **different token**: `getImageArtifactToken()` acquires
+`https://designerappservice.officeapps.live.com/.default`. The observed artifact
+host is `https://designerapp.officeapps.live.com` (hypotheses §14 F14.3/F14.6),
+not the token audience host. No evidence currently authorizes sibling
+`*.officeapps.live.com` hosts.
+
+`fetchImageBytes()` validates that exact HTTPS authority (default port only,
+no userinfo, controls, whitespace or backslashes) **before attaching the bearer**.
+It requires an explicit path with no fragment and rejects locators whose native
+WHATWG serialization would alter the signed path/query (including literal or
+encoded dot segments and characters requiring percent-encoding). Query dot data,
+ordinary encoded slashes/percent signs, plus signs and duplicate query keys remain
+opaque; no decoding or rewriting is performed. Accepted locators pass unchanged
+to Fetch. It rejects redirects and limits each download to an absolute monotonic
+60 seconds across headers **and body**, including ready-read continuations, EOF
+and final buffer assembly. A timer also aborts pending I/O. The default byte cap is
+20 MiB; `M365_MAX_IMAGE_BYTES` accepts a positive safe integer override. Both
+Content-Length and actual streamed byte counts enforce the cap. Caller aborts,
+deadlines and rejected responses retire the body; errors omit signed URLs,
+status text, transport details and abort reasons. `generateImage()` and chat-image
+rendering forward their caller's abort signal into the download.
+
 ### Flow: MSAL PKCE
 We use `@azure/msal-node` `PublicClientApplication` with PKCE. The token cache is persisted to `~/.config/opencode-m365/msal-cache.json` and refreshed silently when possible.
 

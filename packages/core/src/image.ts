@@ -77,7 +77,7 @@ export interface GenerateImageOptions {
    *  getImageArtifactToken() when omitted. Pass it in to avoid re-acquiring
    *  across a batch. */
   artifactToken?: string;
-  /** Abort the underlying chat turn. */
+  /** Abort the chat turn and artifact downloads. */
   signal?: AbortSignal;
   /** If true, don't download bytes — return URLs only (data/base64 empty). Lets a
    *  caller stream the fetch itself, or skip the download when only the URL is
@@ -117,14 +117,115 @@ export function buildImagePrompt(prompt: string, opts: { orientation?: ImageOrie
 export async function fetchImageBytes(
   url: string,
   artifactToken: string,
+  signal?: AbortSignal,
 ): Promise<{ data: Buffer; contentType: string }> {
-  const res = await fetch(url, { headers: { Authorization: `Bearer ${artifactToken}` } });
-  if (!res.ok) {
-    throw new Error(`Image artifact fetch failed: ${res.status} ${res.statusText} for ${url.slice(0, 120)}`);
+  // Validate the raw authority before WHATWG URL parsing can normalize controls,
+  // backslashes or userinfo. Only this host is evidenced in §14 F14.6; the token
+  // audience (designerappservice) is NOT another trusted artifact host. Never
+  // decode/rebuild the signed path or query: fetch receives the original string.
+  if (/[\x00-\x20\x7f\\]/.test(url) ||
+      !/^https:\/\/designerapp\.officeapps\.live\.com(?::443)?(?:[/?#]|$)/i.test(url)) {
+    throw new Error("Untrusted image artifact URL");
   }
-  const contentType = res.headers.get("content-type") ?? "image/png";
-  const data = Buffer.from(await res.arrayBuffer());
-  return { data, contentType };
+  // Native Fetch serializes WHATWG URLs even when given the original string:
+  // dot segments (including mixed/encoded dots), Unicode and some punctuation
+  // would change a signed locator. Compare serialization without decoding or
+  // replacing the caller's bytes. Fragments are never part of a request target;
+  // require an explicit path to avoid an implicit slash as well.
+  const locator = url.match(/^https:\/\/[^/]+(\/[^#]*)$/i)?.[1];
+  const parsed = new URL(url);
+  if (!locator || parsed.href.slice(parsed.origin.length) !== locator) {
+    throw new Error("Untrusted image artifact URL");
+  }
+  if (signal?.aborted) throw new Error("Image artifact fetch aborted");
+
+  // Timers cannot run while ready reads keep scheduling promise microtasks.
+  // Enforce a monotonic deadline as well, through headers, EOF and assembly.
+  const deadline = performance.now() + 60_000;
+  // Cancellation reasons may contain secrets.
+  const configuredLimit = Number(process.env.M365_MAX_IMAGE_BYTES);
+  const limit = Number.isSafeInteger(configuredLimit) && configuredLimit > 0
+    ? configuredLimit : 20 * 1024 * 1024;
+  const controller = new AbortController();
+  let failure = "Image artifact fetch failed";
+  let reader: ReadableStreamDefaultReader<Uint8Array> | undefined;
+  let response: Response | undefined;
+  const retire = () => {
+    const cancellation = reader ? reader.cancel() : response?.body?.cancel();
+    void cancellation?.catch(() => {});
+  };
+  let rejectCancellation!: (reason: Error) => void;
+  const cancelled = new Promise<never>((_, reject) => { rejectCancellation = reject; });
+  // A synchronous deadline check can abort before any race is listening (e.g.
+  // fetch throws synchronously or the final buffer assembly exhausts the budget).
+  void cancelled.catch(() => {});
+  const abort = (message: string) => {
+    if (controller.signal.aborted) return;
+    failure = message;
+    controller.abort();
+    retire();
+    rejectCancellation(new Error(message));
+  };
+  const checkDeadline = () => {
+    if (performance.now() >= deadline) abort("Image artifact fetch timed out");
+    if (controller.signal.aborted) throw new Error(failure);
+  };
+  const callerAbort = () => abort("Image artifact fetch aborted");
+  signal?.addEventListener("abort", callerAbort, { once: true });
+  const timer = setTimeout(() => abort("Image artifact fetch timed out"), 60_000);
+  try {
+    checkDeadline();
+    const pending = fetch(url, {
+      headers: { Authorization: `Bearer ${artifactToken}` },
+      redirect: "error",
+      signal: controller.signal,
+    }).then((res) => {
+      // Also retire a late response from a transport which ignored cancellation.
+      if (controller.signal.aborted) void res.body?.cancel().catch(() => {});
+      return res;
+    });
+    response = await Promise.race([pending, cancelled]);
+    checkDeadline();
+    if (!response.ok) {
+      failure = `Image artifact fetch failed: HTTP ${response.status}`;
+      throw new Error(failure);
+    }
+    if (Number(response.headers.get("content-length")) > limit) {
+      failure = "Image artifact exceeds the configured size limit";
+      throw new Error(failure);
+    }
+    const contentType = response.headers.get("content-type") ?? "image/png";
+    reader = response.body?.getReader();
+    const chunks: Uint8Array[] = [];
+    let size = 0;
+    if (reader) {
+      for (;;) {
+        checkDeadline();
+        const { value, done } = await Promise.race([reader.read(), cancelled]);
+        checkDeadline();
+        if (done) break;
+        size += value.byteLength;
+        if (size > limit) {
+          failure = "Image artifact exceeds the configured size limit";
+          throw new Error(failure);
+        }
+        chunks.push(value);
+      }
+    }
+    checkDeadline();
+    const data = Buffer.concat(chunks, size);
+    checkDeadline();
+    return { data, contentType };
+  } catch {
+    retire();
+    controller.abort();
+    // Neither URLs, statusText, transport errors nor caller reasons are safe.
+    throw new Error(failure);
+  } finally {
+    clearTimeout(timer);
+    signal?.removeEventListener("abort", callerAbort);
+    reader?.releaseLock();
+  }
 }
 
 /**
@@ -185,7 +286,7 @@ export async function generateImage(
 
   const out: GeneratedImage[] = [];
   for (const { url, meta } of urls) {
-    const { data, contentType } = await fetchImageBytes(url, artifactToken);
+    const { data, contentType } = await fetchImageBytes(url, artifactToken, opts.signal);
     out.push({ url, contentType, data, base64: data.toString("base64"), size: meta.size, orientation: meta.orientation });
   }
   return out;
