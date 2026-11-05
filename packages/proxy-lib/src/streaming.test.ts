@@ -487,9 +487,10 @@ describe("M365_AVOID_THROTTLING holds a turn it would have to wait too long for"
   });
 });
 
-describe("Disengage retry keeps a model's <system>-free framing", () => {
+// Intentional migration: terminal refusal replaces F22 automatic softened retries.
+describe("Disengaged is terminal while initial model framing is preserved", () => {
   const tools = [{ type: "function", function: { name: "bash", parameters: { type: "object", properties: { command: { type: "string" } } } } }];
-  async function disengageThenAnswer(model: string): Promise<string> {
+  async function disengageWithoutRetry(model: string): Promise<string> {
     scripted.result = null;
     scripted.texts = [];
     scripted.queue = [{ fullText: "", messageType: "Disengaged" }, { fullText: "```bash\nls\n```" }];
@@ -498,22 +499,24 @@ describe("Disengage retry keeps a model's <system>-free framing", () => {
       messages: [{ role: "system", content: "sys" }, { role: "user", content: `do it ${model}` }],
     });
     const res = await handleChatCompletion(body, new SessionPool());
-    expect(res.status).toBe(200);
-    expect(scripted.texts).toHaveLength(2);
+    expect(res.status).toBe(403);
+    expect(res.headers.get("x-should-retry")).toBe("false");
+    expect((await res.json()).error).toMatchObject({ code: "m365_request_declined", retryable: false });
+    expect(scripted.texts).toHaveLength(1);
     scripted.queue = [];
-    return scripted.texts[1];
+    return scripted.texts[0];
   }
 
-  it("retries Sonnet 5 with relay again, never a <system>-tagged framing", async () => {
-    const retry = await disengageThenAnswer("claude-sonnet-5");
+  it("declines Sonnet 5 without retry, preserving initial relay framing", async () => {
+    const retry = await disengageWithoutRetry("claude-sonnet-5");
     expect(retry).not.toContain("<system>");
     expect(retry).toContain("guide me through this from my terminal, one command at a time");
     expect(retry).not.toContain("put as much as you can into one block");
   });
 
-  it("sends Opus, Sonnet 4.6 and GPT-6 relay_batch on the first try and keeps it on the retry (§24, §25)", async () => {
+  it("sends Opus, Sonnet 4.6 and GPT-6 relay_batch once (§24, §25)", async () => {
     for (const model of ["claude-opus-4.8", "claude-opus", "claude-sonnet", "gpt-6-think-deeper"]) {
-      const retry = await disengageThenAnswer(model);
+      const retry = await disengageWithoutRetry(model);
       expect(scripted.texts[0]).toContain("put as much as you can into one block");
       expect(scripted.texts[0]).not.toContain("<system>");
       expect(retry).toContain("put as much as you can into one block");
@@ -521,10 +524,11 @@ describe("Disengage retry keeps a model's <system>-free framing", () => {
   });
 
 
-  it("still retries the <system>-tagged defaults with softened (F22)", async () => {
-    const retry = await disengageThenAnswer("gpt-5.5-think-deeper");
+  it("does not soften or retry the <system>-tagged defaults", async () => {
+    const retry = await disengageWithoutRetry("gpt-5.5-think-deeper");
     expect(retry).toContain("<system>");
-    expect(retry).toContain("You are an automated coding agent working in a real working directory");
+    expect(retry).toContain("You are the execution core of an automated agent");
+    expect(retry).not.toContain("You are an automated coding agent working in a real working directory");
   });
 });
 
@@ -901,11 +905,11 @@ describe("Opus 4.8 on an account that can't serve it (§24, §36)", () => {
     expect(res.status).toBe(502);
     const err = (await res.json()).error;
     expect(err.code).toBe("model_route_unavailable");
-    expect(err.message).toContain("premium");
+    expect(err.message).toContain("does not establish this account\'s licence entitlement");
     expect(scripted.newConversations).toBe(0);
   }
 
-  it("says the model is premium-only instead of 'empty response' on a tool-less (agent-less) request", async () => {
+  it("reports ambiguous route unavailability rather than asserting a licence on a tool-less request", async () => {
     await deadRoute(false);
     expect(scripted.agentFlags).toEqual([false, false, false]);
   });

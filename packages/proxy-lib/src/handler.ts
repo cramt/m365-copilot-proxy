@@ -12,7 +12,6 @@ import {
   PREMIUM_ONLY_AGENT_TONES,
   defaultFramingForModel,
   currentFramingVariant,
-  transcriptStyleForVariant,
   priorityAccessExhaustionOf,
   notePriorityAccessExhausted,
   activePriorityAccessExhaustion,
@@ -48,6 +47,8 @@ import {
   type ParseResult,
 } from "@m365-copilot/core";
 import { ChatCompletionRequest } from "./schemas.js";
+import { forbiddenResponse, disengagedResponse, terminalErrorResponse } from "./terminal-errors.js";
+import { estimateVisibleUsage, type VisibleOutput } from "./usage.js";
 import type { z } from "zod/v4";
 
 const log = createLogger("handler");
@@ -455,16 +456,13 @@ export async function handleChatCompletion(
   let lastTurnCount: number | null | undefined;
   let lastMetering: Record<string, number> | null | undefined;
 
-  // `onDelta` (when provided) forwards each text delta to the caller AS IT ARRIVES,
-  // for live incremental streaming. It's safe to forward without ever retracting:
-  // runBuffered only retries on an EMPTY attempt (Disengaged, dead-agent, throttle),
-  // and an empty attempt emits no deltas — so a forwarded delta always belongs to the
-  // one attempt that produced content and is never re-sent by a subsequent retry.
+  // `onDelta` forwards text as it arrives. Ordinary empty recovery has no bytes to
+  // duplicate; explicit final refusals never retry. A hypothetical content-then-final
+  // refusal cannot retract already forwarded bytes, but ends with an error, not success.
   async function runBuffered(
     onDelta?: (delta: string) => void,
   ): Promise<{ fullText: string } | { error: Response }> {
     let agentRefreshed = false;
-    let disengageRetried = false;
     let agentFallbackDone = false;
     let priorityFallbackDone = false;
     let internalErrorFreshRetried = false;
@@ -538,6 +536,64 @@ export async function handleChatCompletion(
         return { error: jsonResponse(502, { error: { message: err.message, type: "upstream_error" } }) };
       }
 
+      // These are terminal even if a future upstream starts attaching content.
+      // Already-forwarded incremental bytes cannot be retracted; never emit a success finish.
+      if (copilotStream.result?.value === "ForbiddenRequest") {
+        return { error: forbiddenResponse(model, copilotStream.result) };
+      }
+      // M365 SAYS when it throttles: the final item's result is `Throttled` /
+      // `PerUserThrottled` (#35). Checked BEFORE the content check so
+      // an apology that ever arrives as content can't pass for an answer. This
+      // used to fall through to the empty-reply path below — two "quick retries"
+      // straight back into the throttle, then a 502 blaming a content filter.
+      // Fail fast with a 429 instead, and count it toward the degradation backoff.
+      if (copilotStream.result?.value === "Throttled") {
+        noteRequestOutcome(true, session.conversationId);
+        log.info(`Upstream Throttled (${copilotStream.result.errorCode ?? "no errorCode"}) — 429, no retry`);
+        return { error: throttledResponse(copilotStream.result) };
+      }
+
+      // A priority-access cap (Opus 5.5, Sonnet 5.5) arrives as a turn whose
+      // text is a refusal ("You've used your available priority access…") and
+      // whose final result is `OutOfCredits` (§24 F55). Left alone, the client
+      // would receive a refusal dressed as an answer — the same hazard class as
+      // the image-quota text (§14 H14.4). Surface it as a 429 with the reset
+      // time instead, or, when the budget's fallback model is set
+      // (M365_OPUS_FALLBACK_MODEL / M365_SONNET_FALLBACK_MODEL), re-send the
+      // whole request to that model in a fresh conversation (issue #18). Either
+      // way remember it, so the next requests don't spend M365 turns on
+      // refusals until the reset.
+      const exhausted = copilotStream.messageType === "Disengaged" && copilotStream.result?.value !== "OutOfCredits"
+        ? null : priorityAccessExhaustionOf(copilotStream.result, fullText);
+      if (exhausted) {
+        const budget = meteredBudgetOf(model);
+        if (budget || copilotStream.result?.value === "OutOfCredits") notePriorityAccessExhausted(budget ?? model, exhausted);
+        const fallback = budget && !priorityFallbackDone ? priorityAccessFallbackModel(budget) : null;
+        if (fallback) {
+          priorityFallbackDone = true;
+          log.info(`Priority access exhausted (${exhausted.window}) — re-sending to ${fallback} (${PRIORITY_ACCESS_FALLBACK_ENV[budget!]}) in a fresh conversation`);
+          model = fallback;
+          tone = getToneForModel(model);
+          framingVariant = currentFramingVariant(defaultFramingForModel(model));
+          useToolAgent = requestUsesAgent(model, !!hasTools);
+          session.newConversation();
+          text = formatMessages(body.messages, body.tools, body.tool_choice, session.conversationId, framingVariant);
+          inputImages = imageUrls(body.messages);
+          originalText = text;
+          attempt--;
+          continue;
+        }
+        noteRequestOutcome(false, convId); // an answer, not a throttle
+        log.info(`Priority access exhausted (${exhausted.window}) — resets ${exhausted.resetsAt.toISOString()}`);
+        return { error: priorityAccessResponse(exhausted, model) };
+      }
+
+      // Authoritative results above win over a generic message marker.
+      // Still stop before content success or any InternalError recovery.
+      if (copilotStream.messageType === "Disengaged") {
+        return { error: disengagedResponse() };
+      }
+
       // Image gen (§14): the picture arrives on a GraphicArt frame, usually with NO
       // chat text — so an image turn looks empty to the checks below and would burn
       // a retry. Render the image(s) into the response instead, and (for streaming)
@@ -558,18 +614,6 @@ export async function handleChatCompletion(
       lastScores = copilotStream.scores;
       lastTurnCount = copilotStream.turnCount;
       lastMetering = copilotStream.metering;
-
-      // M365 SAYS when it throttles: the final item's result is `Throttled` /
-      // `PerUserThrottled` (#35). Checked BEFORE the content check so
-      // an apology that ever arrives as content can't pass for an answer. This
-      // used to fall through to the empty-reply path below — two "quick retries"
-      // straight back into the throttle, then a 502 blaming a content filter.
-      // Fail fast with a 429 instead, and count it toward the degradation backoff.
-      if (copilotStream.result?.value === "Throttled") {
-        noteRequestOutcome(true, convId);
-        log.info(`Upstream Throttled (${copilotStream.result.errorCode ?? "no errorCode"}) — 429, no retry`);
-        return { error: throttledResponse(copilotStream.result) };
-      }
 
       // A tone whose agent route serves only on a premium account came back as
       // the dead route (`InternalError`, no content): this account isn't
@@ -602,83 +646,12 @@ export async function handleChatCompletion(
         continue;
       }
 
-      // A priority-access cap (Opus 5.5, Sonnet 5.5) arrives as a turn whose
-      // text is a refusal ("You've used your available priority access…") and
-      // whose final result is `OutOfCredits` (§24 F55). Left alone, the client
-      // would receive a refusal dressed as an answer — the same hazard class as
-      // the image-quota text (§14 H14.4). Surface it as a 429 with the reset
-      // time instead, or, when the budget's fallback model is set
-      // (M365_OPUS_FALLBACK_MODEL / M365_SONNET_FALLBACK_MODEL), re-send the
-      // whole request to that model in a fresh conversation (issue #18). Either
-      // way remember it, so the next requests don't spend M365 turns on
-      // refusals until the reset.
-      const exhausted = priorityAccessExhaustionOf(copilotStream.result, fullText);
-      if (exhausted) {
-        const budget = meteredBudgetOf(model);
-        if (budget || copilotStream.result?.value === "OutOfCredits") notePriorityAccessExhausted(budget ?? model, exhausted);
-        const fallback = budget && !priorityFallbackDone ? priorityAccessFallbackModel(budget) : null;
-        if (fallback) {
-          priorityFallbackDone = true;
-          log.info(`Priority access exhausted (${exhausted.window}) — re-sending to ${fallback} (${PRIORITY_ACCESS_FALLBACK_ENV[budget!]}) in a fresh conversation`);
-          model = fallback;
-          tone = getToneForModel(model);
-          framingVariant = currentFramingVariant(defaultFramingForModel(model));
-          useToolAgent = requestUsesAgent(model, !!hasTools);
-          session.newConversation();
-          text = formatMessages(body.messages, body.tools, body.tool_choice, session.conversationId, framingVariant);
-          inputImages = imageUrls(body.messages);
-          originalText = text;
-          attempt--;
-          continue;
-        }
-        noteRequestOutcome(false, convId); // an answer, not a throttle
-        log.info(`Priority access exhausted (${exhausted.window}) — resets ${exhausted.resetsAt.toISOString()}`);
-        return { error: priorityAccessResponse(exhausted, model) };
-      }
-
       if (copilotStream.hasContent || fullText.length > 0) {
         noteRequestOutcome(false, convId); // clean response → degradation has lifted
         if (useToolAgent) noteAgentRouteAlive(tone); // the agent route answered on this account
         conv.servedModel = model;
         inputImages = []; // on the server now: a forcing retry in this conversation needn't resend them
         return { fullText };
-      }
-
-      // Disengaged is a deliberate safety refusal, NOT a transient empty. Retrying
-      // it with "Please continue." just disengages again and burns the 600-msg
-      // quota (observed: 5 wasted messages in one turn). Fail fast with a clear
-      // signal instead. Commonly fires when a heavy tool prompt is paired with a
-      // non-default model/agent (e.g. a Claude tone + the declarative agent).
-      if (copilotStream.messageType === "Disengaged") {
-        // F22: the default framing's override-shape language occasionally trips Azure
-        // Prompt Shields (jailbreak classifier) on benign requests (e.g. "replace X
-        // with Y, leave everything else unchanged"). Retry ONCE with the low-override
-        // `softened` framing in a FRESH conversation (a Disengaged conversation stays
-        // Disengaged). Drops the worst-case disengage ~100%→~4%. Off via
-        // M365_NO_DISENGAGE_RETRY.
-        if (hasTools && !disengageRetried && !process.env.M365_NO_DISENGAGE_RETRY) {
-          disengageRetried = true;
-          session.newConversation();
-          // `softened` is the low-override twin of the `<system>`-tagged framings.
-          // A variant that deliberately avoids `<system>` tags (Claude Sonnet's
-          // `relay`) keeps itself: swapping to `softened` would reintroduce
-          // exactly the tag that model reads as a forged system prompt.
-          const retryVariant = transcriptStyleForVariant(framingVariant).framingTag === "system" ? "softened" : framingVariant;
-          text = formatMessages(body.messages, body.tools, body.tool_choice, session.conversationId, retryVariant);
-          inputImages = imageUrls(body.messages);
-          log.info(`Upstream Disengaged — retrying once with '${retryVariant}' framing in a fresh conversation (F22)`);
-          attempt--; // free retry; bounded — disengageRetried flips once
-          continue;
-        }
-        log.info("Upstream Disengaged — failing fast (no retry) to preserve quota");
-        return {
-          error: jsonResponse(502, {
-            error: {
-              message: "M365 Copilot disengaged from this request (its safety filter declined to answer). Common causes: too many tools, jailbreak-shaped instructions, or pairing a non-default model with the tool agent. Reduce the toolset or use the default model.",
-              type: "disengaged",
-            },
-          }),
-        };
       }
 
       // A content-less `InternalError` is a turn M365 dropped, and the
@@ -922,7 +895,7 @@ export async function handleChatCompletion(
 
   // --- Render: JSON (non-stream) or an early-flushed SSE stream (stream) ---
   const includeUsage = !!body.stream_options?.include_usage;
-  const usage = () => buildUsage(lastThrottle, lastContentOrigin, lastMessageType, lastScores, lastTurnCount, lastMetering);
+  const usage = (output: VisibleOutput) => ({ ...buildUsage(lastThrottle, lastContentOrigin, lastMessageType, lastScores, lastTurnCount, lastMetering), ...estimateVisibleUsage(body.messages, body.tools, output) });
 
   if (!body.stream) {
     const p = await produce();
@@ -931,13 +904,13 @@ export async function handleChatCompletion(
       return jsonResponse(200, {
         id: completionId, object: "chat.completion", created, model,
         choices: [{ index: 0, message: { role: "assistant", content: null, tool_calls: p.toolCalls }, finish_reason: "tool_calls" }],
-        usage: usage(),
+        usage: usage({ toolCalls: p.toolCalls }),
       });
     }
     return jsonResponse(200, {
       id: completionId, object: "chat.completion", created, model,
       choices: [{ index: 0, message: { role: "assistant", content: p.text }, finish_reason: outputFinishReason(p.text) }],
-      usage: usage(),
+      usage: usage({ text: p.text }),
     });
   }
 
@@ -994,28 +967,22 @@ export async function handleChatCompletion(
       clearInterval(hb);
       try {
         if (p.kind === "error") {
-          let message = "upstream error";
-          let type = "upstream_error";
-          let code: string | undefined;
-          // Carry the structured fields through, not just the prose: a streaming
-          // client still has to tell a priority-access wall (back off until the
-          // reset) from a transient upstream failure (retry now), and the status
-          // code it would have read is gone once HTTP 200 is committed.
+          const error: Record<string, unknown> = { message: "upstream error", type: "upstream_error" };
           try {
-            const parsed = JSON.parse(await p.resp.text())?.error;
-            if (parsed?.message) message = parsed.message;
-            if (parsed?.type) type = parsed.type;
-            if (parsed?.code) code = parsed.code;
+            const parsed: Record<string, unknown> = JSON.parse(await p.resp.text())?.error;
+            for (const key of ["message", "type", "code", "param", "m365_error_code", "m365_message_type", "retryable"]) {
+              if (parsed && Object.hasOwn(parsed, key)) error[key] = parsed[key];
+            }
           } catch {}
           const retryAfter = p.resp.headers.get("Retry-After");
-          // HTTP 200 is already committed, so surface the failure as an in-stream error chunk.
-          send({ ...base, error: { message, type, ...(code ? { code } : {}), ...(retryAfter ? { retry_after: Number(retryAfter) } : {}) } });
+          if (retryAfter !== null) error.retry_after = /^\d+$/.test(retryAfter) ? Number(retryAfter) : retryAfter;
+          send({ ...base, error });
         } else if (p.kind === "tools") {
           p.toolCalls.forEach((tc, i) => {
             log.debug(`Tool call: ${tc.function.name} ${trunc(tc.function.arguments, 200)}`);
             send({ ...base, choices: [{ index: 0, delta: { tool_calls: [{ index: i, id: tc.id, type: "function", function: { name: tc.function.name, arguments: tc.function.arguments } }] }, finish_reason: null }] });
           });
-          send({ ...base, choices: [{ index: 0, delta: {}, finish_reason: "tool_calls" }], ...(includeUsage ? { usage: usage() } : {}) });
+          send({ ...base, choices: [{ index: 0, delta: {}, finish_reason: "tool_calls" }], ...(includeUsage ? { usage: usage({ toolCalls: p.toolCalls }) } : {}) });
         } else {
           // Emit only what wasn't already streamed live: the whole text if nothing was
           // (tool-mode prose fallback, or a fully-buffered turn), or just the tail when
@@ -1025,7 +992,7 @@ export async function handleChatCompletion(
           const remainder = p.text.startsWith(sent) ? p.text.slice(sent.length) : "";
           if (!p.text.startsWith(sent)) log.info(`Streamed prefix diverged from final text (sent ${sent.length}, final ${p.text.length} chars) — not re-sending to avoid duplication`);
           if (remainder) send({ ...base, choices: [{ index: 0, delta: { content: remainder }, finish_reason: null }] });
-          send({ ...base, choices: [{ index: 0, delta: {}, finish_reason: outputFinishReason(p.text) }], ...(includeUsage ? { usage: usage() } : {}) });
+          send({ ...base, choices: [{ index: 0, delta: {}, finish_reason: outputFinishReason(p.text) }], ...(includeUsage ? { usage: usage({ text: p.text }) } : {}) });
         }
       } catch {
         // client likely disconnected mid-emit — nothing more to do
@@ -1036,18 +1003,7 @@ export async function handleChatCompletion(
   }));
 }
 
-/**
- * Build the OpenAI-style `usage` block from whatever diagnostic info M365 gave
- * us. Token counts are NOT exposed by M365's WebSocket API (we'd need to count
- * locally with a tokenizer that matches the underlying model — see the doc on
- * token-usage hypotheses). What M365 does send is a **conversation quota**:
- * how many user messages out of the 600-per-conversation cap have been spent.
- *
- * That's a different axis from token-window utilisation, but it's the closest
- * thing we have to "remaining budget", so we surface it as extension fields
- * (`x_m365_*`) alongside the zeroed standard counters. Real OpenAI clients
- * ignore unknown extension fields; curious users can read them.
- */
+/** Real upstream conversation / quota diagnostics, separate from the visible-text estimate. */
 function buildUsage(
   throttle: { current: number; max: number } | null,
   contentOrigin?: string | null,
@@ -1056,11 +1012,7 @@ function buildUsage(
   turnCount?: number | null,
   metering?: Record<string, number> | null,
 ): Record<string, unknown> {
-  const base: Record<string, unknown> = {
-    prompt_tokens: 0,
-    completion_tokens: 0,
-    total_tokens: 0,
-  };
+  const base: Record<string, unknown> = {};
   if (throttle) {
     base.x_m365_conversation_messages = throttle.current;
     base.x_m365_conversation_max = throttle.max;
@@ -1108,20 +1060,18 @@ function priorityAccessResponse(exhaustion: PriorityAccessExhaustion, model: str
   const retryAfter = secondsUntilReset(exhaustion);
   const label = exhaustion.model ?? model;
   const when = exhaustion.window === "week" ? "this week" : "today";
-  return jsonResponse(
+  return terminalErrorResponse(
     429,
     {
-      error: {
         message:
           `M365 Copilot's priority access to ${label} is used up for ${when} ` +
           `(resets ${exhaustion.resetsAt.toISOString()}, i.e. midnight UTC` +
           `${exhaustion.window === "week" ? " on Monday" : ""}). ` +
           `Switch to another model (e.g. claude-sonnet or gpt-5.5-think-deeper) or wait. ` +
-          `Upstream said: ${exhaustion.message}`,
+          `No further automatic retries will be sent by the proxy.`,
         type: "rate_limit_error",
         code: "priority_access_exhausted",
         param: exhaustion.window,
-      },
     },
     { "Retry-After": String(retryAfter) },
   );
@@ -1140,39 +1090,28 @@ function rateLimitMessage(throttle: { current: number; max: number } | null): st
 }
 
 function rateLimitResponse(throttle: { current: number; max: number } | null): Response {
-  return jsonResponse(429, { error: { message: rateLimitMessage(throttle), type: "rate_limit_error" } });
+  return terminalErrorResponse(429, { message: rateLimitMessage(throttle), type: "rate_limit_error" });
 }
 
 /** M365 explicitly throttled the turn (`result.value: "Throttled"`). It names
  *  the scope (`PerUserThrottled`) but not the duration, so no Retry-After is
  *  invented. */
 function throttledResponse(result: { errorCode?: string; message?: string }): Response {
-  const scope = result.errorCode ? ` (${result.errorCode})` : "";
-  return jsonResponse(429, {
-    error: {
-      message: `M365 Copilot throttled this account${scope}: ${result.message ?? "too many requests"} ` +
-        `Retrying immediately does not help; it is triggered by starting many new conversations in a short time.`,
-      type: "rate_limit_error",
-      code: "m365_throttled",
-      ...(result.errorCode ? { param: result.errorCode } : {}),
-    },
+  return terminalErrorResponse(429, {
+    message: "M365 Copilot throttled this account. No retry duration was provided by upstream.",
+    type: "rate_limit_error", code: "m365_throttled",
+    ...(result.errorCode === "PerUserThrottled" ? { param: result.errorCode } : {}),
   });
 }
 
-/** M365_AVOID_THROTTLING would have had to wait longer than this request may
- *  (a throttle hold, usually), so the turn was never sent: sending it would only
- *  keep the throttle alive. Whatever retries the client makes are answered here
- *  the same way, without reaching M365. */
 function turnBudgetHoldResponse(hold: TurnBudgetHold): Response {
   const retryAfter = Math.max(1, Math.ceil(hold.waitMs / 1000));
-  return jsonResponse(
+  return terminalErrorResponse(
     429,
     {
-      error: {
         message: `Not sent to M365 Copilot (M365_AVOID_THROTTLING): ${hold.message}.`,
         type: "rate_limit_error",
         code: hold.reason === "throttle hold" ? "m365_throttle_hold" : "m365_turn_budget",
-      },
     },
     { "Retry-After": String(retryAfter) },
   );
@@ -1183,21 +1122,17 @@ function turnBudgetHoldResponse(hold: TurnBudgetHold): Response {
  *  instead of hanging on a long retry loop. */
 function emptyResponseResponse(throttle: { current: number; max: number } | null): Response {
   const detail = throttle ? ` (throttle ${throttle.current}/${throttle.max})` : "";
-  return jsonResponse(502, {
-    error: {
+  return terminalErrorResponse(502, {
       message: `M365 Copilot returned an empty response${detail} — likely a content filter, an invalid agent/session, or a transient upstream error.`,
       type: "upstream_empty_response",
-    },
   });
 }
 
 function premiumOnlyModelResponse(model: string): Response {
-  return jsonResponse(502, {
-    error: {
-      message: `M365 Copilot didn't serve ${model}: it returned InternalError on every attempt. ${model} is served only on a premium (paid Microsoft 365 Copilot) account; on any other account use claude-sonnet.`,
+  return terminalErrorResponse(502, {
+      message: `M365 Copilot didn't serve ${model}: it returned InternalError on every attempt. This can indicate an unavailable model route or a transient upstream failure; it does not establish this account's licence entitlement.`,
       type: "upstream_error",
       code: "model_route_unavailable",
-    },
   });
 }
 

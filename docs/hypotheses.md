@@ -8,6 +8,13 @@ behaviour; this is the messy "we haven't shipped it yet" layer.
 Status legend: 🟢 confirmed · 🟡 partially tested · 🔴 untested guess ·
 ⚫ disproved.
 
+**Current proxy contract:** historical F22 softened-retry experiments below do
+not describe today's handler: `Disengaged` is terminal, with explicit final
+results taking precedence (API doc §9). Standard usage counters are now labeled
+visible-context character estimates, not discovered upstream token telemetry
+([README](../README.md#usage--context-window--in-responses)). This policy change
+and its synthetic regression tests do not establish new live-service findings.
+
 Findings should carry **n** (sample size), **service version under test**,
 and **falsification criteria** wherever they're claiming something stronger
 than "we eyeballed one run." See §M (Methods) for the experimental rig.
