@@ -893,6 +893,20 @@ unit-tested, validated offline against the real README (6 fences → text).
 README task remains stochastically flaky for *other* reasons (turn-1 confab, a model
 misreading `ls` output as file content) — orthogonal to this fix.
 
+### F-MIX — a long written answer ending in an example command was run as a tool call
+
+**Contributor report, 2026-11-03:** n=1 in 104 opencode turns (`gpt-5.6-think-deeper`,
+agent-less, relay_batch). Asked "what else could we add for local dev?", the model wrote
+7.7k chars of headed recommendations and a trailing example:
+```` ```bash docker compose --profile observability up -d ````.
+The single-call path executed the example rather than returning the answer; it failed in
+the wrong working directory, after which the agent started the stack unasked. The
+contributor reports replaying 78 real calls: none flagged; two long final answers were
+flagged when an example was appended. This replay was not independently rerun here.
+The new single-call heuristic checks a ≥1,500-character preamble with a Markdown heading
+or table; it does not establish that a call is an example or is trailing. Multi-call
+rules are unchanged. Offline parser and handler regressions cover the new behavior.
+
 ### F16 — Behavioural reliability fixes (from the live pi README run) 🟢
 
 Two deterministic fixes for failures seen in the live pi README run (F15's session):

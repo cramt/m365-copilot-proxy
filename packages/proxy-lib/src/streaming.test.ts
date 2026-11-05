@@ -744,6 +744,18 @@ describe("follow-up turns and give-ups (Windows / pi, measured)", () => {
     scripted.queue = [];
   });
 
+  it("returns a long structured single-fence answer as prose through the handler", async () => {
+    scripted.result = null;
+    scripted.texts = [];
+    const doc = `# Recommendations\n${"Consider a local development improvement. ".repeat(45)}\n\n\`\`\`bash\nprintf example\n\`\`\``;
+    scripted.queue = [{ fullText: doc }];
+    const m = await ask([{ role: "user", content: `recommendations ${Math.random()}` }], new SessionPool());
+    expect(scripted.texts).toHaveLength(1);
+    expect(m.tool_calls).toBeUndefined();
+    expect(m.content).toBe(doc);
+    scripted.queue = [];
+  });
+
   it("leaves a real document alone even if its body sounds like a give-up", async () => {
     scripted.result = null;
     scripted.texts = [];

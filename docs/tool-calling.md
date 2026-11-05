@@ -89,11 +89,15 @@ prompt is tuned. The layers, in handler order:
 - **Document guard** (`isProseDocument`): shell-routing turns *every* ` ```bash ` block into
   a tool call — so a model that ANSWERS with a markdown document full of code fences (e.g.
   "here's a simplified README") would get its own answer executed as shell. A response that
-  looks like a document (≥2 fences AND ≥120 chars surrounding prose, OR ≥4 fences) is returned
-  as **text**, not executed. A single action is never reclassified. (hypotheses §9 F15.) A reply
-  that **opens** with a tool call (a preamble under 200 chars, no heading, no code fence before
-  it) is always an action: its tail was written before the call's result existed. Judged by
-  the whole text, that tail made 34 of 42 guard verdicts in one day's bench runs. (#33.)
+  looks like a document is returned as **text**, not executed. With multiple calls, the
+  existing rule detects at least four calls, a heading, or ≥300 chars of surrounding prose,
+  unless the reply opens with a call. With exactly one call, a preamble of ≥1,500 trimmed
+  characters containing a Markdown heading or table row is treated as a document. This is
+  a heuristic: it does not require the call to be trailing or verify it is an example, so a
+  long structured action plan can also be returned as text. A reply that **opens** with a
+  tool call remains an action: its tail was written before the call's result existed.
+  Judged by the whole text, that tail made 34 of 42 guard verdicts in one day's bench runs.
+  (#33; contributor-reported replay in hypotheses F-MIX.)
 - **Only-the-first-call-ran note** (`executedOnlyFirstNote`): when the proxy runs less than the
   model wrote (a cut invented result, dropped batched calls, or a tail after the call), the
   next tool result is prefixed with a one-line note saying so. M365 keeps the whole reply in
