@@ -18,6 +18,7 @@ let state: ReturnType<typeof fixture>;
 beforeEach(() => { state = fixture(); });
 vi.stubGlobal("defineEventHandler", h3.defineEventHandler);
 vi.stubGlobal("readBody", h3.readBody);
+vi.stubGlobal("getHeader", h3.getHeader);
 vi.mock("@m365-copilot/proxy-lib", async (original) => ({
   ...await original<typeof import("@m365-copilot/proxy-lib")>(),
   handleChatCompletion: async (_body: unknown, _pool: unknown, { signal }: { signal: AbortSignal }) => {

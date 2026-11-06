@@ -205,11 +205,13 @@ the harness's own system prompt becomes `<harness_system_prompt>`.
 **The default is model-aware** (`defaultFramingForModel`, falling back to `defaultFramingForTone`).
 `Claude_Opus` (Opus 4.8 and 5.5), `Claude_Sonnet` (as Sonnet 4.6), `Gpt_6_Reasoning`,
 `Gpt_6_Sol_Reasoning` (hyp §28) and
-`Gpt_61_Sol_Reasoning` (GPT-6.1 Sol, hyp §27) → `relay_batch`; Sonnet 5 (`claude-sonnet-5`, its own `Claude_Sonnet_5` tone since 2026-10-06) and
+`Gpt_61_Sol_Reasoning` (GPT-6.1 Sol, hyp §27), plus `Gpt_5_6_Reasoning`
+(`gpt-5.6-think-deeper`, hyp §39 F97) → `relay_batch`; Sonnet 5 (`claude-sonnet-5`, its own `Claude_Sonnet_5` tone since 2026-10-06) and
 Sonnet 5.5 (`claude-sonnet-5.5`, `Claude_Sonnet` on the paid scenario, keyed on the model ID;
 inherits Sonnet 5's relay, hyp §26) → `relay` — though on the bench relay_batch cut its turns by a
 third (3.35 → 2.20, 40/40, both paths, hyp §30); real pi decides, ~90 budget units. **Every other model keeps `baseline` byte-for-byte** (including
-`claude-sonnet-think-deeper`, unmeasured under relay), so no GPT-5.x bench number moves, and
+`claude-sonnet-think-deeper`, unmeasured under relay, and GPT-5.6 Chat). The GPT-5.6
+reasoning default is a distinct measured exception, not a change to GPT-5.x chat defaults, and
 `M365_FRAMING_*` still wins. Opus used to default to `minimal`, to spend less of its priority-access
 budget by sending a shorter prompt; that budget counts turns, not tokens (docs/hypotheses.md §24
 F55), so it saved nothing — see the Opus section below for why relay_batch replaced it.

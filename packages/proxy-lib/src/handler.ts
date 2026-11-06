@@ -40,6 +40,7 @@ import {
   fabricatedToolResponseAt,
   textAfterFirstToolCall,
   longHeredocAsWrite,
+  longCommandAsScript,
   formatToolResponse,
   isProseDocument,
   getMessageContent,
@@ -51,6 +52,7 @@ import {
   fetchImageBytes,
   type CapturedImage,
   type ParseResult,
+  type ParsedToolCall,
 } from "@m365-copilot/core";
 import { ChatCompletionRequest } from "./schemas.js";
 import { forbiddenResponse, disengagedResponse, terminalErrorResponse } from "./terminal-errors.js";
@@ -166,7 +168,11 @@ interface ConversationState {
    *  Opus fallback, #18) can't continue the M365 conversation — it may need
    *  another scenario — so it starts a fresh one with the full history. */
   servedModel?: string;
+  /** Proposed second half of a long command; mediated by the model after the
+   *  actual write result, never automatically dispatched. */
+  chain: { writeId: string; run: ParsedToolCall; toolsHash: string } | null;
 }
+
 
 /**
  * The note that corrects the model's view of what actually ran.
@@ -235,7 +241,7 @@ export class SessionPool {
     const candidates = [...this.conversations.values()].filter(s => s.scope === scope && !s.busy && s.expectedLength !== undefined && messages.length > s.expectedLength && hashes[s.expectedLength - 1] === s.expectedHash);
     if (candidates.length === 1) {
       const state = candidates[0]; state.lastAccessedAt = now;
-      if (state.accountKey !== accountKey) { state.session.reset(); state.session = new ModelSession(this.sessionOptions); state.sentMessageCount = 0; state.pendingNote = null; state.servedModel = undefined; state.accountKey = accountKey; }
+      if (state.accountKey !== accountKey) { state.session.reset(); state.session = new ModelSession(this.sessionOptions); state.sentMessageCount = 0; state.pendingNote = null; state.chain = null; state.servedModel = undefined; state.accountKey = accountKey; }
       return state;
     }
     while (this.conversations.size >= 512) {
@@ -243,7 +249,7 @@ export class SessionPool {
       if (!oldest) throw new RequestContextError("Conversation capacity reached", 503, "conversation_capacity");
       this.conversations.delete(oldest[0]);
     }
-    const state: ConversationState = { session: new ModelSession(this.sessionOptions), sentMessageCount: 0, pendingNote: null, lastAccessedAt: now, scope, accountKey };
+    const state: ConversationState = { session: new ModelSession(this.sessionOptions), sentMessageCount: 0, pendingNote: null, chain: null, lastAccessedAt: now, scope, accountKey };
     this.conversations.set(crypto.randomUUID(), state); return state;
   }
   commit(state: ConversationState, body: ChatBody, assistant: ParsedMessage) {
@@ -285,6 +291,55 @@ function parseReply(text: string, tools: Parameters<typeof parseToolCalls>[1]): 
     return { parsed: { hasToolCalls: false, toolCalls: [], textContent: text }, judged: opening };
   }
   return { parsed, judged: parsed.textContent };
+}
+
+/** M365's web client renders `<File>notlar.docx</File>` as a file chip, and its
+ *  models write that markup into answers: 58 times in the 245 distinct final
+ *  answers of the pi transcripts (Oct 2–5), plus `<document>`, `<Files>`,
+ *  `<file>`, `<FILE>` and "< File>". An API client shows the raw tags, so a prose
+ *  answer gets the bare name. Code is left as it is: fenced blocks, and inline
+ *  code (`<file>a.txt</file>` written as an example of the markup). */
+export function plainFileNames(text: string): string {
+  const clean = (value: string) => value.replace(/<\s*(file|files|document)\s*>([^<>\n]{1,200}?)<\/\s*\1\s*>/gi, "$2");
+  // The tool-fence parser accepts model-specific nested/glued triple fences.
+  // Prose cleanup instead preserves Markdown code, including unfinished blocks.
+  let output = "", prose = "", offset = 0;
+  let fence: { char: string; length: number } | undefined;
+  const flush = () => { output += clean(prose); prose = ""; };
+  while (offset < text.length) {
+    if (offset === 0 || text[offset - 1] === "\n") {
+      const end = text.indexOf("\n", offset);
+      const lineEnd = end < 0 ? text.length : end + 1;
+      const line = text.slice(offset, lineEnd);
+      const marker = /^ {0,3}(`{3,}|~{3,})([^\r\n]*)/.exec(line);
+      if (fence) {
+        output += line;
+        if (marker && marker[1][0] === fence.char && marker[1].length >= fence.length && !marker[2].trim()) fence = undefined;
+        offset = lineEnd; continue;
+      }
+      if (marker && !(marker[1][0] === "`" && marker[2].includes("`"))) {
+        flush(); fence = { char: marker[1][0], length: marker[1].length };
+        output += line; offset = lineEnd; continue;
+      }
+    }
+    if (text[offset] === "`") {
+      const run = /^`+/.exec(text.slice(offset))![0];
+      let close = offset + run.length;
+      while (close < text.length) {
+        const next = text.indexOf("`", close);
+        if (next < 0) { close = text.length; break; }
+        const candidate = /^`+/.exec(text.slice(next))![0];
+        if (candidate.length === run.length) { flush(); output += text.slice(offset, next + run.length); offset = next + run.length; break; }
+        close = next + candidate.length;
+      }
+      if (close < text.length) continue;
+      // Incomplete streamed code is preserved conservatively, rather than
+      // rewriting literal markup before a closing delimiter has arrived.
+      flush(); output += text.slice(offset); offset = text.length; continue;
+    }
+    prose += text[offset++];
+  }
+  flush(); return output;
 }
 
 // --- Delta message formatting ---
@@ -425,7 +480,24 @@ async function dispatchChatCompletion(
   streamComplete?: (bytes: Uint8Array | undefined) => void,
 ): Promise<Response> {
   const { session } = conv;
-  const hasTools = body.tools && body.tools.length > 0 && body.tool_choice !== "none";
+  // Tool results have no portable typed success flag. Never infer successful
+  // publication from an id or arbitrary result text, and never dispatch a queued
+  // run/delete automatically. Let the model inspect the real result instead.
+  const last = body.messages[body.messages.length - 1];
+  const chain = conv.chain;
+  conv.chain = null;
+  if (chain) {
+    const permitted = body.tool_choice !== "none" &&
+      (typeof body.tool_choice !== "object" || body.tool_choice.function.name === chain.run.function.name) &&
+      canonicalHash(body.tools ?? []) === chain.toolsHash;
+    conv.pendingNote = permitted && last?.role === "tool" && last.tool_call_id === chain.writeId
+      ? `(Note: the previous command exceeded the Windows command-line limit. Only a script write was requested, NOT execution. Inspect its actual tool result below. If it failed or is ambiguous, do not run or delete the artifact; repair or verify the write first. After a confirmed successful write, the intended next call is ${JSON.stringify(chain.run.function)}. This is a proposal, not an executed call.)`
+      : null;
+  }
+  const choice = body.tool_choice;
+  body = { ...body, tools: choice === "none" ? [] : typeof choice === "object"
+    ? body.tools?.filter(t => t.function.name === choice.function.name) : body.tools };
+  const hasTools = !!body.tools?.length;
   const requestedModel = body.model;
 
   // Priority access (§15, §24 F55, §26, issue #18). Once a budget is used up
@@ -472,9 +544,10 @@ async function dispatchChatCompletion(
   // Framing default follows the MODEL (defaultFramingForModel): the Claude,
   // GPT-6 and GPT-6 Sol tones get a user-voice relay (Sonnet reads the
   // `<system>`-tagged baseline as an injected prompt; on Opus it trips the
-  // jailbreak classifier). Opus, Sonnet 4.6, GPT-6, GPT-6 Sol and GPT-6.1 Sol get the
-  // turn-saving `relay_batch` (§24 F60, §25, §27, §28); Sonnet 5 and Sonnet 5.5 plain `relay`. The
-  // rest keep the bench-tuned `baseline`.
+  // jailbreak classifier). Opus, Sonnet 4.6, GPT-6, GPT-6 Sol, GPT-6.1 Sol and
+  // GPT-5.6 Think Deeper get the turn-saving `relay_batch` (§24 F60, §25, §27, §28,
+  // §39 F97); Sonnet 5 and Sonnet 5.5 plain `relay`. The rest keep the bench-tuned
+  // `baseline`.
   // Keyed on the model, not the tone, because one tone can serve two models.
   // M365_FRAMING_* still wins.
   let framingVariant = currentFramingVariant(defaultFramingForModel(model));
@@ -487,7 +560,7 @@ async function dispatchChatCompletion(
   const convId = session.conversationId;
   let text: string;
   // Images ride on the message that carries their text (core image-input.ts).
-  let inputImages: string[];
+  let inputImages: string[] = [];
   if (isFirstTurn || conv.sentMessageCount === 0) {
     text = formatMessages(body.messages, body.tools, body.tool_choice, convId, framingVariant);
     inputImages = imageUrls(body.messages);
@@ -510,7 +583,7 @@ async function dispatchChatCompletion(
       log.info(`Chat completion: model=${model}, stream=${body.stream}, messages=${body.messages.length}, turn=${session.turnCount}, mode=retry, cid=${convId}`);
     }
   }
-  conv.pendingNote = null; // one turn only: consumed above, or stale
+  conv.pendingNote = null; // one turn only
 
   log.debug("Formatted prompt:", trunc(text, 1000));
 
@@ -923,14 +996,23 @@ async function dispatchChatCompletion(
     }
 
     if (parsed.hasToolCalls && parsed.toolCalls.length > 0) {
-      // A heredoc file write past the Windows command-line cap would reach the
-      // shell cut short; run the same write through the harness's write tool.
-      const asWrite = longHeredocAsWrite(parsed.toolCalls[0], body.tools);
+      // A command past the Windows command-line cap would reach the shell cut
+      // short. A lone heredoc file write goes through the harness's write tool;
+      // anything else (other commands with it, `py - <<'EOF'`, `py -c`) is saved
+      // to a script by the write tool, then proposed to the model after its result.
+      const heredoc = longHeredocAsWrite(parsed.toolCalls[0], body.tools);
+      const asWrite = heredoc && !heredoc.skipped ? heredoc : null;
+      const asScript = asWrite ? null : longCommandAsScript(parsed.toolCalls[0], body.tools);
       let rewriteNote: string | null = null;
       if (asWrite) {
         log.info(`Heredoc write to ${asWrite.path} is over the Windows command-line cap — sent as ${asWrite.call.function.name} instead`);
         parsed.toolCalls = [asWrite.call];
-        rewriteNote = `(Note: your heredoc to \`${asWrite.path}\` was longer than the ~8,000-character Windows command-line limit and would have been cut off, so it was written with the \`${asWrite.call.function.name}\` tool instead.${asWrite.skipped ? ` The commands after the heredoc did NOT run: \`${asWrite.skipped.slice(0, 200)}\`.` : ""})`;
+        rewriteNote = `(Note: your heredoc to \`${asWrite.path}\` was longer than the ~8,000-character Windows command-line limit and would have been cut off, so it was written with the \`${asWrite.call.function.name}\` tool instead.)`;
+      } else if (asScript) {
+        log.info(`Command of ${asScript.length} chars is over the Windows command-line cap — saving it to ${asScript.path}, execution requires model mediation`);
+        parsed.toolCalls = [asScript.write];
+        conv.chain = { writeId: asScript.write.id, run: asScript.run, toolsHash: canonicalHash(body.tools ?? []) };
+        rewriteNote = "(Note: only a script write was requested. Execution has not happened; inspect the real write result before proposing a run.)";
       }
       // The model's server-side history holds more than what runs; say so on
       // the turn that carries the real result (executedOnlyFirstNote).
@@ -938,7 +1020,7 @@ async function dispatchChatCompletion(
       conv.pendingNote = notes.length ? notes.join("\n") : null;
       return { kind: "tools", toolCalls: parsed.toolCalls };
     }
-    return { kind: "text", text: fullText };
+    return { kind: "text", text: plainFileNames(fullText) };
   } else {
     // No tools — stream deltas live (onDelta) while buffering for the retry logic.
     const result = await runBuffered(onDelta);

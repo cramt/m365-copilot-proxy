@@ -69,7 +69,7 @@ wss://substrate.office.com/m365Copilot/Chathub/{oid}@{tid}?{query}
 ### Flow: MSAL PKCE
 We use `@azure/msal-node` `PublicClientApplication` with PKCE. The token cache is persisted to `~/.config/opencode-m365/msal-cache.json` and refreshed silently when possible.
 
-MSAL and agent-ID cache snapshots are published through exclusive same-directory
+MSAL and unscoped agent-ID cache snapshots are published through exclusive same-directory
 0600 temporary files: write the full snapshot, fsync and close it, then rename.
 New parent directories are 0700; existing shared parents are not chmodded. Replacing
 an old cache also replaces its permissions. Local publication failures throw
@@ -78,6 +78,8 @@ not an authentication miss: they must not trigger browser login or optional-agen
 fallback. A failure before rename leaves the previous complete cache intact;
 a directory-fsync failure after rename reports failure but leaves the new complete
 snapshot published. Directory fsync is attempted where supported, not on Windows.
+Account-scoped agent provisioning uses per-account in-memory entries, never the
+shared agent-ID file; MSAL token persistence remains independent.
 This is atomic snapshot publication, **not cross-process MSAL merging or guaranteed
 power-loss durability on every OS/filesystem**. Configured ancestor directories must
 be trusted: a destination symlink is replaced rather than followed, an immediate

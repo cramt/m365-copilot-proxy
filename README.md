@@ -628,6 +628,26 @@ Three token scopes are acquired:
 - `api.powerplatform.com/.default` — For Copilot Studio agent management
 - `api.bap.microsoft.com/.default` — For environment discovery
 
+## Conversation continuity and long commands
+
+Continuation requires the complete earlier client-visible prefix to match canonical
+JSON hashes (object key order is normalized; semantic changes are not). Edited or
+compacted history starts a new physical M365 thread and replays the supplied
+history. This consumes additional thread budget, increases throttle exposure and
+can lose remote-only context. A single reported three-turn opencode session echoed
+replies unchanged; that does not verify all opencode versions or pi compaction.
+Account changes replace physical sessions and discard pending script proposals.
+
+Over-cap Windows POSIX commands can still be saved whole with a compatible write
+tool. The next request sends the actual write result to the model, along with a
+proposed run; it does **not** automatically run or delete the file. OpenAI tool
+content has no universal success flag: neither a matching call id nor success/error
+words certify a write. The model must evaluate the real result and repair or verify
+an ambiguous/failed write before requesting execution. This costs an additional
+upstream turn compared with the former synthetic chain. Current tool choice and
+current tool definitions constrain parsing and rewrites. Model mediation is not a
+filesystem integrity guarantee; clients remain responsible for tool authorization.
+
 ## Environment variables
 
 Chat request ingress is bounded in both the Fetch API and Nitro server. Oversized

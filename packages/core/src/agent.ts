@@ -160,18 +160,12 @@ function loadCachedAgent(): CachedAgent | null {
 }
 
 function saveCachedAgent(data: CachedAgent): void {
-<<<<<<< HEAD
   const ctx = currentAccountContext();
   if (ctx) {
     if (scopedAgents.size >= 1000) scopedAgents.delete(scopedAgents.keys().next().value!);
     scopedAgents.set(ctx.key, { agent: data, expires: Date.now() + 15 * 60000 }); return;
   }
-  writeFileSync(AGENT_CACHE_FILE, JSON.stringify(data, null, 2));
-||||||| 65905e8
-  writeFileSync(AGENT_CACHE_FILE, JSON.stringify(data, null, 2));
-=======
   atomicWritePrivate(AGENT_CACHE_FILE, JSON.stringify(data, null, 2));
->>>>>>> refs/remotes/review/pr102
 }
 
 async function ppFetch(

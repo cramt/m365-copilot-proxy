@@ -1,5 +1,5 @@
 import { EventEmitter } from "node:events";
-export const wire = { sockets: [] as Socket[], texts: [] as string[], hold: false, replies: [] as (() => void)[], onChat: undefined as (() => void) | undefined };
+export const wire = { sockets: [] as Socket[], texts: [] as string[], answer: "visible answer", hold: false, replies: [] as (() => void)[], onChat: undefined as (() => void) | undefined };
 export default class Socket extends EventEmitter {
   static OPEN = 1;
   readyState = 1;
@@ -15,7 +15,7 @@ export default class Socket extends EventEmitter {
       wire.texts.push(frame.arguments[0].message.text);
       wire.onChat?.();
       const reply = () => {
-        this.frame({ type: 1, target: "update", arguments: [{ messages: [{ author: "bot", text: "visible answer", messageId: "m" }] }] });
+        this.frame({ type: 1, target: "update", arguments: [{ messages: [{ author: "bot", text: wire.answer, messageId: "m" }] }] });
         this.frame({ type: 2, item: { result: { value: "Success" }, turnState: "Completed", messages: [] } });
       };
       if (wire.hold) wire.replies.push(reply); else queueMicrotask(reply);
