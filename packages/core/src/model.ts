@@ -1,6 +1,7 @@
 import { withAccountContext, currentAccountContext, assertAccountToken, AccountPolicyError } from "./account-policy.js";
 import { TurnBudgetHold } from "./turn-budget.js";
 import { getToken } from "./auth.js";
+import { CachePersistenceError } from "./storage.js";
 import { getOrCreateAgent } from "./agent.js";
 import { CopilotSession } from "./session.js";
 import { uploadImage, type ImageAnnotation } from "./image-input.js";
@@ -154,8 +155,8 @@ export class ModelSession {
         this.cachedAgentId = await getOrCreateAgent();
         if (this.cachedAgentId) log.info(`Using agent: ${this.cachedAgentId}`);
         else log.info("No agent available");
-      } catch (err) {
-        if (err instanceof AccountPolicyError) throw err;
+      } catch (error) {
+        if (error instanceof CachePersistenceError || error instanceof AccountPolicyError) throw error;
         this.cachedAgentId = null;
       }
     }
@@ -228,7 +229,7 @@ export class ModelSession {
         return true;
       }
     } catch (err: any) {
-      if (err instanceof AccountPolicyError) throw err;
+      if (err instanceof CachePersistenceError || err instanceof AccountPolicyError) throw err;
       log.info(`Agent refresh failed: ${err.message}`);
     }
     return false;

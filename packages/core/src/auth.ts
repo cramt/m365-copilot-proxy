@@ -8,6 +8,7 @@ import {
 import { execSync } from "node:child_process";
 import { join } from "node:path";
 import { homedir } from "node:os";
+import { atomicWritePrivate, CachePersistenceError } from "./storage.js";
 
 const CLIENT_ID = "c0ab8ce9-e9a0-42e7-b064-33d422df41f1";
 const AUTHORITY = "https://login.microsoftonline.com/common";
@@ -40,7 +41,7 @@ const CONFIG_DIR = join(homedir(), ".config", "opencode-m365");
 
 function resolveFile(envVar: string, defaultName: string): string {
   if (process.env[envVar]) return process.env[envVar]!;
-  mkdirSync(CONFIG_DIR, { recursive: true });
+  mkdirSync(CONFIG_DIR, { recursive: true, mode: 0o700 });
   return join(CONFIG_DIR, defaultName);
 }
 
@@ -81,8 +82,10 @@ function loadCache(app: msal.PublicClientApplication) {
 
 function saveCache(app: msal.PublicClientApplication) {
   try {
-    writeFileSync(CACHE_FILE, app.getTokenCache().serialize());
-  } catch {}
+    atomicWritePrivate(CACHE_FILE, app.getTokenCache().serialize());
+  } catch {
+    throw new CachePersistenceError();
+  }
 }
 
 let _app: msal.PublicClientApplication | null = null;
@@ -407,6 +410,7 @@ async function runBrowserLogin(
       log.info(`Browser login succeeded as ${result.account?.username}`);
       return result.accessToken;
     } catch (err: any) {
+      if (err instanceof CachePersistenceError) throw err;
       await capture(page, `attempt-${attempt}-fail`);
       log.error(`Browser login attempt ${attempt}/${attempts} failed: ${err.message}`);
       if (attempt < attempts) {
@@ -434,7 +438,8 @@ export async function getTokenSilent(): Promise<string | null> {
     });
     saveCache(app);
     return result.accessToken;
-  } catch {
+  } catch (error) {
+    if (error instanceof CachePersistenceError) throw error;
     return null;
   }
 }
@@ -556,6 +561,7 @@ async function loginInteractiveForScopes(scopes: string[]): Promise<string> {
     log.info(`Interactive login succeeded as ${result.account?.username}`);
     return result.accessToken;
   } catch (err: any) {
+    if (err instanceof CachePersistenceError) throw err;
     await capture(page, "interactive-fail");
     throw err;
   } finally {
@@ -605,6 +611,7 @@ async function doForceReauth(): Promise<boolean> {
       log.info("forceReauth: automated login succeeded");
       return true;
     } catch (err: any) {
+      if (err instanceof CachePersistenceError) throw err;
       if (!canPromptHuman) throw err;
       // Stored creds exist but didn't get through — a policy change, an MFA method
       // swap, or a Conditional Access prompt. A human can still finish it.
@@ -613,6 +620,7 @@ async function doForceReauth(): Promise<boolean> {
       return true;
     }
   } catch (err: any) {
+    if (err instanceof CachePersistenceError) throw err;
     log.error(`forceReauth failed: ${err.message}`);
     return false;
   }
@@ -645,6 +653,7 @@ export async function getTokenForScope(scopes: string[]): Promise<string | null>
       saveCache(app);
       return result.accessToken;
     } catch (err: any) {
+      if (err instanceof CachePersistenceError) throw err;
       log.info(`getTokenForScope: silent failed (${err.message}), trying browser login`);
     }
   }
@@ -657,6 +666,7 @@ export async function getTokenForScope(scopes: string[]): Promise<string | null>
   try {
     return await runBrowserLogin(app, scopes, secrets);
   } catch (err: any) {
+    if (err instanceof CachePersistenceError) throw err;
     if (!canPromptHuman) throw err;
     log.info(`getTokenForScope: browser login failed (${err.message}), asking for interactive approval`);
     return loginInteractiveForScopes(scopes);
@@ -699,6 +709,7 @@ async function doGetToken(): Promise<string> {
   try {
     return await loginAutomated(secrets.email, secrets.password, secrets.mfaSecret);
   } catch (err: any) {
+    if (err instanceof CachePersistenceError) throw err;
     log.info(`Automated login failed (${err.message}), asking for interactive approval`);
     return loginInteractiveForScopes(SCOPES);
   }
