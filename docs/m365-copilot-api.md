@@ -182,6 +182,54 @@ Nothing else is needed: no GPT-V `optionsSets` on the turn, and it works with th
 (hypotheses §33 F86). `core/src/image-input.ts`; the handler sends the OpenAI `image_url` (data URL)
 parts of the messages a turn carries.
 
+### Direct probe accounting (offline-tested helper contract)
+
+`scripts/_probe-chat.mjs::oneTurn` deliberately remains a raw protocol probe:
+its arbitrary tones, scenarios, options, plugins and frame sink are not the
+higher-level `ModelSession` model/agent contract. Build core before importing it.
+It uses the native `turn-budget.ts` event store, with an opaque `tid` + `oid`
+scope derived from the supplied JWT with existing `decodeJwt` shape checks. Both
+claims must be canonical GUID identities matching the supplied decoded claims
+(case-insensitive); malformed/mismatched inputs fail without echoing values. This
+is local consistency checking, **not JWT signature verification**. Token rotation
+for the same principal retains its run state. It records one attempted turn
+immediately before sending chat + Metrics.
+A failed send, timeout, unsuccessful result, or caller retry still spends that
+local attempt; a failed handshake or local refusal does not. It returns
+`attempted` and the terminal `result` alongside the existing summary.
+
+Each process limits a principal to **20 attempts** by default; set
+`M365_PROBE_MAX_ATTEMPTS` to a positive safe integer to choose a different finite
+run cap. An explicit `Throttled` / `PerUserThrottled` result stops further turns
+for that principal for the entire helper-module/process run, independently of
+the native six-hour/72-hour replay retention. Code-only `PerUserThrottled` also
+stops the run. Known cap/stop/pacing refusals happen before opening a socket; a
+second dispatch-time check fences concurrent pending handshakes. Raw frame sinks
+receive independent copies and cannot erase handshake/error/throttle authority.
+With `M365_AVOID_THROTTLING`, a native pacing refusal is returned immediately
+rather than sleeping. These are conservative local sweep controls, not proof of
+upstream entitlement, thread-rate limits or daily allowance. Scoped observations
+are memory-only, do not consume ordinary session grants, and never replay
+unscoped debug logs. Other processes, hosts and first-party clients are invisible.
+
+New probes can call `probeBudgetStatus({ token, claims })` from the helper to read
+that exact principal's `attempts`, `cap`, latched `stopped`, latest
+`observedRemaining` (normalized map or null), and scoped native `pacing` snapshot.
+The read uses the same token-derived identity check and returns detached values.
+**Legacy `budgetStatus` and `scripts/bench/turn-budget.mjs` remain log-based and do
+not include direct probes.** Neither the scoped read nor those legacy logs are
+an aggregate quota authority or a replacement for durable production admission.
+
+`throttle.metering` preserves its existing raw upstream nested shape (including
+undefined/null/malformed entries). Additive `throttle.meteringObservation` contains
+the native parser's finite numeric `remainingAllowance` observations by key, or
+`null` when absent/malformed; numeric zero is retained.
+`TotalTurnUsageDaily`, when present, remains an observation: it does not replace
+production admission, define a reset time, or establish an entitlement. Thread
+creation rate and daily allowances are different constraints. A requested
+`tone`/`scenario` is a route label; the actual deployment remains unknown without
+independent evidence. Model self-identification and latency do not prove identity.
+
 ### The mandatory Metrics frame (`type: 1`, `target: "Metrics"`)
 ```json
 {
