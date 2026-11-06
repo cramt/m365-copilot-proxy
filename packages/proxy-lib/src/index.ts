@@ -1,5 +1,7 @@
 import { type ModelSessionOptions, getAvailableModels } from "@m365-copilot/core";
 import { ChatCompletionRequest } from "./schemas.js";
+import { readRequestJson, requestBodyErrorResponse } from "./request-body.js";
+export { readRequestJson, requestBodyErrorResponse, requestBodyLimits, RequestBodyError } from "./request-body.js";
 import { SessionPool, handleChatCompletion } from "./handler.js";
 import { requestContext, RequestContextError } from "./request-context.js";
 
@@ -113,11 +115,9 @@ export function createApp(sessionOptions: ModelSessionOptions = {}): FetchApp {
     if (method === "POST" && pathname === "/v1/chat/completions") {
       let body: ReturnType<typeof ChatCompletionRequest.parse>;
       try {
-        body = ChatCompletionRequest.parse(await req.json());
-      } catch (err: any) {
-        return withCors(
-          json(400, { error: { message: err.message, type: "invalid_request_error" } }),
-        );
+        body = ChatCompletionRequest.parse(await readRequestJson(req.body, req.headers.get("content-length"), req.signal));
+      } catch (error) {
+        return withCors(requestBodyErrorResponse(error));
       }
       // req.signal aborts when the client disconnects → cancels the M365 turn.
       try {

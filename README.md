@@ -630,8 +630,22 @@ Three token scopes are acquired:
 
 ## Environment variables
 
+Chat request ingress is bounded in both the Fetch API and Nitro server. Oversized
+bodies return `413 request_too_large`, body deadlines return `408 request_body_timeout`,
+and malformed JSON/UTF-8 returns `400 invalid_request_body`. These errors carry
+`x-should-retry: false`. Nitro closes rejected HTTP/1 connections after flushing the
+error, rather than reusing unread upload bytes. A global native admission middleware
+fences every later handler on that socket until chat JSON, strict UTF-8 and schema
+validation succeeds. Invalid uploads never dispatch subsequent pipelined routes.
+The barrier releases before inference/SSE, preserving ordinary keepalive and valid
+pipelines; more than 16 requests waiting behind validation fail closed instead of
+building an unbounded application queue. This deadline covers body receipt,
+not the subsequent M365 turn.
+
 | Variable | Description |
 |---|---|
+| `M365_MAX_REQUEST_BYTES` | Maximum actual JSON request bytes (default `33554432`, 32 MiB). Positive safe integer; invalid values fall back to the default. |
+| `M365_REQUEST_BODY_TIMEOUT_MS` | Total body-read deadline in milliseconds (default `30000`). Positive integer up to `2147483647`; invalid values fall back to the default. Continuous incoming chunks do not reset it. |
 | `M365_DEBUG` | Set to `1` to enable debug logging to `~/.config/opencode-m365/debug.log` (truncated payloads) |
 | `M365_LOG_FILE` | Debug log name, relative to `~/.config/opencode-m365/` (default `debug.log`; an absolute path is used as is). `M365_LOG_FILE=my/log.log` logs to `~/.config/opencode-m365/my/log.log`. |
 | `M365_TRACE` | Set to `1` for full, untruncated debug logging (every WS frame/prompt/response) — implies `M365_DEBUG`. For reverse engineering. |
