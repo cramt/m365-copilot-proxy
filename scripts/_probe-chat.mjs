@@ -1,7 +1,11 @@
 // Shared single-turn chat helper for RE probes.
 //
 // Opens one raw WS to M365 Copilot, sends one chat turn, accumulates the
-// response, and returns a structured summary. No files written — callers
+// response, and returns a structured summary. Build core first (pnpm build).
+// A process-local per-principal cap defaults to 20 attempted dispatches;
+// M365_PROBE_MAX_ATTEMPTS sets a positive finite cap. Explicit throttling stops
+// that principal for this run. M365_AVOID_THROTTLING enables native pacing
+// decisions (refuse rather than sleep). No files written — callers
 // decide what to persist. Modelled on frame-dump-probe.mjs's payload.
 //
 // Returns: {
@@ -9,14 +13,68 @@
 //   disengaged,                          // saw messageType:"Disengaged"
 //   messageTypes, contentOrigin,         // control-frame metadata
 //   scores: { BotOffense, dea_violation, ... },
-//   throttle: { current, max, metering } | null,   // metering: paid scenario only
-//   serviceVersion, turnCount,
+//   throttle: { current, max, metering, meteringObservation } | null, // raw + normalized
+//   serviceVersion, turnCount, attempted, result,
 //   elapsedMs, frameCount, error
 // }
 
 const RS = "\x1E";
 
 import { pathToFileURL } from "node:url";
+import { createHash } from "node:crypto";
+import { recordTurn, recordThrottle, proxyBudgetStatus, budgetConfig, decide, parseMetering, decodeJwt } from "../packages/core/dist/index.mjs";
+
+// A run cap, not an inferred upstream allowance. No tokens or observations persist.
+const attempts = new Map();
+const stopped = new Set();
+const observations = new Map();
+const GUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+// Local claim-shape/consistency check only; NOT JWT signature verification.
+function principal(token, claims) {
+  try {
+    const decoded = decodeJwt(token);
+    for (const key of ["tid", "oid"]) {
+      if (!GUID.test(decoded[key]) || typeof claims?.[key] !== "string" ||
+          !GUID.test(claims[key]) || decoded[key].toLowerCase() !== claims[key].toLowerCase()) throw new Error();
+    }
+    const tid = decoded.tid.toLowerCase(), oid = decoded.oid.toLowerCase();
+    return { tid, oid, scope: createHash("sha256").update(JSON.stringify([tid, oid])).digest("hex") };
+  } catch { throw new TypeError("probe accounting requires a valid JWT principal"); }
+}
+
+function runCap() {
+  const raw = process.env.M365_PROBE_MAX_ATTEMPTS;
+  const cap = raw === undefined ? 20 : Number(raw);
+  if (!Number.isSafeInteger(cap) || cap < 1) throw new TypeError("M365_PROBE_MAX_ATTEMPTS must be a positive safe integer");
+  return cap;
+}
+
+/** This helper's credential-scoped memory only; legacy budgetStatus remains log-based. */
+export function probeBudgetStatus({ token, claims }) {
+  const { scope } = principal(token, claims);
+  const cfg = budgetConfig();
+  return {
+    attempts: attempts.get(scope) ?? 0, cap: runCap(), stopped: stopped.has(scope),
+    observedRemaining: structuredClone(observations.get(scope) ?? null),
+    pacing: proxyBudgetStatus(Date.now(), cfg, false, scope),
+  };
+}
+
+function refusal(scope, cap) {
+  if (stopped.has(scope)) return "probe throttle stop: restart only after reviewing the upstream refusal";
+  if ((attempts.get(scope) ?? 0) >= cap) return "probe run cap reached";
+  const cfg = budgetConfig();
+  if (cfg.enabled && !decide(proxyBudgetStatus(Date.now(), cfg, false, scope), 1, Date.now(), cfg).ok) return "probe turn budget hold";
+  return null;
+}
+
+function refusedSummary(error) {
+  return { fullText: "", deltaText: "", snapshotText: "", disengaged: false,
+    messageTypes: [], contentOrigin: null, scores: {}, throttle: null,
+    serviceVersion: null, turnCount: null, attempted: false, result: null,
+    elapsedMs: 0, frameCount: 0, error };
+}
 const ROOT = pathToFileURL(process.cwd()).href;
 const wsMod = await import(`${ROOT}/node_modules/.pnpm/ws@8.20.0/node_modules/ws/wrapper.mjs`);
 const WebSocket = wsMod.default ?? wsMod.WebSocket;
@@ -68,6 +126,11 @@ export function oneTurn(o) {
     temporaryChat = process.env.M365_SAVE_HISTORY !== "1",
   } = o;
 
+  const { tid, oid, scope } = principal(token, claims);
+  const cap = runCap();
+  const preflight = refusal(scope, cap);
+  if (preflight) return Promise.resolve(refusedSummary(preflight));
+
   const sessionId = crypto.randomUUID();
   const conversationId = crypto.randomUUID();
   const requestId = crypto.randomUUID();
@@ -87,7 +150,7 @@ export function oneTurn(o) {
     scenario,
   });
   if (temporaryChat) params.set("disableMemory", "1");
-  const wsUrl = `wss://substrate.office.com/m365Copilot/Chathub/${claims.oid}@${claims.tid}?${params}`;
+  const wsUrl = `wss://substrate.office.com/m365Copilot/Chathub/${oid}@${tid}?${params}`;
 
   const chatMsg = {
     arguments: [{
@@ -163,6 +226,8 @@ export function oneTurn(o) {
     let serviceVersion = null;
     let turnCount = null;
     let settled = false;
+    let attempted = false;
+    let result = null;
 
     const timer = setTimeout(() => {
       finish("timeout");
@@ -177,7 +242,7 @@ export function oneTurn(o) {
       resolve({
         fullText, deltaText, snapshotText,
         disengaged, messageTypes: [...messageTypes].sort(), contentOrigin,
-        scores, throttle, serviceVersion, turnCount,
+        scores, throttle, serviceVersion, turnCount, attempted, result,
         elapsedMs: Date.now() - t0, frameCount, error: error ?? null,
       });
     }
@@ -201,20 +266,32 @@ export function oneTurn(o) {
     }
 
     ws.on("open", () => {
+      if (settled) return;
       ws.send(JSON.stringify({ protocol: "json", version: 1 }) + RS);
     });
 
     ws.on("message", (data) => {
+      if (settled) return;
       const frames = data.toString().split(RS).filter((f) => f.length > 0);
       for (const f of frames) {
+        if (settled) break;
         let parsed;
         try { parsed = JSON.parse(f); } catch { continue; }
         frameCount++;
-        if (onFrame) { try { onFrame(parsed); } catch {} }
+        if (onFrame) { try { onFrame(structuredClone(parsed)); } catch {} }
+        if (settled) break;
 
         if (!handshakeDone) {
+          if (parsed.error) { finish(`Handshake error: ${parsed.error}`); continue; }
           handshakeDone = true;
-          ws.send(JSON.stringify(chatMsg) + RS + JSON.stringify(metrics) + RS);
+          const payload = JSON.stringify(chatMsg) + RS + JSON.stringify(metrics) + RS;
+          // Pending handshakes may race; serialize accounting synchronously at dispatch.
+          const denied = refusal(scope, cap);
+          if (denied) { finish(denied); continue; }
+          attempted = true;
+          attempts.set(scope, (attempts.get(scope) ?? 0) + 1);
+          recordTurn(Date.now(), scope);
+          try { ws.send(payload); } catch (err) { finish(err.message); }
           continue;
         }
 
@@ -228,7 +305,10 @@ export function oneTurn(o) {
               throttle = {
                 current: a.throttling.numUserMessagesInConversation,
                 max: a.throttling.maxNumUserMessagesInConversation,
+                metering: a.throttling.metering,
+                meteringObservation: parseMetering(a.throttling.metering),
               };
+              observations.set(scope, structuredClone(throttle.meteringObservation));
             }
           }
         }
@@ -243,8 +323,20 @@ export function oneTurn(o) {
               throttle = {
                 current: it.throttling.numUserMessagesInConversation,
                 max: it.throttling.maxNumUserMessagesInConversation,
-                metering: it.throttling.metering ?? null,
+                metering: it.throttling.metering,
+                meteringObservation: parseMetering(it.throttling.metering),
               };
+            }
+            if (it.throttling) observations.set(scope, structuredClone(throttle.meteringObservation));
+            if (typeof it.result?.value === "string" || typeof it.result?.errorCode === "string") {
+              result = { ...(typeof it.result.value === "string" ? { value: it.result.value } : {}),
+                ...(typeof it.result.errorCode === "string" ? { errorCode: it.result.errorCode } : {}),
+                ...(typeof it.result.message === "string" ? { message: it.result.message } : {}),
+              };
+              if (result.value === "Throttled" || result.errorCode === "PerUserThrottled") {
+                stopped.add(scope);
+                recordThrottle(Date.now(), scope);
+              }
             }
             if (it.result?.serviceVersion) serviceVersion = it.result.serviceVersion;
             if (typeof it.turnCount === "number") turnCount = it.turnCount;
