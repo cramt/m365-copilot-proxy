@@ -12,10 +12,13 @@ describe("model licence memory", () => {
     expect(isModelNotLicensed("gpt-5.5", 1001)).toBe(false);
     expect(isModelNotLicensed("claude-sonnet", 1000 + 60 * 60_000)).toBe(false);
   });
-  it("stays bounded", () => {
-    for (let i = 0; i < 200; i++) noteModelNotLicensed(`m${i}`, 1);
-    expect(isModelNotLicensed("m0", 2)).toBe(false);
-    expect(isModelNotLicensed("m199", 2)).toBe(true);
+  it("is one entry per route, so aliases of the same entitlement agree", () => {
+    noteModelNotLicensed("gpt-5.5-quick", 1000);
+    expect(isModelNotLicensed("gpt-5.5", 1001)).toBe(true);
+    expect(isModelNotLicensed("gpt-5.5-think-deeper", 1001)).toBe(false);
+    expect(isModelNotLicensed("gpt-5.6", 1001)).toBe(false);
+  });
+  it("ignores oversized model strings", () => {
     noteModelNotLicensed("x".repeat(257), 1);
     expect(isModelNotLicensed("x".repeat(257), 2)).toBe(false);
   });

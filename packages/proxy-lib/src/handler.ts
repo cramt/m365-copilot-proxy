@@ -20,13 +20,10 @@ import {
 
   priorityAccessExhaustionOf,
   notePriorityAccessExhausted,
-  activePriorityAccessExhaustion,
   meteredAllowance,
   METERED_BUDGETS,
   type MeteredBudget,
   meteredBudgetOf,
-  reasoningWallKey,
-  REASONING_WALL_KEY,
   noteModelNotLicensed,
   priorityAccessFallbackModel,
   PRIORITY_ACCESS_FALLBACK_ENV,
@@ -59,7 +56,7 @@ import {
 } from "@m365-copilot/core";
 import { ChatCompletionRequest } from "./schemas.js";
 import { forbiddenResponse, isModelLicenceDenial, disengagedResponse, terminalErrorResponse } from "./terminal-errors.js";
-import { suggestModels, suggestionSentence } from "./refusal-suggestions.js";
+import { activeWallFor, isReasoningCapFor, suggestModels, suggestionSentence, wallKeyFor } from "./refusal-suggestions.js";
 import { estimateVisibleUsage, type VisibleOutput } from "./usage.js";
 import type { z } from "zod/v4";
 
@@ -512,11 +509,7 @@ async function dispatchChatCompletion(
   // and often a fresh conversation — what the account's thread-rate throttle
   // counts.
   const requestedBudget = meteredBudgetOf(requestedModel);
-  // Reasoning ("Think deeper") turns share one per-account cap across models: its wall first, then the model's own.
-  const reasoningKey = reasoningWallKey(requestedModel);
-  const knownReasoning = reasoningKey ? activePriorityAccessExhaustion(reasoningKey) : null;
-  const knownExhaustion = knownReasoning ? { ...knownReasoning, kind: "reasoning-turns" as const }
-    : activePriorityAccessExhaustion(requestedBudget ?? requestedModel);
+  const knownExhaustion = activeWallFor(requestedModel);
   const fallbackModel = knownExhaustion && requestedBudget ? priorityAccessFallbackModel(requestedBudget) : null;
   if (knownExhaustion && !fallbackModel) {
     log.info(`Priority access exhausted (${knownExhaustion.window}) until ${knownExhaustion.resetsAt.toISOString()} — 429 without contacting M365`);
@@ -708,8 +701,10 @@ async function dispatchChatCompletion(
         ? null : priorityAccessExhaustionOf(copilotStream.result, fullText);
       if (exhausted) {
         const budget = meteredBudgetOf(model);
-        const wall = exhausted.kind === "reasoning-turns" ? reasoningWallKey(model) ?? model : budget ?? model;
-        if (budget || copilotStream.result?.value === "OutOfCredits") notePriorityAccessExhausted(wall, exhausted);
+        // The reasoning cap is only a reasoning cap on a reasoning tone; anywhere else it is an ordinary refusal.
+        const reasoningCap = isReasoningCapFor(model, exhausted);
+        if (!reasoningCap) delete exhausted.kind;
+        if (budget || copilotStream.result?.value === "OutOfCredits") notePriorityAccessExhausted(wallKeyFor(model, reasoningCap), exhausted);
         const fallback = budget && !priorityFallbackDone ? priorityAccessFallbackModel(budget) : null;
         if (fallback) {
           priorityFallbackDone = true;

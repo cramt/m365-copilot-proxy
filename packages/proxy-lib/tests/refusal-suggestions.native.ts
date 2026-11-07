@@ -111,3 +111,41 @@ for (const stream of [false, true]) {
     expect(r.body.message).not.toContain("gpt-5.5 or"); // the refused model is never offered back
   });
 }
+
+for (const stream of [false, true]) {
+  it(`a plain OutOfCredits on a Think deeper model walls only that model, and is never suggested after, stream=${stream}`, async () => {
+    wire.result = { value: "OutOfCredits", message: "No credits." };
+    expectRefusedWith(await ask("gpt-5.5-think-deeper", stream), 429);
+    const turns = wire.texts.length;
+    expectRefusedWith(await ask("gpt-5.5-think-deeper", stream), 429);
+    expect(wire.texts).toHaveLength(turns); // remembered: no second upstream turn
+    wire.result = OPUS_DAILY;
+    const opus = await ask("claude-opus", stream);
+    expect(opus.body.suggested_models).not.toContain("gpt-5.5-think-deeper");
+    wire.result = undefined;
+    expect((await ask("gpt-5.6-think-deeper", stream)).served).toBe(true); // not the shared cap
+  });
+  it(`the reasoning code on a Quick tone is the same ordinary refusal the first time and on re-read, stream=${stream}`, async () => {
+    wire.result = REASONING;
+    const first = await ask("gpt-5.5", stream);
+    const turns = wire.texts.length;
+    const again = await ask("gpt-5.5", stream);
+    expect(wire.texts).toHaveLength(turns);
+    expect(first.body.code).toBe("priority_access_exhausted");
+    expect(again.body.code).toBe(first.body.code);
+  });
+  it(`the reasoning code on a metered model walls its budget, so the next request makes no upstream turn, stream=${stream}`, async () => {
+    wire.result = REASONING;
+    const first = await ask("claude-opus", stream);
+    expect(first.body.code).toBe("priority_access_exhausted");
+    const turns = wire.texts.length;
+    expectRefusedWith(await ask("claude-opus", stream), 429);
+    expect(wire.texts).toHaveLength(turns);
+  });
+  it(`a licence refusal on an alias excludes every alias of the route, stream=${stream}`, async () => {
+    wire.result = NOT_LICENSED;
+    expectRefusedWith(await ask("gpt-5.5-quick", stream), 403);
+    wire.result = REASONING;
+    expect((await ask("gpt-5.5-think-deeper", stream)).body.suggested_models).toEqual(["gpt-5.6"]);
+  });
+}

@@ -1,4 +1,5 @@
 import { currentAccountContext } from "./account-policy.js";
+import { getScenarioForModel, getToneForModel } from "./copilot.js";
 
 // Models M365 refused this account as not licensed (ForbiddenRequest with a model
 // licence code). Only used to stop suggesting them: a wrong entry costs a worse
@@ -12,6 +13,10 @@ const refused = new Map<string, Map<string, number>>();
 
 const scope = () => currentAccountContext()?.key ?? "";
 
+// M365 licenses a route (tone + scenario), not a label: "gpt-5.5" and "gpt-5.5-quick"
+// are one entitlement, so they must be one entry.
+const routeOf = (model: string) => `${getToneForModel(model)}|${getScenarioForModel(model).scenario}`;
+
 export function noteModelNotLicensed(model: string, now = Date.now()): void {
   if (typeof model !== "string" || !model.length || model.length > 256) return;
   const key = scope();
@@ -21,16 +26,18 @@ export function noteModelNotLicensed(model: string, now = Date.now()): void {
     models = new Map();
     refused.set(key, models);
   }
-  models.delete(model); // re-insert keeps insertion order == recency
+  const route = routeOf(model);
+  models.delete(route); // re-insert keeps insertion order == recency
   if (models.size >= MAX_MODELS) models.delete(models.keys().next().value!);
-  models.set(model, now + TTL_MS);
+  models.set(route, now + TTL_MS);
 }
 
 export function isModelNotLicensed(model: string, now = Date.now()): boolean {
   const models = refused.get(scope());
-  const until = models?.get(model);
+  const route = routeOf(model);
+  const until = models?.get(route);
   if (until === undefined) return false;
-  if (until <= now) { models!.delete(model); return false; }
+  if (until <= now) { models!.delete(route); return false; }
   return true;
 }
 
