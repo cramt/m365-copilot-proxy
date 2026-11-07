@@ -38,8 +38,7 @@ function walled(model: string): boolean {
 /** Models worth suggesting after `refused` was refused: not itself, not walled, not known unlicensed. */
 export function suggestModels(refused: string, kind: keyof typeof POOLS): string[] {
   return POOLS[kind].filter((candidate) =>
-    candidate !== refused && !sameRoute(candidate, refused) &&
-    wallKeyOf(candidate) !== wallKeyOf(refused) &&
+    !sameRoute(candidate, refused) &&
     !walled(candidate) && !isModelNotLicensed(candidate));
 }
 
