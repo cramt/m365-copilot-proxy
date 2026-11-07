@@ -503,6 +503,23 @@ export function meteredBudgetOf(model: string): MeteredBudget | null {
   return null;
 }
 
+/**
+ * The tones behind the "Think deeper" options whose turns share one per-account
+ * cap: a refusal with `errorCode: "ReasoningTurnExhausted"` on one wall both
+ * (reported live 2026-11-07 on a non-premium work tenant; the Quick tones kept
+ * serving). Other reasoning tones are not known to share it, so they are not
+ * listed: they keep a wall of their own model ID.
+ */
+const REASONING_CAP_TONES: ReadonlySet<string> = new Set(["Gpt_5_5_Reasoning", "Gpt_5_6_Reasoning"]);
+
+/** The wall key shared by every model on a reasoning-cap tone. */
+export const REASONING_WALL_KEY = "reasoning-turns";
+
+/** `REASONING_WALL_KEY` when this model's turns draw on the shared reasoning cap, else null. */
+export function reasoningWallKey(model: string): string | null {
+  return REASONING_CAP_TONES.has(getToneForModel(model)) ? REASONING_WALL_KEY : null;
+}
+
 /** The env var naming each budget's fallback model. */
 export const PRIORITY_ACCESS_FALLBACK_ENV: Readonly<Record<MeteredBudget, string>> = {
   opus: "M365_OPUS_FALLBACK_MODEL",

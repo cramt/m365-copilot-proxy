@@ -37,6 +37,8 @@ export interface PriorityAccessExhaustion {
   resetsAt: Date;
   /** The upstream text, verbatim. */
   message: string;
+  /** Set when the refusal is the per-account cap on reasoning ("Think deeper") turns, not a model's priority access. */
+  kind?: "reasoning-turns";
 }
 
 // Anchored on "priority access" + a budget window. Deliberately not matching a
@@ -172,14 +174,17 @@ export function meteredAllowance(
  * paths). Null for an ordinary turn.
  */
 export function priorityAccessExhaustionOf(
-  result: { value: string; message?: string } | null | undefined,
+  result: { value: string; errorCode?: string; message?: string } | null | undefined,
   text: string | null | undefined,
   now: Date = new Date(),
 ): PriorityAccessExhaustion | null {
-  const fromText = parsePriorityAccessExhaustion(result?.message, now) ?? parsePriorityAccessExhaustion(text, now);
+  // The result's own code is authoritative; the reasoning cap's text is not priority-access text.
+  const reasoning = result?.value === "OutOfCredits" && result.errorCode === "ReasoningTurnExhausted";
+  const fromText = reasoning ? null : parsePriorityAccessExhaustion(result?.message, now) ?? parsePriorityAccessExhaustion(text, now);
   if (fromText) return fromText;
   if (result?.value !== "OutOfCredits") return null;
   const message = (result.message ?? text ?? "").trim() || "OutOfCredits";
+  if (reasoning) return { window: "day", resetsAt: nextUtcMidnight(now), message, kind: "reasoning-turns" };
   const window: PriorityAccessWindow = /\bweek|monday/i.test(message) ? "week" : "day";
   return { window, resetsAt: window === "week" ? nextUtcMonday(now) : nextUtcMidnight(now), message };
 }

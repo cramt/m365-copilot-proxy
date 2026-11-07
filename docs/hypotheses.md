@@ -185,6 +185,18 @@ off to the refill instead of retrying into a wall. The streaming path needed its
 (`couldBePriorityAccessPrefix`): deltas are forwarded as they arrive, so without it the refusal
 reaches the client *ahead of* the 429 that replaces it.
 
+**Reasoning-turn cap (consumer-reported, 2026-11-07, one non-premium work tenant; not
+reproduced here).** A refusal with `result.value: "OutOfCredits"` and
+`errorCode: "ReasoningTurnExhausted"` was reported to wall both Think deeper tones
+(`Gpt_5_5_Reasoning`, `Gpt_5_6_Reasoning`) while the Quick tones kept serving, and
+`throttling.metering` carried a `ReasoningModelTurnUsage` counter (seen at 10) that is only
+*suspected* to be this cap. The proxy therefore classifies on the `errorCode`, walls the two tones
+together (`reasoningWallKey`), answers 429 `reasoning_turns_exhausted` with the day window it
+uses for any other `OutOfCredits`, and never gates on the metering key. Whether other tones share
+the cap, and the real reset, are unobserved. Refusals carry `suggested_models`: never the refused
+model, a walled one, or one this process saw refused as not licensed on that account (kept in
+memory for an hour, not persisted).
+
 **Confidence.** High on the two wordings and the reset semantics (reported first-hand, verbatim).
 Unknown: the actual allowance size, whether daily and weekly are independent counters or nested,
 and whether it is per-account or per-tenant.

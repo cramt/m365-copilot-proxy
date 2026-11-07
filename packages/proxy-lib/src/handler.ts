@@ -25,6 +25,9 @@ import {
   METERED_BUDGETS,
   type MeteredBudget,
   meteredBudgetOf,
+  reasoningWallKey,
+  REASONING_WALL_KEY,
+  noteModelNotLicensed,
   priorityAccessFallbackModel,
   PRIORITY_ACCESS_FALLBACK_ENV,
   couldBePriorityAccessPrefix,
@@ -55,7 +58,8 @@ import {
   type ParsedToolCall,
 } from "@m365-copilot/core";
 import { ChatCompletionRequest } from "./schemas.js";
-import { forbiddenResponse, disengagedResponse, terminalErrorResponse } from "./terminal-errors.js";
+import { forbiddenResponse, isModelLicenceDenial, disengagedResponse, terminalErrorResponse } from "./terminal-errors.js";
+import { suggestModels, suggestionSentence } from "./refusal-suggestions.js";
 import { estimateVisibleUsage, type VisibleOutput } from "./usage.js";
 import type { z } from "zod/v4";
 
@@ -508,7 +512,11 @@ async function dispatchChatCompletion(
   // and often a fresh conversation — what the account's thread-rate throttle
   // counts.
   const requestedBudget = meteredBudgetOf(requestedModel);
-  const knownExhaustion = activePriorityAccessExhaustion(requestedBudget ?? requestedModel);
+  // Reasoning ("Think deeper") turns share one per-account cap across models: its wall first, then the model's own.
+  const reasoningKey = reasoningWallKey(requestedModel);
+  const knownReasoning = reasoningKey ? activePriorityAccessExhaustion(reasoningKey) : null;
+  const knownExhaustion = knownReasoning ? { ...knownReasoning, kind: "reasoning-turns" as const }
+    : activePriorityAccessExhaustion(requestedBudget ?? requestedModel);
   const fallbackModel = knownExhaustion && requestedBudget ? priorityAccessFallbackModel(requestedBudget) : null;
   if (knownExhaustion && !fallbackModel) {
     log.info(`Priority access exhausted (${knownExhaustion.window}) until ${knownExhaustion.resetsAt.toISOString()} — 429 without contacting M365`);
@@ -688,6 +696,7 @@ async function dispatchChatCompletion(
       }
 
       if (copilotStream.result?.value === "ForbiddenRequest") {
+        if (isModelLicenceDenial(copilotStream.result)) noteModelNotLicensed(model);
         return { error: forbiddenResponse(model, copilotStream.result) };
       }
       // Explicit result verdicts own classification before generic message markers.
@@ -699,7 +708,8 @@ async function dispatchChatCompletion(
         ? null : priorityAccessExhaustionOf(copilotStream.result, fullText);
       if (exhausted) {
         const budget = meteredBudgetOf(model);
-        if (budget || copilotStream.result?.value === "OutOfCredits") notePriorityAccessExhausted(budget ?? model, exhausted);
+        const wall = exhausted.kind === "reasoning-turns" ? reasoningWallKey(model) ?? model : budget ?? model;
+        if (budget || copilotStream.result?.value === "OutOfCredits") notePriorityAccessExhausted(wall, exhausted);
         const fallback = budget && !priorityFallbackDone ? priorityAccessFallbackModel(budget) : null;
         if (fallback) {
           priorityFallbackDone = true;
@@ -1122,7 +1132,7 @@ async function dispatchChatCompletion(
           const error: Record<string, unknown> = { message: "upstream error", type: "upstream_error" };
           try {
             const parsed: Record<string, unknown> = JSON.parse(await p.resp.text())?.error;
-            for (const key of ["message", "type", "code", "param", "m365_error_code", "m365_message_type", "retryable", "status"]) {
+            for (const key of ["message", "type", "code", "param", "suggested_models", "m365_error_code", "m365_message_type", "retryable", "status"]) {
               if (parsed && Object.hasOwn(parsed, key)) error[key] = parsed[key];
             }
           } catch {}
@@ -1225,26 +1235,30 @@ function jsonResponse(status: number, body: unknown, headers: Record<string, str
   });
 }
 
-/** A priority-access budget (Opus 5.5, Sonnet 5.5) ran out. A real 429 (with `Retry-After` and
- *  the UTC reset instant) so a client backs off to the refill instead of
- *  retrying into a wall — and so an agent loop doesn't treat the refusal text as
- *  the model's answer. Resets at midnight UTC; the weekly budget on Monday. */
+/** A priority-access budget (Opus 5.5, Sonnet 5.5) or the per-account reasoning-turn cap ran out.
+ *  A real 429 (with `Retry-After` and the UTC reset instant) so a client backs off to the
+ *  refill instead of retrying into a wall — and so an agent loop doesn't treat the refusal
+ *  text as the model's answer. Resets at midnight UTC; the weekly budget on Monday.
+ *  `suggested_models` lists what this account can still try, never the refused model,
+ *  a walled one or one refused as not licensed. */
 function priorityAccessResponse(exhaustion: PriorityAccessExhaustion, model: string): Response {
   const retryAfter = secondsUntilReset(exhaustion);
+  const reasoning = exhaustion.kind === "reasoning-turns";
+  const suggested = suggestModels(model, reasoning ? "reasoning-turns" : "priority-access");
   const label = exhaustion.model ?? model;
   const when = exhaustion.window === "week" ? "this week" : "today";
+  const reset = `resets ${exhaustion.resetsAt.toISOString()}, i.e. midnight UTC${exhaustion.window === "week" ? " on Monday" : ""}`;
   return terminalErrorResponse(
     429,
     {
-        message:
-          `M365 Copilot's priority access to ${label} is used up for ${when} ` +
-          `(resets ${exhaustion.resetsAt.toISOString()}, i.e. midnight UTC` +
-          `${exhaustion.window === "week" ? " on Monday" : ""}). ` +
-          `Switch to another model (e.g. claude-sonnet or gpt-5.5-think-deeper) or wait. ` +
-          `No further automatic retries will be sent by the proxy.`,
+        message: (reasoning
+          ? `M365 Copilot's reasoning (Think deeper) turns are used up for ${when} (${reset}). `
+          : `M365 Copilot's priority access to ${label} is used up for ${when} (${reset}). `) +
+          `${suggestionSentence(suggested)} No further automatic retries will be sent by the proxy.`,
         type: "rate_limit_error",
-        code: "priority_access_exhausted",
+        code: reasoning ? "reasoning_turns_exhausted" : "priority_access_exhausted",
         param: exhaustion.window,
+        suggested_models: suggested,
     },
     { "Retry-After": String(retryAfter) },
   );

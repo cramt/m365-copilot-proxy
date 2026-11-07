@@ -50,6 +50,8 @@ export {
   isPremiumOnlyModel,
   requestUsesAgent,
   meteredBudgetOf,
+  reasoningWallKey,
+  REASONING_WALL_KEY,
   priorityAccessFallbackModel,
   PRIORITY_ACCESS_FALLBACK_ENV,
   noteAgentRouteDead,
@@ -82,6 +84,7 @@ export {
   type PriorityAccessExhaustion,
   type PriorityAccessWindow,
 } from "./priority-access.js";
+export { noteModelNotLicensed, isModelNotLicensed, resetModelLicenceState } from "./model-licence.js";
 
 export {
   currentFramingVariant,

@@ -20,12 +20,20 @@ const MODEL_LICENCE_CODES = new Set([
   "ClaudeUnavailableForLicense",
 ]);
 
+const upstreamCodeOf = (result: UpstreamRefusal) =>
+  result.errorCode && /^[A-Za-z][A-Za-z0-9_]{0,127}$/.test(result.errorCode) ? result.errorCode : undefined;
+
+/** Did M365 refuse this model specifically because this account's licence doesn't cover it? */
+export function isModelLicenceDenial(result: UpstreamRefusal): boolean {
+  const code = upstreamCodeOf(result);
+  return code !== undefined && MODEL_LICENCE_CODES.has(code);
+}
+
 /** Keep model entitlement, account entitlement and unknown denials distinct. */
 export function forbiddenResponse(model: string, result: UpstreamRefusal): Response {
-  const upstreamCode = result.errorCode && /^[A-Za-z][A-Za-z0-9_]{0,127}$/.test(result.errorCode)
-    ? result.errorCode : undefined;
+  const upstreamCode = upstreamCodeOf(result);
   const accountDenied = upstreamCode === "InvalidCopilotLicense";
-  const modelDenied = upstreamCode !== undefined && MODEL_LICENCE_CODES.has(upstreamCode);
+  const modelDenied = isModelLicenceDenial(result);
   return terminalErrorResponse(403, {
     message: accountDenied
       ? "M365 Copilot is not licensed for this account."
