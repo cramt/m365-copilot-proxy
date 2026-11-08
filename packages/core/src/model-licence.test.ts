@@ -18,6 +18,12 @@ describe("model licence memory", () => {
     expect(isModelNotLicensed("gpt-5.5-think-deeper", 1001)).toBe(false);
     expect(isModelNotLicensed("gpt-5.6", 1001)).toBe(false);
   });
+  it("keeps unrecognised labels apart instead of pooling them on the auto-router route", () => {
+    noteModelNotLicensed("some-unknown-label", 1000);
+    expect(isModelNotLicensed("some-unknown-label", 1001)).toBe(true);
+    expect(isModelNotLicensed("another-unknown-label", 1001)).toBe(false);
+    expect(isModelNotLicensed("m365-copilot", 1001)).toBe(false);
+  });
   it("ignores oversized model strings", () => {
     noteModelNotLicensed("x".repeat(257), 1);
     expect(isModelNotLicensed("x".repeat(257), 2)).toBe(false);

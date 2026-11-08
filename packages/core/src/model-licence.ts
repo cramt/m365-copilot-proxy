@@ -15,7 +15,14 @@ const scope = () => currentAccountContext()?.key ?? "";
 
 // M365 licenses a route (tone + scenario), not a label: "gpt-5.5" and "gpt-5.5-quick"
 // are one entitlement, so they must be one entry.
-const routeOf = (model: string) => `${getToneForModel(model)}|${getScenarioForModel(model).scenario}`;
+// An unrecognised label falls back to the auto-router tone, so it must not share an entry with
+// every other unrecognised label (or with the auto-router): it keeps its own.
+const routeOf = (model: string) => {
+  const tone = getToneForModel(model);
+  return tone === getToneForModel("m365-copilot") && model !== "m365-copilot"
+    ? `label|${model}`
+    : `${tone}|${getScenarioForModel(model).scenario}`;
+};
 
 export function noteModelNotLicensed(model: string, now = Date.now()): void {
   if (typeof model !== "string" || !model.length || model.length > 256) return;

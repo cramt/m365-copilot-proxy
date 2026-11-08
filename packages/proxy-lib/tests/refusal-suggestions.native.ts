@@ -107,8 +107,8 @@ for (const stream of [false, true]) {
     wire.result = { value: "OutOfCredits", errorCode: "SomethingElse", message: "No credits." };
     const r = await ask("gpt-5.5", stream);
     expect(r.body.code).toBe("priority_access_exhausted");
-    expect(r.body.suggested_models).not.toContain("gpt-5.5");
-    expect(r.body.message).not.toContain("gpt-5.5 or"); // the refused model is never offered back
+    expect(r.body.suggested_models).toEqual(["claude-sonnet", "gpt-5.5-think-deeper", "gpt-5.6"]);
+    expect(r.body.message).toContain("Switch to claude-sonnet or gpt-5.5-think-deeper or gpt-5.6, or wait.");
   });
 }
 
