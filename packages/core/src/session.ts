@@ -1,4 +1,5 @@
 import WebSocket from "ws";
+import { retainAccountContext, bindAccountPolicy, currentAccountContext, withAccountContext, assertAccountToken, AccountPolicyError, admitAccountAttempt, renewAccountLeases } from "./account-policy.js";
 import type { ImageAnnotation } from "./image-input.js";
 import { appendFileSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
@@ -189,10 +190,13 @@ export function cursorMessageId(j: string | undefined): string | null {
 export class TurnTextComposer {
   private texts = new Map<string, string>();
   private target: string | null = null;
+  /** No delta has arrived since the last cursor (see delta). */
+  private afterCursor = false;
 
   /** A cursor frame: subsequent deltas extend message `id`. */
   cursor(id: string): void {
     this.target = id;
+    this.afterCursor = true;
   }
 
   /** A full-text snapshot of one message. Before any cursor has been seen, the
@@ -203,10 +207,23 @@ export class TurnTextComposer {
     this.texts.set(key, foldStreamText(this.texts.get(key) ?? "", text).answer);
   }
 
-  /** A token delta for the message the cursor last named. */
+  /** A token delta for the message the cursor last named.
+   *
+   *  The first delta after a cursor can restate the head snapshot that came with
+   *  it. A message that opens with "<" streams the snapshot "<" and then the delta
+   *  "<document" (M365 holds the "<" back until it knows the tag), so appending
+   *  gave "<<document>notlar.docx…", and the final snapshot, one character
+   *  shorter, never replaced it. 9 of 1,061 cursor frames in the Oct 2–5 debug
+   *  logs, each one a "<"; in the rest the first delta continues the snapshot.
+   *  Only that "<" counts as restated: a head of "*" or "`" followed by a delta
+   *  that starts the same way is a continuation ("*" + "*Summary**" is bold,
+   *  "`" + "``bash" a fence), and dropping it would break the markdown. */
   delta(text: string): void {
     const key = this.target ?? "";
-    this.texts.set(key, (this.texts.get(key) ?? "") + text);
+    const current = this.texts.get(key) ?? "";
+    const restated = this.afterCursor && current === "<" && text.startsWith("<");
+    this.texts.set(key, restated ? text : current + text);
+    this.afterCursor = false;
   }
 
   get text(): string {
@@ -243,6 +260,8 @@ export interface ChatTurnOptions {
 }
 
 export interface CopilotSessionOptions {
+  /** Prior attempted turns in the same conversation. */
+  turnCount?: number;
   agentId?: string;
   /** Reuse an existing session ID across reconnections. */
   sessionId?: string;
@@ -303,6 +322,7 @@ export class CopilotSession {
   private sessionId: string;
   private conversationId: string;
   private _turnCount = 0;
+  private accountKey?: string;
   private agentId?: string;
   private nativeActions?: NativeActionConfig;
   private temporaryChat: boolean;
@@ -313,6 +333,7 @@ export class CopilotSession {
     this.agentId = options?.agentId;
     this.nativeActions = options?.nativeActions;
     this.temporaryChat = options?.temporaryChat ?? true;
+    this._turnCount = options?.turnCount ?? 0;
     log.info(`New session: sid=${this.sessionId}, cid=${this.conversationId}, agent=${this.agentId ?? "none"}, nativeActions=${!!this.nativeActions}, temporaryChat=${this.temporaryChat}`);
   }
 
@@ -326,8 +347,28 @@ export class CopilotSession {
    * Each turn opens a fresh WebSocket with invocationId "0" (per SignalR protocol).
    * Session/conversation IDs are reused so M365 maintains server-side context.
    */
-  chat(token: string, text: string, model: string = "m365-copilot", signal?: AbortSignal, opts?: ChatTurnOptions): Promise<CopilotStream> {
+  async chat(token: string, text: string, model: string = "m365-copilot", signal?: AbortSignal, opts?: ChatTurnOptions): Promise<CopilotStream> {
+    if (!currentAccountContext()) return withAccountContext({ getToken: async () => token }, () => this.chat(token, text, model, signal, opts));
+    assertAccountToken(token);
+    const key = currentAccountContext()!.key;
+    if (this.accountKey && this.accountKey !== key) throw new AccountPolicyError(409, "account_changed");
+    this.accountKey = key;
     const isFirst = this._turnCount === 0;
+    const admissionStart = Date.now();
+    for (;;) {
+      try { admitAccountAttempt(isFirst); break; }
+      catch (error) {
+        const enabled = process.env.M365_AVOID_THROTTLING && process.env.M365_AVOID_THROTTLING !== "0";
+        const raw = Number(process.env.M365_BUDGET_MAX_WAIT_MIN ?? 15);
+        const maxWait = Number.isFinite(raw) && raw >= 0 ? raw * 60000 : 15 * 60000;
+        if (!enabled || !(error instanceof AccountPolicyError) || !["account_turn_budget", "account_throttle_hold"].includes(error.code) || !error.retryAfter || Date.now() - admissionStart + error.retryAfter * 1000 > maxWait) throw error;
+        await new Promise<void>((resolve, reject) => {
+          const abort = () => { clearTimeout(timer); signal?.removeEventListener("abort", abort); reject(signal?.reason ?? new DOMException("Aborted", "AbortError")); };
+          const timer = setTimeout(() => { signal?.removeEventListener("abort", abort); resolve(); }, Math.min(error.retryAfter! * 1000, 15000));
+          if (signal?.aborted) abort(); else signal?.addEventListener("abort", abort, { once: true });
+        });
+      }
+    }
     this._turnCount++;
     const wantImages = opts?.generateImages ?? false;
     const images = opts?.images ?? [];
@@ -544,9 +585,42 @@ export class CopilotSession {
       };
 
       const ws = new WebSocket(wsUrl, { headers: buildCopilotWebSocketHeaders(conversationId) });
+      const releasePolicy = retainAccountContext(error => finish(error));
+      const renewPolicy = bindAccountPolicy(renewAccountLeases);
+      const accountThrottle = bindAccountPolicy(recordThrottle);
 
       let handshakeDone = false;
       let stopped = false;
+      let finished = false;
+      let idleTimer: ReturnType<typeof setTimeout> | undefined;
+      let stopTimer: ReturnType<typeof setTimeout> | undefined;
+      const rawIdle = process.env.M365_TURN_IDLE_MS;
+      const parsedIdle = rawIdle === undefined || rawIdle.trim() === "" ? NaN : Number(rawIdle);
+      const idleMs = Number.isFinite(parsedIdle) && parsedIdle > 0 && parsedIdle <= 2_147_483_647 ? parsedIdle : 120_000;
+      const cleanup = (): Error | undefined => {
+        if (idleTimer) clearTimeout(idleTimer);
+        if (stopTimer) clearTimeout(stopTimer);
+        signal?.removeEventListener("abort", onAbort);
+        try { releasePolicy(); } catch { return new AccountPolicyError(503, "account_policy_unavailable", 1); }
+      };
+      // Storage failure must never interrupt settlement or transport disposal.
+      const finish = (error?: Error, terminate = false) => {
+        if (finished) return;
+        finished = true;
+        const cleanupError = cleanup();
+        const terminalError = error ?? cleanupError;
+        if (terminalError) { onError(terminalError); if (!handshakeDone) reject(terminalError); }
+        else { onDone(); if (!handshakeDone) reject(new Error("WebSocket closed before handshake")); }
+        try { if (terminate) ws.terminate(); else ws.close(); } catch { try { ws.terminate(); } catch {} }
+      };
+      const armIdle = () => {
+        if (finished || stopped) return;
+        if (idleTimer) clearTimeout(idleTimer);
+        idleTimer = setTimeout(() => {
+          if (finished || stopped) return;
+          finish(new Error(`No response from M365 for ${idleMs}ms`), true);
+        }, idleMs);
+      };
 
       // Cancellation: when the caller's signal aborts (HTTP client disconnected),
       // cancel the in-flight M365 turn the same way the real UI does — send the
@@ -554,38 +628,46 @@ export class CopilotSession {
       // hard-close fallback). Before the handshake completes there's nothing to
       // stop, so just close.
       const onAbort = () => {
-        if (stopped) return;
+        if (finished || stopped) return;
         stopped = true;
+        if (idleTimer) clearTimeout(idleTimer);
         try {
           if (ws.readyState === WebSocket.OPEN && handshakeDone) {
             log.info("Aborted — sending Stop frame to cancel the turn");
             dumpFrame(requestId, { target: "stop", type: 1 }, "send");
             ws.send(STOP_FRAME);
-            setTimeout(() => { try { ws.close(); } catch {} }, 2_000);
+            stopTimer = setTimeout(() => finish(new DOMException("Aborted", "AbortError"), true), 2_000);
           } else {
-            try { ws.close(); } catch {}
+            finish(new Error("WebSocket closed before handshake"), true);
           }
         } catch {
-          try { ws.close(); } catch {}
+          finish(new DOMException("Aborted", "AbortError"), true);
         }
       };
       if (signal) {
-        if (signal.aborted) onAbort();
+        if (signal.aborted) queueMicrotask(onAbort);
         else signal.addEventListener("abort", onAbort, { once: true });
       }
-      const clearAbort = () => signal?.removeEventListener("abort", onAbort);
+      armIdle();
 
       ws.on("open", () => {
+        if (finished || stopped) return;
         log.debug("WS connected, sending handshake");
-        ws.send(JSON.stringify({ protocol: "json", version: 1 }) + RS);
+        try { ws.send(JSON.stringify({ protocol: "json", version: 1 }) + RS); }
+        catch { finish(new Error("WebSocket handshake send failed"), true); }
       });
 
       ws.on("message", (data: WebSocket.RawData) => {
+        if (finished) return;
+        try {
+        renewPolicy();
+        armIdle();
         const raw = data.toString();
         log.debug("WS recv:", trunc(raw, 500));
         const frames = raw.split(RS).filter((f) => f.length > 0);
 
         for (const frame of frames) {
+          if (finished) break;
           let parsed: unknown;
           try {
             parsed = JSON.parse(frame);
@@ -602,8 +684,7 @@ export class CopilotSession {
             handshakeDone = true;
             const hs = SignalRHandshakeResponse.safeParse(parsed);
             if (hs.success && hs.data.error) {
-              ws.close();
-              reject(new Error(`Handshake error: ${hs.data.error}`));
+              finish(new Error(`Handshake error: ${hs.data.error}`));
               return;
             }
             sendChat();
@@ -612,23 +693,23 @@ export class CopilotSession {
 
           handleMsg(parsed);
         }
-      });
-
-      ws.on("error", (err: Error) => {
-        const msg = err.message || "connection failed";
-        log.error("WS error:", msg);
-        if (!handshakeDone) {
-          reject(new Error(`WebSocket error: ${msg}`));
-        } else {
-          onError(new Error(`WebSocket error: ${msg}`));
+        } catch (error) {
+          finish(error instanceof AccountPolicyError ? error : new Error("WebSocket frame processing failed"), true);
         }
       });
 
+      ws.on("error", (err: Error) => {
+        if (finished) return;
+        const msg = err.message || "connection failed";
+        log.error("WS error:", msg);
+        finish(new Error(`WebSocket error: ${msg}`), true);
+      });
+
       ws.on("close", () => {
-        clearAbort();
+        if (finished) return;
+        finish();
         log.info("WS closed, answer length:", answer.length);
         log.debug("Final response:", trunc(answer, 1000));
-        onDone();
       });
 
       const sendChat = () => {
@@ -816,19 +897,15 @@ export class CopilotSession {
 
         if (base.type === 7) {
           const frame = CloseFrame.safeParse(raw);
-          if (frame.success && frame.data.error) {
-            onError(new Error(`Server close: ${frame.data.error}`));
-          }
-          ws.close();
+          finish(frame.success && frame.data.error
+            ? new Error(`Server close: ${frame.data.error}`) : undefined);
           return;
         }
 
         if (base.type === 3) {
           const frame = CompletionFrame.safeParse(raw);
-          if (frame.success && frame.data.error) {
-            onError(new Error(`Completion error: ${frame.data.error}`));
-          }
-          ws.close();
+          finish(frame.success && frame.data.error
+            ? new Error(`Completion error: ${frame.data.error}`) : undefined);
           return;
         }
 
@@ -844,7 +921,7 @@ export class CopilotSession {
                 ...(typeof item.result.message === "string" ? { message: item.result.message } : {}),
               };
               if (item.result.value !== "Success") log.info(`Turn result: ${item.result.value}${serverResult.errorCode ? ` (${serverResult.errorCode})` : ""}`);
-              if (item.result.value === "Throttled") recordThrottle();
+              if (item.result.value === "Throttled") accountThrottle();
             }
             if (item.turnState) turnState = item.turnState;
             if (item.throttling) {
@@ -878,7 +955,7 @@ export class CopilotSession {
             // receive the action's result (H-NATIVE-6).
             if (resumedHere) return;
           }
-          ws.close();
+          finish();
           return;
         }
 

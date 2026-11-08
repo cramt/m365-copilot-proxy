@@ -115,10 +115,11 @@ Opus 4.5 (`claude-opus-4.5`, with the tool agent) solved ~100% of the bench unde
 tried — so the solve rate couldn't rank them. The jailbreak classifier could: the `<system>`-tagged
 rule framings tripped it on 20 of 60 tasks (`minimal` 12/30, `baseline` 8/30), relay and `softened`
 on 0 of 80 (p = 5×10⁻⁹; hyp §24 F56), always on "find the secret" / "edit the config" prompts. The
-proxy's retry rescues those, but each one is a dead turn plus a fresh conversation — thread budget,
-and on metered Opus 5.5 possibly a priority-access unit. Two smaller lessons from the same sweep:
-- **A framing without `<system>` tags needs to stay clear of the classifier by itself.** The retry
-  swaps only `<system>`-tagged framings for `softened`; `retag` and `terse_user` were retried as
+proxy's historical F22 retry rescued those, but each one cost a dead turn plus a fresh
+conversation. The current handler instead returns a terminal refusal and never automatically
+softens or reframes Disengaged requests (see API doc §9). Two lessons from that historical sweep:
+- **A framing without `<system>` tags needs to stay clear of the classifier by itself.** The historical retry
+  swapped only `<system>`-tagged framings for `softened`; `retag` and `terse_user` were retried as
   themselves, disengaged again and failed (4 tasks). relay never needed the retry.
 - **A shorter prompt doesn't save Opus quota.** `minimal` was the default for that reason; the
   budget counts turns (hyp §24 F55). Choose for fewer turns and fewer Disengages instead.
@@ -204,11 +205,13 @@ the harness's own system prompt becomes `<harness_system_prompt>`.
 **The default is model-aware** (`defaultFramingForModel`, falling back to `defaultFramingForTone`).
 `Claude_Opus` (Opus 4.8 and 5.5), `Claude_Sonnet` (as Sonnet 4.6), `Gpt_6_Reasoning`,
 `Gpt_6_Sol_Reasoning` (hyp §28) and
-`Gpt_61_Sol_Reasoning` (GPT-6.1 Sol, hyp §27) → `relay_batch`; Sonnet 5 (`claude-sonnet-5`, its own `Claude_Sonnet_5` tone since 2026-10-06) and
+`Gpt_61_Sol_Reasoning` (GPT-6.1 Sol, hyp §27), plus `Gpt_5_6_Reasoning`
+(`gpt-5.6-think-deeper`, hyp §39 F97) → `relay_batch`; Sonnet 5 (`claude-sonnet-5`, its own `Claude_Sonnet_5` tone since 2026-10-06) and
 Sonnet 5.5 (`claude-sonnet-5.5`, `Claude_Sonnet` on the paid scenario, keyed on the model ID;
 inherits Sonnet 5's relay, hyp §26) → `relay` — though on the bench relay_batch cut its turns by a
 third (3.35 → 2.20, 40/40, both paths, hyp §30); real pi decides, ~90 budget units. **Every other model keeps `baseline` byte-for-byte** (including
-`claude-sonnet-think-deeper`, unmeasured under relay), so no GPT-5.x bench number moves, and
+`claude-sonnet-think-deeper`, unmeasured under relay, and GPT-5.6 Chat). The GPT-5.6
+reasoning default is a distinct measured exception, not a change to GPT-5.x chat defaults, and
 `M365_FRAMING_*` still wins. Opus used to default to `minimal`, to spend less of its priority-access
 budget by sending a shorter prompt; that budget counts turns, not tokens (docs/hypotheses.md §24
 F55), so it saved nothing — see the Opus section below for why relay_batch replaced it.

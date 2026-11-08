@@ -1,3 +1,4 @@
+import { currentAccountContext, accountRouteFact, noteAccountRoute, leaseAccountRoute, setAccountRouteScenario } from "./account-policy.js";
 import { JwtClaims } from "./schemas.js";
 import type { MeteredBudget } from "./priority-access.js";
 
@@ -369,8 +370,8 @@ export const PREMIUM_ONLY_AGENT_TONES: ReadonlySet<string> = new Set([
   "Gpt_61_Sol_Reasoning",
 ]);
 
-// What this process has learned about the agent route, per tone. The proxy
-// serves one account, so this is per-account knowledge; a restart re-learns it.
+// No-context volatile compatibility state for legacy pure helper callers/tests.
+// Production ModelSession/proxy requests always use credential-scoped SQLite facts.
 const deadAgentRoutes = new Set<string>();
 const aliveAgentRoutes = new Set<string>();
 
@@ -380,6 +381,10 @@ const aliveAgentRoutes = new Set<string>();
  * has already answered in this process: then the failure was a transient.
  */
 export function noteAgentRouteDead(tone: string): boolean {
+  if (currentAccountContext()) {
+    if (accountRouteFact(tone) === "alive") return false;
+    noteAccountRoute(tone, false); return true;
+  }
   if (aliveAgentRoutes.has(tone)) return false;
   deadAgentRoutes.add(tone);
   return true;
@@ -387,11 +392,13 @@ export function noteAgentRouteDead(tone: string): boolean {
 
 /** Record that this account's agent route answered for `tone`. */
 export function noteAgentRouteAlive(tone: string): void {
+  if (currentAccountContext()) { noteAccountRoute(tone, true); return; }
   aliveAgentRoutes.add(tone);
 }
 
 /** Whether this process has seen the agent route answer for `tone`. */
 export function isAgentRouteAlive(tone: string): boolean {
+  if (currentAccountContext()) return accountRouteFact(tone) === "alive";
   return aliveAgentRoutes.has(tone);
 }
 
@@ -403,7 +410,12 @@ export function resetAgentRoutes(): void {
 
 /** Whether a tool request on this tone should carry the tool agent. */
 export function toneUsesToolAgent(tone: string): boolean {
-  if (AGENTLESS_TOOL_TONES.has(tone) || deadAgentRoutes.has(tone)) return false;
+  if (AGENTLESS_TOOL_TONES.has(tone)) return false;
+  if (currentAccountContext()) {
+    const fact = accountRouteFact(tone);
+    if (fact === "dead") return false;
+    if ((!fact || fact === "suspect") && PREMIUM_ONLY_AGENT_TONES.has(tone)) leaseAccountRoute(tone);
+  } else if (deadAgentRoutes.has(tone)) return false;
   if (/^Claude_/i.test(tone)) return AGENT_CLAUDE_TONES.has(tone);
   return true;
 }
@@ -427,6 +439,7 @@ export function toolRequestUsesAgent(tone: string): boolean {
  * replaced it, serves agent-less too (§36).
  */
 export function requestUsesAgent(model: string, hasTools: boolean): boolean {
+  setAccountRouteScenario(getScenarioForModel(model).scenario);
   return hasTools && toolRequestUsesAgent(getToneForModel(model));
 }
 
@@ -488,6 +501,23 @@ export function meteredBudgetOf(model: string): MeteredBudget | null {
   if (tone === "Claude_Opus") return "opus";
   if (tone === "Claude_Sonnet") return "sonnet-5.5";
   return null;
+}
+
+/**
+ * The tones behind the "Think deeper" options whose turns share one per-account
+ * cap: a refusal with `errorCode: "ReasoningTurnExhausted"` on one wall both
+ * (reported live 2026-11-07 on a non-premium work tenant; the Quick tones kept
+ * serving). Other reasoning tones are not known to share it, so they are not
+ * listed: they keep a wall of their own model ID.
+ */
+const REASONING_CAP_TONES: ReadonlySet<string> = new Set(["Gpt_5_5_Reasoning", "Gpt_5_6_Reasoning"]);
+
+/** The wall key shared by every model on a reasoning-cap tone. */
+export const REASONING_WALL_KEY = "reasoning-turns";
+
+/** `REASONING_WALL_KEY` when this model's turns draw on the shared reasoning cap, else null. */
+export function reasoningWallKey(model: string): string | null {
+  return REASONING_CAP_TONES.has(getToneForModel(model)) ? REASONING_WALL_KEY : null;
 }
 
 /** The env var naming each budget's fallback model. */

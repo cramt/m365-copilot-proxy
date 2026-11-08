@@ -1,5 +1,10 @@
+import { canonicalHash, validateCanonicalInput } from "./canonical-hash.js";
+export { canonicalHash } from "./canonical-hash.js";
+import { requestContext, RequestContextError, type RequestContext } from "./request-context.js";
 import {
   ModelSession,
+  AccountPolicyError,
+  withAccountContext,
   type ModelSessionOptions,
   createLogger,
   trunc,
@@ -12,14 +17,14 @@ import {
   PREMIUM_ONLY_AGENT_TONES,
   defaultFramingForModel,
   currentFramingVariant,
-  transcriptStyleForVariant,
+
   priorityAccessExhaustionOf,
   notePriorityAccessExhausted,
-  activePriorityAccessExhaustion,
   meteredAllowance,
   METERED_BUDGETS,
   type MeteredBudget,
   meteredBudgetOf,
+  noteModelNotLicensed,
   priorityAccessFallbackModel,
   PRIORITY_ACCESS_FALLBACK_ENV,
   couldBePriorityAccessPrefix,
@@ -35,6 +40,7 @@ import {
   fabricatedToolResponseAt,
   textAfterFirstToolCall,
   longHeredocAsWrite,
+  longCommandAsScript,
   formatToolResponse,
   isProseDocument,
   getMessageContent,
@@ -46,8 +52,12 @@ import {
   fetchImageBytes,
   type CapturedImage,
   type ParseResult,
+  type ParsedToolCall,
 } from "@m365-copilot/core";
 import { ChatCompletionRequest } from "./schemas.js";
+import { forbiddenResponse, isModelLicenceDenial, disengagedResponse, terminalErrorResponse } from "./terminal-errors.js";
+import { activeWallFor, isReasoningCapFor, suggestModels, suggestionSentence, wallKeyFor } from "./refusal-suggestions.js";
+import { estimateVisibleUsage, type VisibleOutput } from "./usage.js";
 import type { z } from "zod/v4";
 
 const log = createLogger("handler");
@@ -144,6 +154,11 @@ type ParsedMessage = ChatBody["messages"][number];
 // --- Per-conversation state ---
 
 interface ConversationState {
+  scope: string;
+  accountKey: string;
+  busy?: boolean;
+  expectedHash?: string;
+  expectedLength?: number;
   session: ModelSession;
   sentMessageCount: number;
   lastAccessedAt: number;
@@ -154,7 +169,11 @@ interface ConversationState {
    *  Opus fallback, #18) can't continue the M365 conversation — it may need
    *  another scenario — so it starts a fresh one with the full history. */
   servedModel?: string;
+  /** Proposed second half of a long command; mediated by the model after the
+   *  actual write result, never automatically dispatched. */
+  chain: { writeId: string; run: ParsedToolCall; toolsHash: string } | null;
 }
+
 
 /**
  * The note that corrects the model's view of what actually ran.
@@ -185,101 +204,66 @@ export function executedOnlyFirstNote(fabricated: boolean, droppedCalls: number,
   return null;
 }
 
-// --- Session pool: maps conversation fingerprint → M365 session ---
-
-const MAX_IDLE_MS = 30 * 60 * 1000; // evict after 30 min idle
-
+// Bounded hash-only lineage. Divergence creates a new immutable branch.
+const MAX_IDLE_MS = 30 * 60 * 1000;
+function lineage(messages: ParsedMessage[]): string[] {
+  let previous = "";
+  return messages.map(m => previous = canonicalHash([previous, { ...m, content: m.content ?? null }]));
+}
+interface StoredResponse { hash: string; status?: number; headers?: [string, string][]; bytes?: Uint8Array; at: number }
 export class SessionPool {
   private conversations = new Map<string, ConversationState>();
-  private sessionOptions: ModelSessionOptions;
-
-  constructor(sessionOptions: ModelSessionOptions = {}) {
-    this.sessionOptions = sessionOptions;
+  readonly sessionOptions: ModelSessionOptions;
+  private locks = new Map<string, Promise<void>>();
+  private admissions = 0;
+  readonly receipts = new Map<string, StoredResponse>();
+  constructor(sessionOptions: ModelSessionOptions = {}) { this.sessionOptions = sessionOptions; }
+  async acquire(key: string, signal?: AbortSignal): Promise<() => void> {
+    if (this.admissions >= 1024) throw new RequestContextError("Admission capacity reached", 503, "conversation_capacity");
+    this.admissions++;
+    const prior = this.locks.get(key) ?? Promise.resolve();
+    let release!: () => void;
+    const current = new Promise<void>(r => { release = r; });
+    const tail = prior.then(() => current);
+    this.locks.set(key, tail);
+    let abort!: () => void;
+    const aborted = new Promise<never>((_, reject) => { abort = () => reject(new RequestContextError("Request aborted", 499, "request_aborted")); signal?.addEventListener("abort", abort, { once: true }); });
+    try { if (signal?.aborted) abort(); await Promise.race([prior, aborted]); }
+    catch (err) { this.admissions--; release(); void tail.then(() => { if (this.locks.get(key) === tail) this.locks.delete(key); }); throw err; }
+    finally { signal?.removeEventListener("abort", abort); }
+    let released = false;
+    return () => { if (released) return; released = true; this.admissions--; release(); if (this.locks.get(key) === tail) this.locks.delete(key); };
   }
-
-  /**
-   * Resolve the conversation state for an incoming request.
-   * Fingerprint is the hash of the first user message and the request's tool
-   * names — same opener and same tool set = same conversation.
-   */
-  resolve(messages: ParsedMessage[], tools?: ChatBody["tools"]): ConversationState {
-    this.evictStale();
-
-    const fingerprint = this.fingerprint(messages, tools);
-    const existing = this.conversations.get(fingerprint);
-
-    if (existing) {
-      // A request that carries no more messages than this conversation already
-      // sent is not its continuation (a harness re-sends the whole history and
-      // only ever appends). It's a new session that shares the first user message
-      // — two pi sessions opened with the same prompt, even in different
-      // directories — or a re-sent request. Either way it needs a FRESH M365
-      // conversation: reset() kept the conversationId, so the full prompt went
-      // into the old thread, and at equal length nothing reset at all and
-      // "Please continue." went there. Measured (Windows / pi, 30 runs of 2
-      // prompts): later sessions answered from earlier ones — "notlar.docx was
-      // already created and verified" in an empty directory — and the pass rate
-      // fell 7/10 → 4/10 → 3/10 over the sweep. The full prompt re-sends the
-      // whole history, so nothing the harness holds is lost.
-      if (messages.length <= existing.sentMessageCount) {
-        log.info(`Conversation ${fingerprint}: not a continuation (${messages.length} <= ${existing.sentMessageCount} sent), starting a fresh M365 conversation`);
-        existing.session.newConversation();
-        existing.sentMessageCount = 0;
-        existing.pendingNote = null;
-      }
-      existing.lastAccessedAt = Date.now();
-      return existing;
-    }
-
-    // New conversation
-    log.info(`New conversation ${fingerprint}, ${this.conversations.size} active`);
-    const state: ConversationState = {
-      session: new ModelSession(this.sessionOptions),
-      sentMessageCount: 0,
-      pendingNote: null,
-      lastAccessedAt: Date.now(),
-    };
-    this.conversations.set(fingerprint, state);
-    return state;
-  }
-
-  // The tool names are in the key because a harness's side requests can share
-  // the session's first user message. opencode sends a title request ("You are
-  // a title generator…", no tools) 4 ms before the task (12 tools): keyed on the
-  // opener alone both went into one M365 conversation, as turns 0 and 1 run at
-  // the same time (#83). pi's and opencode's tool sets don't change within a
-  // session; one that does starts a fresh conversation with the full history,
-  // which costs a thread, not the answer. Names, not definitions: descriptions
-  // can carry per-turn text. The system prompt would separate the title request
-  // too, but it is the likelier place for a date, a time or a git status.
-  private fingerprint(messages: ParsedMessage[], tools?: ChatBody["tools"]): string {
-    const firstUser = messages.find(m => m.role === "user");
-    const text = firstUser ? getMessageContent(firstUser) : "";
-    const toolNames = [...new Set((tools ?? []).map(t => t.function.name))].sort().join(",");
-    return simpleHash(`${toolNames}\n${text}`);
-  }
-
-  private evictStale() {
+  resolve(messages: ParsedMessage[], tools?: ChatBody["tools"], context: RequestContext = {}, accountKey = "unscoped"): ConversationState {
     const now = Date.now();
-    for (const [key, state] of this.conversations) {
-      if (now - state.lastAccessedAt > MAX_IDLE_MS) {
-        log.info(`Evicting idle conversation ${key}`);
-        this.conversations.delete(key);
-      }
+    for (const [key, state] of this.conversations) if (!state.busy && now - state.lastAccessedAt > MAX_IDLE_MS) this.conversations.delete(key);
+    const scope = canonicalHash([context.trustedPrincipal ?? "local", context.sessionHint ?? null, [...new Set((tools ?? []).map(t => t.function.name))].sort()]);
+    const hashes = lineage(messages);
+    const candidates = [...this.conversations.values()].filter(s => s.scope === scope && !s.busy && s.expectedLength !== undefined && messages.length > s.expectedLength && hashes[s.expectedLength - 1] === s.expectedHash);
+    if (candidates.length === 1) {
+      const state = candidates[0]; state.lastAccessedAt = now;
+      if (state.accountKey !== accountKey) { state.session.reset(); state.session = new ModelSession(this.sessionOptions); state.sentMessageCount = 0; state.pendingNote = null; state.chain = null; state.servedModel = undefined; state.accountKey = accountKey; }
+      return state;
+    }
+    while (this.conversations.size >= 512) {
+      const oldest = [...this.conversations].filter(([,s]) => !s.busy).sort((a,b) => a[1].lastAccessedAt - b[1].lastAccessedAt)[0];
+      if (!oldest) throw new RequestContextError("Conversation capacity reached", 503, "conversation_capacity");
+      this.conversations.delete(oldest[0]);
+    }
+    const state: ConversationState = { session: new ModelSession(this.sessionOptions), sentMessageCount: 0, pendingNote: null, chain: null, lastAccessedAt: now, scope, accountKey };
+    this.conversations.set(crypto.randomUUID(), state); return state;
+  }
+  commit(state: ConversationState, body: ChatBody, assistant: ParsedMessage) {
+    try {
+      const hashes = lineage([...body.messages, assistant]);
+      state.expectedHash = hashes.at(-1); state.expectedLength = hashes.length; state.lastAccessedAt = Date.now();
+    } catch (err) {
+      if (!(err instanceof RequestContextError) || err.code !== "request_structure_limit") throw err;
+      // Lineage is optional; generated output is not subject to request limits.
+      state.expectedHash = undefined; state.expectedLength = undefined;
     }
   }
-
-  get size(): number {
-    return this.conversations.size;
-  }
-}
-
-function simpleHash(str: string): string {
-  let hash = 0;
-  for (let i = 0; i < str.length; i++) {
-    hash = ((hash << 5) - hash + str.charCodeAt(i)) | 0;
-  }
-  return String(hash);
+  get size(): number { return this.conversations.size; }
 }
 
 /** Parse a tool-mode reply, with the document guard applied.
@@ -308,6 +292,55 @@ function parseReply(text: string, tools: Parameters<typeof parseToolCalls>[1]): 
     return { parsed: { hasToolCalls: false, toolCalls: [], textContent: text }, judged: opening };
   }
   return { parsed, judged: parsed.textContent };
+}
+
+/** M365's web client renders `<File>notlar.docx</File>` as a file chip, and its
+ *  models write that markup into answers: 58 times in the 245 distinct final
+ *  answers of the pi transcripts (Oct 2–5), plus `<document>`, `<Files>`,
+ *  `<file>`, `<FILE>` and "< File>". An API client shows the raw tags, so a prose
+ *  answer gets the bare name. Code is left as it is: fenced blocks, and inline
+ *  code (`<file>a.txt</file>` written as an example of the markup). */
+export function plainFileNames(text: string): string {
+  const clean = (value: string) => value.replace(/<\s*(file|files|document)\s*>([^<>\n]{1,200}?)<\/\s*\1\s*>/gi, "$2");
+  // The tool-fence parser accepts model-specific nested/glued triple fences.
+  // Prose cleanup instead preserves Markdown code, including unfinished blocks.
+  let output = "", prose = "", offset = 0;
+  let fence: { char: string; length: number } | undefined;
+  const flush = () => { output += clean(prose); prose = ""; };
+  while (offset < text.length) {
+    if (offset === 0 || text[offset - 1] === "\n") {
+      const end = text.indexOf("\n", offset);
+      const lineEnd = end < 0 ? text.length : end + 1;
+      const line = text.slice(offset, lineEnd);
+      const marker = /^ {0,3}(`{3,}|~{3,})([^\r\n]*)/.exec(line);
+      if (fence) {
+        output += line;
+        if (marker && marker[1][0] === fence.char && marker[1].length >= fence.length && !marker[2].trim()) fence = undefined;
+        offset = lineEnd; continue;
+      }
+      if (marker && !(marker[1][0] === "`" && marker[2].includes("`"))) {
+        flush(); fence = { char: marker[1][0], length: marker[1].length };
+        output += line; offset = lineEnd; continue;
+      }
+    }
+    if (text[offset] === "`") {
+      const run = /^`+/.exec(text.slice(offset))![0];
+      let close = offset + run.length;
+      while (close < text.length) {
+        const next = text.indexOf("`", close);
+        if (next < 0) { close = text.length; break; }
+        const candidate = /^`+/.exec(text.slice(next))![0];
+        if (candidate.length === run.length) { flush(); output += text.slice(offset, next + run.length); offset = next + run.length; break; }
+        close = next + candidate.length;
+      }
+      if (close < text.length) continue;
+      // Incomplete streamed code is preserved conservatively, rather than
+      // rewriting literal markup before a closing delimiter has arrived.
+      flush(); output += text.slice(offset); offset = text.length; continue;
+    }
+    prose += text[offset++];
+  }
+  flush(); return output;
 }
 
 // --- Delta message formatting ---
@@ -342,14 +375,130 @@ export function formatDeltaMessages(messages: ParsedMessage[], history: ParsedMe
  * Handle a chat completion request, returning an OpenAI-compatible Response.
  * The SessionPool routes each conversation to its own ModelSession.
  */
-export async function handleChatCompletion(
+export async function handleChatCompletion(body: ChatBody, pool: SessionPool, opts: RequestContext = {}): Promise<Response> {
+  try {
+    validateCanonicalInput(body);
+    const controller = new AbortController();
+    const combinedSignal = opts.signal ? AbortSignal.any([opts.signal, controller.signal]) : controller.signal;
+    const bodyContext = requestContext(body);
+    const explicitHeaders = new Headers();
+    if (opts.sessionHint !== undefined) explicitHeaders.set("x-opencode-session", opts.sessionHint);
+    if (opts.idempotencyKey !== undefined) explicitHeaders.set("idempotency-key", opts.idempotencyKey);
+    const context = { ...bodyContext, ...opts, ...requestContext(body, explicitHeaders), signal: combinedSignal };
+    // Caller IDs are affinity hints only. Account resolution precedes every state lookup.
+    return await new Promise<Response>((deliver, reject) => {
+    void withAccountContext(pool.sessionOptions, async (accountKey: string) => {
+      let producerStarted = false;
+      let producerDone!: () => void;
+      const completed = new Promise<void>(resolve => { producerDone = resolve; });
+      const dispatch = async (): Promise<Response> => {
+      const scope = canonicalHash([accountKey, context.trustedPrincipal ?? "local"]);
+      const key = context.idempotencyKey ? canonicalHash([scope, context.idempotencyKey]) : undefined;
+      const hash = canonicalHash(body);
+      const now = Date.now();
+      for (const [id, entry] of pool.receipts) if (entry.bytes && now - entry.at > MAX_IDLE_MS) pool.receipts.delete(id);
+      let ownedReceipt: StoredResponse | undefined;
+      const discardReceipt = () => { if (key && pool.receipts.get(key) === ownedReceipt) pool.receipts.delete(key); };
+      if (key) {
+        const receipt = pool.receipts.get(key);
+        if (receipt) {
+          if (receipt.hash !== hash) return jsonResponse(409, { error: { message: "Idempotency key used with a different payload", type: "invalid_request_error", code: "idempotency_conflict" } }, { "x-should-retry": "false" });
+          if (receipt.bytes) return new Response(new Uint8Array(receipt.bytes), { status: receipt.status, headers: receipt.headers });
+          return jsonResponse(409, { error: { message: "Request still pending", type: "invalid_request_error", code: "idempotency_pending" } }, { "Retry-After": "1" });
+        }
+        while (pool.receipts.size >= 128) {
+          const oldest = [...pool.receipts].find(([,v]) => v.bytes);
+          if (!oldest) throw new RequestContextError("Idempotency capacity reached", 503, "idempotency_capacity");
+          pool.receipts.delete(oldest[0]);
+        }
+        ownedReceipt = { hash, at: now };
+        pool.receipts.set(key, ownedReceipt);
+      }
+      let release: (() => void) | undefined;
+      let conv: ConversationState | undefined;
+      let finished = false;
+      let successful = false;
+      context.signal.addEventListener("abort", discardReceipt, { once: true });
+      const finish = (success = false) => {
+        if (finished) return; finished = true; successful = success;
+        context.signal.removeEventListener("abort", discardReceipt);
+        if (conv) { conv.busy = false; if (!success) { conv.expectedHash = undefined; conv.expectedLength = undefined; } }
+        release?.(); producerDone();
+      };
+      try {
+        // One admitted producer per logical owner/substream. Anonymous requests use a
+        // common admission lane because no caller-supplied owner can be trusted.
+        release = await pool.acquire(canonicalHash([context.trustedPrincipal ?? "local", context.sessionHint ?? null, [...new Set((body.tools ?? []).map(t => t.function.name))].sort()]), context.signal);
+        if (context.signal?.aborted) throw new RequestContextError("Request aborted", 499, "request_aborted");
+        conv = pool.resolve(body.messages, body.tools, { ...context, trustedPrincipal: context.trustedPrincipal ?? "local" }, accountKey);
+        conv.busy = true; producerStarted = true;
+        const response = await dispatchChatCompletion(body, pool, context, conv, finish, controller, key ? (bytes) => {
+          const receipt = pool.receipts.get(key);
+          if (receipt !== ownedReceipt) return;
+          if (receipt && bytes && successful && !context.signal?.aborted) { receipt.bytes = bytes; receipt.status = 200; receipt.headers = [["Content-Type", "text/event-stream"], ["Cache-Control", "no-cache"]]; }
+          else discardReceipt();
+        } : undefined);
+        const isSse = response.headers.get("Content-Type")?.includes("text/event-stream") === true;
+        if (!key) {
+          if (!isSse) finish(response.ok && !context.signal?.aborted);
+          return response;
+        }
+        if (!isSse) {
+          const bytes = new Uint8Array(await response.arrayBuffer());
+          const buffered = new Response(bytes, { status: response.status, headers: response.headers });
+          const receipt = pool.receipts.get(key);
+          if (receipt === ownedReceipt && receipt && response.ok && !context.signal?.aborted && bytes.byteLength <= 1024 * 1024) {
+            receipt.bytes = bytes; receipt.status = response.status; receipt.headers = [...response.headers];
+          } else discardReceipt();
+          finish(response.ok && !context.signal?.aborted);
+          return buffered;
+        }
+        return response;
+      } catch (err) { finish(); discardReceipt(); throw err; }
+      };
+      const response = await dispatch();
+      deliver(response);
+      // Keep core's account context (including policy storage) alive after HTTP
+      // headers. ALS propagation alone cannot extend its resource lifetime.
+      if (producerStarted) await completed;
+      return response;
+    }).catch(reject);
+    });
+  } catch (err) {
+    if (err instanceof AccountPolicyError) return accountPolicyResponse(err);
+    if (err instanceof RequestContextError) return jsonResponse(err.status, { error: { message: err.message, type: "invalid_request_error", code: err.code } });
+    throw err;
+  }
+}
+
+async function dispatchChatCompletion(
   body: ChatBody,
   pool: SessionPool,
-  opts: { signal?: AbortSignal } = {},
+  opts: RequestContext,
+  conv: ConversationState,
+  finish: (success?: boolean) => void,
+  cancellation: AbortController,
+  streamComplete?: (bytes: Uint8Array | undefined) => void,
 ): Promise<Response> {
-  const conv = pool.resolve(body.messages, body.tools);
   const { session } = conv;
-  const hasTools = body.tools && body.tools.length > 0 && body.tool_choice !== "none";
+  // Tool results have no portable typed success flag. Never infer successful
+  // publication from an id or arbitrary result text, and never dispatch a queued
+  // run/delete automatically. Let the model inspect the real result instead.
+  const last = body.messages[body.messages.length - 1];
+  const chain = conv.chain;
+  conv.chain = null;
+  if (chain) {
+    const permitted = body.tool_choice !== "none" &&
+      (typeof body.tool_choice !== "object" || body.tool_choice.function.name === chain.run.function.name) &&
+      canonicalHash(body.tools ?? []) === chain.toolsHash;
+    conv.pendingNote = permitted && last?.role === "tool" && last.tool_call_id === chain.writeId
+      ? `(Note: the previous command exceeded the Windows command-line limit. Only a script write was requested, NOT execution. Inspect its actual tool result below. If it failed or is ambiguous, do not run or delete the artifact; repair or verify the write first. After a confirmed successful write, the intended next call is ${JSON.stringify(chain.run.function)}. This is a proposal, not an executed call.)`
+      : null;
+  }
+  const choice = body.tool_choice;
+  body = { ...body, tools: choice === "none" ? [] : typeof choice === "object"
+    ? body.tools?.filter(t => t.function.name === choice.function.name) : body.tools };
+  const hasTools = !!body.tools?.length;
   const requestedModel = body.model;
 
   // Priority access (§15, §24 F55, §26, issue #18). Once a budget is used up
@@ -360,7 +509,7 @@ export async function handleChatCompletion(
   // and often a fresh conversation — what the account's thread-rate throttle
   // counts.
   const requestedBudget = meteredBudgetOf(requestedModel);
-  const knownExhaustion = activePriorityAccessExhaustion(requestedBudget ?? requestedModel);
+  const knownExhaustion = activeWallFor(requestedModel);
   const fallbackModel = knownExhaustion && requestedBudget ? priorityAccessFallbackModel(requestedBudget) : null;
   if (knownExhaustion && !fallbackModel) {
     log.info(`Priority access exhausted (${knownExhaustion.window}) until ${knownExhaustion.resetsAt.toISOString()} — 429 without contacting M365`);
@@ -396,9 +545,10 @@ export async function handleChatCompletion(
   // Framing default follows the MODEL (defaultFramingForModel): the Claude,
   // GPT-6 and GPT-6 Sol tones get a user-voice relay (Sonnet reads the
   // `<system>`-tagged baseline as an injected prompt; on Opus it trips the
-  // jailbreak classifier). Opus, Sonnet 4.6, GPT-6, GPT-6 Sol and GPT-6.1 Sol get the
-  // turn-saving `relay_batch` (§24 F60, §25, §27, §28); Sonnet 5 and Sonnet 5.5 plain `relay`. The
-  // rest keep the bench-tuned `baseline`.
+  // jailbreak classifier). Opus, Sonnet 4.6, GPT-6, GPT-6 Sol, GPT-6.1 Sol and
+  // GPT-5.6 Think Deeper get the turn-saving `relay_batch` (§24 F60, §25, §27, §28,
+  // §39 F97); Sonnet 5 and Sonnet 5.5 plain `relay`. The rest keep the bench-tuned
+  // `baseline`.
   // Keyed on the model, not the tone, because one tone can serve two models.
   // M365_FRAMING_* still wins.
   let framingVariant = currentFramingVariant(defaultFramingForModel(model));
@@ -411,7 +561,7 @@ export async function handleChatCompletion(
   const convId = session.conversationId;
   let text: string;
   // Images ride on the message that carries their text (core image-input.ts).
-  let inputImages: string[];
+  let inputImages: string[] = [];
   if (isFirstTurn || conv.sentMessageCount === 0) {
     text = formatMessages(body.messages, body.tools, body.tool_choice, convId, framingVariant);
     inputImages = imageUrls(body.messages);
@@ -434,7 +584,7 @@ export async function handleChatCompletion(
       log.info(`Chat completion: model=${model}, stream=${body.stream}, messages=${body.messages.length}, turn=${session.turnCount}, mode=retry, cid=${convId}`);
     }
   }
-  conv.pendingNote = null; // one turn only: consumed above, or stale
+  conv.pendingNote = null; // one turn only
 
   log.debug("Formatted prompt:", trunc(text, 1000));
 
@@ -455,16 +605,14 @@ export async function handleChatCompletion(
   let lastTurnCount: number | null | undefined;
   let lastMetering: Record<string, number> | null | undefined;
 
-  // `onDelta` (when provided) forwards each text delta to the caller AS IT ARRIVES,
-  // for live incremental streaming. It's safe to forward without ever retracting:
-  // runBuffered only retries on an EMPTY attempt (Disengaged, dead-agent, throttle),
-  // and an empty attempt emits no deltas — so a forwarded delta always belongs to the
-  // one attempt that produced content and is never re-sent by a subsequent retry.
+  // `onDelta` forwards text as it arrives. Ordinary empty recovery has no bytes to
+  // duplicate; explicit final refusals never retry. A hypothetical content-then-final
+  // refusal cannot retract already forwarded bytes, but ends with an error, not success.
   async function runBuffered(
     onDelta?: (delta: string) => void,
   ): Promise<{ fullText: string } | { error: Response }> {
     let agentRefreshed = false;
-    let disengageRetried = false;
+
     let agentFallbackDone = false;
     let priorityFallbackDone = false;
     let internalErrorFreshRetried = false;
@@ -507,9 +655,10 @@ export async function handleChatCompletion(
         // skip it to reach the model the tone selects (e.g. Claude). See
         // ModelSession.run / docs H8.6.
         copilotStream = await session.run(text, model, signal, useToolAgent, inputImages, waitForBudget);
-      } catch (err: any) {
+      } catch (err: unknown) {
+        if (err instanceof AccountPolicyError) return { error: accountPolicyResponse(err) };
         if (err instanceof TurnBudgetHold) return { error: turnBudgetHoldResponse(err) };
-        return { error: jsonResponse(502, { error: { message: err.message, type: "upstream_error" } }) };
+        return { error: jsonResponse(502, { error: { message: err instanceof Error ? err.message : "upstream error", type: "upstream_error" } }) };
       }
 
       let fullText = "";
@@ -534,8 +683,47 @@ export async function handleChatCompletion(
         if (copilotStream.fullText && copilotStream.fullText.length > fullText.length) {
           fullText = copilotStream.fullText;
         }
-      } catch (err: any) {
-        return { error: jsonResponse(502, { error: { message: err.message, type: "upstream_error" } }) };
+      } catch (err: unknown) {
+        if (err instanceof AccountPolicyError) return { error: accountPolicyResponse(err) };
+        return { error: jsonResponse(502, { error: { message: err instanceof Error ? err.message : "upstream error", type: "upstream_error" } }) };
+      }
+
+      if (copilotStream.result?.value === "ForbiddenRequest") {
+        if (isModelLicenceDenial(copilotStream.result)) noteModelNotLicensed(model);
+        return { error: forbiddenResponse(model, copilotStream.result) };
+      }
+      // Explicit result verdicts own classification before generic message markers.
+      if (copilotStream.result?.value === "Throttled") {
+        noteRequestOutcome(true, session.conversationId);
+        return { error: throttledResponse(copilotStream.result) };
+      }
+      const exhausted = copilotStream.messageType === "Disengaged" && copilotStream.result?.value !== "OutOfCredits"
+        ? null : priorityAccessExhaustionOf(copilotStream.result, fullText);
+      if (exhausted) {
+        const budget = meteredBudgetOf(model);
+        // The reasoning cap is only a reasoning cap on a reasoning tone; anywhere else it is an ordinary refusal.
+        const reasoningCap = isReasoningCapFor(model, exhausted);
+        if (!reasoningCap) delete exhausted.kind;
+        if (budget || copilotStream.result?.value === "OutOfCredits") notePriorityAccessExhausted(wallKeyFor(model, reasoningCap), exhausted);
+        const fallback = budget && !priorityFallbackDone ? priorityAccessFallbackModel(budget) : null;
+        if (fallback) {
+          priorityFallbackDone = true;
+          model = fallback;
+          tone = getToneForModel(model);
+          framingVariant = currentFramingVariant(defaultFramingForModel(model));
+          useToolAgent = requestUsesAgent(model, !!hasTools);
+          session.newConversation();
+          text = formatMessages(body.messages, body.tools, body.tool_choice, session.conversationId, framingVariant);
+          inputImages = imageUrls(body.messages);
+          originalText = text;
+          attempt--;
+          continue;
+        }
+        noteRequestOutcome(false, session.conversationId);
+        return { error: priorityAccessResponse(exhausted, model) };
+      }
+      if (copilotStream.messageType === "Disengaged") {
+        return { error: disengagedResponse() };
       }
 
       // Image gen (§14): the picture arrives on a GraphicArt frame, usually with NO
@@ -558,18 +746,6 @@ export async function handleChatCompletion(
       lastScores = copilotStream.scores;
       lastTurnCount = copilotStream.turnCount;
       lastMetering = copilotStream.metering;
-
-      // M365 SAYS when it throttles: the final item's result is `Throttled` /
-      // `PerUserThrottled` (#35). Checked BEFORE the content check so
-      // an apology that ever arrives as content can't pass for an answer. This
-      // used to fall through to the empty-reply path below — two "quick retries"
-      // straight back into the throttle, then a 502 blaming a content filter.
-      // Fail fast with a 429 instead, and count it toward the degradation backoff.
-      if (copilotStream.result?.value === "Throttled") {
-        noteRequestOutcome(true, convId);
-        log.info(`Upstream Throttled (${copilotStream.result.errorCode ?? "no errorCode"}) — 429, no retry`);
-        return { error: throttledResponse(copilotStream.result) };
-      }
 
       // A tone whose agent route serves only on a premium account came back as
       // the dead route (`InternalError`, no content): this account isn't
@@ -602,40 +778,6 @@ export async function handleChatCompletion(
         continue;
       }
 
-      // A priority-access cap (Opus 5.5, Sonnet 5.5) arrives as a turn whose
-      // text is a refusal ("You've used your available priority access…") and
-      // whose final result is `OutOfCredits` (§24 F55). Left alone, the client
-      // would receive a refusal dressed as an answer — the same hazard class as
-      // the image-quota text (§14 H14.4). Surface it as a 429 with the reset
-      // time instead, or, when the budget's fallback model is set
-      // (M365_OPUS_FALLBACK_MODEL / M365_SONNET_FALLBACK_MODEL), re-send the
-      // whole request to that model in a fresh conversation (issue #18). Either
-      // way remember it, so the next requests don't spend M365 turns on
-      // refusals until the reset.
-      const exhausted = priorityAccessExhaustionOf(copilotStream.result, fullText);
-      if (exhausted) {
-        const budget = meteredBudgetOf(model);
-        if (budget || copilotStream.result?.value === "OutOfCredits") notePriorityAccessExhausted(budget ?? model, exhausted);
-        const fallback = budget && !priorityFallbackDone ? priorityAccessFallbackModel(budget) : null;
-        if (fallback) {
-          priorityFallbackDone = true;
-          log.info(`Priority access exhausted (${exhausted.window}) — re-sending to ${fallback} (${PRIORITY_ACCESS_FALLBACK_ENV[budget!]}) in a fresh conversation`);
-          model = fallback;
-          tone = getToneForModel(model);
-          framingVariant = currentFramingVariant(defaultFramingForModel(model));
-          useToolAgent = requestUsesAgent(model, !!hasTools);
-          session.newConversation();
-          text = formatMessages(body.messages, body.tools, body.tool_choice, session.conversationId, framingVariant);
-          inputImages = imageUrls(body.messages);
-          originalText = text;
-          attempt--;
-          continue;
-        }
-        noteRequestOutcome(false, convId); // an answer, not a throttle
-        log.info(`Priority access exhausted (${exhausted.window}) — resets ${exhausted.resetsAt.toISOString()}`);
-        return { error: priorityAccessResponse(exhausted, model) };
-      }
-
       if (copilotStream.hasContent || fullText.length > 0) {
         noteRequestOutcome(false, convId); // clean response → degradation has lifted
         if (useToolAgent) noteAgentRouteAlive(tone); // the agent route answered on this account
@@ -644,42 +786,6 @@ export async function handleChatCompletion(
         return { fullText };
       }
 
-      // Disengaged is a deliberate safety refusal, NOT a transient empty. Retrying
-      // it with "Please continue." just disengages again and burns the 600-msg
-      // quota (observed: 5 wasted messages in one turn). Fail fast with a clear
-      // signal instead. Commonly fires when a heavy tool prompt is paired with a
-      // non-default model/agent (e.g. a Claude tone + the declarative agent).
-      if (copilotStream.messageType === "Disengaged") {
-        // F22: the default framing's override-shape language occasionally trips Azure
-        // Prompt Shields (jailbreak classifier) on benign requests (e.g. "replace X
-        // with Y, leave everything else unchanged"). Retry ONCE with the low-override
-        // `softened` framing in a FRESH conversation (a Disengaged conversation stays
-        // Disengaged). Drops the worst-case disengage ~100%→~4%. Off via
-        // M365_NO_DISENGAGE_RETRY.
-        if (hasTools && !disengageRetried && !process.env.M365_NO_DISENGAGE_RETRY) {
-          disengageRetried = true;
-          session.newConversation();
-          // `softened` is the low-override twin of the `<system>`-tagged framings.
-          // A variant that deliberately avoids `<system>` tags (Claude Sonnet's
-          // `relay`) keeps itself: swapping to `softened` would reintroduce
-          // exactly the tag that model reads as a forged system prompt.
-          const retryVariant = transcriptStyleForVariant(framingVariant).framingTag === "system" ? "softened" : framingVariant;
-          text = formatMessages(body.messages, body.tools, body.tool_choice, session.conversationId, retryVariant);
-          inputImages = imageUrls(body.messages);
-          log.info(`Upstream Disengaged — retrying once with '${retryVariant}' framing in a fresh conversation (F22)`);
-          attempt--; // free retry; bounded — disengageRetried flips once
-          continue;
-        }
-        log.info("Upstream Disengaged — failing fast (no retry) to preserve quota");
-        return {
-          error: jsonResponse(502, {
-            error: {
-              message: "M365 Copilot disengaged from this request (its safety filter declined to answer). Common causes: too many tools, jailbreak-shaped instructions, or pairing a non-default model with the tool agent. Reduce the toolset or use the default model.",
-              type: "disengaged",
-            },
-          }),
-        };
-      }
 
       // A content-less `InternalError` is a turn M365 dropped, and the
       // conversation it happened in tends to stay dropped: "Please continue."
@@ -895,14 +1001,23 @@ export async function handleChatCompletion(
     }
 
     if (parsed.hasToolCalls && parsed.toolCalls.length > 0) {
-      // A heredoc file write past the Windows command-line cap would reach the
-      // shell cut short; run the same write through the harness's write tool.
-      const asWrite = longHeredocAsWrite(parsed.toolCalls[0], body.tools);
+      // A command past the Windows command-line cap would reach the shell cut
+      // short. A lone heredoc file write goes through the harness's write tool;
+      // anything else (other commands with it, `py - <<'EOF'`, `py -c`) is saved
+      // to a script by the write tool, then proposed to the model after its result.
+      const heredoc = longHeredocAsWrite(parsed.toolCalls[0], body.tools);
+      const asWrite = heredoc && !heredoc.skipped ? heredoc : null;
+      const asScript = asWrite ? null : longCommandAsScript(parsed.toolCalls[0], body.tools);
       let rewriteNote: string | null = null;
       if (asWrite) {
         log.info(`Heredoc write to ${asWrite.path} is over the Windows command-line cap — sent as ${asWrite.call.function.name} instead`);
         parsed.toolCalls = [asWrite.call];
-        rewriteNote = `(Note: your heredoc to \`${asWrite.path}\` was longer than the ~8,000-character Windows command-line limit and would have been cut off, so it was written with the \`${asWrite.call.function.name}\` tool instead.${asWrite.skipped ? ` The commands after the heredoc did NOT run: \`${asWrite.skipped.slice(0, 200)}\`.` : ""})`;
+        rewriteNote = `(Note: your heredoc to \`${asWrite.path}\` was longer than the ~8,000-character Windows command-line limit and would have been cut off, so it was written with the \`${asWrite.call.function.name}\` tool instead.)`;
+      } else if (asScript) {
+        log.info(`Command of ${asScript.length} chars is over the Windows command-line cap — saving it to ${asScript.path}, execution requires model mediation`);
+        parsed.toolCalls = [asScript.write];
+        conv.chain = { writeId: asScript.write.id, run: asScript.run, toolsHash: canonicalHash(body.tools ?? []) };
+        rewriteNote = "(Note: only a script write was requested. Execution has not happened; inspect the real write result before proposing a run.)";
       }
       // The model's server-side history holds more than what runs; say so on
       // the turn that carries the real result (executedOnlyFirstNote).
@@ -910,7 +1025,7 @@ export async function handleChatCompletion(
       conv.pendingNote = notes.length ? notes.join("\n") : null;
       return { kind: "tools", toolCalls: parsed.toolCalls };
     }
-    return { kind: "text", text: fullText };
+    return { kind: "text", text: plainFileNames(fullText) };
   } else {
     // No tools — stream deltas live (onDelta) while buffering for the retry logic.
     const result = await runBuffered(onDelta);
@@ -922,22 +1037,23 @@ export async function handleChatCompletion(
 
   // --- Render: JSON (non-stream) or an early-flushed SSE stream (stream) ---
   const includeUsage = !!body.stream_options?.include_usage;
-  const usage = () => buildUsage(lastThrottle, lastContentOrigin, lastMessageType, lastScores, lastTurnCount, lastMetering);
+  const usage = (output: VisibleOutput) => ({ ...buildUsage(lastThrottle, lastContentOrigin, lastMessageType, lastScores, lastTurnCount, lastMetering), ...estimateVisibleUsage(body.messages, body.tools, output) });
 
   if (!body.stream) {
     const p = await produce();
     if (p.kind === "error") return p.resp;
+    if (!opts.signal?.aborted) pool.commit(conv, body, p.kind === "tools" ? { role: "assistant", content: null, tool_calls: p.toolCalls } : { role: "assistant", content: p.text });
     if (p.kind === "tools") {
       return jsonResponse(200, {
         id: completionId, object: "chat.completion", created, model,
         choices: [{ index: 0, message: { role: "assistant", content: null, tool_calls: p.toolCalls }, finish_reason: "tool_calls" }],
-        usage: usage(),
+        usage: usage({ toolCalls: p.toolCalls }),
       });
     }
     return jsonResponse(200, {
       id: completionId, object: "chat.completion", created, model,
       choices: [{ index: 0, message: { role: "assistant", content: p.text }, finish_reason: outputFinishReason(p.text) }],
-      usage: usage(),
+      usage: usage({ text: p.text }),
     });
   }
 
@@ -952,7 +1068,21 @@ export async function handleChatCompletion(
   return sseResponse(new ReadableStream({
     async start(controller) {
       const enc = new TextEncoder();
-      const send = (obj: unknown) => controller.enqueue(enc.encode(`data: ${JSON.stringify(obj)}\n\n`));
+      let hb: ReturnType<typeof setInterval> | undefined;
+      let completed = false;
+      try {
+      let recorded: Uint8Array[] = [];
+      let recordedSize = 0;
+      let recordable = true;
+      const emit = (bytes: Uint8Array) => {
+        if (streamComplete && recordable) {
+          recordedSize += bytes.length;
+          if (recordedSize <= 1024 * 1024) recorded.push(bytes);
+          else { recordable = false; recorded = []; }
+        }
+        controller.enqueue(bytes);
+      };
+      const send = (obj: unknown) => emit(enc.encode(`data: ${JSON.stringify(obj)}\n\n`));
       const base = { id: completionId, object: "chat.completion.chunk", created, model };
       send({ ...base, choices: [{ index: 0, delta: { role: "assistant" }, finish_reason: null }] });
       // Keepalive: a REAL empty-delta chunk, not an SSE comment. Agents that track
@@ -960,7 +1090,7 @@ export async function handleChatCompletion(
       // `last_chunk_time`, so a silent turn shows "N s without stream output" and can
       // trip its stale watchdog) see this as activity. No content is added — an empty
       // delta contributes nothing to the assembled message.
-      const hb = setInterval(() => {
+      hb = setInterval(() => {
         try { send({ ...base, choices: [{ index: 0, delta: {}, finish_reason: null }] }); } catch {}
       }, 15000);
 
@@ -984,38 +1114,32 @@ export async function handleChatCompletion(
           gated = false;
           delta = head; // release everything held so far, in order
         }
+        send({ ...base, choices: [{ index: 0, delta: { content: delta }, finish_reason: null }] });
         sent += delta;
-        try { send({ ...base, choices: [{ index: 0, delta: { content: delta }, finish_reason: null }] }); } catch {}
       };
 
       let p: Produced;
       try { p = await produce(liveDelta); }
-      catch (err: any) { p = { kind: "error", resp: jsonResponse(502, { error: { message: err?.message ?? "stream error", type: "upstream_error" } }) }; }
+      catch (err: unknown) { p = { kind: "error", resp: err instanceof AccountPolicyError ? accountPolicyResponse(err) : jsonResponse(502, { error: { message: err instanceof Error ? err.message : "stream error", type: "upstream_error" } }) }; }
       clearInterval(hb);
-      try {
+      if (p.kind !== "error" && !opts.signal?.aborted) pool.commit(conv, body, p.kind === "tools" ? { role: "assistant", content: null, tool_calls: p.toolCalls } : { role: "assistant", content: p.text });
         if (p.kind === "error") {
-          let message = "upstream error";
-          let type = "upstream_error";
-          let code: string | undefined;
-          // Carry the structured fields through, not just the prose: a streaming
-          // client still has to tell a priority-access wall (back off until the
-          // reset) from a transient upstream failure (retry now), and the status
-          // code it would have read is gone once HTTP 200 is committed.
+          const error: Record<string, unknown> = { message: "upstream error", type: "upstream_error" };
           try {
-            const parsed = JSON.parse(await p.resp.text())?.error;
-            if (parsed?.message) message = parsed.message;
-            if (parsed?.type) type = parsed.type;
-            if (parsed?.code) code = parsed.code;
+            const parsed: Record<string, unknown> = JSON.parse(await p.resp.text())?.error;
+            for (const key of ["message", "type", "code", "param", "suggested_models", "m365_error_code", "m365_message_type", "retryable", "status"]) {
+              if (parsed && Object.hasOwn(parsed, key)) error[key] = parsed[key];
+            }
           } catch {}
           const retryAfter = p.resp.headers.get("Retry-After");
-          // HTTP 200 is already committed, so surface the failure as an in-stream error chunk.
-          send({ ...base, error: { message, type, ...(code ? { code } : {}), ...(retryAfter ? { retry_after: Number(retryAfter) } : {}) } });
+          if (retryAfter !== null) error.retry_after = /^\d+$/.test(retryAfter) ? Number(retryAfter) : retryAfter;
+          send({ ...base, error });
         } else if (p.kind === "tools") {
           p.toolCalls.forEach((tc, i) => {
             log.debug(`Tool call: ${tc.function.name} ${trunc(tc.function.arguments, 200)}`);
             send({ ...base, choices: [{ index: 0, delta: { tool_calls: [{ index: i, id: tc.id, type: "function", function: { name: tc.function.name, arguments: tc.function.arguments } }] }, finish_reason: null }] });
           });
-          send({ ...base, choices: [{ index: 0, delta: {}, finish_reason: "tool_calls" }], ...(includeUsage ? { usage: usage() } : {}) });
+          send({ ...base, choices: [{ index: 0, delta: {}, finish_reason: "tool_calls" }], ...(includeUsage ? { usage: usage({ toolCalls: p.toolCalls }) } : {}) });
         } else {
           // Emit only what wasn't already streamed live: the whole text if nothing was
           // (tool-mode prose fallback, or a fully-buffered turn), or just the tail when
@@ -1025,29 +1149,39 @@ export async function handleChatCompletion(
           const remainder = p.text.startsWith(sent) ? p.text.slice(sent.length) : "";
           if (!p.text.startsWith(sent)) log.info(`Streamed prefix diverged from final text (sent ${sent.length}, final ${p.text.length} chars) — not re-sending to avoid duplication`);
           if (remainder) send({ ...base, choices: [{ index: 0, delta: { content: remainder }, finish_reason: null }] });
-          send({ ...base, choices: [{ index: 0, delta: {}, finish_reason: outputFinishReason(p.text) }], ...(includeUsage ? { usage: usage() } : {}) });
+          send({ ...base, choices: [{ index: 0, delta: {}, finish_reason: outputFinishReason(p.text) }], ...(includeUsage ? { usage: usage({ text: p.text }) } : {}) });
         }
-      } catch {
-        // client likely disconnected mid-emit — nothing more to do
+        if (p.kind === "error" || !opts.signal?.aborted) { emit(enc.encode("data: [DONE]\n\n")); controller.close(); }
+        if (streamComplete) {
+          let bytes: Uint8Array | undefined;
+          if (recordable) { bytes = new Uint8Array(recordedSize); let offset = 0; for (const chunk of recorded) { bytes.set(chunk, offset); offset += chunk.length; } }
+          recorded = [];
+          finish(p.kind !== "error" && !opts.signal?.aborted);
+          streamComplete(bytes);
+        } else {
+          finish(p.kind !== "error" && !opts.signal?.aborted);
+        }
+        completed = true;
       } finally {
-        try { controller.enqueue(enc.encode("data: [DONE]\n\n")); controller.close(); } catch {}
+        clearInterval(hb);
+        if (!completed) { finish(); streamComplete?.(undefined); }
       }
     },
+    cancel() { cancellation.abort(); },
   }));
 }
 
-/**
- * Build the OpenAI-style `usage` block from whatever diagnostic info M365 gave
- * us. Token counts are NOT exposed by M365's WebSocket API (we'd need to count
- * locally with a tokenizer that matches the underlying model — see the doc on
- * token-usage hypotheses). What M365 does send is a **conversation quota**:
- * how many user messages out of the 600-per-conversation cap have been spent.
- *
- * That's a different axis from token-window utilisation, but it's the closest
- * thing we have to "remaining budget", so we surface it as extension fields
- * (`x_m365_*`) alongside the zeroed standard counters. Real OpenAI clients
- * ignore unknown extension fields; curious users can read them.
- */
+/** Native local policy verdicts must not become transport failures or fresh retries. */
+function accountPolicyResponse(error: AccountPolicyError): Response {
+  const retryable = error.code === "route_probe_busy";
+  const headers: Record<string, string> = { "x-should-retry": String(retryable) };
+  if (error.retryAfter !== undefined && Number.isFinite(error.retryAfter) && error.retryAfter > 0) {
+    headers["Retry-After"] = String(Math.min(Number.MAX_SAFE_INTEGER, Math.ceil(error.retryAfter)));
+  }
+  return jsonResponse(error.status, { error: { message: error.message, type: "account_policy_error", code: error.code, status: error.status, retryable } }, headers);
+}
+
+/** Real upstream conversation / quota diagnostics, separate from the visible-text estimate. */
 function buildUsage(
   throttle: { current: number; max: number } | null,
   contentOrigin?: string | null,
@@ -1056,11 +1190,7 @@ function buildUsage(
   turnCount?: number | null,
   metering?: Record<string, number> | null,
 ): Record<string, unknown> {
-  const base: Record<string, unknown> = {
-    prompt_tokens: 0,
-    completion_tokens: 0,
-    total_tokens: 0,
-  };
+  const base: Record<string, unknown> = {};
   if (throttle) {
     base.x_m365_conversation_messages = throttle.current;
     base.x_m365_conversation_max = throttle.max;
@@ -1100,28 +1230,30 @@ function jsonResponse(status: number, body: unknown, headers: Record<string, str
   });
 }
 
-/** A priority-access budget (Opus 5.5, Sonnet 5.5) ran out. A real 429 (with `Retry-After` and
- *  the UTC reset instant) so a client backs off to the refill instead of
- *  retrying into a wall — and so an agent loop doesn't treat the refusal text as
- *  the model's answer. Resets at midnight UTC; the weekly budget on Monday. */
+/** A priority-access budget (Opus 5.5, Sonnet 5.5) or the per-account reasoning-turn cap ran out.
+ *  A real 429 (with `Retry-After` and the UTC reset instant) so a client backs off to the
+ *  refill instead of retrying into a wall — and so an agent loop doesn't treat the refusal
+ *  text as the model's answer. Resets at midnight UTC; the weekly budget on Monday.
+ *  `suggested_models` lists what this account can still try, never the refused model,
+ *  a walled one or one refused as not licensed. */
 function priorityAccessResponse(exhaustion: PriorityAccessExhaustion, model: string): Response {
   const retryAfter = secondsUntilReset(exhaustion);
+  const reasoning = exhaustion.kind === "reasoning-turns";
+  const suggested = suggestModels(model, reasoning ? "reasoning-turns" : "priority-access");
   const label = exhaustion.model ?? model;
   const when = exhaustion.window === "week" ? "this week" : "today";
-  return jsonResponse(
+  const reset = `resets ${exhaustion.resetsAt.toISOString()}, i.e. midnight UTC${exhaustion.window === "week" ? " on Monday" : ""}`;
+  return terminalErrorResponse(
     429,
     {
-      error: {
-        message:
-          `M365 Copilot's priority access to ${label} is used up for ${when} ` +
-          `(resets ${exhaustion.resetsAt.toISOString()}, i.e. midnight UTC` +
-          `${exhaustion.window === "week" ? " on Monday" : ""}). ` +
-          `Switch to another model (e.g. claude-sonnet or gpt-5.5-think-deeper) or wait. ` +
-          `Upstream said: ${exhaustion.message}`,
+        message: (reasoning
+          ? `M365 Copilot's reasoning (Think deeper) turns are used up for ${when} (${reset}). `
+          : `M365 Copilot's priority access to ${label} is used up for ${when} (${reset}). `) +
+          `${suggestionSentence(suggested)} No further automatic retries will be sent by the proxy.`,
         type: "rate_limit_error",
-        code: "priority_access_exhausted",
+        code: reasoning ? "reasoning_turns_exhausted" : "priority_access_exhausted",
         param: exhaustion.window,
-      },
+        suggested_models: suggested,
     },
     { "Retry-After": String(retryAfter) },
   );
@@ -1140,39 +1272,28 @@ function rateLimitMessage(throttle: { current: number; max: number } | null): st
 }
 
 function rateLimitResponse(throttle: { current: number; max: number } | null): Response {
-  return jsonResponse(429, { error: { message: rateLimitMessage(throttle), type: "rate_limit_error" } });
+  return terminalErrorResponse(429, { message: rateLimitMessage(throttle), type: "rate_limit_error" });
 }
 
 /** M365 explicitly throttled the turn (`result.value: "Throttled"`). It names
  *  the scope (`PerUserThrottled`) but not the duration, so no Retry-After is
  *  invented. */
 function throttledResponse(result: { errorCode?: string; message?: string }): Response {
-  const scope = result.errorCode ? ` (${result.errorCode})` : "";
-  return jsonResponse(429, {
-    error: {
-      message: `M365 Copilot throttled this account${scope}: ${result.message ?? "too many requests"} ` +
-        `Retrying immediately does not help; it is triggered by starting many new conversations in a short time.`,
-      type: "rate_limit_error",
-      code: "m365_throttled",
-      ...(result.errorCode ? { param: result.errorCode } : {}),
-    },
+  return terminalErrorResponse(429, {
+    message: "M365 Copilot throttled this account. No retry duration was provided by upstream.",
+    type: "rate_limit_error", code: "m365_throttled",
+    ...(result.errorCode === "PerUserThrottled" ? { param: result.errorCode } : {}),
   });
 }
 
-/** M365_AVOID_THROTTLING would have had to wait longer than this request may
- *  (a throttle hold, usually), so the turn was never sent: sending it would only
- *  keep the throttle alive. Whatever retries the client makes are answered here
- *  the same way, without reaching M365. */
 function turnBudgetHoldResponse(hold: TurnBudgetHold): Response {
   const retryAfter = Math.max(1, Math.ceil(hold.waitMs / 1000));
-  return jsonResponse(
+  return terminalErrorResponse(
     429,
     {
-      error: {
         message: `Not sent to M365 Copilot (M365_AVOID_THROTTLING): ${hold.message}.`,
         type: "rate_limit_error",
         code: hold.reason === "throttle hold" ? "m365_throttle_hold" : "m365_turn_budget",
-      },
     },
     { "Retry-After": String(retryAfter) },
   );
@@ -1183,21 +1304,17 @@ function turnBudgetHoldResponse(hold: TurnBudgetHold): Response {
  *  instead of hanging on a long retry loop. */
 function emptyResponseResponse(throttle: { current: number; max: number } | null): Response {
   const detail = throttle ? ` (throttle ${throttle.current}/${throttle.max})` : "";
-  return jsonResponse(502, {
-    error: {
+  return terminalErrorResponse(502, {
       message: `M365 Copilot returned an empty response${detail} — likely a content filter, an invalid agent/session, or a transient upstream error.`,
       type: "upstream_empty_response",
-    },
   });
 }
 
 function premiumOnlyModelResponse(model: string): Response {
-  return jsonResponse(502, {
-    error: {
-      message: `M365 Copilot didn't serve ${model}: it returned InternalError on every attempt. ${model} is served only on a premium (paid Microsoft 365 Copilot) account; on any other account use claude-sonnet.`,
+  return terminalErrorResponse(502, {
+      message: `M365 Copilot didn't serve ${model}: it returned InternalError on every attempt. This can indicate an unavailable model route or a transient upstream failure; it does not establish this account's licence entitlement.`,
       type: "upstream_error",
       code: "model_route_unavailable",
-    },
   });
 }
 

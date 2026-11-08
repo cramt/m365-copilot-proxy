@@ -23,6 +23,9 @@
 // Resets happen at midnight UTC: the daily budget at the next UTC midnight, the
 // weekly one at the next UTC Monday ("wait until Monday").
 
+import { priorityDimension } from "./priority-dimension.js";
+import { currentAccountContext, readAccountFact, writeAccountFact, AccountPolicyError } from "./account-policy.js";
+
 /** Which budget ran out. */
 export type PriorityAccessWindow = "day" | "week";
 
@@ -34,6 +37,8 @@ export interface PriorityAccessExhaustion {
   resetsAt: Date;
   /** The upstream text, verbatim. */
   message: string;
+  /** Set when the refusal is the per-account cap on reasoning ("Think deeper") turns, not a model's priority access. */
+  kind?: "reasoning-turns";
 }
 
 // Anchored on "priority access" + a budget window. Deliberately not matching a
@@ -169,14 +174,17 @@ export function meteredAllowance(
  * paths). Null for an ordinary turn.
  */
 export function priorityAccessExhaustionOf(
-  result: { value: string; message?: string } | null | undefined,
+  result: { value: string; errorCode?: string; message?: string } | null | undefined,
   text: string | null | undefined,
   now: Date = new Date(),
 ): PriorityAccessExhaustion | null {
-  const fromText = parsePriorityAccessExhaustion(result?.message, now) ?? parsePriorityAccessExhaustion(text, now);
+  // The result's own code is authoritative; the reasoning cap's text is not priority-access text.
+  const reasoning = result?.value === "OutOfCredits" && result.errorCode === "ReasoningTurnExhausted";
+  const fromText = reasoning ? null : parsePriorityAccessExhaustion(result?.message, now) ?? parsePriorityAccessExhaustion(text, now);
   if (fromText) return fromText;
   if (result?.value !== "OutOfCredits") return null;
   const message = (result.message ?? text ?? "").trim() || "OutOfCredits";
+  if (reasoning) return { window: "day", resetsAt: nextUtcMidnight(now), message, kind: "reasoning-turns" };
   const window: PriorityAccessWindow = /\bweek|monday/i.test(message) ? "week" : "day";
   return { window, resetsAt: window === "week" ? nextUtcMonday(now) : nextUtcMidnight(now), message };
 }
@@ -187,19 +195,34 @@ export function priorityAccessExhaustionOf(
 // the reset is refused too. Each of those refusals still starts an M365 turn,
 // often in a fresh conversation — the thread budget the account throttles on
 // (F13) — so the proxy answers them itself until the reset. One process serves
-// one account, so this is per-account knowledge. Kept per budget: an Opus wall
+// one account historically. Authenticated contexts now persist scoped facts. An Opus wall
 // says nothing about Sonnet 5.5's. A model not known to be metered that gets an
 // `OutOfCredits` anyway is remembered under its model ID.
 const exhaustions = new Map<string, PriorityAccessExhaustion>();
 
 /** Record that the budget under `key` (a MeteredBudget, or a model ID) ran out. */
 export function notePriorityAccessExhausted(key: string, e: PriorityAccessExhaustion, now: Date = new Date()): void {
+  if (currentAccountContext()) {
+    let dimension: string;
+    try { dimension = priorityDimension(key); } catch { throw new AccountPolicyError(503, "account_policy_unavailable", 1); }
+    const known = readAccountFact("priority", dimension, +now);
+    if (!known || +e.resetsAt > known.expires) writeAccountFact("priority", dimension, e.window, +e.resetsAt, +now);
+    return;
+  }
   const known = exhaustions.get(key);
   if (!known || e.resetsAt > known.resetsAt || known.resetsAt <= now) exhaustions.set(key, e);
 }
 
 /** The recorded exhaustion under `key`, while it lasts; null once its reset has passed. */
 export function activePriorityAccessExhaustion(key: string, now: Date = new Date()): PriorityAccessExhaustion | null {
+  if (currentAccountContext()) {
+    let dimension: string;
+    try { dimension = priorityDimension(key); } catch { throw new AccountPolicyError(503, "account_policy_unavailable", 1); }
+    const fact = readAccountFact("priority", dimension, +now);
+    if (!fact) return null;
+    if (fact.value !== "day" && fact.value !== "week") throw new AccountPolicyError(503, "account_policy_unavailable", 1);
+    return { window: fact.value, resetsAt: new Date(fact.expires), message: "Priority access is exhausted for this account budget" };
+  }
   const known = exhaustions.get(key);
   if (known && known.resetsAt <= now) exhaustions.delete(key);
   return exhaustions.get(key) ?? null;

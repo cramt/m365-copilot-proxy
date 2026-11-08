@@ -9,7 +9,7 @@
     "proxy": "node packages/proxy/bin/m365-proxy.mjs",
     "pi": "bash scripts/pi-local.sh",
     "test": "pnpm test:unit",
-    "test:unit": "pnpm build && npx vitest run",
+    "test:unit": "pnpm build && pnpm exec vitest run && pnpm --filter @m365-copilot/proxy-lib test:native",
     "test:live": "pnpm build && M365_LIVE=1 npx vitest run"
   },
   "packageManager": "pnpm@10.32.1",

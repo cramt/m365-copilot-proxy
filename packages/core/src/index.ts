@@ -8,6 +8,8 @@ export {
   forceReauth,
 } from "./auth.js";
 
+export { CachePersistenceError } from "./storage.js";
+
 export {
   generateImage,
   fetchImageBytes,
@@ -48,6 +50,8 @@ export {
   isPremiumOnlyModel,
   requestUsesAgent,
   meteredBudgetOf,
+  reasoningWallKey,
+  REASONING_WALL_KEY,
   priorityAccessFallbackModel,
   PRIORITY_ACCESS_FALLBACK_ENV,
   noteAgentRouteDead,
@@ -80,6 +84,7 @@ export {
   type PriorityAccessExhaustion,
   type PriorityAccessWindow,
 } from "./priority-access.js";
+export { noteModelNotLicensed, isModelNotLicensed, resetModelLicenceState } from "./model-licence.js";
 
 export {
   currentFramingVariant,
@@ -88,6 +93,7 @@ export {
   transcriptStyleForVariant,
   FRAMING_VARIANT_NAMES,
   longHeredocAsWrite,
+  longCommandAsScript,
   type TranscriptStyle,
 } from "./fenced.js";
 
@@ -108,6 +114,8 @@ export {
   ACTION_CONFIRM_MESSAGE_TYPES,
   type ActionConfirmation,
 } from "./native-actions.js";
+
+export { withAccountContext, AccountPolicyError } from "./account-policy.js";
 
 export {
   ModelSession,

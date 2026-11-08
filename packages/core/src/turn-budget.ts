@@ -3,6 +3,8 @@ import { homedir } from "node:os";
 import { basename, join, resolve } from "node:path";
 import { createLogger, fileLoggingEnabled, LOG_PATH } from "./log.js";
 
+import { currentAccountContext, noteAccountThrottle } from "./account-policy.js";
+
 const log = createLogger("turn-budget");
 
 // Throttle avoidance, OFF unless M365_AVOID_THROTTLING=1: wait before an
@@ -277,7 +279,7 @@ export class TurnBudgetHold extends Error {
 
 // This process's turns, recorded where session.ts logs them. Counted only when
 // this process doesn't write a debug log (otherwise the log already holds them).
-const ownEvents: BudgetEvent[] = [];
+const ownEvents: (BudgetEvent & { scope?: string })[] = [];
 // Turns let through but not yet started: the token, an image upload or the agent
 // lookup can come in between. Counted until session.ts records the turn, so a
 // request deciding meanwhile sees it.
@@ -295,26 +297,31 @@ function pruneOwn(nowMs: number): void {
   while (grants.length && grants[0]! < nowMs - GRANT_TTL_MS) grants.shift();
 }
 
-/** An upstream turn starting. CopilotSession.chat calls it where it logs `Chat turn`. */
-export function recordTurn(nowMs = Date.now()): void {
-  grants.shift();
-  ownEvents.push({ t: nowMs, kind: "turn", line: `own:${ownSeq++}` });
+/** Scoped probes must not consume default session grants. */
+export function recordTurn(nowMs = Date.now(), scope?: string): void {
+  if (scope === undefined && currentAccountContext()) return;
+  if (scope === undefined) grants.shift();
+  ownEvents.push({ t: nowMs, kind: "turn", line: `own:${ownSeq++}`, scope });
   pruneOwn(nowMs);
 }
 
-/** A throttled turn. session.ts calls it where it logs `Turn result: Throttled`. */
-export function recordThrottle(nowMs = Date.now()): void {
-  ownEvents.push({ t: nowMs, kind: "throttled", line: `own:${ownSeq++}` });
+/** Record explicit scoped observations separately from durable session policy. */
+export function recordThrottle(nowMs = Date.now(), scope?: string): void {
+  if (scope === undefined && currentAccountContext()) { noteAccountThrottle(nowMs); return; }
+  ownEvents.push({ t: nowMs, kind: "throttled", line: `own:${ownSeq++}`, scope });
 }
 
 /**
  * The bucket as the proxy sees it: the logs, this process's grants, and its own
  * turns unless `logged` says its debug log already holds them.
  */
-export function proxyBudgetStatus(nowMs = Date.now(), cfg: BudgetConfig = budgetConfig(), logged = fileLoggingEnabled()): ReturnType<typeof budgetStatus> {
+export function proxyBudgetStatus(nowMs = Date.now(), cfg: BudgetConfig = budgetConfig(), logged = fileLoggingEnabled(), scope?: string): ReturnType<typeof budgetStatus> {
   pruneOwn(nowMs);
+  // Direct probes do not write session log lines or consume session grants.
+  // Their opaque principal scope must never replay unscoped account logs.
+  if (scope !== undefined) return budgetStatus(nowMs, { ...cfg, dirs: [] }, ownEvents.filter((e) => e.scope === scope));
   const extra: BudgetEvent[] = [
-    ...(logged ? [] : ownEvents),
+    ...(logged ? [] : ownEvents.filter((e) => e.scope === undefined)),
     ...grants.map((t, i) => ({ t, kind: "turn" as const, line: `grant:${t}:${i}` })),
   ];
   const dirs = logged && !cfg.dirs.includes(LOG_PATH) ? [...cfg.dirs, LOG_PATH] : cfg.dirs;
@@ -362,6 +369,7 @@ export interface AwaitTurnBudgetOptions {
  * limit, and one whose client went away doesn't keep its place (#77).
  */
 export async function awaitTurnBudget(opts: AwaitTurnBudgetOptions = {}): Promise<{ waitedMs: number }> {
+  if (currentAccountContext()) return { waitedMs: 0 }; // No legacy log replay or duplicate grants in authenticated policy scope.
   const cfg = opts.cfg ?? budgetConfig();
   if (!cfg.enabled) return { waitedMs: 0 };
   const now = opts.now ?? Date.now;

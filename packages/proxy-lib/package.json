@@ -16,7 +16,8 @@
   ],
   "scripts": {
     "build": "tsdown src/index.ts --format esm --dts",
-    "test": "vitest run"
+    "test": "vitest run",
+    "test:native": "cd ../.. && vitest run --config packages/proxy-lib/vitest.native.config.ts"
   },
   "dependencies": {
     "@m365-copilot/core": "workspace:*",
