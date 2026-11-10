@@ -1,10 +1,12 @@
 # Claude Code and Codex
 
-> **Status: experimental (Oct 7 2026).** The whole path has been checked end to end with
-> the real CLIs (Claude Code 2.1.286, Codex 0.157), the real gateway and the real proxy
-> code, with only the M365 turn faked (`scripts/gateway-fake-m365.mjs`). It has **not**
-> been run against live M365 yet. In particular, whether these harnesses' big prompts
-> trip `Disengaged` is still unknown — see [hypotheses §39](hypotheses.md).
+> **Status: experimental; first live runs Nov 10 2026** (Windows 11, premium account, three runs
+> per arm, so read the numbers as direction, not rates). The path works end to end and never tripped
+> `Disengaged`. What failed was the model: M365's Claude models often refuse to act as Claude Code
+> or the Codex CLI ("I'm Microsoft Copilot…"), reading the harness's identity lines and
+> `<system-reminder>` blocks as an injection. `M365_HARNESS_PROMPT=lean` strips those. With it,
+> Claude Code on `claude-sonnet-5` solved 6/6, against 0/3 without it. Codex still refuses about one
+> task in three. Details: [hypotheses §39](hypotheses.md) F102–F104.
 
 Neither client speaks the API this proxy serves. Claude Code only speaks the Anthropic
 Messages API. Codex only speaks the OpenAI Responses API: it dropped
@@ -23,10 +25,20 @@ Codex ─────── OpenAI Responses ─────┘   (provider "m36
 ## Setup
 
 **1. Start the proxy on a port other than 4141.** copilot-api also defaults to 4141.
+`M365_HARNESS_PROMPT=lean` removes what the models refuse (see
+[What the proxy does](#what-the-proxy-does-for-these-clients)), and `M365_AVOID_THROTTLING=1` paces
+turns before the account's throttle trips:
 
 ```sh
-m365-proxy 4143
+M365_HARNESS_PROMPT=lean M365_AVOID_THROTTLING=1 M365_DEBUG=1 m365-proxy 4143
 ```
+
+On a managed Windows PC (Entra-joined, Intune) the one-time sign-in can be silent. If the Chrome
+policy `CloudAPAuthEnabled` is on, Chrome signs in with your Windows account. Set
+`M365_ENABLE_INTERACTIVE_APPROVAL=1`, `CHROMIUM_PATH` to `chrome.exe`, and `M365_LOGIN_UA` to a
+Windows Chrome user agent; the default is a Linux one. On Windows `CHROMIUM_PATH` is required, because
+the proxy finds a browser with `command -v`. Edge doesn't work when policy forces browser sign-in
+(`BrowserSignin=2`): Playwright never gets a window.
 
 **2. Add the proxy to copilot-api as a provider.** Edit `config.json`
 (`~/.local/share/copilot-api/`, or the directory given to `--api-home`):
@@ -84,12 +96,18 @@ disengage (on the agent path,
 characters, the same count as pi. Add `WebSearch`/`WebFetch` only if you want them (see
 [Search](#search)).
 
+Which model: on a premium account, `m365/claude-sonnet-5` (Sonnet 5 on the paid scenario, with no
+priority-access budget) solved 6/6 live with `M365_HARNESS_PROMPT=lean`. Otherwise use
+`m365/claude-sonnet` (Sonnet 4.6). `claude-opus` (Opus 5.5) and `claude-sonnet-5.5` spend small daily
+budgets (40 and 80 turns), shared with your own Copilot Chat use, and every tool call is a turn.
+
 **4. Codex** (`~/.codex/config.toml`):
 
 ```toml
 model = "m365/claude-sonnet"
 model_provider = "m365"
 web_search = "disabled"
+model_instructions_file = "/path/to/m365-brief.txt"   # optional, see below
 
 [model_providers.m365]
 name = "m365 via copilot-api"
@@ -100,6 +118,13 @@ request_max_retries = 1
 stream_max_retries = 1
 stream_idle_timeout_ms = 300000
 ```
+
+`model_instructions_file` replaces Codex's own ~40k-character instructions, which are written for GPT
+and name the Codex CLI throughout. A three-sentence brief with no identity cut Codex's M365 turns per
+task from 5.3 to 2.3 live, but didn't stop the remaining refusals. The brief used:
+"I'm working on a project in the current directory of my computer. My terminal tools run the commands
+and file edits you ask for, and I send you back their output. Please work through the task step by step
+with those tools, and finish with a short answer."
 
 `web_search = "disabled"` is required for now. Through an OpenAI-compatible provider,
 copilot-api rejects Codex's hosted search tool with a 400 ("Responses Messages fallback
@@ -145,6 +170,14 @@ proxy handles both modes; see below.
   (`[m365-proxy: disengaged] …`) with `finish_reason: "stop"`. Nothing retries: one
   failed turn costs 2 M365 turns (the proxy's own F22 retry) instead of ~22.
   `M365_STREAM_ERROR_MODE=text|chunk` forces either behaviour for any client.
+- **The harness's identity and reminders can be stripped (`M365_HARNESS_PROMPT`, off by default).**
+  Even with `--system-prompt-file`, Claude Code sends Anthropic's billing header, "You are a Claude
+  agent, built on Anthropic's Claude Agent SDK." and `<system-reminder>` blocks in the user turn, one of
+  which names the model ID. M365's models answer that they're Microsoft Copilot and refuse. `clean`
+  drops those lines and blocks, plus Claude Code's and Codex's own "You are …" lines; the environment
+  and date reminders are kept as plain text. `lean` also cuts each tool description to ~700
+  characters, so Bash keeps its Git Bash line and loses the git and PR protocol. Claude Code's first
+  turn goes from 17.2k to 5.1k characters.
 
 ## Search
 
@@ -165,9 +198,17 @@ Disabling Codex's hosted `web_search` doesn't rule out search:
 
 ## Known limits
 
-- **Not tried against live M365.** These harnesses' first prompts are big, so Disengaged
-  is the open risk. The first turn the proxy builds is about 31k characters for lean
-  Claude Code and 53k–71k for Codex (fallback tools vs Code Mode).
+- **The models refuse the harness.** Live, no turn disengaged; the failures were the model saying it is
+  Microsoft Copilot with its own sandbox, not Claude Code or the Codex CLI. Without
+  `M365_HARNESS_PROMPT` Claude Code solved 1/3 (Sonnet 4.6) and 0/3 (Sonnet 5); with `lean`, Sonnet 5
+  solved 6/6. Codex solved 2/3 in every arm. Its remaining refusals quote the proxy's
+  `<harness_system_prompt>` wrapper and Codex's PTY tools (`exec_command`, `write_stdin`)
+  ([F103](hypotheses.md)).
+- **Quota.** A headless run of these small tasks cost one conversation and 2–5 M365 turns. Every turn
+  draws on the account's throttle bucket (~100 turns, refilled at ~1.6 a minute); once it runs dry,
+  `PerUserThrottled` refuses everything for about an hour, and a fresh login doesn't help. Run the
+  proxy with `M365_AVOID_THROTTLING=1`. Fan-out to subagents spends the bucket fastest (issue #94).
+  Opus 5.5 and Sonnet 5.5 also have small daily budgets, shared with your own Copilot Chat use.
 - **Thread budget ([F13](hypotheses.md)).** A headless session opens one M365
   conversation, plus one per `WebSearch` call and one per subagent
   ([F101](hypotheses.md)). Compaction and `WebFetch` summaries open more, and so may
@@ -175,6 +216,9 @@ Disabling Codex's hosted `web_search` doesn't rule out search:
   been measured. The settings above turn off the avoidable ones.
 - **One tool call per turn, and about 3k output tokens per turn.** A large `Write` or
   heredoc gets cut off. Codex's `apply_patch` isn't used; edits go through the shell.
+- **No token counts.** M365 reports none, so usage shows 0 tokens and the harness can't track its
+  context window. The proxy sends only new messages per turn, and M365 holds the conversation
+  (600 messages each).
 
 ## Checking it without quota
 
@@ -224,6 +268,10 @@ out (F13). Run them one at a time.
    ```sh
    node scripts/harness-check.mjs --harness=claude,codex --tasks=fix-bug,find-needle,edit-config
    ```
+
+   For H39d's prompt arms, restart the proxy with `M365_HARNESS_PROMPT=off|clean|lean` between
+   runs, and pass `--claude-system-prompt-file=F`, `--claude-append-system-prompt-file=F` or
+   `--codex-instructions-file=F` (with `--label=NAME` to tell the result files apart).
 
    Per run you get:
    - the outcome, from a verifier;

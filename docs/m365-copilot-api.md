@@ -86,6 +86,13 @@ The `nativeclient` redirect URI is designed to be **intercepted by an embedded n
 - Field selectors: email `input[name="loginfmt"]`, password `input[name="passwd"]`, TOTP `input[name="otc"]`.
 - On NixOS, Playwright's bundled `chrome-headless-shell` fails (`libglib-2.0.so.0`); point it at a system Chromium via `CHROMIUM_PATH` (`resolveChromiumPath()`).
 - TOTP codes are single-use per 30s window — space retries past the window.
+- **Managed Windows PCs (Entra-joined, Intune) can sign in silently with Chrome.** With the Chrome
+  policy `CloudAPAuthEnabled=1`, Chrome signs in with the Windows PRT. The interactive path
+  (`M365_ENABLE_INTERACTIVE_APPROVAL=1`, `CHROMIUM_PATH` set to chrome.exe, a Windows
+  `M365_LOGIN_UA`) got its code in about a second with no prompt. Edge under Playwright fails
+  (`Browser window not found`) when the policy `BrowserSignin=2` forces a profile sign-in first.
+  `resolveChromiumPath()` probes with `command -v`, which Windows lacks, so set `CHROMIUM_PATH`
+  there (hypotheses §39 F104).
 
 ---
 

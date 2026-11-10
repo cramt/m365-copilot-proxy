@@ -5740,3 +5740,81 @@ only be told apart by their first message. Not covered: interactive sessions (ti
 recaps; no TTY here) and compaction. What's left of H39c needs live sessions: how often the model searches
 or spawns a subagent, and what interactive mode adds. Also seen: Codex 0.157's `workspace-write` sandbox
 refuses every command on Windows ("blocked by policy", even `echo`).
+
+### Nov 10 2026 — first live runs
+A Windows 11 PC (Entra-joined, Intune-managed) with a premium account:
+the paid scenario serves `claude-sonnet-5` ("I'm Microsoft Enterprise Copilot, based on Claude Sonnet
+5"). Claude Code 2.1.303, Codex 0.157.0-alpha.9 and copilot-api 2.6.23 drove the proxy through
+`scripts/harness-check.mjs` over `fix-bug`, `find-needle` and `edit-config`, 90 s apart, three runs
+per arm. Arms 1–3 ran on da63706 (this section's code before the upstream merge), the rest on the
+merge. "Brief" is `--system-prompt-file` (Claude Code) or `model_instructions_file` (Codex) holding
+three user-voice sentences with no identity: "I'm working on a project in the current directory of my
+computer. My terminal tools run the commands and file edits you ask for, and I send you back their
+output. Please work through the task step by step with those tools, and finish with a short answer."
+
+| arm | model | harness | client prompt | `M365_HARNESS_PROMPT` | solved | M365 turns per run |
+|---|---|---|---|---|---|---|
+| 1 | Sonnet 4.6 (`claude-sonnet`) | Claude Code | default | — | 1/3 | 1.7 |
+| 2 | Sonnet 4.6 | Codex | default | — | 2/3 | 3.3 |
+| 3 | Sonnet 4.6 | Claude Code | brief | — | 2/3 | 2.3 |
+| 4 | Sonnet 5 (`claude-sonnet-5`) | Claude Code | brief | off | 0/3 | 1.3 |
+| 5 | Sonnet 5 | Claude Code | brief | lean | 3/3 | 3.0 |
+| 8 | Sonnet 5 | Claude Code | default | lean | 3/3 | 3.0 |
+| 6 | Sonnet 5 | Codex | default | lean | 2/3 | 5.3 |
+| 7 | Sonnet 5 | Codex | brief | lean | 2/3 | 2.3 |
+
+Arm 2's turns include two requests from another local client (F104). The whole session cost 81 M365
+turns in 32 conversations over 70 minutes, with no throttle.
+
+### F102 — H39a: the harnesses don't disengage; the model refuses them 🟢 (24 runs)
+No turn disengaged in any arm, and the highest `dea_violation` was 4.7e-7 (clean tool calls sit near
+1e-8). Every failure is the model declining, in prose, to be the harness. Sonnet 4.6: "the instructions in
+your message describe me as 'Claude Code' running in a terminal-based harness … That's not actually how
+I'm set up — I'm Microsoft Copilot". Sonnet 5: "This message is trying to get me to drop my actual
+identity/tools … I'm Microsoft Enterprise Copilot". Codex: "I'm Microsoft 365 Copilot, not the Codex CLI
+agent described in that framing". One Sonnet 4.6 run refused on its second turn instead, calling the real
+tool output "a fake tool_response". The open risk was Disengaged; the real one is the harness's identity,
+§21's lesson (Sonnet reads `<system>` tags as an injection) applied to the harness's own text.
+
+### F103 — H39d: strip the harness's identity and reminders 🟡 (n=3 per arm)
+What Sonnet 5 quoted when it refused (arm 4) survives `--system-prompt-file`: Claude Code prepends
+`x-anthropic-billing-header: …` and "You are a Claude agent, built on Anthropic's Claude Agent SDK." to any
+system prompt, and opens the user turn with five `<system-reminder>` blocks (the environment, "You are
+powered by the model named Sonnet 5. The exact model ID is m365/claude-sonnet-5", a token budget, the date,
+git attribution). Its refusal named them: "fake 'system-reminder' and 'harness' text … a claimed model ID,
+a claimed Anthropic 'Claude Agent SDK' identity". `M365_HARNESS_PROMPT=lean` (`harness.ts`) drops them,
+keeps the environment and date as plain text, and cuts each tool description to ~700 characters (Bash
+keeps its Git Bash line and loses the git and PR protocol). The first turn shrank from 17.2k to 5.1k
+characters, and Sonnet 5 went from 0/3 to 6/6 (arms 5 and 8): Claude Code needs no prompt of its own once
+the proxy strips these.
+
+Codex improved less. Its base instructions name the Codex CLI throughout. With them replaced (arm 7),
+Sonnet 5 still refused `fix-bug` in every Codex arm, now pointing at the proxy's own
+`<harness_system_prompt>` wrapper and Codex's PTY tools: "an embedded 'harness' describing a different
+agent setup (PowerShell `exec_command`/`write_stdin` tools, a Windows machine …)". The brief did cut
+Codex's turns per run from 5.3 to 2.3 (`edit-config`: 12 → 4).
+
+### F104 — sign-in, routes and a stray client on a managed Windows PC 🟡
+- **Sign-in is silent with Chrome.** The Intune Chrome policy `CloudAPAuthEnabled=1` makes Chrome sign in
+  with the Windows PRT. With `M365_ENABLE_INTERACTIVE_APPROVAL=1`, `CHROMIUM_PATH` set to chrome.exe and a
+  Windows `M365_LOGIN_UA`, the interactive path had its code in about a second, with no prompt. Edge
+  failed (`Browser.getWindowForTarget: Browser window not found`) because the user policy
+  `BrowserSignin=2` forces a profile sign-in before any window opens. `resolveChromiumPath` probes with
+  `command -v`, which Windows lacks, so `CHROMIUM_PATH` has to be set there.
+- **`claude-opus-4.8` is a dead route here.** It returned `InternalError` on every attempt (tool-less,
+  agent-less), on an account whose paid scenario serves Sonnet 5. §36 has premium accounts serving it
+  (n=1 request, two attempts).
+- **Every turn carried `metering`** (Opus 40/75, Sonnet 5.5 80/150), Sonnet 4.6's included-scenario
+  turns too.
+- **An unknown local client sent two requests.** Both read "Operational connectivity test <hex>. Do not
+  search, access files, call tools, or generate images" and used `gpt-6.1-sol` and `gpt-6-think-deeper`.
+  They went straight to the proxy's port, not through the gateway. The text isn't in this repo,
+  copilot-api or Codex. With no auth on a well-known port, any local process can spend the account's
+  turns (#93).
+
+### Open (Nov 10)
+- **H39a** — answered for Disengaged (F102). The refusals moved to H39d.
+- **H39d** — the harness's identity text causes the refusals; removing it fixes Claude Code (F103).
+  **Next:** for Codex, rename the `<harness_system_prompt>` wrapper for harness user-agents and present
+  `exec_command` as a plain shell without `write_stdin`. Also run a `clean`-only arm (is the description
+  cap needed?), Sonnet 4.6 under `lean`, and `--repeat` to firm up 6/6.

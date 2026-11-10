@@ -320,7 +320,10 @@ pnpm test:live      # M365_LIVE=1; live tests that hit real M365 (uses quota)
   the turn ten times, each retry opening fresh conversations. Claude Code's `Bash` is Git Bash on
   Windows, so it gets no PowerShell note (`shellDialect` reads it as POSIX). The client's
   `prompt_cache_key` (its session id) scopes the conversation key, on top of the opener and the
-  tool names. See docs/claude-code-codex.md, docs/hypotheses.md §39.
+  tool names. Their identity lines ("You are a Claude agent, built on Anthropic's Claude Agent
+  SDK", "…running in the Codex CLI") and `<system-reminder>` blocks make M365's models refuse ("I'm
+  Microsoft Copilot") — not Disengage. `M365_HARNESS_PROMPT=clean|lean` strips them (`harness.ts`;
+  Sonnet 5 in Claude Code 0/3 → 6/6). See docs/claude-code-codex.md, docs/hypotheses.md §39.
 - **Account degradation is THREAD-rate, not message-count** (docs/hypotheses.md §9 F13).
   Microsoft throttles *conversations started*, not messages sent — the per-conversation
   counter resets each thread. A bench that opens one fresh conversation per task burns the
