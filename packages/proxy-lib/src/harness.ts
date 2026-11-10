@@ -149,3 +149,41 @@ export function leanHarnessTools<T extends ToolLike>(tools: T[] | undefined): T[
     return { ...t, function: { ...t.function, description: leanToolDescription(description) } };
   });
 }
+
+interface ToolCallLike {
+  function: { name: string; arguments: string };
+}
+interface ToolSchemaLike {
+  function: { name: string; parameters?: unknown };
+}
+
+/**
+ * A call whose numeric arguments the tool's schema documents in milliseconds,
+ * with any value under 1000 read as seconds. Models fill the tools block's
+ * optional `timeout: <timeout>` in seconds: GPT-5.6 Think Deeper sent Claude
+ * Code's Bash `timeout: 30`, Claude Code moved each command to the background
+ * after its 1 s floor, and `claude -p` never exited (hypotheses §39). Nobody
+ * means a sub-second timeout. Returns the same call when nothing changes.
+ */
+export function millisecondArgsFixed<C extends ToolCallLike>(call: C, tools: ToolSchemaLike[] | undefined): C {
+  const schema = tools?.find((t) => t.function.name === call.function.name)?.function.parameters as
+    | { properties?: Record<string, { description?: string }> }
+    | undefined;
+  const props = schema?.properties;
+  if (!props) return call;
+  let args: Record<string, unknown>;
+  try {
+    args = JSON.parse(call.function.arguments);
+  } catch {
+    return call;
+  }
+  if (!args || typeof args !== "object") return call;
+  let changed = false;
+  for (const [key, value] of Object.entries(args)) {
+    if (typeof value !== "number" || value <= 0 || value >= 1000) continue;
+    if (!/millisecond/i.test(props[key]?.description ?? "")) continue;
+    args[key] = value * 1000;
+    changed = true;
+  }
+  return changed ? { ...call, function: { ...call.function, arguments: JSON.stringify(args) } } : call;
+}

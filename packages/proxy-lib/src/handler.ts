@@ -52,6 +52,7 @@ import {
   cleanHarnessMessages,
   harnessPromptMode,
   leanHarnessTools,
+  millisecondArgsFixed,
   streamErrorsAsText,
   streamErrorText,
   stripGatewayToolTipsFromMessages,
@@ -974,7 +975,9 @@ export async function handleChatCompletion(
       // the turn that carries the real result (executedOnlyFirstNote).
       const notes = [rewriteNote, executedOnlyFirstNote(cutFabricated, droppedCalls, textAfterFirstToolCall(fullText, body.tools).length)].filter(Boolean);
       conv.pendingNote = notes.length ? notes.join("\n") : null;
-      return { kind: "tools", toolCalls: parsed.toolCalls };
+      const fixed = parsed.toolCalls.map((c) => millisecondArgsFixed(c, body.tools));
+      if (fixed.some((c, i) => c !== parsed.toolCalls[i])) log.info("A millisecond argument under 1000 read as seconds (e.g. Bash timeout: 30)");
+      return { kind: "tools", toolCalls: fixed };
     }
     return { kind: "text", text: fullText };
   } else {

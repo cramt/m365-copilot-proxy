@@ -6,6 +6,7 @@ import {
   isAgentHarnessUserAgent,
   leanHarnessTools,
   leanToolDescription,
+  millisecondArgsFixed,
   streamErrorsAsText,
   streamErrorText,
   stripGatewayToolTips,
@@ -210,5 +211,39 @@ describe("leanToolDescription", () => {
     expect(out[1].function.description).toBe(bash);
     expect(out[1].function.parameters).toBe(long.function.parameters);
     expect(leanHarnessTools(undefined)).toBeUndefined();
+  });
+});
+
+describe("millisecondArgsFixed", () => {
+  // Claude Code 2.1.303's Bash schema, abridged.
+  const tools = [{
+    type: "function",
+    function: {
+      name: "Bash",
+      parameters: {
+        type: "object",
+        properties: {
+          command: { type: "string", description: "The command to execute" },
+          timeout: { type: "number", description: "Optional timeout in milliseconds (max 600000)" },
+          description: { type: "string", description: "Clear, concise description of what this command does" },
+        },
+      },
+    },
+  }];
+  const call = (args: Record<string, unknown>) => ({ id: "c1", type: "function", function: { name: "Bash", arguments: JSON.stringify(args) } });
+
+  it("reads a millisecond value under 1000 as seconds", () => {
+    const out = millisecondArgsFixed(call({ command: "python3 check.py", timeout: 30 }), tools);
+    expect(JSON.parse(out.function.arguments)).toEqual({ command: "python3 check.py", timeout: 30000 });
+  });
+
+  it("leaves real millisecond values, other parameters and unknown tools alone", () => {
+    const ms = call({ command: "sleep 5", timeout: 120000 });
+    expect(millisecondArgsFixed(ms, tools)).toBe(ms);
+    const other = { id: "c2", type: "function", function: { name: "Read", arguments: JSON.stringify({ limit: 30 }) } };
+    expect(millisecondArgsFixed(other, tools)).toBe(other);
+    const bad = { id: "c3", type: "function", function: { name: "Bash", arguments: "not json" } };
+    expect(millisecondArgsFixed(bad, tools)).toBe(bad);
+    expect(millisecondArgsFixed(ms, undefined)).toBe(ms);
   });
 });
