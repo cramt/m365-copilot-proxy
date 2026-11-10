@@ -411,6 +411,32 @@ describe("an explicitly Throttled turn (result.value = Throttled)", () => {
   });
 });
 
+describe("a prompt over the model's input limit (result.value = InvalidRequest)", () => {
+  // Live, GPT-6.1 Sol on a Codex first turn: no content, only this final result.
+  const TOO_LONG = { value: "InvalidRequest", errorCode: "InputTokenLimitExceeded" };
+
+  it("fails fast with a 400 that says the prompt is too long — no retries", async () => {
+    scripted.deltas = [];
+    scripted.fullText = "";
+    scripted.result = TOO_LONG;
+    scripted.runs = 0;
+    const body = ChatCompletionRequest.parse({
+      model: "gpt-6.1-sol",
+      stream: false,
+      messages: [{ role: "user", content: "a very long prompt" }],
+    });
+    const res = await handleChatCompletion(body, new SessionPool());
+    scripted.result = null;
+    expect(res.status).toBe(400);
+    const err = (await res.json()).error;
+    expect(err.type).toBe("invalid_request_error");
+    expect(err.code).toBe("context_length_exceeded");
+    expect(err.param).toBe("InputTokenLimitExceeded");
+    expect(err.message).toContain("too long for gpt-6.1-sol");
+    expect(scripted.runs).toBe(1); // the empty-reply path spent 3 attempts here
+  });
+});
+
 describe("M365_AVOID_THROTTLING holds a turn it would have to wait too long for", () => {
   const hold = () => new TurnBudgetHold("throttle hold", 65 * 60_000, Date.parse("2026-10-12T08:00:00.000Z"));
 

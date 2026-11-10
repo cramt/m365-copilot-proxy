@@ -604,6 +604,16 @@ export async function handleChatCompletion(
         return { error: throttledResponse(copilotStream.result) };
       }
 
+      // M365 rejects a prompt over the model's input limit outright: no content,
+      // `result: InvalidRequest (InputTokenLimitExceeded)`. GPT-6.1 Sol did on every
+      // Codex first turn, whose ~40k-character instructions Sonnet takes (§39).
+      // Any retry re-sends the same prompt, so fail fast and say what to cut.
+      if (copilotStream.result?.value === "InvalidRequest") {
+        noteRequestOutcome(false, convId);
+        log.info(`Upstream InvalidRequest (${copilotStream.result.errorCode ?? "no errorCode"}), prompt ${text.length} chars — 400, no retry`);
+        return { error: invalidRequestResponse(copilotStream.result, model, text.length) };
+      }
+
       // A tone whose agent route serves only on a premium account came back as
       // the dead route (`InternalError`, no content): this account isn't
       // premium. Remember that for the process, and re-send the WHOLE request
@@ -1218,6 +1228,24 @@ function turnBudgetHoldResponse(hold: TurnBudgetHold): Response {
     },
     { "Retry-After": String(retryAfter) },
   );
+}
+
+/** M365 refused the turn as an invalid request; `InputTokenLimitExceeded` means
+ *  the prompt is too big for this model. A 400: re-sending it can't succeed. */
+function invalidRequestResponse(result: { errorCode?: string; message?: string }, model: string, promptChars: number): Response {
+  const tooLong = result.errorCode === "InputTokenLimitExceeded";
+  const message = tooLong
+    ? `M365 Copilot refused the prompt as too long for ${model} (InputTokenLimitExceeded; ${promptChars} characters sent). ` +
+      `Shorten the system prompt or the tool definitions (for Codex: model_instructions_file), or use another model.`
+    : `M365 Copilot rejected the request (InvalidRequest${result.errorCode ? `: ${result.errorCode}` : ""})${result.message ? `: ${result.message}` : "."}`;
+  return jsonResponse(400, {
+    error: {
+      message,
+      type: "invalid_request_error",
+      code: tooLong ? "context_length_exceeded" : "m365_invalid_request",
+      ...(result.errorCode ? { param: result.errorCode } : {}),
+    },
+  });
 }
 
 /** Empty upstream reply that is NOT an at-limit throttle — a distinct failure
