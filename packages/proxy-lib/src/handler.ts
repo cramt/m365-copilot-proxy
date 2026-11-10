@@ -679,6 +679,27 @@ export async function handleChatCompletion(
         return { error: priorityAccessResponse(exhausted, model) };
       }
 
+      // M365's prompt filter can answer with a canned apology instead of a
+      // Disengaged message: contentOrigin "Apology", "Sorry, it looks like I can't
+      // chat about this. Let's try a different topic." GPT-5.6 Think Deeper did on
+      // a benign Codex edit task (§39). It is F22's refusal with text, and it
+      // reached the client as the model's answer. Retry it like a Disengage, once,
+      // in a fresh conversation; a second apology goes through as before. Tool
+      // requests only: they're buffered, so nothing has been streamed yet.
+      if (
+        copilotStream.contentOrigin === "Apology" &&
+        hasTools && !disengageRetried && !process.env.M365_NO_DISENGAGE_RETRY
+      ) {
+        disengageRetried = true;
+        session.newConversation();
+        const retryVariant = transcriptStyleForVariant(framingVariant).framingTag === "system" ? "softened" : framingVariant;
+        text = formatMessages(body.messages, body.tools, body.tool_choice, session.conversationId, retryVariant);
+        inputImages = imageUrls(body.messages);
+        log.info(`Upstream Apology (prompt filter) — retrying once with '${retryVariant}' framing in a fresh conversation (F22)`);
+        attempt--; // free retry; bounded — disengageRetried flips once
+        continue;
+      }
+
       if (copilotStream.hasContent || fullText.length > 0) {
         noteRequestOutcome(false, convId); // clean response → degradation has lifted
         if (useToolAgent) noteAgentRouteAlive(tone); // the agent route answered on this account

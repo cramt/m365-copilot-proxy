@@ -11,7 +11,7 @@ const scripted: {
   /** Text of every run() call, in order. */
   texts: string[];
   /** Per-call overrides, consumed front-first (e.g. a Disengaged turn, then an answer). */
-  queue: Array<{ fullText: string; messageType?: string | null; result?: { value: string; errorCode?: string; message?: string }; metering?: Record<string, number> }>;
+  queue: Array<{ fullText: string; messageType?: string | null; contentOrigin?: string; result?: { value: string; errorCode?: string; message?: string }; metering?: Record<string, number> }>;
   /** The model argument of every run() call, in order. */
   models: string[];
   /** The `useAgent` argument of every run() call, in order. */
@@ -69,7 +69,7 @@ vi.mock("@m365-copilot/core", async (importActual) => {
         metering: next?.metering ?? null,
         images: [],
         throttle: { current: 1, max: 600 },
-        contentOrigin: "Claude",
+        contentOrigin: next?.contentOrigin ?? "Claude",
         messageType: (next?.messageType ?? null) as string | null,
         messageId: "m1",
         scores: null,
@@ -515,6 +515,26 @@ describe("M365_AVOID_THROTTLING holds a turn it would have to wait too long for"
 
 describe("Disengage retry keeps a model's <system>-free framing", () => {
   const tools = [{ type: "function", function: { name: "bash", parameters: { type: "object", properties: { command: { type: "string" } } } } }];
+
+  it("retries the prompt filter's canned apology once in a fresh conversation, like a Disengage", async () => {
+    const APOLOGY = "Sorry, it looks like I can't chat about this. Let's try a different topic.";
+    scripted.result = null;
+    scripted.texts = [];
+    scripted.newConversations = 0;
+    scripted.queue = [{ fullText: APOLOGY, contentOrigin: "Apology" }, { fullText: "```bash\nls\n```" }];
+    const body = ChatCompletionRequest.parse({
+      model: "gpt-5.6-think-deeper", stream: false, tools,
+      messages: [{ role: "user", content: "change the port in config.json to 8080, leave everything else unchanged" }],
+    });
+    const res = await handleChatCompletion(body, new SessionPool());
+    scripted.queue = [];
+    expect(res.status).toBe(200);
+    expect(scripted.texts).toHaveLength(2);
+    expect(scripted.newConversations).toBe(1);
+    const message = (await res.json()).choices[0].message;
+    expect(message.content ?? "").not.toContain("can't chat about this");
+    expect(message.tool_calls[0].function.name).toBe("bash");
+  });
   async function disengageThenAnswer(model: string): Promise<string> {
     scripted.result = null;
     scripted.texts = [];
