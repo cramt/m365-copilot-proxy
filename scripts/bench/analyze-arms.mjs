@@ -23,16 +23,20 @@
 //   path      `agent` or `agent-less`: whether the LAST request carried the tool
 //             agent, i.e. the path that served the result (a dead-route fallback
 //             to agent-less counts as agent-less, and is flagged `fb`)
-//   sandbox   turns with a "Coding and executing" Progress frame: the model ran
-//             commands in its own remote sandbox. Don't count
-//             `contentOrigin: CodeGenerator` instead; most such turns lack it.
+//   sandbox   turns with a `contentType: "Code"` Progress frame: the model ran
+//             code in its own remote sandbox. The text varies by model —
+//             "Coding and executing" (GPT-6, Sonnet 5), "Analysing" / "Analysis"
+//             (Sonnet 4.6's code interpreter, which the old text-only match
+//             missed: hypotheses §30). Don't count `contentOrigin: CodeGenerator`
+//             instead; most such turns lack it.
 //   diseng / jb  turns with a Disengaged message / a JailBreakClassifier origin
 // If the number of conversations doesn't match the number of tasks, the arm's
 // wire totals still print but its rows get path `?`.
 //
 // A task is INVALID (left out of every score) when it failed because of the
 // infrastructure: its error is a transport failure or a throttle (WebSocket /
-// connection / 429 / m365_throttled); or its conversation logged a network-level
+// connection / 429 / m365_throttled, or a turn M365_AVOID_THROTTLING held back
+// — a pi run sees only its message); or its conversation logged a network-level
 // WS error or a Throttled turn; or it timed out in an arm whose log shows network
 // failures elsewhere (a stalled connect leaves no error of its own); or it hit
 // the Opus priority-access wall (a priority_access_exhausted error, or an
@@ -56,7 +60,7 @@ import { basename, join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 
 const PI_TASKS = ["fix-bug", "multi", "edit-config"];
-const TRANSPORT = /WebSocket error|connection failed|ECONNREFUSED|ECONNRESET|ENOTFOUND|EAI_AGAIN|socket hang up|m365_throttled|HTTP 429/i;
+const TRANSPORT = /WebSocket error|connection failed|ECONNREFUSED|ECONNRESET|ENOTFOUND|EAI_AGAIN|socket hang up|m365_throttled|HTTP 429|Not sent to M365 Copilot/i;
 // A WS error the network caused. Not "closed before the connection was
 // established": that's the proxy aborting a turn because the client gave up.
 const NETWORK_WS_ERROR = /WS error: (connection failed|.*(ENOTFOUND|EAI_AGAIN|ECONNRESET|ECONNREFUSED|ETIMEDOUT|ENETUNREACH|getaddrinfo))/;
@@ -165,14 +169,14 @@ export function conversations(log) {
 }
 
 /** Per-turn frame verdicts, keyed by clientCorrelationId (= frame file name). */
-function frameFlags(framesDir) {
+export function frameFlags(framesDir) {
   const flags = new Map();
   if (!existsSync(framesDir) || !statSync(framesDir).isDirectory()) return flags;
   for (const f of readdirSync(framesDir)) {
     if (!f.endsWith(".ndjson")) continue;
     const t = readFileSync(join(framesDir, f), "utf8");
     flags.set(f.slice(0, -7), {
-      sandbox: t.includes("Coding and executing"),
+      sandbox: t.includes('"contentType":"Code"') || t.includes("Coding and executing"),
       disengaged: t.includes('"messageType":"Disengaged"'),
       jailbreak: t.includes("JailBreakClassifier"),
     });

@@ -56,10 +56,15 @@ fresh login doesn't clear it. `--task-gap S` (phase-sweep: `TASK_GAP=S`) slows a
 To avoid the throttle instead, set **`M365_AVOID_THROTTLING=1`** (off by default). The bench then waits
 before every task (and every real-pi run) until the proxy's debug logs say the bucket covers a whole
 task plus a reserve of 20 turns, and for 75 minutes of quiet after a throttled turn (`turn-budget.mjs`).
-A long sweep then runs at the account's pace, ~1.6 turns a minute once the bucket is low. It needs a
+A long sweep then runs at the bucket's refill rate, ~1.6 turns a minute once the bucket is low. It needs a
 proxy with `M365_DEBUG=1`, which phase-sweep always sets; turns it can't see (the web client, another
 host, a proxy without debug logs) aren't counted. `node scripts/bench/turn-budget.mjs status` shows
-where the bucket stands, and the `M365_BUDGET_*` variables in its header tune the model. The Opus
+where the bucket stands, and the `M365_BUDGET_*` variables tune the model. The model lives in the
+core package (`packages/core/src/turn-budget.ts`; build first), because a proxy started with the same
+variable also waits, before each upstream turn — which is what keeps a long pi session clear of the
+throttle (hypotheses §37). Both keep the same reserve, so a task the bench let start only waits in the
+proxy if it runs past its turn allowance or something else spends turns meanwhile; phase-sweep's
+proxies inherit the variable. The Opus
 priority-access wall (`claude-opus`: 40 turns a day) stops it the same way, as `[bench] PRIORITY
 ACCESS EXHAUSTED` (exit 4); `analyze-arms.mjs` counts the tasks it took as `INVALID(quota)`.
 
@@ -93,7 +98,10 @@ PHASES='A:baseline,relay,demo_only,relay|B@M365_FORCE_AGENT=0:relay,pi=fix-bug,p
 ```
 
 `PHASES` is `NAME[@KEY=VAL...]:ARM,...` separated by `|`. An arm is a framing variant, `default`
-(the model's shipped framing) or `pi=fix-bug|multi|edit-config` (`PI_N` real-pi runs). Every
+(the model's shipped framing) or `pi=fix-bug|multi|edit-config` (`PI_N` real-pi runs).
+`@MODEL=ID` gives a phase its own model, so one sweep can alternate two models arm by arm (one arm
+per phase) instead of running them hours apart; `MODEL` can then be left out, and `analyze-arms`
+selects on `+MODEL=ID`. Every
 proxy runs with debug logs, frame dumps and the confab retry off. `DRY_RUN=1` validates the plan
 (unknown variants included) without spending anything; `PROXY_CMD="node
 scripts/bench/_mock-proxy.mjs"` runs the whole driver against the mock. The header of the

@@ -4,10 +4,10 @@
 // one M365 conversation — the thread budget, F13). Per run it records:
 //   - the outcome, from a verifier (SOLVED / FAIL / DISENGAGED / THROTTLED / TIMEOUT);
 //   - from the proxy's debug log: M365 turns, M365 conversations (threads),
-//     Disengaged events and the highest dea_violation score (H30a);
+//     Disengaged events and the highest dea_violation score (H39a);
 //   - through a header-logging shim in front of copilot-api: every request the
-//     harness made and, for Claude Code, its x-claude-code-request-class (H30c).
-// docs/hypotheses.md §30; setup in docs/claude-code-codex.md.
+//     harness made and, for Claude Code, its x-claude-code-request-class (H39c).
+// docs/hypotheses.md §39; setup in docs/claude-code-codex.md.
 //
 // Needs: the proxy started with M365_DEBUG=1 (reads ~/.config/opencode-m365/
 // debug.log, or --proxy-log); copilot-api with a provider "m365" pointing at the
@@ -75,7 +75,7 @@ const EXTRA_TASKS = [{
   prompt: "Use web search to find the GitHub repository for the open-source project \"m365-copilot-proxy\" by cramt. Reply with just its URL.",
   claudeTools: "Bash,Read,Edit,Write,WebSearch",
 }, {
-  // H30c: a subagent is a new conversation with its own first message.
+  // H39c: a subagent is a new conversation with its own first message.
   name: "subagent",
   files: { "notes.txt": "hello\n" },
   prompt: "Use a subagent (the Agent tool) to look at the files in this directory and report their names back. Then tell me the file names.",
@@ -251,7 +251,8 @@ async function runCodex(task, dir, base) {
 function outcomeOf(solved, r, m) {
   if (solved) return "SOLVED";
   const text = `${r.answer}\n${r.stdout}\n${r.stderr}`;
-  if (m.throttled > 0 || /m365_throttled|PerUserThrottled/.test(text)) return "THROTTLED";
+  // m365_throttle_hold: M365_AVOID_THROTTLING answers for the throttle without sending the turn.
+  if (m.throttled > 0 || /m365_throttled|m365_throttle_hold|PerUserThrottled/.test(text)) return "THROTTLED";
   if (/\[m365-proxy: disengaged\]/.test(text) || m.disengaged >= 2) return "DISENGAGED";
   if (r.timedOut) return "TIMEOUT";
   return "FAIL";

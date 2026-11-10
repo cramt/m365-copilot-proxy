@@ -59,7 +59,12 @@ Each agent session reuses the same M365 conversation (same `sessionId` + `conver
 
 - Node.js 24+
 - pnpm 10+
-- An M365 account with Copilot access
+- A **work or school (Entra ID) account** with M365 Copilot Chat. Personal Microsoft
+  accounts — Microsoft 365 Personal/Family, Outlook.com, copilot.microsoft.com — are
+  not supported: the proxy talks to the enterprise M365 Copilot service, and the Office
+  client it signs in as rejects personal accounts ("You can't sign in here with a
+  personal account", #64). "Every account" elsewhere in this README means every work
+  or school account, premium or not.
 - A way to sign in, either:
   - **TOTP-based MFA with the base32 secret in hand** — the automated login types the
     6-digit code itself, so it needs the seed, not an app on your phone. See
@@ -200,6 +205,10 @@ Point [pi](https://pi.dev/) at it via `~/.pi/agent/models.json`:
 > `apiKey` is a placeholder. The proxy binds to localhost and validates no
 > credential — the field exists only because the OpenAI client schema requires it.
 
+To let the model see images — a screenshot, a chart the agent drew, a PNG it `read`s — add
+`"input": ["text", "image"]` to each model entry. pi then sends them as `image_url` parts and the proxy
+uploads them to M365 the way the web client does.
+
 Then run pi (use `gpt-5.5-think-deeper` — the reliable tool-calling model — and keep the
 toolset lean; M365 "disengages" on very large tool payloads, see
 [docs/m365-copilot-api.md](docs/m365-copilot-api.md#the-disengaged-filter)):
@@ -209,6 +218,13 @@ pi --models "gpt-5.5-think-deeper" -p --tools read,list,edit,write "your task"
 ```
 
 This is verified working end-to-end, including multi-tool calls and real file edits.
+
+**Long sessions.** Every turn draws on the account's throttle budget, about 100 turns refilled at
+~1.6 a minute. A busy pi session can run it dry, and M365 then refuses every turn for about an hour
+(`PerUserThrottled`). Start the proxy with `M365_AVOID_THROTTLING=1` (and `M365_DEBUG=1`, so it can
+read the budget from its logs) and it slows the session down instead. Once the budget is down to a
+reserve, it waits before each turn, inside the open stream so pi doesn't time out. See
+[`M365_AVOID_THROTTLING`](#environment-variables).
 
 ### 4. Use with OpenClaw
 
@@ -308,7 +324,7 @@ without NixOS: `nix run github:cramt/m365-copilot-proxy -- 4141`.
 | `claude-sonnet-5` | Claude_Sonnet_5 (paid scenario) | Claude Sonnet 5. **Needs a paid/premium Copilot seat**; no separate quota. 27/30 on the bench with the `relay` framing (6/40 with `baseline`; see below) |
 | `claude-sonnet-think-deeper` | Claude_Sonnet_Reasoning | Claude reasoning |
 | `claude-opus` / `claude-opus-5.5` | Claude_Opus (paid scenario) | Claude Opus 5.5. **Needs a paid/premium Copilot seat** and has a small separate quota: 40 turns a day (see below). 10/10 on the bench with `relay`; defaults to `relay_batch`. `claude-opus-5` is kept as an alias |
-| `claude-opus-4.5` | Claude_Opus (included scenario, tool agent) | Claude Opus 4.5. **Premium accounts only**, but **no** priority-access quota. With its default `relay_batch` framing: 20/20 on the bench at 2.3 turns per task, 10/10 driving real pi |
+| `claude-opus-4.8` | Claude_Opus (included scenario) | Claude Opus 4.8. **Premium accounts only**, but **no** priority-access quota. With its default `relay_batch` framing and the tool agent: 30/30 on the bench at 2.5 turns per task, 10/10 driving real pi. `claude-opus-4.5` is kept as an alias (it was Opus 4.5 until October 2026) |
 | `gpt-5.4` / `gpt-5.4-quick` | Gpt_5_4_* | GPT-5.4 |
 | `gpt-5.3` / `gpt-5.3-think-deeper` | Gpt_5_3_* | GPT-5.3 |
 | `gpt-5.2` / `gpt-5.2-think-deeper` | Gpt_5_2_* | GPT-5.2 |
@@ -464,25 +480,26 @@ fewer turns through real pi (39/39). On Sonnet 5 that saved only 6% in pi, so it
 Sonnet 5.5 starts on `relay` too, until it has been benchmarked.
 Override with `M365_FRAMING_VARIANT` as usual. Details: hypotheses §21, §25, §26.
 
-### Opus (`claude-opus`, `claude-opus-4.5`) — two models, one with a small quota
+### Opus (`claude-opus`, `claude-opus-4.8`) — two models, one with a small quota
 
 The `Claude_Opus` tone serves two models, picked by the `scenario` the WebSocket is opened with:
 
 | Model ID | Model | Scenario | Who can use it | Quota |
 |---|---|---|---|---|
 | `claude-opus` (`claude-opus-5.5`, `claude-opus-5`) | Claude Opus 5.5 | `OfficeWebPaidCopilot` | paid/premium seat | small priority-access quota |
-| `claude-opus-4.5` | Claude Opus 4.5 | `OfficeWebIncludedCopilot`, tool agent attached | premium account | none beyond the usual throttling |
+| `claude-opus-4.8` (`claude-opus-4.5`) | Claude Opus 4.8 | `OfficeWebIncludedCopilot` | premium account | none beyond the usual throttling |
 
 The proxy picks the scenario from the model ID, so nothing has to be configured. This is an
 **entitlement, not a bypass**: without a paid/premium seat neither model serves. `claude-opus`
-then gets a licence-refusal message, and `claude-opus-4.5` a 502 saying it's premium-only. `licenseType`
+then gets a licence-refusal message, and `claude-opus-4.8` a 502 saying it's premium-only. `licenseType`
 alone unlocks nothing; override either with `M365_SCENARIO` / `M365_LICENSE_TYPE`.
 
-**`claude-opus-4.5` only works through the Copilot Studio tool agent**, so the proxy attaches the
-agent to every request on it, tools or not. Without the agent the route returns a canned apology on
-every account, which is why earlier notes in this repo recorded Opus on the included scenario as
-dead. It may introduce itself as "Claude Opus 5": that's what its system prompt says, and the model
-itself mostly answers "Opus 4.5" (see hypotheses §24).
+**`claude-opus-4.8`'s tool requests carry the Copilot Studio tool agent**, like `claude-opus`'s.
+Without the agent Opus 4.8 has a code interpreter of its own, and unless the framing steers it away it
+works there instead of in your harness, reporting success on files it never touched. The default
+`relay_batch` framing does steer it away, and there the two paths solve the same, so the agent is the
+safety margin. Requests without tools go without it. Until October 2026 this route served Claude Opus
+4.5, and only through the agent; `claude-opus-4.5` now reaches Opus 4.8 (see hypotheses §24, §36).
 
 **`claude-opus` is metered separately: 40 turns a day, 75 a week.** Opus 5.5 draws on a "priority
 access" budget distinct from the ~600-message conversation cap, and **every M365 turn costs one,
@@ -498,8 +515,8 @@ What the proxy does about it:
   (`code: priority_access_exhausted`, `param: day|week`) with a `Retry-After` to the reset — on the
   streaming path an `error` chunk with the same fields. It then answers further `claude-opus`
   requests itself until the reset, without spending M365 turns on more refusals.
-- **Can fall back to Opus 4.5:** with `M365_OPUS_FALLBACK_MODEL=claude-opus-4.5`, a `claude-opus`
-  request that hits the wall is sent to `claude-opus-4.5` instead (unmetered, premium accounts only),
+- **Can fall back to Opus 4.8:** with `M365_OPUS_FALLBACK_MODEL=claude-opus-4.8`, a `claude-opus`
+  request that hits the wall is sent to `claude-opus-4.8` instead (unmetered, premium accounts only),
   and so is every later one until the reset. The response's `model` field says which model answered.
 - **Spends fewer turns:** the `relay_batch` framing (below) asks the model to do as much as it can
   per tool call, and avoids the jailbreak-filter retries that cost `claude-opus`'s old default framing
@@ -513,8 +530,9 @@ retry in a fresh conversation), the user-voice `relay` framings on none. And tur
 from 3.65 to 2.30 turns per bench task (20/20 either way) and from 6 to 3.5 turns per real-pi run
 (10/10 either way) — on Opus 5.5 that's ~17 tasks a day instead of ~11. The cost to watch is a
 block that acts before it has seen any output; in pi every edit still came after a read. Opus 5.5
-went 10/10 on the bench with `relay`; it hasn't been benched with `relay_batch` yet.
-Override with `M365_FRAMING_VARIANT` as usual. Details: [hypotheses §24](docs/hypotheses.md).
+went 10/10 on the bench with `relay`; it hasn't been benched with `relay_batch` yet. Opus 4.8, which
+replaced Opus 4.5, went 30/30 with it at 2.5 turns per task.
+Override with `M365_FRAMING_VARIANT` as usual. Details: [hypotheses §24, §36](docs/hypotheses.md).
 
 ## Image generation
 
@@ -596,20 +614,25 @@ Three token scopes are acquired:
 | `M365_DUMP_FRAMES` | Set to `1` to write every WebSocket frame (both directions) to `~/.config/opencode-m365/frames/<requestId>.ndjson`. For offline diffing of new M365 fields. |
 | `M365_FRAME_DIR` | Frame dump directory, relative to `~/.config/opencode-m365/` (default `frames`; an absolute path is used as is). `M365_FRAME_DIR=my/frames` dumps to `~/.config/opencode-m365/my/frames/`. |
 | `M365_ALLOW_MULTI_TOOL` | Allow the model to emit multiple tool calls per turn (default: only the first is kept) |
+| `M365_NO_EARLY_STOP` | Set to `1` to let a tool turn run to its end after the model starts writing its own `<tool_response>`. By default the proxy stops the turn once that invented tail passes `M365_EARLY_STOP_AFTER` chars (the invented part is cut either way), which saves minutes when the model invents the rest of the session (#65) |
+| `M365_EARLY_STOP_AFTER` | How many chars of a model-written `<tool_response>` tail a tool turn may run before the proxy stops it (default `2000`; `0` stops at the tag). M365 keeps a short tail in the conversation and the model seems to follow it: stopping at the tag cost Sonnet 4.6 10% more turns in real pi, the default none measurable ([hypotheses §35](docs/hypotheses.md)) |
 | `M365_STREAM_ERROR_MODE` | How a streaming request that fails after its HTTP 200 is reported: `chunk` (an OpenAI-style `error` chunk) or `text` (the reason as the assistant's message, with `finish_reason: "stop"`). Unset, Claude Code and Codex user-agents get `text` and every other client gets `chunk`. Through copilot-api, an error chunk made Claude Code retry the turn ten times, each retry opening fresh M365 conversations ([docs/claude-code-codex.md](docs/claude-code-codex.md)). |
 | `M365_INJECT_REPLY_TOOL` | Set to `1` to inject a synthetic `reply(text)` tool. Forces every turn to be a tool call, including pure-prose answers. Cleaner contract for the model, +1 tool to the prompt (watch the Disengaged threshold). Confirmed 5/5 compliance on June 9 2026 ([hypotheses §1.1](docs/hypotheses.md)). |
 | `M365_NO_CONFAB_RETRY` / `M365_CONFAB_RETRIES` | M365's chat model sometimes produces prose instead of a tool call when it should act — either confabulating an inability ("I can't access the files, please paste them") **or** claiming a completion it never did ("I've replaced the README", with no tool call). By default the proxy detects both and re-prompts forcefully **in the same conversation** (`M365_CONFAB_RETRIES`, default `1`) to force a real action. Set `M365_NO_CONFAB_RETRY=1` to disable. |
 | `M365_NO_BACKOFF` (alias `M365_NO_AUTO_REAUTH`) | Set to `1` to disable degradation backoff. By default, when empty/throttled responses span several **distinct conversations** in a short window (the thread-rate-throttle signature, [F13](docs/hypotheses.md)), the proxy **paces subsequent turns** (a jittered delay before starting new backend conversations) to let the account self-heal. This replaced the old auto-reauth: a fresh login does **not** clear this throttle (it's `oid`-keyed — [§11 H-R1](docs/hypotheses.md)) and raised our detection profile. A single long pi thread never trips the trigger. |
 | `M365_BACKOFF_THRESHOLD` / `M365_BACKOFF_WINDOW_MS` / `M365_BACKOFF_BASE_MS` / `M365_BACKOFF_MAX_MS` | Tune backoff: distinct-conversation empties to trigger (default `3`), the window they must fall in (default `120000`), the initial pacing window (default `90000`), and its escalation cap (default `600000`). |
+| `M365_AVOID_THROTTLING` | Set to `1` to keep the account clear of M365's `PerUserThrottled` throttle. A long pi session or a bench sweep trips it by running the account's turn budget dry (~100 turns, refilled at ~1.6 a minute, [hypotheses §24 F58](docs/hypotheses.md)), and it then refuses every turn for about an hour. With this set, the proxy waits before each upstream turn until the budget holds that turn plus a reserve of 20. A streamed request waits on its keepalive chunks, so pi doesn't time out, and the session runs at ~1.6 turns a minute once the budget is low. After a throttled turn the proxy holds new turns for 75 minutes and answers them with a 429 (`m365_throttle_hold`, with `Retry-After`) instead of sending them: each one would keep the throttle alive. The budget is read from the debug logs under `~/.config/opencode-m365`, so with `M365_DEBUG=1` it also counts the bench's and other proxies' turns and survives a restart. Without it, only this process's turns since it started count. The bench uses the same variable ([scripts/bench/README.md](scripts/bench/README.md)). Off by default. [Hypotheses §37](docs/hypotheses.md). |
+| `M365_BUDGET_MAX_WAIT_MIN` | The longest `M365_AVOID_THROTTLING` holds a streamed request (default `15`, enough to refill an empty budget). A longer wait, usually a throttle hold, gets the 429 instead. A request that isn't streamed waits at most 2 minutes, since it sends nothing until the answer and clients give up on it after 5. Both limits count the time a request spends behind others waiting their turn. A larger value (e.g. `90`) lets a streamed request sit out a throttle hold instead of failing: pi has no time limit on a stream that keeps sending data. |
+| `M365_BUDGET_CAPACITY` / `M365_BUDGET_REFILL` / `M365_BUDGET_RESERVE` / `M365_BUDGET_HOLD_MIN` / `M365_BUDGET_LOGS` | Tune `M365_AVOID_THROTTLING`'s budget model: its size (default `100` turns), refill rate (`1.6` a minute), the reserve kept back (`20`), the hold after a throttled turn (`75` minutes), and more log files or directories to read (`:`-separated). |
 | `M365_BROWSER_PROFILE` / `M365_LOGIN_UA` | Override the persistent browser-profile dir and the login User-Agent used for the (rare) automated interactive login. The persistent profile keeps AAD SSO/device cookies so repeat logins are silent and look like a familiar device ([§11 H-R3](docs/hypotheses.md)). |
 | `M365_ENABLE_INTERACTIVE_APPROVAL` | Set to `1` to allow a **visible** browser window for sign-in when the automated login can't work or fails — the fallback for tenants with no TOTP option (push-only MFA, FIDO2, Okta/Ping/Duo). You complete SSO/MFA by hand once; tokens refresh silently afterwards. Off by default so headless hosts fail loudly rather than hang. See [If your tenant has no TOTP option](#if-your-tenant-has-no-totp-option). |
 | `M365_NO_INTERACTIVE` | Set to `1` to hard-disable any visible browser login, overriding the flag above. For systemd/CI hosts where a window must never open. |
 | `M365_INTERACTIVE_TIMEOUT_MS` | How long to wait for you to finish the interactive sign-in (default `600000`, i.e. 10 minutes). |
 | `M365_LOGIN_LOCALE` / `M365_LOGIN_TIMEZONE` | Browser locale and timezone presented during login (defaults `en-GB` / `Europe/Copenhagen`). These are part of the anti-bot-scoring fingerprint ([§11 F25](docs/hypotheses.md)) — set them to match your own machine if AAD starts treating your automated login as a bot. |
-| `M365_FORCE_AGENT` | Override which tool requests carry the Copilot Studio tool agent. `1` attaches it to every tool request (and turns off the GPT-6 Sol fallback below); `0` never attaches it. Unset, the proxy decides per model: GPT-5.x, `m365-copilot` and both Opus models take it, the other Claude models and `gpt-6-think-deeper` don't, and `gpt-6-sol` / `gpt-6.1-sol` take it only on a premium account, which the proxy learns from the first request. `claude-opus-4.5` carries it on tool-less requests too, since that's its only route (`0` turns that off as well). On a non-premium account `0` saves the probe turn (~3 s) per GPT-6 Sol model per proxy start. |
-| `M365_OPUS_FALLBACK_MODEL` | Model to serve `claude-opus` (Opus 5.5) requests with once its priority-access budget is used up, instead of returning a 429 — typically `claude-opus-4.5`, which isn't metered (premium accounts only). Applies until the budget resets; the response's `model` field names the model that answered. Unset by default. |
+| `M365_FORCE_AGENT` | Override which tool requests carry the Copilot Studio tool agent. `1` attaches it to every tool request (and turns off the GPT-6 Sol fallback below); `0` never attaches it. Unset, the proxy decides per model: GPT-5.x, `m365-copilot` and both Opus models take it, the other Claude models and `gpt-6-think-deeper` don't, and `gpt-6-sol` / `gpt-6.1-sol` take it only on a premium account, which the proxy learns from the first request. On a non-premium account `0` saves the probe turn (~3 s) per GPT-6 Sol model per proxy start. |
+| `M365_OPUS_FALLBACK_MODEL` | Model to serve `claude-opus` (Opus 5.5) requests with once its priority-access budget is used up, instead of returning a 429 — typically `claude-opus-4.8`, which isn't metered (premium accounts only). Applies until the budget resets; the response's `model` field names the model that answered. Unset by default. |
 | `M365_SONNET_FALLBACK_MODEL` | The same for `claude-sonnet-5.5` (Sonnet 5.5) once its priority-access budget is used up — e.g. `claude-sonnet-5` (unmetered) or `claude-sonnet` (Sonnet 4.6, any account). A fallback naming a metered model is ignored. Unset by default. |
-| `M365_SCENARIO` / `M365_LICENSE_TYPE` | Override the entitlement the WebSocket is opened under (defaults: `OfficeWebIncludedCopilot` / `Starter`, switching to `OfficeWebPaidCopilot` / `Premium` for the entitlement-gated models — `claude-opus`, `gpt-6-think-deeper`, `claude-sonnet-5` and `claude-sonnet-5.5`; `claude-opus-4.5` and `gpt-6.1-sol` stay on the included one). `scenario` is what gates the model list (and picks Sonnet 4.6 vs 5.5 for the `Claude_Sonnet` tone, Sonnet 4.6 vs 5 for `Claude_Sonnet_5`, Opus 4.5 vs 5.5 for `Claude_Opus`); `licenseType` rides along and unlocks nothing by itself. Forcing the paid scenario on `gpt-6.1-sol` spends its separate GPT-6.1 Sol allowance (40 turns a day, 75 a week), which the proxy doesn't track. |
+| `M365_SCENARIO` / `M365_LICENSE_TYPE` | Override the entitlement the WebSocket is opened under (defaults: `OfficeWebIncludedCopilot` / `Starter`, switching to `OfficeWebPaidCopilot` / `Premium` for the entitlement-gated models — `claude-opus`, `gpt-6-think-deeper`, `claude-sonnet-5` and `claude-sonnet-5.5`; `claude-opus-4.8` and `gpt-6.1-sol` stay on the included one). `scenario` is what gates the model list (and picks Sonnet 4.6 vs 5.5 for the `Claude_Sonnet` tone, Sonnet 4.6 vs 5 for `Claude_Sonnet_5`, Opus 4.8 vs 5.5 for `Claude_Opus`); `licenseType` rides along and unlocks nothing by itself. Forcing the paid scenario on `gpt-6.1-sol` spends its separate GPT-6.1 Sol allowance (40 turns a day, 75 a week), which the proxy doesn't track. |
 | `M365_CACHE_FILE` | Override MSAL token cache location |
 | `M365_SECRETS_FILE` | Override credentials file location |
 | `CHROMIUM_PATH` | Path to Chromium binary for automated login |
@@ -680,7 +703,7 @@ pnpm run test:live    # Run live integration tests against M365
 - Tool calling is emulated (prompt injection + a Copilot Studio agent), not native function calling — robust with the agent, unreliable without it
 - The `think-deeper` / `*_Reasoning` models take 10-30s per response
 - Hard quota of ~600 messages **per conversation** (mitigated by session reuse + delta sends)
-- `claude-opus` needs a paid/premium seat and has its own small priority-access quota (40 turns a day, 75 a week; every tool call is a turn) that resets at midnight UTC (weekly on Monday); exhaustion surfaces as a 429, or as a switch to `M365_OPUS_FALLBACK_MODEL`. `claude-opus-4.5` needs a premium account too, but has no such quota
+- `claude-opus` needs a paid/premium seat and has its own small priority-access quota (40 turns a day, 75 a week; every tool call is a turn) that resets at midnight UTC (weekly on Monday); exhaustion surfaces as a 429, or as a switch to `M365_OPUS_FALLBACK_MODEL`. `claude-opus-4.8` needs a premium account too, but has no such quota
 - `claude-sonnet-5.5` needs a paid/premium seat and has a priority-access quota of its own (80 turns a day, 150 a week), handled the same way (`M365_SONNET_FALLBACK_MODEL`). `claude-sonnet-5` needs the seat but has no quota
 - Streaming: **tool-less** responses stream incrementally (deltas forwarded as they arrive). **Tool-calling** turns are still buffered server-side — the raw text has to be parsed for tool-call fences before it can be emitted — so those arrive as a single chunk at the end (with an immediate HTTP 200 + heartbeats so the client never times out waiting)
 

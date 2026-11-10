@@ -21,6 +21,8 @@ export {
   type ImageGenFailureReason,
 } from "./image.js";
 
+export { uploadImage, imageUrls, type ImageAnnotation } from "./image-input.js";
+
 export {
   noteRequestOutcome,
   awaitDegradationBackoff,
@@ -40,10 +42,10 @@ export {
   getScenarioForModel,
   isSonnet5Model,
   isSonnet55Model,
-  isOpus45Model,
+  isIncludedOpusModel,
   toneUsesToolAgent,
   toolRequestUsesAgent,
-  modelRequiresAgent,
+  isPremiumOnlyModel,
   requestUsesAgent,
   meteredBudgetOf,
   priorityAccessFallbackModel,
@@ -85,6 +87,7 @@ export {
   defaultFramingForModel,
   transcriptStyleForVariant,
   FRAMING_VARIANT_NAMES,
+  longHeredocAsWrite,
   type TranscriptStyle,
 } from "./fenced.js";
 
@@ -121,8 +124,10 @@ export {
   looksLikeHallucinatedCompletion,
   looksLikeRemoteArtifactCompletion,
   truncateAtFabricatedToolResponse,
+  fabricatedToolResponseAt,
   textAfterFirstToolCall,
   isProseDocument,
+  formatToolResponse,
   type Message,
   type ToolDef,
   type ToolFunction,
@@ -131,4 +136,24 @@ export {
   type ParseResult,
 } from "./tools.js";
 
-export { createLogger, trunc, LOG_PATH, FRAME_DIR } from "./log.js";
+export { createLogger, trunc, LOG_PATH, FRAME_DIR, fileLoggingEnabled } from "./log.js";
+export {
+  budgetConfig,
+  parseEvents,
+  findLogs,
+  readLogEvents,
+  replay,
+  decide,
+  budgetStatus,
+  proxyBudgetStatus,
+  awaitTurnBudget,
+  recordTurn,
+  recordThrottle,
+  resetTurnBudget,
+  TurnBudgetHold,
+  type BudgetConfig,
+  type BudgetEvent,
+  type BudgetState,
+  type BudgetDecision,
+  type AwaitTurnBudgetOptions,
+} from "./turn-budget.js";

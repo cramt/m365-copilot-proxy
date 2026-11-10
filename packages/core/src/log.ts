@@ -58,3 +58,8 @@ export function trunc(value: string, limit: number): string {
 }
 
 export const LOG_PATH = LOG_FILE;
+
+/** Whether this process writes its debug log (M365_DEBUG / M365_TRACE). */
+export function fileLoggingEnabled(): boolean {
+  return enabled;
+}

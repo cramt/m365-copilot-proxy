@@ -62,12 +62,13 @@ const MODEL_TONES: Record<string, string> = {
   "claude-opus": "Claude_Opus",
   "claude-opus-5": "Claude_Opus",
   "claude-opus-5.5": "Claude_Opus",
-  // Included scenario, WITH the tool agent attached, on a premium account only:
-  // Claude Opus 4.5, outside the priority-access budget. Its system prompt
-  // tells it it is "Claude Opus 5" with a May 2026 cutoff, and its chain of
-  // thought disputes that ("…that's not accurate to who I actually am"); it
-  // self-IDs as Opus 4.5 most of the time. Agent-less it is the dead route on
-  // every account, and with the agent it is dead on a non-premium one (docs §24).
+  // Included scenario, on a premium account only: Claude Opus 4.8 (self-IDs
+  // "Claude Opus 4.8", cutoff 2026-01, 2026-10-13), outside the priority-access
+  // budget. It replaced Opus 4.5 some time between 2026-10-04 and 2026-10-11,
+  // and unlike Opus 4.5, which served only with the tool agent attached, it
+  // serves agent-less too; on a non-premium account it is the dead route either
+  // way (docs §36). `claude-opus-4.5` is a legacy alias for the same route.
+  "claude-opus-4.8": "Claude_Opus",
   "claude-opus-4.5": "Claude_Opus",
 
   // GPT-5.5 (current generation)
@@ -161,7 +162,8 @@ export function getToneForModel(model: string): string {
   // rather than being downgraded to Sonnet. The match is on `opus` alone, so it
   // survives whatever version suffix a client decides to send. The scenario is
   // attached automatically (getScenarioForModel): paid (Opus 5.5) unless the
-  // string names Opus 4.5 (`claude-opus-4-5-…`), which goes to the included one.
+  // string names Opus 4.8 (`claude-opus-4-8-…`, or a legacy `claude-opus-4-5-…`),
+  // which goes to the included one.
   // Likewise an unmapped Sonnet 5 string (`claude-sonnet-5[1m]`, a dated
   // `claude-sonnet-5-…`) goes to Sonnet 5's own tone; Sonnet 5.5 strings stay on
   // `Claude_Sonnet` and get the paid scenario from isSonnet55Model.
@@ -207,7 +209,7 @@ const PAID_LICENSE_TYPE = "Premium";
  * other — `defaultFramingForTone`, `parsePriorityAccessExhaustion` and
  * `toneUsesToolAgent` each decide for themselves.
  *
- * A model ID can opt out: `claude-opus-4.5` is the same tone on the included
+ * A model ID can opt out: `claude-opus-4.8` is the same tone on the included
  * scenario (INCLUDED_SCENARIO_MODELS), and isn't metered.
  *
  * `Claude_Sonnet_5` is here because its own model, Sonnet 5, only serves on the
@@ -257,24 +259,29 @@ export function isSonnet5Model(model: string): boolean {
  * Model IDs that need the INCLUDED scenario even though their tone is in
  * PAID_SCENARIO_TONES — the mirror image of PAID_SCENARIO_MODELS.
  *
- * `Claude_Opus` is Opus 5.5 on the paid scenario and Opus 4.5 on the included
- * one. The included model serves only with the tool agent attached and only on
- * a premium account (agent-tone-probe, 2026-10-02/04, docs §24). Unmapped
- * strings a client may send for it (`claude-opus-4-5-20251101`,
- * `claude-opus-4.5[1m]`) are caught by OPUS_4_5_PATTERN rather than silently
- * served by Opus 5.5 — which would also spend the priority-access budget.
+ * `Claude_Opus` is Opus 5.5 on the paid scenario and Opus 4.8 on the included
+ * one (Opus 4.5 until October 2026), and the included model serves only on a
+ * premium account (docs §24, §36). Unmapped strings a client may send for it
+ * (`claude-opus-4-8-…`, `claude-opus-4.5[1m]`) are caught by
+ * INCLUDED_OPUS_PATTERN rather than silently served by Opus 5.5 — which would
+ * also spend the priority-access budget.
  */
 export const INCLUDED_SCENARIO_MODELS: ReadonlySet<string> = new Set([
+  "claude-opus-4.8",
   "claude-opus-4.5",
 ]);
-// `opus-4.5`, `opus-4-5`, `opus4_5`, `opus 4.5`, and anything after it — but not
-// `opus-4` / `opus-4-1` / `opus-4.6`, and not a hypothetical `opus-4.50`.
-const OPUS_4_5_PATTERN = /opus[-_ ]?4[-_. ]5(?!\d)/i;
+// `opus-4.8`, `opus-4-8`, `opus4_8`, `opus 4.8` (and the same for 4.5), and
+// anything after it — but not `opus-4` / `opus-4-1` / `opus-4.6`, and not a
+// hypothetical `opus-4.50`.
+const INCLUDED_OPUS_PATTERN = /opus[-_ ]?4[-_. ][58](?!\d)/i;
 
-/** True when this model ID is Claude Opus 4.5, i.e. `Claude_Opus` + included scenario. */
-export function isOpus45Model(model: string): boolean {
+/**
+ * True when this model ID names the included scenario's Opus (Opus 4.8; the
+ * legacy Opus 4.5 IDs reach it too), i.e. `Claude_Opus` + included scenario.
+ */
+export function isIncludedOpusModel(model: string): boolean {
   return INCLUDED_SCENARIO_MODELS.has(model) ||
-    (getToneForModel(model) === "Claude_Opus" && OPUS_4_5_PATTERN.test(model));
+    (getToneForModel(model) === "Claude_Opus" && INCLUDED_OPUS_PATTERN.test(model));
 }
 
 // --- Which tool requests carry the Copilot Studio tool agent ------------------
@@ -303,15 +310,29 @@ export const AGENTLESS_TOOL_TONES: ReadonlySet<string> = new Set([
  * Claude tones that DO take the tool agent; every other `Claude_*` tone goes
  * agent-less.
  *
- * - `Claude_Opus`: on the included scenario (`claude-opus-4.5`, Opus 4.5) the
- *   agent is the ONLY route — agent-less it is the BotConnection dead route on
- *   every account, with the agent it serves on a premium account (docs §24). On
- *   the paid scenario (`claude-opus`, Opus 5.5) it serves either way, and takes
- *   the agent so both Opus models run the same path and the same framing.
+ * - `Claude_Opus`: both models serve either way on a premium account, and take
+ *   the agent. On the included scenario (`claude-opus-4.8`, Opus 4.8) agent-less
+ *   tool-calls as well on relay_batch, the shipped framing (30/30 each, 2.60 vs
+ *   2.53 turns per task, p = 0.80), but has its own code interpreter, and
+ *   without a framing that steers it out it works there instead of in the
+ *   harness: `baseline` solved 1/10 agent-less, 7 sandbox turns, vs 8/10 with
+ *   the agent (docs §36). Opus 4.5, the included model before it, served ONLY
+ *   with the agent (§24). On the paid scenario (`claude-opus`, Opus 5.5) the
+ *   agent keeps both Opus models on the same path and the same framing.
  *   There is no agent-less fallback to learn (it isn't in
  *   PREMIUM_ONLY_AGENT_TONES): a non-premium account can't reach either model
  *   at all — the paid scenario is unlicensed there (F46), and the included one
- *   is dead with and without the agent.
+ *   is dead with and without the agent (isPremiumOnlyModel).
+ *
+ * Not `Claude_Sonnet` or `Claude_Sonnet_5` (docs §30, benched on a premium
+ * account, where their agent route serves). The agent takes Sonnet 4.6,
+ * Sonnet 5 and Sonnet 5.5 out of their own sandboxes, but costs more than
+ * that's worth: Sonnet 5 (`Claude_Sonnet_5`, paid) reads
+ * the agent's enterprise tools against the harness and refuses it (10/20 vs
+ * 19/20 agent-less); Sonnet 4.6 (`Claude_Sonnet`, included) solves the same
+ * but spends one more turn per real-pi run (4.4 vs 3.5), using pi's `edit`
+ * where relay_batch merges fix and check into one shell call; Sonnet 5.5
+ * (`Claude_Sonnet`, paid) gains nothing measurable either way.
  */
 export const AGENT_CLAUDE_TONES: ReadonlySet<string> = new Set([
   "Claude_Opus",
@@ -400,23 +421,24 @@ export function toolRequestUsesAgent(tone: string): boolean {
 }
 
 /**
- * Model IDs that serve ONLY with the tool agent attached, so a request carries
- * it even without tools (the agent's instructions say to answer normally when
- * there's no <tools> block). Today that's Opus 4.5: agent-less, the included
- * scenario gives `Claude_Opus` the BotConnection dead route (docs §24).
+ * The agent decision for one request of any kind. Tool requests follow
+ * toolRequestUsesAgent; a tool-less request never carries it. Opus 4.5 needed
+ * it even then, since the agent was its only route (docs §24); Opus 4.8, which
+ * replaced it, serves agent-less too (§36).
  */
-export function modelRequiresAgent(model: string): boolean {
-  return isOpus45Model(model);
+export function requestUsesAgent(model: string, hasTools: boolean): boolean {
+  return hasTools && toolRequestUsesAgent(getToneForModel(model));
 }
 
 /**
- * The agent decision for one request of any kind. Tool requests follow
- * toolRequestUsesAgent; a tool-less request carries the agent only when the
- * model can't be served without it (`M365_FORCE_AGENT=0` still turns it off).
+ * Whether this model ID is served only on a premium account (a paid Microsoft
+ * 365 Copilot seat), on either path: on any other account every turn is the
+ * dead route — BotConnection apology, final `result: InternalError` — with the
+ * agent and without it, so there is nothing to fall back to. Today that's the
+ * included scenario's Opus (Opus 4.8; docs §24, §36).
  */
-export function requestUsesAgent(model: string, hasTools: boolean): boolean {
-  if (hasTools) return toolRequestUsesAgent(getToneForModel(model));
-  return modelRequiresAgent(model) && process.env.M365_FORCE_AGENT !== "0";
+export function isPremiumOnlyModel(model: string): boolean {
+  return isIncludedOpusModel(model);
 }
 
 export interface ScenarioRouting {
@@ -446,18 +468,18 @@ export function getScenarioForTone(tone: string): ScenarioRouting {
  * The scenario a MODEL ID must be requested under: paid when its tone is
  * entitlement-gated (Opus, Sonnet 5, GPT-6) or when the ID itself selects the
  * paid model behind a shared tone (Sonnet 5.5); included when the ID selects
- * the included model behind a paid tone (Opus 4.5). This is what session.ts
+ * the included model behind a paid tone (Opus 4.8). This is what session.ts
  * routes on.
  */
 export function getScenarioForModel(model: string): ScenarioRouting {
-  if (isOpus45Model(model)) return routing(false);
+  if (isIncludedOpusModel(model)) return routing(false);
   return routing(PAID_SCENARIO_TONES.has(getToneForModel(model)) || isSonnet55Model(model));
 }
 
 /**
  * The priority-access budget this model's turns draw on, or null when it isn't
  * metered: Opus on the paid scenario (Opus 5.5) and `Claude_Sonnet` on the paid
- * scenario (Sonnet 5.5). Opus 4.5, Sonnet 4.6 and Sonnet 5 aren't metered.
+ * scenario (Sonnet 5.5). Opus 4.8, Sonnet 4.6 and Sonnet 5 aren't metered.
  * Follows the scenario the request will really use, `M365_SCENARIO` included.
  */
 export function meteredBudgetOf(model: string): MeteredBudget | null {
@@ -477,7 +499,7 @@ export const PRIORITY_ACCESS_FALLBACK_ENV: Readonly<Record<MeteredBudget, string
 /**
  * The model to serve a metered request with once its priority-access budget is
  * used up, instead of a 429: `M365_OPUS_FALLBACK_MODEL` for Opus 5.5 (typically
- * `claude-opus-4.5`), `M365_SONNET_FALLBACK_MODEL` for Sonnet 5.5 (typically
+ * `claude-opus-4.8`), `M365_SONNET_FALLBACK_MODEL` for Sonnet 5.5 (typically
  * `claude-sonnet-5`). Opt-in, because it swaps the model: the response's
  * `model` field then names the one that answered. Ignored when it names a
  * metered model itself.

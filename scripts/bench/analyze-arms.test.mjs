@@ -1,5 +1,8 @@
 import { describe, expect, it } from "vitest";
-import { select, stratifiedPermutation, turnsOf } from "./analyze-arms.mjs";
+import { mkdtempSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { frameFlags, select, stratifiedPermutation, turnsOf } from "./analyze-arms.mjs";
 
 const rows = (task, ...turns) => turns.map((t, i) => ({ task: `${task}#${i + 1}`, turns: t }));
 
@@ -20,6 +23,19 @@ describe("analyze-arms", () => {
   it("is reproducible for a seed", () => {
     const xs = rows("t", 3, 4, 2, 5, 3, 3), ys = rows("t", 2, 3, 3, 2, 4, 2);
     expect(stratifiedPermutation(xs, ys, { seed: 7, iters: 5_000 })).toBe(stratifiedPermutation(xs, ys, { seed: 7, iters: 5_000 }));
+  });
+
+  it("counts a sandbox turn by its Code progress frame, whatever the model calls it", () => {
+    const dir = mkdtempSync(join(tmpdir(), "frames-"));
+    const progress = (text) => JSON.stringify({ type: 1, arguments: [{ messages: [{ text, author: "bot", messageType: "Progress", contentType: "Code" }] }] });
+    const chat = JSON.stringify({ type: 1, arguments: [{ messages: [{ text: "```bash\nls\n```", author: "bot", contentOrigin: "DeepLeo" }] }] });
+    writeFileSync(join(dir, "s46.ndjson"), [progress("Analysing"), chat].join("\n")); // Sonnet 4.6's code interpreter
+    writeFileSync(join(dir, "g6s.ndjson"), [progress("Coding and executing"), chat].join("\n")); // GPT-6 Sol, Sonnet 5
+    writeFileSync(join(dir, "plain.ndjson"), chat);
+    const flags = frameFlags(dir);
+    expect(flags.get("s46").sandbox).toBe(true);
+    expect(flags.get("g6s").sandbox).toBe(true);
+    expect(flags.get("plain").sandbox).toBe(false);
   });
 
   it("leaves a fallback's dead agent turn out of the count", () => {

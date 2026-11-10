@@ -20,7 +20,8 @@ import { join } from "node:path";
 import { getToken, getOrCreateAgent, decodeJwt } from "../packages/core/dist/index.mjs";
 
 // `ws` is a @m365-copilot/core dep, not a workspace-root dep.
-const ROOT = process.cwd();
+import { pathToFileURL } from "node:url";
+const ROOT = pathToFileURL(process.cwd()).href;
 const wsMod = await import(`${ROOT}/node_modules/.pnpm/ws@8.20.0/node_modules/ws/wrapper.mjs`);
 const WebSocket = wsMod.default ?? wsMod.WebSocket;
 

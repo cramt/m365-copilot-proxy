@@ -58,10 +58,11 @@ const TONES = [
   { tone: "Claude_Reasoning", note: "accepted but actually GPT-5 — don't use" },
 
   // Opus, both entitlements, so the scenario effect is measured not assumed.
-  // Agent-less (this probe) the included cell is dead on every account; Opus
-  // 4.5 (`claude-opus-4.5`) lives there only WITH the agent, on a premium
-  // account — agent-tone-probe.mjs is the probe for that (§24).
-  { tone: "Claude_Opus", note: "included scenario: expect the BotConnection apology (Opus 4.5 needs the agent)", ...INCLUDED },
+  // The included cell is Opus 4.8 (`claude-opus-4.8`), on a premium account
+  // only, agent-less as well as with the agent (agent-tone-probe.mjs); a
+  // non-premium account gets the BotConnection apology. It was Opus 4.5 until
+  // October 2026, which was dead here agent-less on every account (§24, §36).
+  { tone: "Claude_Opus", note: "included scenario: expect DeepLeo + Opus 4.8 on a premium account, the BotConnection apology on a non-premium one", ...INCLUDED },
   { tone: "Claude_Opus", note: "PAID scenario: expect DeepLeo + Opus 5.5 (spends priority access)", ...PAID },
 
   // GPT-6, likewise paired. Entitlement-gated exactly like Opus but NOT

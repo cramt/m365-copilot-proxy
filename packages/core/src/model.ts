@@ -1,7 +1,9 @@
 import { getToken } from "./auth.js";
 import { getOrCreateAgent } from "./agent.js";
 import { CopilotSession } from "./session.js";
+import { uploadImage, type ImageAnnotation } from "./image-input.js";
 import { createLogger, trunc } from "./log.js";
+import { awaitTurnBudget } from "./turn-budget.js";
 import type { CopilotStream } from "./copilot.js";
 
 const log = createLogger("model");
@@ -87,9 +89,34 @@ export class ModelSession {
    *
    * If `signal` aborts (the HTTP client disconnects) the in-flight turn is
    * cancelled by sending M365's Stop frame, mirroring the real UI's Stop button.
+   *
+   * `waitForBudget` waits until the account's turn budget can afford one more
+   * turn (M365_AVOID_THROTTLING; awaitTurnBudget). The caller waits before it
+   * calls run(); run() waits again before the reconnect's turn. It throws
+   * TurnBudgetHold rather than wait too long.
    */
-  async run(text: string, model: string = "m365-copilot", signal?: AbortSignal, useAgent: boolean = true): Promise<CopilotStream> {
-    const token = await this.resolveToken();
+  async run(
+    text: string,
+    model: string = "m365-copilot",
+    signal?: AbortSignal,
+    useAgent: boolean = true,
+    images: string[] = [],
+    waitForBudget: () => Promise<{ waitedMs: number }> = () => awaitTurnBudget({ signal }),
+  ): Promise<CopilotStream> {
+    let token = await this.resolveToken();
+    // Image input (#39): upload each image for this conversation; the message points at them.
+    // A failed upload is said in the text, so the model doesn't answer about an image it never got.
+    const annotations: ImageAnnotation[] = [];
+    for (const url of images) {
+      try {
+        annotations.push(await uploadImage(token, this.conversationId, url));
+      } catch (err: any) {
+        log.info(`Image upload failed: ${err.message}`);
+        text += `
+
+(Note: an attached image could not be passed on — ${err.message.slice(0, 120)}. Don't describe it; say it didn't arrive.)`;
+      }
+    }
     const wantAgent = this.useAgent && useAgent;
 
     // Resolve agent ID lazily (persists across resets), only when wanted.
@@ -119,13 +146,18 @@ export class ModelSession {
     // the tool-calling agent path — image optionsSets are agent-less, and we don't
     // want the image tool competing with fenced tool-call emission. Opt out with
     // M365_NO_IMAGE_GEN for a pure-text agent-less turn.
-    const turnOpts = { generateImages: !agentForTurn && !process.env.M365_NO_IMAGE_GEN };
+    const turnOpts = { generateImages: !agentForTurn && !process.env.M365_NO_IMAGE_GEN, images: annotations };
 
     try {
       return await this.copilotSession.chat(token, text, model, signal, turnOpts);
     } catch (err: any) {
       // Session might be stale — reconnect with same IDs
       log.info("Session error, reconnecting:", err.message);
+      // The reconnect is one more upstream turn, so it waits on the budget too:
+      // otherwise it skips the wait and its recordTurn takes the grant of a turn
+      // another request was let through for (#77). A token held through a long
+      // wait may be near its end, so fetch it again.
+      if ((await waitForBudget()).waitedMs > 0) token = await this.resolveToken();
       this.copilotSession = this.createCopilotSession(agentForTurn);
       this.currentAgentId = agentForTurn;
       return await this.copilotSession.chat(token, text, model, signal, turnOpts);

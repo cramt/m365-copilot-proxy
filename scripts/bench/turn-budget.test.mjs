@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
-import { budgetConfig, decide, findLogs, parseEvents, replay, waitForBudget } from "./turn-budget.mjs";
+import { budgetConfig, budgetStatus, decide, findLogs, parseEvents, replay, waitForBudget } from "./turn-budget.mjs";
 
 const T0 = Date.parse("2026-10-05T08:00:00.000Z");
 const iso = (ms) => new Date(ms).toISOString();
@@ -48,6 +48,49 @@ describe("turn-budget", () => {
     expect(Math.round(d.waitMs / 60_000)).toBe(40);
   });
 
+  it("starts the replay full only after a quiet stretch, so a long sweep waiting on the bucket doesn't get its opening burst back", () => {
+    // A sweep waiting on the bucket: 70 turns in its first 10 min, then exactly the refill rate
+    // for 7 h. The bucket really sits at ~46 the whole time (100 - 70 + 16).
+    const evs = [...turns(70, T0, 8_500), ...turns(672, T0 + 10 * 60_000, 37_500)];
+    const now = T0 + 7 * 3_600_000;
+    const st = replay(evs, now, { ...cfg, windowMin: 1440 });
+    expect(st.settled).toBe(true);
+    expect(st.since).toBe(T0);
+    expect(st.level).toBeGreaterThan(40);
+    expect(st.level).toBeLessThan(50);
+    // A 6 h window holds no quiet hour: it starts empty instead of full (the old
+    // replay started full here and said ~100) and asks for a longer window.
+    const short = replay(evs, now, cfg);
+    expect(short.settled).toBe(false);
+    expect(short.since).toBe(now - 360 * 60_000);
+    expect(short.level).toBeLessThan(st.level);
+  });
+
+  it("reads further back until it finds where the bucket was last full", () => {
+    const dir = mkdtempSync(join(tmpdir(), "turn-budget-"));
+    const evs = [...turns(70, T0, 8_500), ...turns(672, T0 + 10 * 60_000, 37_500)];
+    writeFileSync(join(dir, "s-debug.log"), evs.map((e, i) => turnLine(e.t, i)).join("\n") + "\n");
+    const st = budgetStatus(T0 + 7 * 3_600_000, { ...cfg, maxWindowMin: 4320, dirs: [dir] });
+    expect(st.settled).toBe(true);
+    expect(st.windowMin).toBe(1440);
+    expect(st.since).toBe(T0);
+    expect(st.level).toBeLessThan(50);
+  });
+
+  it("keeps a throttle's hold even when the bucket has refilled since", () => {
+    // 65 quiet minutes: the bucket is full again, but a 75-min hold isn't over.
+    const hold = { ...cfg, holdMin: 75 };
+    const evs = [...turns(5, T0, 1000), { t: T0 + 10_000, kind: "throttled", line: "thr" }];
+    const now = T0 + 10_000 + 65 * 60_000;
+    const st = replay(evs, now, hold);
+    expect(st.level).toBe(100);
+    expect(st.lastThrottle).toBe(T0 + 10_000);
+    const d = decide(st, 12, now, hold);
+    expect(d.ok).toBe(false);
+    expect(d.reason).toBe("throttle hold");
+    expect(Math.round(d.waitMs / 60_000)).toBe(10);
+  });
+
   it("lets a task start only with need + reserve turns left, and says how long the refill takes", () => {
     expect(decide({ level: 32, lastThrottle: null }, 12, T0, cfg).ok).toBe(true);
     const d = decide({ level: 16, lastThrottle: null }, 12, T0, cfg);
@@ -70,8 +113,8 @@ describe("turn-budget", () => {
     expect(slept.every((ms) => ms <= 60_000)).toBe(true);
     expect(res.waitedMs).toBeGreaterThan(10 * 60_000);
     expect(res.waitedMs).toBeLessThan(14 * 60_000);
-    expect(lines[0]).toMatch(/^\[t\] pacing: bucket ~1\d\/100 turns, need 12 \+ reserve 20 — waiting/);
-    expect(lines.at(-1)).toMatch(/^\[t\] pacing: resumed after/);
+    expect(lines[0]).toMatch(/^\[t\] turn budget: bucket ~1\d\/100 turns, need 12 \+ reserve 20 — waiting/);
+    expect(lines.at(-1)).toMatch(/^\[t\] turn budget: resumed after/);
   });
 
   it("is off unless M365_AVOID_THROTTLING is set, and then never waits", async () => {

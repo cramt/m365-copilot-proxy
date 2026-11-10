@@ -17,7 +17,8 @@ const ZIP = join(process.cwd(), "scripts", "da-app", "sentinel-agent.zip");
 const creds = loadSecrets();
 if (!creds) { console.log("no secrets"); process.exit(1); }
 
-const ROOT = process.cwd();
+import { pathToFileURL } from "node:url";
+const ROOT = pathToFileURL(process.cwd()).href;
 const pwMod = await import(`${ROOT}/node_modules/.pnpm/playwright@1.58.2/node_modules/playwright/index.js`);
 const chromium = pwMod.chromium ?? pwMod.default?.chromium;
 const { TOTP } = await import(`${ROOT}/node_modules/.pnpm/otpauth@9.5.0/node_modules/otpauth/dist/otpauth.esm.js`);

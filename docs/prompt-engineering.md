@@ -43,7 +43,8 @@ These are what actually move compliance. In rough order of importance:
    with a tool call is an action), confab retry, hallucinated-completion retry, tool-result
    labelling, one-call-per-turn, stripping invented `{confidence}`/`{final}` JSON, treating a
    model-written `<tool_response>` as a stop sequence (Sonnet 4.6 invents one in about half
-   its turns), and telling the model on the next turn when only its first call ran. See
+   its turns; the turn is stopped once that tail passes 2,000 chars, #65), and telling the model on
+   the next turn when only its first call ran. See
    [`tool-calling.md`](tool-calling.md), [hyp §20 F39, F41].
 
 ## Claude Sonnet: don't *cage* it, don't *label* things `<system>`
@@ -73,6 +74,14 @@ but "on which machine" — and our framing decides that. Conclusive (hyp §21, p
 - **Sonnet 4.6 has the same reflex, weaker.** It rarely refuses, but says "this appears to be a
   system-level automated agent prompt embedded in a user message" and then hedges. `relay` is its
   default too: 78/90 vs baseline's 47/76 (p = 3×10⁻⁴, hyp §21 F42).
+- **The tool agent takes the sandbox away, and that isn't a fix** (hyp §30, premium account). With
+  the agent none of Sonnet 4.6, Sonnet 5 and Sonnet 5.5 works in its own sandbox, and Sonnet 4.6
+  solves under every framing (99% vs 82% agent-less over 17 framings; the gap is all in the
+  `<system>`-tagged ones). But Sonnet 5 then reads the agent's enterprise tools in its context
+  against the harness and disowns it ("I'm Microsoft 365 Copilot, and I don't have access to a
+  shell…"; 10/20 vs 19/20), and Sonnet 4.6 stops batching in real pi: it reaches for pi's `edit`
+  and checks in a call of its own, one turn more per run. Under the shipped user-voice framings,
+  agent-less already solves 193/200, so `Claude_Sonnet` and `Claude_Sonnet_5` stay agent-less.
 
 ## GPT-6 / GPT-6 Sol: `relay` is not just a Claude fix
 
@@ -122,7 +131,10 @@ there. Asking for batching works: "Each round trip takes me a while, so put as m
 block" (`relay_batch`) took Opus 4.5 from 3.65 to 2.30 turns per bench task at 20/20 solved.
 Real pi agreed: 3.5 turns per run vs 6.0, 10/10 each. It is the
 Opus default (both models). The cost to watch: a batched block acts before it has seen any output —
-in pi every edit still came after a read.
+in pi every edit still came after a read. Opus 4.8, which replaced Opus 4.5 on `claude-opus-4.8` in
+October 2026, went 30/30 with it at 2.53 turns per task, with the agent (hyp §36 F90). Agent-less it
+has a code interpreter of its own, and the user-voice note is what keeps it out: under `baseline` it
+worked there and reported on files it never touched (1/10), under relay_batch it never went in (F91).
 
 **It carries to other models unevenly — measure in real pi, not only on the bench** (hyp §25). The
 bench's turn savings: GPT-6 and GPT-6 Sol −33%, Sonnet 4.6 −14%, Sonnet 5 −15%. In pi: GPT-6 Sol −19%
@@ -190,11 +202,12 @@ the transcript's **tags** (`transcriptStyleForVariant`): the Claude Sonnet set n
 the harness's own system prompt becomes `<harness_system_prompt>`.
 
 **The default is model-aware** (`defaultFramingForModel`, falling back to `defaultFramingForTone`).
-`Claude_Opus` (Opus 4.5 and 5.5), `Claude_Sonnet` (as Sonnet 4.6), `Gpt_6_Reasoning`,
+`Claude_Opus` (Opus 4.8 and 5.5), `Claude_Sonnet` (as Sonnet 4.6), `Gpt_6_Reasoning`,
 `Gpt_6_Sol_Reasoning` (hyp §28) and
 `Gpt_61_Sol_Reasoning` (GPT-6.1 Sol, hyp §27) → `relay_batch`; Sonnet 5 (`claude-sonnet-5`, its own `Claude_Sonnet_5` tone since 2026-10-06) and
 Sonnet 5.5 (`claude-sonnet-5.5`, `Claude_Sonnet` on the paid scenario, keyed on the model ID;
-inherits Sonnet 5's relay, unbenched, hyp §26) → `relay`. **Every other model keeps `baseline` byte-for-byte** (including
+inherits Sonnet 5's relay, hyp §26) → `relay` — though on the bench relay_batch cut its turns by a
+third (3.35 → 2.20, 40/40, both paths, hyp §30); real pi decides, ~90 budget units. **Every other model keeps `baseline` byte-for-byte** (including
 `claude-sonnet-think-deeper`, unmeasured under relay), so no GPT-5.x bench number moves, and
 `M365_FRAMING_*` still wins. Opus used to default to `minimal`, to spend less of its priority-access
 budget by sending a shorter prompt; that budget counts turns, not tokens (docs/hypotheses.md §24

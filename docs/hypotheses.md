@@ -49,10 +49,11 @@ than "we eyeballed one run." See §M (Methods) for the experimental rig.
   has none; both Opus models move onto the agent and `relay_batch` (the `<system>`-tagged framings
   trip the jailbreak classifier, F56; batching cuts turns ~40%, F60); the refusal isn't streamed and
   issue #18 (F59); Opus's native call markup leaking into fences (F57); four throttles in
-  a day that a per-turn bucket fits better than a conversation count (F58)
+  a day that a per-turn bucket fits better than a conversation count (F58). The route has served Opus
+  4.8 since Oct 2026, agent-less too (§36)
 - §25 — `relay` vs `relay_batch` for the other user-voice tones (Sonnet 4.6/5, GPT-6, GPT-6 Sol):
   batching saves ~33% of turns on the GPT-6 tones and ~15% on the Sonnets (F61); the F58 bucket
-  predicts throttles on non-premium accounts too, and the bench can pace itself by it
+  predicts throttles on non-premium accounts too, and the bench can wait on it
   (`M365_AVOID_THROTTLING=1`)
 - §26 — `Claude_Sonnet` @ paid is now Sonnet 5.5 and Sonnet 5 has its own tone, `Claude_Sonnet_5`
   (F64); Sonnet 5.5 has its own priority-access budget, 80/day and 150/week (F65), and Sonnet 5's
@@ -67,8 +68,36 @@ than "we eyeballed one run." See §M (Methods) for the experimental rig.
 - §29 — agent-less GPT-6.1 Sol vs GPT-6 Sol: the same solves and turns under every framing, but only
   GPT-6.1 Sol keeps out of its sandbox under the user-voice ones (relay_batch 0/40 tasks vs 6/20, honest
   3/40 vs 17/20); the included scenario's GPT-6.1 Sol isn't GPT-6 Sol renamed (F72, bears on H27a)
-
----
+- §30 — `Claude_Sonnet` and `Claude_Sonnet_5` with the tool agent (Sonnet 4.6, Sonnet 5, Sonnet 5.5):
+  `Claude_Sonnet_5` @ included is `Claude_Sonnet` @ included (F73); the agent takes Sonnet 4.6 out of its
+  code interpreter (F74), but neither `Claude_Sonnet` nor `Claude_Sonnet_5` takes the agent (F75)
+- §31 — Windows / pi as a general agent (Oct 2 2026): a host is not a shell (F76), nested fences
+  executed (F77), an ~8.2k-char command-line cap (F78), give-ups the retry never saw (F79–F81);
+  framing variants and thread poisoning not supported (F82); documents still open (F83); sessions
+  sharing an opening message shared an M365 conversation (F84)
+- §32 — one conversation, two backends (Oct 4 2026): each turn's new connection landed on a random
+  backend, the regions kept separate copies of the conversation, and about half the turns ran on a
+  partial history; `X-RoutingParameter-SessionKey` pins a conversation to one backend (F85)
+- §33 — image input (#39): the web client's upload + `ImageFile` annotation works with the chat token,
+  agent-less and with the tool agent, no extra optionsSets (F86, confirms H8.10)
+- §34 — why Sonnet 4.6 spends a turn more per pi run with the tool agent: not the agent's instructions
+  (H34a) and not the code interpreter (H34b), but the agent path itself; it also runs on past its call
+  more (runaways in 12 of 60 agent runs vs 4 of 70) (F87)
+- §35 — stopping a tool turn once the model writes its own `<tool_response>` after a call (#65): at the
+  tag it saves 25–35% of pi's wall time with no lost solves (F88), but costs Sonnet 4.6 10% more turns
+  agent-less; a 2,000-char cap on the invented tail keeps the turns and still ends the runaways, and is
+  the default (F89); between Oct 8 and Oct 11 M365 stopped streaming Claude to the premium account (no
+  change in this repo caused it)
+- §36 — `Claude_Opus` @ included is now Claude Opus 4.8 (`claude-opus-4.8`; Opus 4.5 until Oct 2026) and
+  serves agent-less too, premium accounts only: tool requests keep the agent — relay_batch ties on the
+  bench, agent-less costs 22% more turns in real pi (F90), and agent-less it has its own code interpreter
+  and writes its own tool results (F91); tool-less requests go agent-less, and the premium-only 502
+  covers every path (F92)
+- §37 — `M365_AVOID_THROTTLING` in the proxy: every upstream turn waits for the F58 bucket, so a pi
+  session's too; pi rides out a 6.7-min hold on keepalives, and a throttle hold is answered without a
+  turn (F93); with it set on the proxy alone, 144 pi turns in 40 min, 42 at the floor, no throttle (F94);
+  the bucket doesn't refill at 00:00Z like the priority-access budgets: without it, the account
+  throttled 31 turns after 00:00Z (F95)
 
 ---
 
@@ -1567,7 +1596,7 @@ Microsoft's own red-team tool — plus the official extensibility docs. All 🔴
 | # | Hypothesis | Why plausible | Probe | Payoff |
 |---|---|---|---|---|
 | **H8.9** | **Web search is a deterministic toggle:** `plugins:[]` + `optionsSets:["nosearchall"]` = off; our current `plugins:[{BingWebSearch}]` forces it on. | SydneyQt: `if NoSearch && len(Plugins)==0 { append("nosearchall") }`. Audit schema logs `AISystemPlugin:[{Id:"BingWebSearch"}]` only when search fired. | Same fresh-fact query with each config; watch `InternalSearchQuery`/`sourceAttributions` appear only when on; measure latency delta. | Off = faster, deterministic coding answers, no web derail. On (when wanted) = up-to-date docs + citations. |
-| **H8.10** | **Image INPUT (vision)** works by POSTing the image to a substrate `UploadFile` endpoint (PyRIT: `/m365Copilot/UploadFile`; SydneyQt consumer analog: `bing.com/images/kblob`) → `docId`/`BlobId`, then attaching `messageAnnotations:[{id,messageAnnotationType:"ImageFile"}]` with `optionsSets:["cwcgptvsan",…]`. NOT via `entityAnnotationTypes`. | PyRIT implements the full enterprise flow incl. header `X-Variants:feature.EnableImageSupportInUploadFile`. | Replicate the upload POST with a screenshot, attach annotation, ask "what's in this image?"; confirm pixel-level vision. | Screenshots of errors, UI mockups, diagrams as agent input. |
+| **H8.10** | **Image INPUT (vision)** works by POSTing the image to a substrate `UploadFile` endpoint (PyRIT: `/m365Copilot/UploadFile`; SydneyQt consumer analog: `bing.com/images/kblob`) → `docId`/`BlobId`, then attaching `messageAnnotations:[{id,messageAnnotationType:"ImageFile"}]` with `optionsSets:["cwcgptvsan",…]`. NOT via `entityAnnotationTypes`. | PyRIT implements the full enterprise flow incl. header `X-Variants:feature.EnableImageSupportInUploadFile`. | Replicate the upload POST with a screenshot, attach annotation, ask "what's in this image?"; confirm pixel-level vision. | Screenshots of errors, UI mockups, diagrams as agent input. **🟢 §33 F86** (no extra optionsSets needed). |
 | **H8.11** | **Graph/Work grounding** is gated by `entityAnnotationTypes` breadth + CIQ variants (`feature.EnableLuForChatCIQ`, `feature.enableChatCIQPlugin`) + `optionsSets:["at_mention_plugins_enable"]`; currently dormant because optionsSets is empty. | We already send the entity types; Zenity + audit schema confirm Graph entities (`TeamsChat`, mail, files) are grounding sources. | Enable CIQ variants, @-reference a real OneDrive file, watch for grounded citations. | M365 tenant data as a RAG backend — retrieval no other LLM API gives. |
 | **H8.12** | **Long-document QA** is gated by `optionsSets:["ldqa","ldsummary"]` paired with a `File` entity; improves deep-in-doc recall and may route through the separate `numLongDocSummary…` counter (→ H8.18). | `ld*` flags in SydneyQt defaults; MS "summarization needs whole-doc context" docs. | Reference a long file, needle question, toggle `ldqa`/`ldsummary`. | Reliable long-context grounding (logs, specs, PDFs). |
 
@@ -2753,6 +2782,9 @@ N with no idea what turns 1..N-1 said.
 Two turns on one temporary conversation: turn 1 supplies a codeword, turn 2 asks for it back.
 Turn 2 answered `plum-harbor-77` verbatim. Context is retained on the live `ConversationId`.
 n=1, but the failure mode would be total rather than stochastic, so one clean sample settles it.
+(Oct 4: it was stochastic after all, for a different reason. Turns of a conversation forked across
+backends, saved or temporary alike, and every fork kept turn 1, which is all this check asked
+about. See §32 F85.)
 
 ### F29 — the temporary thread is genuinely absent from history 🟢
 
@@ -3679,6 +3711,9 @@ comparison p = 6×10⁻¹⁰ (relay 60/60 either way).
 
 ## 24. Oct 4 2026 — Claude Opus 4.5: `Claude_Opus` on the included scenario, through the tool agent only
 
+> **Superseded, Oct 13 2026 (§36):** the route now serves Claude Opus 4.8 (`claude-opus-4.8`;
+> `claude-opus-4.5` is an alias of it), agent-less as well as with the agent.
+
 **Question.** The user's probes on the premium account (2026-10-02/04) show `Claude_Opus` answering
 on the *included* scenario when the tool agent is attached — and identifying as Claude Opus 4.5, not
 the paid scenario's Opus 5.5. Is it a usable second Opus, which accounts serve it, does it draw on the
@@ -3856,6 +3891,22 @@ but left `</parameter>` in the command. Replaying all 11 replies through the cur
 bench's tool definitions: 11 calls, no markup left in any argument. Unit tests use the replies verbatim.
 Not seen in any Sonnet or GPT sweep log.
 
+**Later: the closer glued to the last line, and a restated call (Sonnet 5.5, real pi, Oct 17).** A
+Sonnet 5.5 turn ran nothing: its reply was a ~490-character plan, a ```bash fence whose last line ended
+in `</bash>` with no newline before it, "Oops, that closing fence is wrong. Here is the same command,
+correctly formatted:", and the command again. The closer rule only matched a closer on its own line,
+and the two copies counted as two calls, so the plan made the document guard (`isProseDocument`: a
+lead-in of ≥ 200 chars, prose ≥ 300) return the reply as text. Across the frame dumps 2 of 364 fences end
+in a glued closer (`</bash>`, and a `</parameter>` on a single-call reply whose command then ran as broken
+shell); the guard fired on 3 of 437 replies, the other two genuine "run these yourself" give-ups. **Fixed:**
+a glued closer is stripped too, unless the line also opens the same tag (a file's own
+`<parameter>x</parameter>`), and a call that restates the one before it replaces it: same tool, token
+Jaccard ≥ 0.85, at most 300 chars between, and a sign it is a correction (the first copy carried native
+markup, or the gap says "oops", "wrong", "same command"…). The corrected copy runs, nothing is reported
+as dropped, and the restated pair's span covers both copies, so no speculation note follows. Replayed:
+the live reply gives 1 call, the corrected copy; over all 437 replies only that one changes (guard
+verdicts 3 → 2, the give-ups still caught).
+
 ### F58 — four throttles in one day on the premium account; a fixed "N per 30 min" doesn't fit, a per-turn bucket might 🟡
 Every fresh conversation and every turn the proxy (and the user's probes) sent on the premium account
 on 2026-10-04, against the first `Turn result: Throttled (PerUserThrottled)` of each episode:
@@ -3932,17 +3983,17 @@ of A-4, ~10 min before the window, with the model's bucket at **3.5**. So all th
 onsets came with the model at +3.5, +5.9 and −1.3: about right, a few turns optimistic. Either the
 bucket holds ~95 rather than 100, or a few turns a day are invisible to the logs.
 
-**Shipped (bench only, opt-in): pacing.** With `M365_AVOID_THROTTLING=1`,
+**Shipped (bench only, opt-in): throttle avoidance.** With `M365_AVOID_THROTTLING=1`,
 `scripts/bench/turn-budget.mjs` replays every recent proxy debug log on the account (`[session] Chat
 turn` and `Turn result: Throttled` lines) through this bucket, and `run.mjs` / `pi-reliability.sh`
 wait before each task until it covers a whole task (12 turns) plus a reserve of 20, and for an hour
 of quiet after a throttled turn. Off by default; the `M365_BUDGET_*` variables tune the model.
 Replayed over the premium account's 2026-10-05 logs, the gate closes at ~07:40Z (bucket 31), an hour
 before the 08:45Z onset. pi arms now stop on a throttle too, as bench arms already did. Nothing in the
-proxy changed: a real pi session still isn't paced.
+proxy changed: a real pi session still doesn't wait on the bucket.
 
 **The hour's hold was too short once: the throttle isn't the bucket.** The premium account sent nothing
-after its 08:45:47Z throttled turn (all logs checked), the pacer resumed at 09:45:47Z with the bucket
+after its 08:45:47Z throttled turn (all logs checked), the bench stopped waiting at 09:45:47Z with the bucket
 modeled at ~96, and the first turn was throttled again (09:45:50Z). The non-premium accounts were
 served again 56.6 min (T) and 60.1 min (P) after their last throttled turns, 74 and 83 min after their
 onsets. So the throttle is a state with its own clock, not an empty bucket: lifting 60–74 min after the
@@ -4170,8 +4221,20 @@ delta turns' `name="unknown"` label). **Fixed** (PR #51): real pi, relay, 10/10,
 10 edits YAML and all parsed, none rejected — 5.20 turns per run vs relay's 7.16 here (12:19–12:33Z,
 account P). That is a bigger saving than batching's, and the two should stack; not yet measured together.
 
+**Side finding — opencode's `edit` loses multi-line strings (#82).** opencode's `edit` takes `path`,
+`oldString`, `newString`, `replaceAll`: no body param, and camelCase names that aren't in `SEARCH_KEYS`, so
+all four are header lines (`oldString: <oldString>`). Sonnet 5 fills that in with the text as it is in the
+file, its later lines at the code's own indentation. The parser read one line per value and ended the
+header at the first non-`key:` line, so the call reached opencode as `{"path", "oldString": "<first
+line>"}`, with no `newString` (2 of 2 opencode sessions on Oct 16, 2 or 3 wasted turns each). **Fixed:** in a
+header-only tool a string value runs on to the next `key:` line, blank lines included, trailing ones
+dropped; `key: |` reads as a block scalar. Before relying on that, the dumps were checked for stray lines
+in header-only fences, which the run-on would now glue onto a value: 47 of 47 pi `read` fences had none.
+Live (opencode 2.0.30, `claude-sonnet-5`, premium account): a four-line `oldString` written in exactly
+that shape arrived whole and the edit applied on the first try.
+
 ### F63 — real pi on the premium account: GPT-6 batches cleanly, Sonnet 5 doesn't save turns → the decision 🟢
-Paced runs (`M365_AVOID_THROTTLING=1`), 11:00–11:56Z, confab retry off, no throttled or Disengaged run.
+Runs with `M365_AVOID_THROTTLING=1`, 11:00–11:56Z, confab retry off, no throttled or Disengaged run.
 
 | model | framing | fix-bug | multi | turns per run | sandbox turns |
 |---|---|---|---|---|---|
@@ -4385,7 +4448,7 @@ it now reads a two-digit run as major.minor.
 
 ### Framing: design and pre-registered decision rule
 **Phase A (screen, 18:36Z on):** `phase-sweep.sh`, `MODEL=gpt-6.1-sol`, 10 bench tasks per arm, confab
-retry off, paced (`M365_AVOID_THROTTLING=1`), seven framings on each account — baseline, minimal,
+retry off, `M365_AVOID_THROTTLING=1`, seven framings on each account — baseline, minimal,
 demo_only (GPT-6 Sol's runners-up, F51), the four user-voice framings honest, terse_user, relay,
 relay_batch — in a different order per account. The agent path is the premium account's; the
 agent-less path is the two non-premium accounts', reached the way a real client reaches it (the first
@@ -4489,8 +4552,8 @@ so both must pass to switch `gpt-6-sol` to relay_batch; otherwise it keeps relay
 Turns are M365 turns per task or run, without the dead agent turn an agent-less proxy spends once
 before it falls back.
 
-**Design.** `phase-sweep.sh`, `MODEL=gpt-6-sol`, the 10 bench tasks per arm, confab retry off, paced
-(`M365_AVOID_THROTTLING=1`), the shipped routing (the first tool request tries the agent; the
+**Design.** `phase-sweep.sh`, `MODEL=gpt-6-sol`, the 10 bench tasks per arm, confab retry off,
+`M365_AVOID_THROTTLING=1`, the shipped routing (the first tool request tries the agent; the
 non-premium accounts fall back to agent-less), one sweep per account, all three at once:
 - premium (agent): bench relay_batch, relay, relay, relay_batch (F61's order mirrored); real pi
   fix-bug + multi, 5 runs each, under relay, then relay_batch;
@@ -4602,7 +4665,985 @@ one that didn't wouldn't settle it.
 
 ---
 
-## 30. Oct 7 2026 — Claude Code and Codex through copilot-api (real CLIs and gateway, no M365 traffic)
+## 30. Oct 7 2026 — Sonnet 4.6 behind both tones, with and without the tool agent
+
+**Question.** On the included scenario `Claude_Sonnet` and `Claude_Sonnet_5` both serve Sonnet 4.6
+(F64). Claude tool requests go agent-less: the agent route is dead for Claude on a non-premium account
+(F44), and F44 never tested whether Claude tool-calls better *with* the agent on a premium one. Opus
+took the agent (F53, F56; `AGENT_CLAUDE_TONES`). Should `Claude_Sonnet` or `Claude_Sonnet_5`? And is
+`Claude_Sonnet_5` @ included the same model as `Claude_Sonnet` @ included to the bench, or only to
+self-ID (the question §29 asked of the two GPT-6 Sol tones)?
+
+**Self-ID, today (09:42–09:45Z).** `agent-tone-probe.mjs --baseline` with the §26 prompt (`--prompt=`,
+new), included scenario both times, premium account, 2 cells per tone:
+
+| tone @ included | with the agent | agent-less |
+|---|---|---|
+| `Claude_Sonnet` | Sonnet 4.6, 2025-08 ×1; **dead route ×1** (BotConnection, `InternalError`, the first cell of the run) | Sonnet 4.6, 2025-08 ×2 |
+| `Claude_Sonnet_5` | Sonnet 4.6, 2025-08 ×2 | Sonnet 4.6, 2025-08 ×2 |
+
+A non-premium account, with the agent: the dead route for both tones (2/2, ~3 s), as in F44/F64; agent-less
+(the user's `tone-probe.mjs`, same prompt, 10:01Z): "Claude Sonnet 4.6; Anthropic; 2025-08" for both
+(1/1 each, `DeepLeo`, the invalid-tone control rejected). So all four configurations self-ID as Sonnet
+4.6, and the agent arms below can only run on the premium account. The premium dead-route cell is F52's transient
+shape on a Claude tone; one in three is far above F52's ~1 in 250, so the sweep counts it.
+
+**H30a.** With the agent, Sonnet 4.6 solves as much as agent-less, with fewer sandbox turns (the agent
+path sends no code-interpreter optionsSets, `session.ts`), and no more turns per task. **Falsified if**
+the agent loses solves beyond −1 per 20 tasks, or adds turns, under the default framing.
+
+**H30b.** The two tones are the same model to the bench: on each path and framing, the same solves,
+turns per task and tasks with a sandbox turn. **Falsified if**, pooled over framings, a test stratified
+by framing and task separates the tones at p < 0.01 on any of the three, on either path.
+
+**Pre-registered decision rule (fixed 09:48Z, before any run).** A tone joins `AGENT_CLAUDE_TONES`
+only if, on `claude-sonnet`'s shipped default framing (relay_batch), agent (premium) vs agent-less
+(both non-premium accounts):
+1. solved(agent) ≥ solved(agent-less) − 1 per 20 valid tasks;
+2. turns per task not up (an increase at task-stratified permutation p < 0.05 fails);
+3. a gain, at least one of: turns per task down ≥ 10% at p < 0.05; sandbox + Disengaged + jailbreak
+   turns down by ≥ 2 per 20 tasks; solved up by ≥ 2 per 20;
+4. dead-route `InternalError`s on the premium account's agent turns ≤ 1 per 100 (the handler can take
+   one on a process's first request for "this account isn't premium").
+Every framing is reported; the others decide nothing unless relay_batch fails, and then the best
+framing on the agent path is the candidate, and would move the default with it.
+**Reach.** `Claude_Sonnet` is Sonnet 5.5 on the paid scenario too, and no model ID reaches
+`Claude_Sonnet_5` @ included: that tone's only routed model is Sonnet 5 (paid). So a pass here doesn't
+ship alone. `Claude_Sonnet_5` also needs Sonnet 5 (premium, paid, unmetered, its default relay) to pass
+the same rule in a follow-up; `Claude_Sonnet` needs a Sonnet 5.5 check or a model-level exception that
+keeps Sonnet 5.5 agent-less. Non-premium accounts would stay agent-less through
+`PREMIUM_ONLY_AGENT_TONES`, the learned fallback.
+
+**Design.** `phase-sweep.sh`, all 17 framing variants, the 10 bench tasks per arm, confab retry off,
+`M365_AVOID_THROTTLING=1`, `COOLDOWN=PHASE_COOLDOWN=20`. Each arm is its own phase, so the two
+tones alternate arm by arm (ABBA by framing), with `@MODEL=` (new: a per-phase bench model) and the
+scenario pinned to included for both (`M365_SCENARIO=OfficeWebIncludedCopilot`,
+`M365_LICENSE_TYPE=Starter`; `claude-sonnet-5` would otherwise route to the paid scenario, i.e. to
+Sonnet 5). `M365_FORCE_AGENT` says the path.
+- premium, agent (`=1`): framing order relay_batch, recency, demo_only, proof_demand, baseline, persona,
+  negative, softened, honest, terse_user, relay, retag, terse, fewshot, minimal, session_facts, react;
+- a non-premium account, agent-less (`=0`): that order reversed;
+- another non-premium account, agent-less (`=0`): the order rotated by 8 (honest first).
+340 tasks per account: n = 10 per tone × framing with the agent, 20 without. **Threat:** agent vs
+agent-less is also premium vs non-premium account. If the verdict hinges on a small gap, a premium
+agent-less control (relay_batch, both tones) follows.
+
+**Run notes.** Launched 09:48Z on all three accounts. The premium sweep throttled at 15:59:36Z
+(`PerUserThrottled`, 6 h 11 min in, arm 21 of 34, `claude-sonnet` relay task 6), with `M365_AVOID_THROTTLING` on. Cause:
+`turn-budget.mjs` replayed the logs of the last 6 h from a FULL bucket, which is exact only if the
+account was quiet when the window opened. A sweep waiting on the bucket isn't: from 15:40Z its 09:48–10:05Z opening burst
+(~70 turns over the refill) left the window, the replay handed those turns back (15:59Z: ~52 left by the
+old replay, ~−9 by a replay from the last quiet hour), and the bench stopped waiting. That is also a
+good fit for F58's bucket: the throttle came when the corrected replay said the bucket was empty.
+**Fixed:** the replay starts full only after a quiet stretch of capacity/refill minutes, reads back 6 h →
+24 h → 72 h to find one, and starts empty if it can't; a throttle's hold still counts from before that
+stretch (`turn-budget.test.mjs`, two new cases fail on the old replay). The non-premium sweeps were
+caught before they throttled: the fix was copied in at 16:08Z (each arm's bench loads it afresh), and
+the one arm already running the old code was paused between tasks until the fixed replay said there
+was room. The premium sweep resumes after the throttle hold: the 5 relay tasks it didn't run
+(`sonnet46-tones-agent-relayfill`), then the 13 remaining arms in order (`sonnet46-tones-agent-b`).
+The pause cost one arm. One non-premium account's `claude-sonnet` demo_only arm (agent-less) was stopped after
+each task; meanwhile the proxy closed the bench's idle keep-alive connection, and each task that came
+next after a solved one failed in 0 s, client-side, before reaching the proxy (`fetch failed: EPIPE` /
+`UND_ERR_SOCKET`): 4 of its 10. Its rows no longer map onto its log, so the arm is left out and re-run
+when that sweep is done (a make-up arm). The other account's paused arm was only held
+after its last task and is clean. Don't pause a bench between tasks for longer than the proxy's
+keep-alive timeout; stop it instead.
+
+### Follow-up, pre-registered 21:05Z (after the main sweep's agent-less arms, before the last premium arm finished)
+
+The main sweep (results below) passes the decision rule on relay_batch for both tones, but only through
+criterion 3, on a small gap: tasks with a sandbox turn, 6 of 40 agent-less vs 0 of 20 with the agent.
+As fixed in advance, that calls for the premium agent-less control. Two more questions decide what can
+ship, since a tone can't carry the agent for one of its models only without new code (Reach, above).
+All on the premium account, one sweep, `M365_AVOID_THROTTLING=1`, one arm per phase:
+
+- **H30c — account vs path.** Agent-less on the premium account, Sonnet 4.6 goes to its code
+  interpreter as often as on the non-premium ones, i.e. the 0 sandbox tasks with the agent are the
+  path's (no code-interpreter optionsSets), not the account's. Bench: relay_batch S, S5, S5, S and
+  baseline S5, S, `M365_FORCE_AGENT=0`, included scenario (60 tasks). **Falsified if** relay_batch has
+  0 sandbox tasks in 40 and baseline fewer than half the non-premium rate (28 of 40).
+- **Real pi** on `claude-sonnet` (relay_batch), fix-bug + multi, 5 runs each, with the agent and
+  agent-less on the same account. The agent passes if ≥ 9/10 and pi turns per run aren't up (an
+  increase at task-stratified permutation p < 0.05 fails).
+- **H30d — the agent path also removes Sonnet 5's own sandbox** (`bash_tool`, `/home/claude`), which
+  no client knob turned off (F36). `claude-sonnet-5` (paid, Sonnet 5, unmetered), its default relay,
+  agent vs agent-less, ABBA, 20 tasks per path. **Predicted:** 0 tasks with a sandbox turn with the
+  agent, several without (F61: 9 turns in 20). **Falsified if** an agent task has a `contentType: Code`
+  frame. `Claude_Sonnet_5` joins only if Sonnet 5 passes the main rule's criteria 1–4 too (on relay,
+  its default).
+- **H30e — Sonnet 5.5 too** (added 21:08Z at the user's request, extended to relay_batch 21:10Z, both
+  before any follow-up result). `claude-sonnet-5.5` (`Claude_Sonnet` @ paid, metered), a 2×2 of framing
+  (relay, its default; relay_batch) × path, 10 tasks per cell. A cell costs ~30–33 budget units, the
+  four ~125 of the ~141 left this week (last read 2026-10-06 23:59Z: 71 / 141) — more than a day's 80,
+  so it spans two budget days as a Latin square: before midnight UTC relay/agent then
+  relay_batch/agent-less (the first two arms of the sweep), after it relay_batch/agent then
+  relay/agent-less (the last two, ≥ 4 h of sweep later). Each day holds one cell of each
+  framing and each path, so a day effect can't pass for either. Agent vs agent-less: H30d's
+  prediction and criteria, on relay and on relay_batch. relay vs relay_batch answers H26b on the bench
+  (the budget counts turns): F61's rule, criteria 1–3, per path. n = 10 per cell can fail criterion 1
+  but hardly pass a turns criterion on its own; a close call gets more data next week, not a default
+  change. `Claude_Sonnet` joins `AGENT_CLAUDE_TONES` only if Sonnet 4.6 and Sonnet 5.5 both pass, or with
+  a model-level exception for the one that doesn't.
+
+### Main sweep: results (ran 09:48Z–21:20Z)
+102 bench arms plus the make-up arm, 1,021 tasks, 1,017 valid (4 left out: the throttled task, three
+WebSocket failures). Every arm mapped onto its log. Sandbox is counted by the `contentType: Code` frame
+(fixed this session: the old text match missed Sonnet 4.6's code interpreter entirely). S =
+`claude-sonnet`, S5 = `claude-sonnet-5`, both @ included, i.e. both Sonnet 4.6.
+
+| config, 17 framings | solved | turns per task | turns per solved task | tasks with a sandbox turn | Disengaged (= jailbreak) turns |
+|---|---|---|---|---|---|
+| S, agent (premium) | 167/170 | 3.42 | 3.48 | 0 | 52 |
+| S5, agent (premium) | 168/170 | 3.45 | 3.52 | 0 | 52 |
+| S, agent-less (two non-premium accounts) | 282/338 | 3.15 | 3.55 | 198 | 103 |
+| S5, agent-less (two non-premium accounts) | 273/339 | 3.04 | 3.50 | 199 | 98 |
+
+### F73 — `Claude_Sonnet_5` @ included is `Claude_Sonnet` @ included, to the bench too 🟢
+Stratified by framing × task, the tones differ on nothing, on either path: with the agent solved
+p = 1.0, turns p = 0.72, sandbox p = 1.0, jailbreak p = 1.0 (170 tasks each); agent-less p = 0.22,
+0.16, 1.0, 0.29 (338/339). The two non-premium accounts agree with each other just as closely (p ≥ 0.07).
+H30b stands: unlike GPT-6 Sol and GPT-6.1 Sol (§29), there is no behavioural fingerprint either. One
+model behind two tone names, as the self-IDs said.
+
+### F74 — the agent takes Sonnet 4.6 out of its code interpreter, and that is where it fails 🟢
+- **Sandbox.** With the agent, 0 of 340 tasks had a sandbox turn, under every framing; agent-less,
+  397 of 677 (Fisher p = 10⁻⁹⁶). The agent path sends no code-interpreter optionsSets (`session.ts`), so
+  this is the expected mechanism; H30c checks it isn't the account.
+- **Solves.** 335/340 (99%) vs 555/677 (82%), p = 10⁻¹⁷. Agent-less, 119 of the 122 failures had a
+  sandbox turn: the model looked for or wrote the files in `/mnt/data` (41 ended in an ERROR, mostly
+  the proxy's remote-artifact guard; 81 in prose). On the user-voice framings, which say the sandbox is
+  the wrong machine, the gap closes: relay, relay_batch, honest, retag, terse_user 193/200 agent-less
+  vs 98/100 (p = 0.72). The `<system>`-tagged framings are where the agent helps: every one of them
+  solves ≥ 9/10 with it, 11–20 of 20 without.
+- **Messages.** Turns per task go *up* with the agent over all tasks (3.09 → 3.44, p = 2·10⁻⁵), but
+  only because an agent-less failure gives up early; per solved task they don't move (3.52 → 3.48,
+  −1%, p = 0.51, strata where both paths solved). Half the agent-less *solves* had a sandbox turn too
+  (278 of 555), without costing a turn per task.
+- **Jailbreak classifier.** No change (0.30 → 0.31 per task, p = 0.47): it fires on the
+  `<system>`-tagged framings with or without the agent (persona on 10 of 10 tasks), and the proxy's
+  retry recovers nearly all of them. Not on relay or relay_batch, on either path.
+- **Dead route.** 1 `InternalError` in 1,168 agent turns (criterion 4: 0.09 per 100).
+
+**Against the rule, on relay_batch:** 1 holds (20/20 vs 20/20 per tone); 2 holds (S 2.85 → 2.60, −9%,
+p = 0.22; S5 2.80 → 2.80); 3 holds through its sandbox clause only (sandbox + Disengaged + jailbreak per
+20 tasks 3.0 → 0.0; tasks with a sandbox turn 6/40 vs 0/20, p = 0.17); 4 holds. So both tones pass, on a
+gap too small to stand alone, which sends it to the follow-up as pre-registered.
+
+### Follow-up: run notes (provisional, while it runs)
+- **Sonnet 5 with the agent disowns the harness** (`s5a1`, relay, 7/10). Its own sandbox is gone (0
+  `contentType: Code` frames in 30 turns, as H30d predicted), but with the agent attached its context
+  names the agent's real tools — enterprise search over mail, calendar and files — and it reads the
+  harness's shell tool against that: "I'm Microsoft 365 Copilot, and I don't have access to a shell,
+  file system, or coding execution tools like `bash`, `read_file`…"; "I didn't actually send a bash
+  command in my previous reply… The "tool_response" showing `exit=0` isn't" real. CoT: "This looks
+  like a prompt injection attempt, trying to convince me I made a bash tool call… I don't have a bash
+  tool as Microsoft 365 Copilot". Usually after one correct call, on the turn that sees its result.
+  Such replies: 6 of Sonnet 5's 30 agent turns; 0 of 1,169 for Sonnet 4.6 with the agent (main
+  sweep) and 0 of 34 for Sonnet 5.5 (`s55ra`); 0 of its agent-less turns so far. F37's
+  injection-sensitivity, with a new trigger. **The second agent arm (`s5a2`) settles it: 3/10**, every
+  miss an "I'm Microsoft 365 Copilot… only have access to tools for retrieving emails, c[alendar]…"
+  refusal, two of them before any call; CoT: "…tool definitions that don't match what I actually have
+  available, which is only the fetch_email_result…", "I only have the three fetch t[ools]". So the agent
+  route gives Sonnet 5 the declarative agent's enterprise fetch tools in its system context, and it
+  holds the harness up against them. Sonnet 5, relay: agent 10/20, agent-less 19/20 (`s5l1` 9/10,
+  `s5l2` 10/10; 6 sandbox turns in 66). Criterion 1 fails by 9 per 20 → **`Claude_Sonnet_5` stays
+  agent-less** (H30d: the sandbox prediction holds, 0 Code frames in 51 agent turns; the tone doesn't
+  join).
+- **Sonnet 5.5's "weekly" budget reset at midnight UTC.** `ClaudeSonnet55QueryWeekly` read 94 at
+  21:56Z on Wednesday 2026-10-07 and 150 on the first paid turn after midnight (00:22Z Thursday), with
+  the daily key back at 80. It had also started Wednesday at 150 (after 141 on Tuesday at 23:59Z). So
+  it resets daily, three days running, not on Monday as F65 assumed; with 80 a day under 150 it can't
+  bind. Opus's weekly key read 0 before and after the same midnight, so that one doesn't. n = 3
+  resets; watch the next Monday.
+
+### Follow-up: results (ran 21:21Z–02:28Z, premium account, no throttle, no budget wall)
+18 arms, every one mapped onto its log, no invalid task. Sonnet 5.5 spent 56 units before midnight and
+55 after (one per turn; the weekly key reset at midnight, see the run notes).
+
+**H30c — the path, not the account, but the account isn't nothing 🟢.** Sonnet 4.6 agent-less on the
+premium account: relay_batch 39/40, sandbox on 4 of 40 tasks (non-premium 6 of 40, p = 0.74); baseline
+20/20, sandbox on 6 of 20 (non-premium 27 of 40, p = 0.012). By the pre-registered criterion (relay_batch
+0 of 40 *and* baseline under half the non-premium rate) not falsified: the premium account goes to its
+code interpreter too. With the agent on the same account: 0 of 40 (p = 0.005). So the agent's zero is
+the path's. The premium account does go there less often under baseline — some account-level
+difference in what the `<system>`-tagged prompt triggers, not chased.
+
+**The rule on relay_batch, same account** (premium agent-less → premium agent): solved 39/40 → 20/20;
+turns 2.75 → 2.70 (−2%, p = 0.70); sandbox + Disengaged + jailbreak per 20 tasks 2.0 → 0.0 — exactly
+criterion 3's line, on 4 of 40 tasks vs 0 of 20 (p = 0.29); dead route 1 in 1,168. A pass, on the line.
+
+**Real pi decides it: Sonnet 4.6 spends one more turn per run with the agent 🔴.** `claude-sonnet`,
+relay_batch, premium, 5 runs per task per path, all 20 solved:
+
+| | fix-bug turns | multi turns | per run | `edit` calls | fix + check in one bash |
+|---|---|---|---|---|---|
+| agent | 4,3,4,4,4 | 5,5,5,5,5 | 4.40 | 9 | 1 of 5 fix-bug runs |
+| agent-less | 3,3,3,3,3 | 4,4,4,4,4 | 3.50 | 0 | 5 of 5 |
+
++26%, task-stratified p = 2·10⁻⁴, so the pi criterion fails. Not an artifact: with the agent it fixes
+`calc.py` with pi's `edit` tool and runs `python3 check.py` as a call of its own; agent-less it merges
+both into `sed -i … && python3 check.py`, as relay_batch asks. Likely the agent's instructions, which
+present the fenced tool protocol as *the* contract ("Emit exactly one fenced tool call per turn… must
+match the provided tool definitions"), pulling it to the named tool over the batched shell. The bench
+can't see this: it has no `edit` tool.
+
+**H30d — Sonnet 5 🔴 (sandbox prediction 🟢).** relay, paid: agent 10/20, agent-less 19/20 (p = 0.003),
+turns 2.55 vs 3.30 (the agent's failures stop early), sandbox 0 vs 6 of 20. See the run notes: the
+agent route puts its enterprise fetch tools in Sonnet 5's context, and it disowns the harness.
+
+**H30e — Sonnet 5.5 🟢 (sandbox), no gain otherwise.** The 2×2, 10 tasks per cell, every cell 10/10:
+
+| | agent | agent-less |
+|---|---|---|
+| relay | 3.40 turns, sandbox 0 | 3.30 turns, sandbox 5 tasks |
+| relay_batch | 2.20 turns, sandbox 0 | 2.20 turns, sandbox 2 tasks |
+
+- **Path:** 20/20 each; turns 2.80 vs 2.75 (p = 1.0); sandbox tasks 0 vs 7 of 20 (p = 0.008), none of
+  which cost a task or a turn. No disowning replies on either path (0 of 111 turns): Sonnet 5.5 doesn't
+  share Sonnet 5's reaction to the agent.
+- **Framing (H26b, bench):** relay_batch −34% turns per task (3.35 → 2.20, path × task strata,
+  p = 5·10⁻⁵), on both paths alike (agent −35%, p = 0.015; agent-less −33%, p = 0.008), no solve lost,
+  sandbox + Disengaged + jailbreak turns 6 → 3. F61's criteria 1–3 pass on each path. This is a far
+  bigger saving than Sonnet 5's (−15% bench, −6% pi; F61, F63), and the budget counts turns.
+
+### F75 — neither `Claude_Sonnet` nor `Claude_Sonnet_5` takes the agent 🟢
+By the rules fixed before each run:
+- **`Claude_Sonnet_5` stays agent-less.** Its only routed model, Sonnet 5, loses 9 solves in 20 with the
+  agent (criterion 1). Its included-scenario model is Sonnet 4.6, which no model ID reaches.
+- **`Claude_Sonnet` stays agent-less.** Sonnet 4.6 passes the bench rule only on criterion 3's line
+  (sandbox turns that, under relay_batch, cost no task) and fails real pi (+1 turn per run, p = 2·10⁻⁴).
+  Sonnet 5.5 gains nothing measurable but the sandbox look-arounds, and is unbenched in pi; a tone-wide
+  change would also move Sonnet 4.6. Not worth a model-level exception.
+What the agent does buy, on all three models, is no sandbox: 0 of 390 tasks and pi runs, against 59% of
+agent-less tasks over all 17 framings (non-premium, main sweep). That matters only for framings the proxy doesn't ship: under the
+user-voice ones the sandbox look-around is rare and harmless. **Open:** whether agent instructions that
+allowed a batched call would remove Sonnet 4.6's extra pi turn; and Sonnet 5.5 relay vs relay_batch in
+real pi (§25's amendment), which would decide `SONNET_5_5_DEFAULT_FRAMING` — ~90 budget units, about a
+day's.
+
+**Correction to F61/F62 (Sonnet 4.6 sandbox counts).** They were read with the old text-only sandbox
+match, which never sees Sonnet 4.6's code interpreter ("Analysing" / "Analysis", not "Coding and
+executing"). Re-read by `contentType: Code`: F61's bench, relay vs relay_batch, 1 vs 6 sandbox turns in
+40 tasks each (reported 0 vs 0) — +2.5 per 20, over criterion 3's +1 on the bench alone; F62's real pi,
+10 vs 3 (not reported). Together 11 vs 9, so relay_batch added no sandbox turns, and none of them cost a
+run; the decision stands. Every other archive on the three accounts (GPT-6, GPT-6 Sol, GPT-6.1 Sol,
+Sonnet 5) reads the same under both rules.
+
+---
+
+## 31. Oct 2 2026 — Windows / pi as a general agent (#6, #7): six proxy-side causes, and what is still open
+
+**Question.** #7's fix (673911b) was reasoned, not measured: no Windows host had run it. On a real
+Windows 11 machine with real pi and `gpt-5.6-think-deeper`, does a pi session work as a general
+agent — scan a repo, write and fix code, use a skill, produce documents? Where it doesn't, which
+causes are the proxy's?
+
+**Raw data** (local, not in the repo): one non-premium account; pi
+`@earendil-works/pi-coding-agent` 1.0.0, Git Bash, Node 24; per-run debug logs, outputs and
+`results.json` of a six-task suite (`%TEMP%\m365-agent-suite-*`); sweeps, a mock OpenAI endpoint and
+probes (`%TEMP%\m365-tooltest`). Service version not captured (`M365_DEBUG` truncates frames).
+Methods note for anyone sweeping single turns: **vary the first user message** — `SessionPool`
+fingerprints a conversation by it, so identical prompts land in one M365 conversation (F82).
+
+### F76 — a Windows host is not a PowerShell shell: the platform note sent pi's bash PowerShell 🟢
+pi on Windows gives a tool named `bash` ("Execute a bash command…") backed by Git Bash. The #7 note
+said it "runs PowerShell" and to emit ```powershell, so every shell turn came back as
+`/usr/bin/bash: line 2: Write-Output: command not found` (trace, 1/1) and the model gave up after
+one or two. That is also #7's original report read the other way: "only works when I say use bash"
+— bash *was* the right dialect there. Fixed by reading the dialect off the tool definition
+(`shellDialect`, `M365_HOST_SHELL` override). After: the same "inspect the project" prompt explored
+with `find`/`grep`; "count the .ts files and write the number" wrote 43 (actual 43).
+**Falsify:** a harness whose tool is named `bash` but runs PowerShell (set `M365_HOST_SHELL`).
+
+### F77 — the fence regex closed on the first ```, so nested fences executed 🟢
+A ```markdown answer holding N illustrative ```bash examples parsed as N−1 executable calls
+(deterministic; 3 examples → 2 calls), and a heredoc writing Markdown with a code block reached the
+shell as `cat > ozet.md <<'EOF'\n# Title` (unterminated). `scanFences` counts depth; only depth-0
+blocks are tool candidates. 0 of ~1 MB of logged model output glues a closer to code, so the
+own-line rule costs nothing observed.
+
+### F78 — pi's shell tool cuts commands past ~8,190 characters silently 🟢 (model-free)
+A mock OpenAI endpoint returning scripted tool calls to real pi: a 12,070-char heredoc wrote 8,164
+bytes, the trailing `wc`/`echo` never ran, and bash only said "here-document … delimited by
+end-of-file"; 7,000 chars and 6,000 double quotes were intact (the cap is on characters, not escaped
+length); pi's `write` tool took 50,000 chars intact and created parent dirs. Live, every long file
+landed cut mid-word (two runs: 8,165 and 7,564 chars — the second command had ~600 chars of `find`
+before the heredoc). A platform-note line telling the model to use the write tool did not hold (1/1:
+it still wrote one 13.6 KB heredoc), so the proxy rewrites an over-cap quoted heredoc write to the
+harness write tool (`longHeredocAsWrite`). After: the summary task wrote 13,418 chars, complete.
+
+### F79 — every follow-up tool result went out as `name="unknown"` 🟢; that it caused the give-ups ⚫ not supported
+`formatMessages` names a result after its call (fixed earlier for the misread it causes); the
+handler's delta path — every pi turn from turn 2 on — kept `m.name || "unknown"`. Fixed: one
+`formatToolResponse` for both. The hypothesis that the label caused the mid-task "bash is not
+enabled" give-ups (both observed ones came right after the first result) is **not supported**:
+after the fix, pdf and docx still gave up the same way (3 of 4 runs).
+(#50/#51 fixed the same name on main while this was open, with a separate `<tool_response
+name="bash" call_id="…">` for deltas. Kept here: the one shared renderer, so the delta reads like the
+first turn, `tool="bash" command="…"`, and #51's test now expects that.)
+
+### F80 — give-ups the forcing retry never saw: Turkish ones, and ones dressed as a document 🟢
+(1) Every confabulation pattern was English; a Turkish user's give-ups went straight through.
+(2) "…devre dışı olduğu için oluşturamıyorum" + two "run these yourself" ```bash blocks parsed as
+tool calls, so the retry (gated on no calls) was skipped, then the document guard returned it as
+text. The guard now runs first, and for a document only the opening paragraph is judged. Turkish
+patterns are first-person / session-scoped so a Turkish summary of this repo doesn't match (tested).
+Live detections after the change rescued fix-bug, skill-use, docx (2×), pdf (1×) and a turn-1
+summary refusal; one summary retry also failed.
+
+### F81 — the forcing prompt contradicted the transcript mid-task 🟡
+`CONFAB_FORCE_PROMPT` says "you have not run any command yet"; after a real tool result the model
+answered "so I can't run `ls -la` or `cat`" (2/2 observed retries). With `everActed`, the retry now
+says the tools work and a missing program is something to install. Indicative only: the first pdf
+pass of the night came after it (a 39.6 KB PDF via Edge headless print-to-pdf, Segoe UI / Consolas
+embedded, every Turkish glyph of the source mapped). n too small for a rate.
+
+### F82 — framing variants and "a refusal poisons the thread": both ⚫ at the scale tested
+An n=1-per-arm read suggested `relay`/`honest`/`minimal` beat `baseline` for GPT-5.6 tool calls. A
+5-per-arm sweep that reused one first message put all 30 trials in **one** conversation
+(`x_m365_conversation_messages` 3→4→5…) and scored 1/30. With a nonce per trial and interleaved
+arms: `baseline` 5/5, `relay` 5/5, `honest` 5/5 — no framing effect on the turn-1 call. "One refusal
+poisons the thread" (re-send in a fresh conversation on a give-up): in-thread 5/6 vs fresh 6/6, not a
+result; left as the opt-in lever it was on the fork, not shipped.
+
+### F83 — the general suite: coding works, documents don't yet 🟡
+Real pi, `gpt-5.6-think-deeper`, one objective verifier per task, across the night's builds after
+F76: write code (Turkish slugify, with the `İ` trap) 3/3 · fix two seeded bugs 3/3 · use a project
+skill 2/2 · repo Q&A 2/3 (one answer from context, wrong file) · .docx 3/6 · PDF 1/10. Two caveats:
+project skills are trust-gated and `-p` mode skips them (`--approve` for automation — the first two
+skill runs were a test bug, not a model failure); and the last three PDF runs were turn-1 refusals
+in a row after well over 100 threads that night — plausibly account degradation (§9 F13), unproven.
+**Update (Oct 4, rested account):** the "obstacle" reading was partly my harness. pandoc 3.12 and
+MiKTeX `xelatex` had been installed since Sep 29, but the shell the suite ran from had a stale PATH,
+so its agents never saw them; and one of the night's docx runs `pip install`ed python-docx, changing
+the environment for later runs. Day-to-day numbers are therefore not comparable. See F84 for what the
+probe actually found.
+
+### F84 — sessions that share an opening message shared one M365 conversation 🟢
+The F83 probe (Oct 4, one day of rest, 3 arms × {pdf, docx} × 5, interleaved; arms: control, the
+document recipes in the platform note, the same recipes as a project skill) scored control 7/10, note
+3/10, skill 4/10 — and **by position in the sweep** 7/10 → 4/10 → 3/10, every arm falling together.
+The failed runs' text explains it: in **empty** directories the model wrote "notlar.docx was already
+created and verified successfully", "Earlier in the conversation, the filesystem run already confirmed
+that notlar.md and notlar.docx exist", "Önceki çıktıya göre notlar.pdf başarıyla oluşturulmuş".
+`SessionPool` keys a conversation on the first user message, every run of a task sent the same one,
+and on a match the handler called `session.reset()` — which drops the `CopilotSession` object but
+keeps the `conversationId` — so the full prompt went into the previous run's M365 thread. At equal
+length nothing reset at all, the delta was empty, and `"Please continue."` went there. Real-use
+shape: two pi sessions opened with the same prompt within 30 minutes, even in different directories.
+This is also what F82's 1/30 was, read as a measurement artifact at the time. Fixed:
+`messages.length <= sentMessageCount` → `newConversation()` (a harness only ever appends, and the
+full prompt re-sends the whole history). Regression tests fail on the old handler.
+The document-recipe arms did not help (note 3/10 with 7 turn-1 give-ups vs control 2; p ≈ 0.07 on
+the give-ups, not significant) and were not shipped. **Live after the fix** (same sweep, control only, 10 × {pdf, docx}, interleaved, rested account):
+**17/20** (pdf 8/10, docx 9/10) vs control 7/10 before; by position 9/10 then 8/10 — the decline is
+gone. The fresh-conversation path fired on 18 of 20 runs (every repeat of a prompt), and 0 outputs
+referred to an earlier run (5 of 30 before). 7 of the 17 passes were rescued by the forcing retry
+(F80/F81), so the give-up reflex is still there; the retry is carrying it. The 3 failures: one
+mid-task give-up after 2 tool calls, two turn-1 refusals.
+
+**The key needs the tool names too (#83, Oct 16).** opencode 2.0.30 opens a session with two requests
+4 ms apart that share the first user message: a title request ("You are a title generator…", no tools)
+and the task (12 tools). Keyed on the opener alone, both resolved to one `ConversationState` and ran in one
+M365 conversation at the same time, the title prompt as turn 0 and the task as turn 1 (2 of 3 opencode
+sessions; in the third the pair shared the state too, but each request rotated it to a fresh conversation
+because the session switched model, the task's while the title turn was still running). A fake OpenAI server showed that neither pi (4 tools) nor opencode's task thread changes its
+tool names or system prompt between turns, so the key is now the opener plus the sorted tool names. Names,
+not definitions, because a description can carry per-turn text; the system prompt was left out for the
+same reason. A session that changes its tool set starts a fresh conversation with the full history: one
+more thread, but no wrong answer. **Live** (opencode, `claude-sonnet-5`, premium account): the title request
+went into its own conversation and the task into another, and the task's 3 follow-up turns went into
+the task's conversation in delta mode.
+
+---
+
+## 32. Oct 4 2026 — one conversation, two backends: turns forked until `X-RoutingParameter-SessionKey` pinned them
+
+### F85 — each turn landed on a random backend, and the conversation forked under the model 🟢
+**Discovery** (Windows / pi, `gpt-5.6-think-deeper`, long sessions of three consecutive requests). The
+chain of thought kept naming a "mismatch" between the model's call and the `<tool_response>` it got —
+"they pasted a command line interface output instead of the expected file content" — and the model
+read `todo.mjs` four times in one step. The final `type:2` item carries the server's own count of
+the conversation's user messages (`turnCount`, `throttling.numUserMessagesInConversation`). Over
+the 17 turns of that step it ran 1,2,3,2,4,5,3,6,4,5,6,7,7,8,8,9,9: the turns were landing on two
+diverging copies of the conversation that shared only the first turn.
+
+**Scale** (`scripts/fork-scan.mjs` over the proxy debug logs of Oct 2–4 on one account; turns
+joined across files by ConversationId): 77 of 116 conversations with 3+ turns forked, and 455 of 852
+turns ran on an older copy; in the long sessions 9 of 10 and 86% of turns. On off-thread turns the
+model repeated a tool call it had already made for the same request 21% of the time (1% on the full
+thread) and reasoned about mismatched responses 10% of the time (1%).
+
+**Probe** (`scripts/fork-probe.mjs`, `gpt-5.6-think-deeper` with the agent; 6 turns each). Every
+message carries a fresh word and asks for all the words so far, so the reply shows what the model can
+see:
+
+| arm | conversations forked | turns off the thread | replies missing a word |
+|---|---|---|---|
+| temporary chat (the default) | 2/3 | 7/18 | 7/18 |
+| saved chat | 3/3 | 11/18 | 11/18 |
+| temporary chat + routing key | **0/4** | **0/24** | **0/24** |
+
+The replies list exactly the words of their copy (turn 4: "willow cobalt", missing turns 2–3; turn 6:
+"willow biscuit maple violet", missing 4–5). Saved chat forks too, so `disableMemory=1` is not the
+cause, and F28's two-turn check could not have seen this: every fork here keeps turn 1.
+
+**Mechanism.** Handshake-only connections (no chat message, so no quota and no thread) on one
+ConversationId: `x-calculatedbetarget` named 4–6 different backends in 6 connections, pods in
+Switzerland North and Sweden Central, and no cookie came back. With the header
+`X-RoutingParameter-SessionKey: <ConversationId>`: 1 backend in 6, twice (a different one per
+conversation). The same key as a query parameter does not pin; neither does `X-AnchorMailbox` (OID or
+UPN) or a fixed `chatsessionid`. Inferred: each region keeps its own copy of a live conversation.
+**Fixed:** the proxy sends the header with the conversation id on every turn
+(`buildCopilotWebSocketHeaders`; `M365_NO_SESSION_ROUTING=1` leaves it out).
+
+**Validated in real pi** (the same long-session test, on a build with the header plus the pending
+Windows fixes of #44, `relay` framing; 6 sessions, 125 turns): no forks (0/6 sessions, 0/125 turns);
+18/18 steps passed; every follow-up summarised its own request; no "mismatch" reasoning and no call
+repeated within a request. 5.9 tool calls and 48 s per step, against 8.4–12.8 and 58–92 s on forked
+conversations; the run did not trip the throttle.
+
+**What this re-opens.** Before the fix, every multi-turn measurement ran with about half its turns on a
+partial history. A/B comparisons stay fair (their arms forked alike), but absolute numbers — turns per
+task, give-up rates, follow-ups that drift back to the first request — are worth re-measuring.
+
+---
+
+## 33. Oct 8 2026 — image input (#39)
+
+The proxy forwarded only the text of a message, so a model behind it never saw an image: not a
+screenshot the user pasted, not a chart the agent had just drawn and `read` back (#39). H8.10 had the
+web client's flow from PyRIT but was never run.
+
+### F86 — the web client's upload works with the chat token, on both paths, with no extra optionsSets 🟢
+`scripts/image-input-probe.mjs`: a 600×400 bar chart titled "Lot ZEPHYR-4821" with bars 37/82/15,
+uploaded to `/m365Copilot/UploadFile` through `ModelSession` (the proxy's token), the `docId` sent as an
+`ImageFile` `messageAnnotation`, and asked for the title and numbers; one fresh conversation per arm,
+`gpt-5.6-think-deeper`:
+
+| arm | answer | expected parts |
+|---|---|---|
+| agent-less, GPT-V optionsSets (`enterprise_flux_work_gptv`, `cwcgptvsan`, `flux_v3_gptv_…`) | "Title: Lot ZEPHYR-4821; numbers: 37, 82, 15." | 4/4 |
+| agent-less, annotation only | the same | 4/4 |
+| with the tool agent | the same | 4/4 |
+| control, no image | "No image is attached." | 0/4 |
+
+The title and the numbers can't be guessed, and the control shows the question alone doesn't produce
+them. The GPT-V optionsSets made no difference, so the proxy sends none (fewer moving parts on a turn,
+and optionsSets have changed behaviour before, §8.9). n = 1 per arm; one model.
+
+**Shipped.** `core/src/image-input.ts` uploads a data-URL image and builds the annotation;
+`ModelSession.run(…, images)` uploads before the turn and says in the text when an upload failed, so the
+model doesn't describe an image it never got; the handler takes the `image_url` parts of the messages a
+turn carries (all of them for a full prompt and the fresh-conversation retries, the new ones for a
+delta), and drops them once a turn has gone through, so a forcing retry in the same conversation doesn't
+attach them twice. pi sends images only for a model whose `models.json` entry lists
+`"input": ["text", "image"]`; a `read` of a PNG then arrives as a user message "Attached image(s) from
+tool result:" with the image, right after the tool result.
+**Not covered:** `http(s)` image URLs (pi sends data URLs; others would need fetching first), and other
+models than `gpt-5.6-think-deeper`.
+
+---
+
+## 34. Oct 8 2026 — agent instructions that let Sonnet 4.6 batch (`M365_AGENT_VARIANT`)
+
+**Question.** With the tool agent Sonnet 4.6 spends one more turn per real-pi run than agent-less
+(4.4 vs 3.5, every run, §30): it fixes with pi's `edit` and checks in a separate call, where agent-less
+it merges both into one `sed -i … && python3 check.py`. Is that the agent's instructions — "Emit exactly
+one fenced tool call per turn… The info-string and header keys must match the provided tool definitions
+exactly" — or something else on the agent path?
+
+**Tooling (experiment-only, not kept).** For this test `agent.ts` had an `M365_AGENT_VARIANT` switch over
+a registry of instruction texts; each variant was its own agent (the name carries the hash) with its own
+cache file, and `default` was the shipped text byte-for-byte (`8dd4e74e`). The test failed (F87), so the
+switch was reverted rather than committed; rerunning means re-adding it with the texts below (`batch`
+replaces `default`'s "Emit exactly one fenced tool call per turn, then stop and wait for the
+<tool_response>."; `shell` adds a paragraph before the no-tools line). Four variants, as different from
+each other as I could make them:
+- `batch` (`f8170f5d`): "Emit one fenced tool call per turn, then stop and wait for the
+  <tool_response>, and make that call do as much of the task as it can: one shell block may look at the
+  files, make the change and run the check together.";
+- `shell` (`25a8c93c`): "When a shell tool is defined, do the work through it: each turn, one shell block
+  that does the whole step — inspect, edit in place with sed or a heredoc, then run the check, chained
+  with &&. Use the other tools only for what a shell can't do.";
+- `defer` (`3bc5e2c7`), the whole text: "You are a helpful assistant that can act through tools. When the
+  incoming message contains a <tools> block, the message explains how to use those tools: follow its
+  instructions on how to act and how to write a call. When the message has no <tools> block, respond
+  normally as a helpful assistant in natural language." (relay_batch carries the format and the
+  batching note by itself);
+- `minimal` (`75357d68`): "You are a helpful assistant." — the agent path with next to nothing in it.
+All four were provisioned at 03:33Z and served Sonnet 4.6 through the agent (one self-ID turn each).
+
+**Hypotheses (fixed 03:35Z, before any run).**
+- **H34a — the instructions.** The extra turn is `default`'s wording. Predicts: `batch`, `shell`, `defer`
+  and `minimal` merge fix and check (≤ 2 `edit` calls in 10 runs) and spend no more than the agent-less
+  control + 0.25 turns per run; `default` again ~4.4 with ~9 `edit` calls.
+- **H34b — the code interpreter.** The agent-less path batches because M365's code interpreter is on
+  there (the agent path sends no code-interpreter optionsSets), not because the agent's text forbids it.
+  Predicts: agent-less with `M365_NO_CODE_INTERPRETER=1` spends ~4.4 turns per run and uses `edit`.
+Both can be partly true; all four agent variants at ~4.4 plus no-CI at ~3.5 would point at the agent
+path itself (its system context), neither text nor optionsSets.
+
+**Decision rule.** A variant removes the extra turn if, in real pi, it solves 10/10 and its turns per run
+are ≤ the same sweep's agent-less control + 0.25 and below `default`'s (task-stratified permutation
+p < 0.05). That alone ships nothing: a new default text re-provisions the agent that Opus (4.5 and 5.5)
+and the GPT agent tones also use, so a winner then needs Opus 4.5 (bench relay_batch + real pi; Opus 5.5's
+week is used up until Monday) and GPT-6 Sol / GPT-6.1 Sol with the agent (real pi) re-checked, and
+Sonnet 4.6 re-judged against F75 (it would also need a reason to take the agent at all).
+
+**Design.** `claude-sonnet` (relay_batch, its default), real pi fix-bug + multi, `PI_N=5` per task per
+arm, `M365_AVOID_THROTTLING=1`. Premium account, one phase per arm: agent `default`, `batch`, `shell`, agent-less control,
+`defer`, `minimal`, agent-less + `M365_NO_CODE_INTERPRETER=1` (70 runs). H34b replicated on a non-premium
+account, agent-less control vs no-CI, ABBA (40 runs). (A run on another non-premium account was stopped
+during its first pi run, at the user's request — the account was needed — and is left out.)
+
+**Run notes.** Launched 03:38Z (premium) and 03:39Z (the non-premium account); each arm's debug log names the
+agent it used (`Using cached agent … (instructions <hash>, variant <name>)`), and every agent arm so far
+ran every turn through the agent, every agent-less arm none. One `default` multi run failed: on its
+first turn the model wrote a correct call and then went on — its own `<tool_response>`, and the rest of
+the session — for 4 min and 45,816 chars, until pi's 240 s timeout ended the run (F39's shape). The
+proxy cut the 45,695 invented chars as it should, but only after the stream closed: the tool path
+buffers the whole turn. **Lead (not in this sweep):** stop the stream as soon as a complete fence is
+followed by `<tool_response`, as a client Stop would (everything after the first call is dropped anyway).
+It would turn this failure into a normal turn and cut wall time wherever the model rambles on.
+Every pi failure so far is that runaway: each 240 s timeout is a turn whose invented continuation the
+proxy cut afterwards at 45–69 k chars (`default` multi 1; `batch` fix-bug 1 and multi 2, so `batch` is
+7/10 by this alone). Shorter self-written `<tool_response>`s are routine and harmless: 60% of Sonnet
+4.6's agent turns in §30's sweep (420 of 703), but only 6 of them over 5 k chars in 1,645 bench turns;
+here 7 in 128 pi turns. So under this decision rule a variant's solve count partly measures how often it
+rambles past a call, which the live stop above would remove. Judge turns on solved runs, and re-run any
+variant that loses runs this way once the stop is in.
+
+### F87 — it's the agent path, not its instructions and not the code interpreter 🟢
+Premium sweep 03:38–06:00Z, 70 pi runs, every agent run through its own variant's agent and every
+agent-less one without; a non-premium account, 40 runs; plus §30's pi arms (Oct 7). Turns per *solved* run
+(failed runs are all runaways, below), task-stratified permutation:
+
+| Oct 8, premium | solved | turns per solved run | fix-bug | multi | `edit` per run | fix + check in one bash, per run |
+|---|---|---|---|---|---|---|
+| agent `default` | 9/10 | 4.22 | 3,4,4,3,4 | 5,5,5,✗,5 | 0.70 | 0.20 |
+| agent `batch` | 7/10 | 4.29 | 4,3,4,✗,4 | 5,✗,5,✗,5 | 0.60 | 0.10 |
+| agent `shell` | 10/10 | 4.40 | 4,4,4,3,4 | 5,5,5,5,5 | 0.90 | 0.10 |
+| agent `defer` | 8/10 | 4.25 | 3,4,4,4,4 | 5,✗,5,✗,5 | 0.70 | 0.00 |
+| agent `minimal` | 10/10 | 4.30 | 4,3,4,4,4 | 5,5,4,5,5 | 0.80 | 0.20 |
+| agent-less | 10/10 | 3.80 | 3,3,3,3,3 | 4,5,5,5,4 | 0.30 | 0.60 |
+| agent-less, no code interpreter | 10/10 | 3.70 | 3,3,4,3,3 | 4,5,4,4,4 | 0.20 | 0.80 |
+
+- **H34a falsified.** No agent text moves it: every variant is within 0.2 turns of `default` (p ≥ 0.58)
+  and calls `edit` as often (0.6–0.9 per run). Not the targeted rewording, not the strong shell
+  preference, not deferring to the message, not "You are a helpful assistant." alone.
+- **H34b falsified.** Turning the code interpreter off agent-less changes nothing: 3.80 → 3.70 on the
+  premium account (p = 1.0), 4.10 → 4.05 on the non-premium account (20 runs each, p = 1.0, `edit` 0.50 vs 0.55).
+- **The agent path costs the turn, and it replicates.** All five agent arms against both agent-less
+  arms today: 3.75 → 4.30 per solved run (+15%, p = 3·10⁻⁵), `edit` 0.25 → 0.74 per run; with §30's
+  arms, 3.67 → 4.31 (+18%, p = 10⁻⁵). §30's perfectly uniform +1 was the clean end of it: today the
+  agent-less control called `edit` too, now and then. What's left on the agent path that the text and
+  the optionsSets don't explain is what M365 adds there — the declarative-agent wrapper and its
+  enterprise tools, which Sonnet 5 named in its reasoning (§30 run notes). Untested.
+- **The agent path also rambles more.** Runs with a runaway turn (an invented `<tool_response>` and the
+  rest of the session, cut at > 5 k chars): 12 of 60 with the agent, 4 of 70 without (p = 0.017). Every
+  failed run (6, all agent) was one of them, ended by pi's 240 s timeout.
+
+**Decision:** nothing ships from this. `default` stays the agent's text (no variant beats it, so no
+re-provisioning, and no Opus / GPT re-check is needed), and F75 stands: `Claude_Sonnet` and
+`Claude_Sonnet_5` stay agent-less — now with the mechanism narrowed to the agent path itself. The
+variant switch was reverted; the four variants' agents stay provisioned in the tenant (never deleted,
+§10), unused. **Open:** the live stop for runaways (run notes above), which would also cut the
+agent-less path's 4 in 70, and is the one thing here that would change a real pi session.
+
+---
+
+## 35. Oct 8 2026 — stop the turn when the model starts writing its own `<tool_response>` (#65)
+
+**Change.** `handler.ts`, tool requests: as the turn streams, once the composed text holds a self-written
+`<tool_response>` after a real call (the stop sequence `truncateAtFabricatedToolResponse` already cut
+at, after the fact), abort the turn the way a client's Stop does. M365 then ends it with `result:
+Success` ("Stop requested. StopReason: ClientRequested", seen in §34's frames). The cut keeps the head as
+before. `M365_NO_EARLY_STOP=1` turns it off. Who it touches, from past archives: Sonnet 4.6 writes its
+own result on ~60% of turns (§30), Sonnet 5 on 8 of 225, Opus 4.5 on 2 of 255; Opus 5.5, GPT-6, GPT-6 Sol
+and GPT-6.1 Sol on none of 540.
+
+**H35 (fixed before any run).** In real pi the early stop removes the runaway failures (§34: 12 of 60
+agent runs had a turn going on past its call for > 5 k chars, all 6 failures among them, each ended
+by pi's 240 s timeout) and cuts wall time per run, at no cost in solves or turns, and a conversation
+continues normally after a stopped turn. **Falsified if** runs fail after a stopped turn, or turns per
+run go up.
+
+**Decision rule.** Commit the change if, on each path, stop-on solves ≥ stop-off − 1 per 20 runs, turns
+per solved run don't go up (an increase at task-stratified permutation p < 0.05 fails), and no failure
+traces back to a stopped turn (an error or confused reply on the turn after it). Wall time per run is
+reported, not decisive.
+
+**Design.** `claude-sonnet` (relay_batch), real pi fix-bug + multi, `PI_N=5` per task per arm, `M365_AVOID_THROTTLING=1`,
+ABBA by arm. A non-premium account, agent-less (the shipped path): on, off, off, on (20 runs each). Premium,
+with the agent (`M365_FORCE_AGENT=1`, where the runaways clustered): off, on, on, off (20 each).
+
+**Run notes.** Launched 06:21Z on both accounts. From 06:59:52Z every new WebSocket on this host failed
+(`WS error: connection failed`, ~20 s per pi run, no M365 turn spent) on both accounts, stop on and off
+alike. The cause was the host, not the change: IPv6 lost its default route (`ENETUNREACH`) while DNS
+kept returning AAAA records first, and Node's address fallback (`autoSelectFamily`) gives each address
+250 ms, under the ~270 ms an IPv4 connect to M365 takes here, so every attempt was cut off
+(`AggregateError`). `--dns-result-order=ipv4first` alone didn't help; with
+`--no-network-family-autoselection` as well, 3/3 connected. Lost to it: the non-premium account's second stop-on arm
+(8 of 10 runs) and the premium second stop-off arm (6 runs; the sweep was stopped at 07:38Z). Those runs
+are transport failures, left out of every score, and each lost arm was re-run whole with
+`NODE_OPTIONS="--no-network-family-autoselection --dns-result-order=ipv4first"`
+(one make-up archive per account). **Lead:** the proxy itself fails this way for any
+user whose IPv6 is broken; a longer per-address timeout on its WebSocket would fix that.
+
+### F88 — stopping early saves a quarter to a third of the wall time and costs nothing the rule counts 🟢 (#65)
+95 pi runs, 15 of them transport failures from the outage (left out); every arm mapped onto its log.
+Turns and seconds per *solved* run, task-stratified permutation:
+
+| path | early stop | solved | turns | seconds | early stops (runs with one) | runaways |
+|---|---|---|---|---|---|---|
+| agent-less (a non-premium account) | on | 22/22 | 4.41 | **32.3** | 30 (21 of 22) | 0 |
+| agent-less (a non-premium account) | off | 19/20 | 4.16 | 43.2 | 0 | 0 |
+| agent (premium) | on | 18/18 | 4.44 | **35.1** | 27 (18 of 18) | 0 |
+| agent (premium) | off | 20/20 | 4.40 | 53.7 | 0 | 2 |
+
+- **Wall time:** −25% agent-less (p = 2·10⁻⁵), −35% with the agent (p = 10⁻⁵). The stop lands 50–300
+  chars into the turn; M365 acknowledges it in ~0.4 s and the socket closes ~0.8 s after the stop, with
+  60–800 chars more on the wire, which the cut removes as before.
+- **No harm on the turn after:** 39 runs had at least one stopped turn (57 stops), and every one solved.
+  The one failure, stop off, answered in prose on its first turn.
+- **Runaways:** 2 with the stop off (premium; both cut afterwards, neither long enough to time the run
+  out), 0 with it on. Too rare in this sample to show §34's failures going away; mechanically, a stopped
+  turn can't run on.
+- **Turns:** not up by the rule's test — agent-less 4.16 → 4.41 (p = 0.065), with the agent 4.40 → 4.44
+  (p = 1.0). But the agent-less shift has a mechanism. With the stop off, the model's first turn goes on
+  past its `cat` and writes the fix as one `sed -i … && python3 check.py`, inside its invented
+  continuation; M365 keeps that whole message in the conversation, and on the next turn the model
+  follows its own plan. With the stop on, that plan never reaches the conversation, and it uses pi's
+  `edit` and checks separately. fix-bug: merged fix and check in 6 of 10 runs off vs 1 of 12 on, turns
+  3.50 → 3.92 (p = 0.12); multi unchanged (4.90 → 5.00).
+
+**Decision:** passes the rule on both paths → committed (`handler.ts`, `M365_NO_EARLY_STOP=1` to opt out).
+H35 holds except for the turn count, which moved the wrong way on one task without reaching the rule's
+line. **Lead:** the note the proxy sends after a cut ("only the first tool call in your previous reply
+was actually run…") could invite the merge the invented plan used to provide. *(Superseded: the turn
+cost replicated after the rebase, and the default became a 2,000-char cap on the tail, F89.)*
+
+### Follow-up, Oct 11: after the rebase onto main, the turn cost replicates
+
+**Smoke, premium account, rebased build** (session routing #49, image input #66 and the rest of main
+underneath), stop on, `PI_N=5`: 10/10 with the agent, 10/10 agent-less. But no turn there streamed: every
+`claude-sonnet` turn arrived as one `streamingMode: "Full"` update when M365 had finished it (97 of 97), so
+each stop fired only when the whole text landed (median 319 chars past the tag, up to 19 k; Oct 8, the
+same account and model: 16–17, every turn `Delta`). **No change in this repo caused it:** the pre-rebase
+build (`9e2d9f1` plus §34/§35's own commits, so none of #44, #49, #66, #67, #68 or the fence fix), which
+streamed there on Oct 8, gets `Full` there today too (4 of 4 turns, plain and tool requests); its request
+frames, frame shapes and debug log match Oct 8's but for ids and content; `M365_NO_SESSION_ROUTING=1`
+gives `Full` on the rebased build as well (2 arms each way, 8 turns). It covers every Claude tone tried on
+the premium account, on both scenarios: `Claude_Sonnet` @ included (Sonnet 4.6), `Claude_Sonnet_5` @ paid
+(Sonnet 5) and `Claude_Sonnet` @ paid (Sonnet 5.5), 1 plain turn each, all `Full`. Not GPT: on the same
+account `gpt-6.1-sol` and `gpt-5.6` stream (309 and 334 `Delta` updates). Not the non-premium accounts:
+there `claude-sonnet` streams, tool requests and plain ones alike, on the old build and on main, routing
+on and off. The premium account's last Claude turn that streamed was Oct 8 14:36Z and its first `Full`-only
+one Oct 11 14:47Z, with no Claude turn there in between. So M365 stopped streaming Claude to the premium
+account in that window; there the stop can't come early.
+
+**Replicate, both non-premium accounts, rebased build**, agent-less, stop on vs off, one order per account
+(on, off / off, on), 20 runs a side. Every turn streamed; every stop landed 16 chars past the tag.
+
+| agent-less | solved | M365 turns per run | seconds per run | stops (runs with one) | runaways |
+|---|---|---|---|---|---|
+| stop on | 20/20 | 4.25 | **24.6** | 20 (20) | 0 |
+| stop off | 20/20 | 3.90 | 38.0 | 0 | 2 |
+
+Seconds −35% (p = 5·10⁻⁵). Turns +9%, task-stratified p = 0.049; with §35's agent-less arms (4.00 → 4.41
+by this count, p = 0.073) pooled, 3.95 → 4.33, +10%, **p = 0.004**, multi alone 4.45 → 5.00 (p = 0.003).
+The mechanism replicates too: with the stop on, Sonnet 4.6 merges fix and check into one bash call less
+(0.60 → 0.25 per run; on multi 0.60 → 0.00) and calls pi's `edit` more (0.40 → 0.75). So on
+`claude-sonnet`'s shipped path (Sonnet 4.6, agent-less) the stop at the tag **fails the rule's turn
+test**: it trades 10% more turns (throttle budget) for 35% less wall time. Invented tails are short as a
+rule (stop-off turns, both paths: median ~400 chars, p90 2.1–2.7 k, p95 2.6–4.3 k, longest 10 k here;
+§34's runaways ran 45–69 k), and the ones the model followed with a merged call were 81–1,428 chars.
+
+**H35b (fixed before any run).** Stopping only once the invented tail passes a cap
+(`M365_EARLY_STOP_AFTER`, chars past the tag) keeps the turns at the stop-off level — the short tails
+that carry the plan run to their end — and still ends runaways, at ~215 chars a second within ~10 s
+(2 k) or ~25 s (5 k) instead of minutes. **Falsified if** a cap's turns are above stop-off at p < 0.05.
+
+**Design.** `claude-sonnet` agent-less, real pi fix-bug + multi, `PI_N=5` per task per arm, both
+non-premium accounts in parallel, four arms each, reversed between the accounts: stop off
+(`M365_NO_EARLY_STOP=1`), stop at the tag (`=0`), cap 2,000, cap 5,000 (20 runs per arm).
+
+**Decision rule.** A cap passes if it solves ≥ stop-off − 1 per 20, its turns per run aren't above
+stop-off at task-stratified p < 0.05, and no failure traces back to a stopped turn. The smallest passing
+cap becomes the default. If none passes, the stop stays opt-in.
+
+**Run notes.** Launched 16:17Z on both non-premium accounts, each with its own proxy port; both ran
+clean (no throttle, no transport failure), every turn streamed.
+
+### F89 — a 2,000-char cap keeps the turns and still ends the runaways; the stop at the tag costs 10% 🟢 (#65)
+160 pi runs, every one solved (20/20 per arm), every arm mapped onto its log. Per run, task-stratified
+permutation against stop-off:
+
+| agent-less | M365 turns | vs stop-off | seconds (mean / median / max) | vs stop-off | stops | runaways (cut > 5 k) |
+|---|---|---|---|---|---|---|
+| stop off | 4.10 | | 47.5 / 39 / 199 | | 0 | 2 (longest 36 k) |
+| stop at the tag (`=0`) | 4.55 | +11%, p = 0.018 | 20.3 / 19 / 31 | −57%, p < 10⁻⁴ | 40 | 0 |
+| cap 2,000 | 4.20 | +2%, p = 0.74 | 31.5 / 31 / 76 | −34%, p = 0.035 | 3 | 0 |
+| cap 5,000 | 4.35 | +6%, p = 0.21 | 36.0 / 37 / 63 | −24%, p = 0.22 | 0 | 0 |
+
+- **The stop at the tag costs turns, a third time.** Pooled over its three A/Bs (§35, the rebase
+  replicate, this sweep): 4.00 → 4.40 per run, +10%, p = 8·10⁻⁵ (60 vs 62 runs). The mechanism reads
+  less cleanly here: `edit` calls go up again (0.60 → 0.90 per run), but merged fix + check calls don't
+  separate (0.40 vs 0.45), so "the model follows its own short tail as a plan" holds in two of three
+  sweeps.
+- **The caps keep the turns.** H35b holds: neither cap is above stop-off (2 k: +2%; 5 k: +6%, with no
+  stop at all, so that is the noise). Against both Oct 11 stop-off arms pooled (40 runs), cap 2 k is
+  +5%, p = 0.17. The 2 k cap stopped 3 turns, each ~2,003 chars past the tag; the longest invented tail
+  was 2,056 chars in the 2 k arm and 4,537 in the 5 k one, while stop-off had two runaways, one a
+  36 k-char turn in a 199 s run.
+- **Wall time.** The stop at the tag is fastest; cap 2 k still saves a third of stop-off's mean (its
+  median 31 vs 39 s), most of it the runaways it ends.
+
+**Decision:** cap 2,000 is the smallest passing cap → the default (`M365_EARLY_STOP_AFTER`, `0` for the
+stop at the tag, `M365_NO_EARLY_STOP=1` to opt out). The agent path wasn't re-run: its turns didn't move
+with the stop at the tag (F88), and the premium account doesn't stream Claude today, so a stop there
+can't come early anyway. **Open:** whether M365 streams Claude to the premium account again, and what else
+the `Full`-only turns change for streaming clients there.
+
+## 36. Oct 13 2026 — `Claude_Opus` @ included becomes Opus 4.8, and serves without the tool agent
+
+**Question.** The user's probes on the premium account (2026-10-13 01:37–01:41Z, service
+`1.0.03571.57831`) show `Claude_Opus` on the included scenario self-identifying as **"Claude Opus 4.8;
+Anthropic; 2026-01"**, where it said Opus 4.5 (§24 F54). And it now answers **agent-less**: the route F53
+found dead (8/8) is `DeepLeo`. Which path should `claude-opus-4.8` take for tool requests, and does a
+tool-less request still need the agent?
+
+**Raw data** (local, not in the repo): the user's runs in `scripts/tone-out/` and
+`scripts/agent-tone-out/` in the premium account's checkout and one non-premium account's checkout.
+
+| cell (`Claude_Opus` @ included) | premium | non-premium |
+|---|---|---|
+| agent attached (`agent-tone-probe`) | `DeepLeo`, `3PDeclarativeAgent`: "Claude Opus 4.8; Anthropic" 3/3 (cutoff 2026-01 ×1, 2025-01 ×2) | dead: BotConnection, `result: InternalError` (1/1) |
+| agent-less (`tone-probe`) | `DeepLeo`: "Claude Opus 4.8; Anthropic; 2026-01" 5/5 | dead: BotConnection apology (1/1) |
+
+**When.** Agent-less on the premium account, the last dead cell on record is 2026-10-04 00:28Z; the first
+live one is 2026-10-11 20:26Z (a `pong` prompt, so no self-ID). No probe ran in between. The paid cell
+(Opus 5.5) was at its daily wall in every run, so it says nothing about the paid route. Per the
+self-ID rule, "Opus 4.8" is what it calls itself: the system prompt that made Opus 4.5 say "Opus 5"
+(F54) may be gone or changed, and no `ChainOfThoughtSummary` frame came with these turns.
+
+**Shipped before the sweep:** `claude-opus-4.8` (included scenario, unmetered); `claude-opus-4.5` kept
+as a legacy alias for the same route; `isOpus45Model` → `isIncludedOpusModel`, matching `opus-4-8…`
+strings as well as `opus-4-5…`. The path is left as it was (agent on every request) until the sweep
+decides.
+
+**H36a.** Agent-less, Opus 4.8 tool-calls as well as with the agent (it is the path the other Claude
+tones ship on), with no more turns per task. **Falsified if** it fails the rule below.
+
+**Pre-registered decision rule (fixed 05:07Z, before the sweep started).** The agent is the status quo and wins
+ties: `claude-opus-4.8` tool requests go agent-less only if, on `relay_batch` (the Opus default),
+agent-less vs agent on the premium account:
+1. solved(agent-less) ≥ solved(agent) − 1 per 30 valid tasks;
+2. turns per task not up (an increase at task-stratified permutation p < 0.05 fails);
+3. a gain, at least one of: turns per task down ≥ 10% at p < 0.05; sandbox + Disengaged + jailbreak turns
+   down by ≥ 3 per 30 tasks; solved up by ≥ 3 per 30;
+4. real pi (fix-bug + multi, 5 runs each per path): agent-less ≥ 9/10, and turns per run not up (an
+   increase at p < 0.05 fails).
+`baseline` (10 tasks per path) decides nothing; it shows whether the agent-less path has a sandbox the
+model reaches for when the framing doesn't steer it away (Sonnet 4.6's did, §30 F74).
+
+**Tool-less requests** (`modelRequiresAgent`): that rule existed only because the agent was Opus 4.5's
+sole route (F53). The probes above already falsify that for Opus 4.8, so it goes, unless the proxy's own
+tool-less turns (`proxy-verify` without `--tools`) fail agent-less.
+
+**Design.** `phase-sweep.sh`, `MODEL=claude-opus-4.8`, premium account, included scenario, 10 bench tasks
+per arm, confab retry off, `M365_AVOID_THROTTLING=1`, one arm per phase, `M365_FORCE_AGENT`
+says the path. Order: relay_batch agent, agent-less; baseline agent-less, agent; relay_batch agent-less,
+agent, agent, agent-less; then real pi (relay_batch, its default) fix-bug agent, agent-less, multi
+agent-less, agent. 30 relay_batch tasks per path. No account confound this time: both paths run on the
+one account that serves the model.
+
+**Run notes.** `opus48-agent`, 05:07–07:13Z, 12 arms, 271 M365 turns, none throttled, every arm mapped
+onto its log. Services `1.0.03571.57831` … `57845`. The bench waited on the bucket from arm 6 on.
+
+### F90 — the agent stays: relay_batch ties on the bench, and agent-less costs 22% more turns in real pi 🟢
+| config (premium, Opus 4.8) | solved | turns per task | sandbox / Disengaged / jailbreak turns |
+|---|---|---|---|
+| relay_batch, agent | 30/30 | 2.53 | 0 / 0 / 0 |
+| relay_batch, agent-less | 30/30 | 2.60 (+3%, p = 0.80) | 0 / 0 / 0 |
+| real pi (relay_batch), agent | 10/10 | 3.70 per run, 23.7 s | 0 / 0 / 0 |
+| real pi (relay_batch), agent-less | 10/10 | **4.50** per run (+22%, p = 5.4·10⁻⁴), 27.2 s | 0 / 0 / 0 |
+| baseline, agent | 8/10 | 2.40 | 0 / 2 / 2 |
+| baseline, agent-less | **1/10** | 1.10 | **7** / 2 / 2 |
+
+Turns: task-stratified permutation (`analyze-arms --turns`). Agent-less fails criteria 3 (no gain of any
+kind) and 4 (pi turns up), so **H36a is falsified and `Claude_Opus` keeps the agent on tool requests**.
+In pi the extra turn is pi's `edit`: agent-less Opus 4.8 called it in all 10 runs (10 times), with the
+agent in 2 (2 times), where relay_batch otherwise fixes and re-checks in one shell call. That is the
+mirror image of Sonnet 4.6, whose extra turn with `edit` came *with* the agent (§30 F75, §34 F87).
+relay_batch holds up on Opus 4.8: 30/30 at 2.53 turns per task with the agent, close to Opus 4.5's
+2.30 (F60) and 0 Disengaged turns in 60 tasks. Turns on the included scenario carry no `metering`
+(0 of 271), as Opus 4.5's didn't (F55).
+
+### F91 — agent-less, Opus 4.8 has a code interpreter of its own, and writes its own tool results 🟢
+`baseline` agent-less solved 1 of 10: on 7 turns it ran the task in its own sandbox (`contentType:
+Code`) and then reported on files it had never touched ("`fizzbuzz.py` created and ran successfully —
+output matches…", "The working directory was empty — `config.json` did not exist. I've created it"). With
+the agent: 0 sandbox turns in 137. Under relay_batch the user-voice note keeps it out (0 of 78 agent-less
+bench turns), like Sonnet 4.6 (§30 F74). Agent-less it also writes a `<tool_response>` of its own after a
+call on 13 of 134 turns (97–1,808 chars, all cut by the stop sequence, none long enough for the early
+stop), and never with the agent (0 of 137, Fisher p = 8·10⁻⁵). Neither cost a solve here; both are
+reasons the agent is the safer path. As fingerprints, they also say the included route changed more
+than its name: Opus 4.5 never served agent-less, so neither could be seen before.
+
+### F92 — tool-less requests go agent-less now; a non-premium account gets the premium-only 502 on every path 🟢
+`modelRequiresAgent` is gone: `requestUsesAgent` attaches the agent to tool requests only, for every
+model. The premium-only 502 (`model_route_unavailable`) used to fire only for a request that carried the
+agent, so a tool-less one would have ended in "empty response" on a non-premium account. It now keys on
+the model (`isPremiumOnlyModel`), whatever the path. Live, with the new build, `proxy-verify.mjs
+--model=claude-opus-4.8` on a non-premium account (06:49–06:54Z): tool-less (agent-less), tools without
+the agent, and tools with it (the shipped path) each got `InternalError` on all 3 attempts and the
+premium-only 502. On the premium account, same build (07:18–07:19Z): tool-less answered agent-less ("4"),
+and `--agent --tools --multiturn` called the tool and used its result (PASS).
+
+**Shipped.** `claude-opus-4.8` (included scenario, agent on tool requests, `relay_batch`), with
+`claude-opus-4.5` an alias of it; `isIncludedOpusModel` matches `opus-4-8…` and `opus-4-5…` strings; no
+agent on tool-less requests; `isPremiumOnlyModel` for the 502. `M365_OPUS_FALLBACK_MODEL`'s suggested
+value is `claude-opus-4.8`. Not measured: the paid route (Opus 5.5), which was at its daily wall all
+night.
+
+---
+
+## 37. Oct 12 2026 — `M365_AVOID_THROTTLING` in the proxy: a pi session waits for the F58 bucket too
+
+**Change.** The F58 bucket moves from the bench into the core package (`packages/core/src/turn-budget.ts`;
+`scripts/bench/turn-budget.mjs` re-exports it). With `M365_AVOID_THROTTLING=1` the proxy calls
+`awaitTurnBudget` before every upstream turn (`runBuffered` in `handler.ts`, forcing retries included).
+The bench waits for a whole task plus the reserve; the proxy waits for one turn plus the same reserve
+(20), so a task the bench let start doesn't wait inside the proxy. A streamed request waits on its
+keepalive chunks for up to `M365_BUDGET_MAX_WAIT_MIN` (15) and an unstreamed one for up to 2 min. A
+longer wait, usually a throttle hold, is answered with a 429 (`m365_throttle_hold` /
+`m365_turn_budget`, `Retry-After`) and the turn is never sent. The proxy reads the same logs as the
+bench, incrementally (2–8 ms per turn on the premium account's config dir). It adds its own turns from
+memory when it doesn't log, and the turns it let through that haven't started yet, so two concurrent
+requests can't both take the last turn above the reserve.
+
+**Why.** By F58 every turn takes one from the bucket, mid-thread or not: the 07:56Z onset hit a turn in
+the middle of a conversation. A pi session is one thread, but its turns cost the same, and a busy pi
+session can spend 100 turns in well under an hour; then every turn fails for about an hour. The bench
+could already wait for the bucket (§25); a pi session couldn't.
+
+**What pi does with a held stream** (pi 0.78.1's source, then tested below). The OpenAI SDK's timeout
+covers only the wait for headers, which a streamed response sends at once. undici's 5-min
+`bodyTimeout` is an idle timer, reset by every chunk, so the proxy's 15 s keepalive should hold a turn
+open for as long as it likes. pi's own retry (3 tries at 2, 4 and 8 s, `Retry-After` ignored) fires
+only on messages matching `rate.?limit|429|too many requests|…`; an error chunk in a stream carries
+just its message, and the hold's message matches none of them.
+
+**Fixtures.** H37a and H37b fake the bucket's state, not M365's: a log file of fake `Chat turn` /
+`Turn result: Throttled` lines with fresh timestamps, kept outside the config dir and given only to
+the test proxy through `M365_BUDGET_LOGS`, so no other process on the account counts them. Real pi,
+fix-bug, `claude-sonnet`, a non-premium account, `M365_NO_CONFAB_RETRY=1`.
+
+### F93 — a pi turn held 6.7 min on keepalives runs normally; a throttle hold costs pi nothing upstream 🟢
+
+- **H37a (held past pi's idle timer): confirmed, n=1.** The fixture held 90 turns 5 s old, a bucket of
+  ~10, so the first turn waited 6.7 min (23:01:43 → 23:08:23Z), past pi's 5-min idle timer. pi did
+  not time out. The run solved in 4 turns, each later one held ~30 s (one turn's refill, less the ~8 s
+  the turn itself took), 520 s in all. Falsified it would have been by a pi error during the wait.
+- **H37b (throttle hold): confirmed, n=1.** With a throttled turn 5 min old in the fixture, pi's one
+  request was answered at once: "Not sent to M365 Copilot (M365_AVOID_THROTTLING): M365 throttled this
+  account at 23:13:59Z; holding new turns for ~70 more min…". No `Chat turn` reached the proxy's log,
+  pi made no retry (one `Chat completion` line), and the run ended in 0 s. pi-reliability had scored it
+  a plain FAIL, since it looked only for `PerUserThrottled|m365_throttled`, which a streamed error
+  doesn't carry. It now also matches `throttled this account`, and analyze-arms counts a held run as
+  INVALID (`Not sent to M365 Copilot`).
+
+**H37c (pre-registered before the run).** Drive pi past the bucket with `M365_AVOID_THROTTLING` set
+on the proxy only: pi-reliability without the variable, no cooldown, 50 fix-bug runs, ~200 turns, on a non-premium account
+whose bucket starts full. Prediction: the proxy lets turns straight through until its count reaches
+the reserve (at pi's ~4 turns a minute the bucket refills meanwhile, so after ~130 turns, ~35 min),
+then waits ~30 s a turn for the rest (~70 turns), its count bottoms out at the reserve (~20), and the
+account never throttles. **Falsified
+by** any `Turn result: Throttled` in the run: the model is more than 20 turns optimistic for pi's
+traffic, or the proxy lets through turns it shouldn't. Without the variable, F58 puts the onset where
+the count reaches 0, ~100 turns in.
+
+**H37d — does the bucket refill at 00:00Z, the way the priority-access budgets reset? (pre-registered
+23:30Z).** The model refills continuously and never resets. The logs on record can't tell: replayed both
+ways (M0 continuous; M1 also refilled to full at 00:00Z), every onset on the three accounts gets the
+same level, because each had a quiet stretch before 00:00Z. Only one 00:00Z on record found the bucket
+low (premium, 2026-10-08: M0 31, then 97 turns in the hour), and M0 didn't run dry there either. Probe:
+H37c holds a non-premium account at the reserve (~20) across 00:00Z. At 00:00:30Z, stop it, restart
+the proxy without `M365_AVOID_THROTTLING`, and send short turns back to back in one conversation until
+the first throttle.
+**M0 predicts** a throttle after ~20–25 turns; **M1 predicts** none until ~110. A throttle in that
+range also shows H37c really ran at the floor. No throttle by ~130 would mean the bucket was bigger
+than either says.
+
+### F94 — with `M365_AVOID_THROTTLING` on the proxy alone, 144 pi turns in 40 min, 42 of them at the floor, and no throttle 🟢 (H37c)
+The run started 23:21Z on a full bucket and was stopped after run 40 at 00:01Z for H37d. All 40 runs
+solved (fix-bug, `claude-sonnet`), in 144 turns. pi ran faster than predicted, ~7.3 turns a minute,
+so the proxy's count reached the reserve after 102 turns (23:35:49Z, 14 min), not ~130. From there
+the proxy waited before every turn: 42 waits, mean 29.6 s, max 33 s, 20.8 min in all. That held the
+account at 1.64 turns a minute (the refill is 1.6), and the model's level bottomed at 20.2. No turn came
+back throttled and no request was held. Without the variable, F58 puts the onset ~20 turns past 23:35Z.
+
+### F95 — the bucket doesn't refill at 00:00Z: the account throttled 31 turns after it, where the continuous model said empty 🟢 (H37d, n=1)
+At 00:01:52Z the proxy's count stood at 20.7, after F94's run. The proxy was restarted without
+`M365_AVOID_THROTTLING`, and a probe sent
+short `claude-sonnet` turns back to back, ~4 s each. 28 turns were logged before the throttled one.
+26 of them were in one conversation, from 25 requests: the last request was cut off when the probe was
+restarted, and the proxy logged a second turn for it on its reconnect path. The other 2 were in a fresh
+conversation 50 s later. The 29th, sent at 00:04:38.7Z, came back `Throttled (PerUserThrottled)` at
+00:05:20Z, 41 s after it was sent.
+At that onset M0 stood at −2.9. M1, the bucket
+refilled to full at 00:00Z, stood at 76.4, since 31 turns had been sent since 00:00Z. So the turn
+budget carries over 00:00Z; only the priority-access budgets reset there. It also shows F94's account
+really sat at the reserve: without the variable, it ran dry in under 3 min. One account, one 00:00Z: a reset at
+some other hour isn't excluded. Replayed through M0, the 12 onsets in the three accounts' logs stand at
+−9 to +31, and this one at −2.9 sits among them.
+
+**Follow-up (#77): two gaps in the proxy's wait, closed Oct 14.** (1) A request's limit was counted
+from when it reached the front of the line, so an unstreamed request queued behind a streamed one's
+long wait could sit past its 2-min limit, and past its client's 5-min header timeout. A client that hung
+up kept its place too. The limit now counts from arrival, and the wait in line ends at that limit or
+when the client goes away. (2) `ModelSession.run`'s reconnect after a session error (the path F95 saw
+fire) sent a second turn without waiting. Its `recordTurn` then took the grant of a turn another request
+had been let through for. The reconnect now waits like any other turn, with the handler's limit and
+signal. Live check, premium account, no turn sent (reserve set above capacity): a streamed request
+waited on keepalives, an unstreamed one queued behind it got its 429 at 2.0 min (`Retry-After` 278 s,
+both turns' refill), and a client that hung up at 22 s had left the line ("behind 1 other request", not 2).
+
+## 38. Oct 14 2026 — a content-less `InternalError` drops the turn; "Please continue." loses the request
+
+Seen driving the proxy from T3 Code (Claude Code via cli-proxy-api), `Gpt_6_Sol_Reasoning`, on a
+non-premium account (`claude-sonnet-5.5` → `ForbiddenRequest (InvalidCopilotLicense)`).
+
+### F96 — the empty-reply retry re-sent nothing the dropped turn carried 🟡
+
+**Observed.** 28 of 89 turns that day ended `Turn result: InternalError` with no content. The
+ordinary empty-reply path then sent "Please continue." into the same conversation; that came back
+`InternalError` again in 9 of 18 retries (vs 28/89 overall). The 9 that answered can be worse
+than failing: one T3 session's delta carried a test run's output, the turn dropped, and the
+"continued" answer was "From what you've shown, everything is green so far" — written from the
+earlier context, never having seen the results.
+
+**Reading.** Same wire state as the dead agent route (§23): the turn processed nothing, so there
+is nothing to continue. The agent-fallback path already re-sends the whole request in a fresh
+conversation for exactly that reason; the generic path didn't.
+
+**Change.** On a content-less `InternalError` (not a premium-only model, whose `InternalError` is
+deterministic, §24), re-send the whole request once in a fresh conversation. It spends an attempt
+rather than being free, so a tone that fails every time still ends at the existing give-up.
+
+**Open.** No controlled A/B yet: an 8-run gpt-6-sol tool bench in the same hour saw zero
+`InternalError`s (7/8, the miss was the model exploring off-task until timeout), so the rate is
+bursty. Falsifier: fresh-conversation retries failing at the same rate as same-conversation ones.
+Cost to watch: each such retry starts a conversation, which is what the F13 thread-rate throttle
+counts. Bounded to one per dropped turn, but on a bad `InternalError` day it adds up; the same
+afternoon's benching (one conversation per run) did trip `PerUserThrottled`.
+
+---
+
+## 39. Oct 7 2026 — Claude Code and Codex through copilot-api (real CLIs and gateway, no M365 traffic)
 
 **Question.** What does it take to drive the proxy from Claude Code and Codex? Neither speaks Chat
 Completions — Claude Code only Anthropic Messages, Codex only the Responses API since it dropped
@@ -4618,7 +5659,7 @@ also run offline on the captured requests. Prompts: "Reply with the single word 
 the shell.". n=1 per cell: these are protocol facts, not model behaviour. Setup and fixes:
 [claude-code-codex.md](claude-code-codex.md).
 
-### F73 — the harnesses' first prompts are big: 4–27 tools, 31k–71k characters to M365 🟡
+### F97 — the harnesses' first prompts are big: 4–27 tools, 31k–71k characters to M365 🟡
 | request | tools | tool definitions | system | first turn the proxy builds |
 |---|---|---|---|---|
 | Claude Code default (`--safe-mode`) | 27 | 89.7k chars | 14.5k | — |
@@ -4628,9 +5669,9 @@ the shell.". n=1 per cell: these are protocol facts, not model behaviour. Setup 
 
 Default Claude Code is far past the ~12-tool Disengage range ([api §9](m365-copilot-api.md#the-disengaged-filter));
 lean Claude Code has pi's tool count. Size alone doesn't trigger Disengaged (F10); whether these
-prompts' *shape* does is H30a.
+prompts' *shape* does is H39a.
 
-### F74 — through copilot-api the loop broke in three places; fixed in the proxy 🟢
+### F98 — through copilot-api the loop broke in three places; fixed in the proxy 🟢
 1. Codex's shells, `exec_command` (unified exec) and `shell_command`, weren't recognised: a ```` ```bash ````
    reply produced no tool call. Now routed (`SHELL_TOOL_NAME`).
 2. copilot-api serves every non-GPT model to Codex in Code Mode (`tool_mode: code_mode_only`). The only
@@ -4640,44 +5681,47 @@ prompts' *shape* does is H30a.
    returned the command's output, exit code 0 — and the tips are stripped.
 3. On Windows `hostPlatformNote` told the model Claude Code's `Bash` runs PowerShell; Claude Code's own
    description says it "runs Git Bash (POSIX sh), not cmd.exe or PowerShell". Now no note for a Git Bash
-   tool, and ```` ```powershell ```` goes to Claude Code's `PowerShell` tool when it has one.
+   tool, and ```` ```powershell ```` goes to Claude Code's `PowerShell` tool when it has one. §31 F76's
+   `shellDialect`, merged in later, read that description as PowerShell too (it names PowerShell to rule
+   it out), so a Git Bash claim is read as POSIX before the PowerShell words.
 
 Also keyed sessions on `prompt_cache_key` (copilot-api sends Claude Code's and Codex's session id):
-Codex opens every session in a repo with the same environment message, which merged sessions.
+Codex opens every session in a repo with the same environment message, which merged sessions. Merged
+with #83 (§31), the key is the session key plus the opener and the tool names.
 
-### F75 — an error chunk after the 200 turned one Disengage into ~22 M365 turns 🟢
+### F99 — an error chunk after the 200 turned one Disengage into ~22 M365 turns 🟢
 copilot-api can't parse the proxy's in-stream `error` chunk. Claude Code got "API Error: 500 Unexpected
 token 'd'…" and retried 10 times in ~150 s (`CLAUDE_CODE_MAX_RETRIES` defaults to 10), and each retry of
 a Disengaged turn runs the F22 retry in a fresh conversation. Now, for Claude Code and Codex user-agents,
 the reason goes out as assistant text with `finish_reason: "stop"` (`M365_STREAM_ERROR_MODE`): Claude Code
 finished in 7 s with `[m365-proxy: disengaged] …`, 2 M365 turns in all (fake-M365 run, default retries).
 
-### F76 — search survives `web_search = "disabled"` 🟡 (routing verified with mocks, M365's output not)
+### F100 — search survives `web_search = "disabled"` 🟡 (routing verified with mocks, M365's output not)
 Codex's hosted `web_search` gets a 400 from copilot-api for `openai-compatible` providers. What works:
 Codex standalone search (`web.run`, executed by Codex through copilot-api's `/v1/alpha/search`, which
 needs a `codex`/Copilot login or an `openai-responses` search provider), and Claude Code `WebSearch`
 (routed to such a provider, it gets structured links; with `messageApiWebSearchModel: ""` it reaches the
 proxy as tool-less chat, where the agent-less turn carries the Bing plugin). M365 marks in-turn citations
 with private-use markers (`\uE200cite\uE202turnNsearchM\uE201`) and the proxy drops `sourceAttributions`,
-so search results need resolving before a harness can use them (H30b).
+so search results need resolving before a harness can use them (H39b).
 
 ### Open
-- **H30a** — the lean Claude Code (4 tools, 31k chars) and Codex (53–71k chars, written for GPT) first
+- **H39a** — the lean Claude Code (4 tools, 31k chars) and Codex (53–71k chars, written for GPT) first
   prompts disengage no more often than pi's on the agent-less Claude tones. **Falsify:** a paced run of
   `claude -p` / `codex exec` over the bench tasks on a rested account, with Disengaged above pi's rate;
   watch `x_m365_dea_score`. **Kit:** `scripts/harness-check.mjs` (the proxy now writes each turn's scores
   to the debug log, since the gateway drops `usage` extensions). Not yet run: it needs a signed-in account.
-- **H30b** — an agent-less turn with Bing returns usable sources: titles and URLs in `sourceAttributions`,
+- **H39b** — an agent-less turn with Bing returns usable sources: titles and URLs in `sourceAttributions`,
   with the text's markers indexing them in order. **Probe:** one search prompt with `M365_DUMP_FRAMES=1`
   (the never-run H8.9 toggle probe fits alongside). Unblocks a search-only `/v1/responses` for both
   clients. **Kit:** `scripts/search-citations-probe.mjs` (`--from-dump` re-reads an existing dump). Not
   yet run.
-- **H30c** — Claude Code's side requests (compaction, `WebFetch` summaries, `WebSearch` sub-requests,
+- **H39c** — Claude Code's side requests (compaction, `WebFetch` summaries, `WebSearch` sub-requests,
   subagents) are most of a session's new conversations (F13). **Probe:** count conversations per real
   session; if they dominate, pool tool-less one-shot requests into one conversation per session key.
-  Headless structure measured (F77); live counts pending.
+  Headless structure measured (F101); live counts pending.
 
-### F77 — a headless session costs one conversation, plus one per web search and per subagent 🟡 (structure only, fake M365)
+### F101 — a headless session costs one conversation, plus one per web search and per subagent 🟡 (structure only, fake M365)
 `scripts/harness-check.mjs` drove Claude Code 2.1.286 (`-p`) and Codex 0.157 (`exec`) through copilot-api
 into the proxy, with only the M365 turn faked (`scripts/gateway-fake-m365.mjs`). Conversations are the
 distinct `cid`s in the proxy's `[model] run:` lines.
@@ -4693,6 +5737,6 @@ Headless Claude Code made no other requests, with or without the quiet settings
 (`DISABLE_NON_ESSENTIAL_MODEL_CALLS` etc.), and Codex `exec` sent no task-title request. Claude Code
 2.1.286 sends `x-claude-code-session-id` but **not** `x-claude-code-request-class`, so side requests can
 only be told apart by their first message. Not covered: interactive sessions (titles, prompt suggestions,
-recaps; no TTY here) and compaction. What's left of H30c needs live sessions: how often the model searches
+recaps; no TTY here) and compaction. What's left of H39c needs live sessions: how often the model searches
 or spawns a subagent, and what interactive mode adds. Also seen: Codex 0.157's `workspace-write` sandbox
 refuses every command on Windows ("blocked by policy", even `echo`).

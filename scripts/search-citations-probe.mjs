@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// H30b (docs/hypotheses.md §30): does an agent-less turn with M365's Bing plugin
+// H39b (docs/hypotheses.md §39): does an agent-less turn with M365's Bing plugin
 // return sources a harness can use? Sends ONE web-search question through the
 // proxy (tool-less, so agent-less with plugins:[BingWebSearch]), then reads that
 // turn's frame dump and reports:

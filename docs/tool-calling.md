@@ -77,7 +77,15 @@ prompt is tuned. The layers, in handler order:
   only the proxy sends tool results, so a `<tool_response>` in the model's own output is
   invented. Sonnet 4.6 writes one after its fence in about half its turns and then acts on the
   fiction; everything from the tag on is cut, keeping the real call at the head. Runs first, so
-  the invented tail can't make the turn look like a document below. (#31.)
+  the invented tail can't make the turn look like a document below. (#31.) The proxy also watches
+  for the tag while the turn streams, and once the invented tail is 2,000 chars long it stops the
+  turn, as a client's Stop would, instead of waiting for M365 to finish: an invented continuation
+  can run for minutes (45–69 k chars, long enough for pi's timeout). Not at the tag itself: M365
+  keeps the whole message in the conversation, the model seems to follow a short tail (the usual
+  kind, median ~400 chars) as its plan, and stopping at the tag cost Sonnet 4.6 10% more turns in real pi;
+  with the cap it takes as many turns as when the turn runs to its end, and no runaway gets far
+  (#65, hyp §35 F88, F89). `M365_EARLY_STOP_AFTER` sets the cap (`0` = at the tag);
+  `M365_NO_EARLY_STOP=1` waits for the end of the turn.
 - **Document guard** (`isProseDocument`): shell-routing turns *every* ` ```bash ` block into
   a tool call — so a model that ANSWERS with a markdown document full of code fences (e.g.
   "here's a simplified README") would get its own answer executed as shell. A response that

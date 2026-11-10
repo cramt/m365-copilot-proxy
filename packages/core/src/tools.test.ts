@@ -264,6 +264,53 @@ That should be everything you need to get going quickly.`;
   });
 });
 
+describe("a call the model restates as a correction", () => {
+  const bashTool = [{
+    type: "function" as const,
+    function: { name: "bash", description: "run", parameters: { type: "object", properties: { command: { type: "string" } }, required: ["command"] } },
+  }];
+  const PLAN = "The logs are plain text, so the viewer can read them once they are renamed. Two of the files are empty "
+    + "and can go. Next I'll rename the rest to `.log`, delete the two empty ones, and point the index page at the "
+    + "local copies, keeping a backup of the page first so the change is easy to undo if anything looks wrong.";
+  const CMD1 = "cd /tmp/proj && rm logs/a.txt logs/b.txt && for f in logs/*.txt; do mv \"$f\" \"${f%.txt}.log\"; done && ls logs; grep -n 'href\\|src' index.html";
+  const CMD2 = "cd /tmp/proj && rm logs/a.txt logs/b.txt && for f in logs/*.txt; do mv \"$f\" \"${f%.txt}.log\"; done && ls logs; grep -n 'href' index.html";
+  // The shape of the live Sonnet 5.5 reply: a long plan, the command with a glued
+  // `</bash>`, a one-line apology, and the command again.
+  const reply = `${PLAN}\n\n\`\`\`bash\n${CMD1}</bash>\n\`\`\`\n\nOops, that closing fence is wrong. Here is the same command, correctly formatted:\n\n\`\`\`bash\n${CMD2}\n\`\`\``;
+
+  it("runs the corrected copy, as one call, and the document guard lets it through", () => {
+    const parsed = parseToolCalls(reply, bashTool);
+    expect(parsed.toolCalls).toHaveLength(1);
+    expect(JSON.parse(parsed.toolCalls[0].function.arguments).command).toBe(CMD2);
+    expect(isProseDocument(parsed, reply, bashTool)).toBe(false);
+  });
+
+  it("leaves nothing after the call to report as speculation", async () => {
+    const { textAfterFirstToolCall } = await import("./tools.js");
+    expect(textAfterFirstToolCall(reply, bashTool)).toBe("");
+  });
+
+  it("restates on the apology alone, when the first copy was well-formed", () => {
+    const parsed = parseToolCalls(reply.replace("</bash>", ""), bashTool);
+    expect(parsed.toolCalls.map((c) => JSON.parse(c.function.arguments).command)).toEqual([CMD2]);
+  });
+
+  it("keeps two calls when nothing says the second corrects the first", () => {
+    const twice = `\`\`\`bash\n${CMD1}\n\`\`\`\n\nThen:\n\n\`\`\`bash\n${CMD2}\n\`\`\``;
+    expect(parseToolCalls(twice, bashTool).toolCalls).toHaveLength(2);
+  });
+
+  it("keeps different commands apart, whatever the gap says — and a give-up is still a document", () => {
+    const giveUp = "The notes/ directory doesn't appear to exist in the sandbox I have access to, so I'm unable to look "
+      + "for the code myself. The task references a filesystem that isn't reachable through my tools. You can find it "
+      + "by running this in your project, and if the first one is wrong for your layout, sorry, try:\n\n"
+      + "```bash\ngrep -rn 'SECRET_CODE=' notes/*.txt\n```\n\nOr more broadly:\n\n```bash\ngrep -r 'SECRET_CODE=' notes/ | sed 's/.*SECRET_CODE=//'\n```";
+    const parsed = parseToolCalls(giveUp, bashTool);
+    expect(parsed.toolCalls).toHaveLength(2);
+    expect(isProseDocument(parsed, giveUp, bashTool)).toBe(true);
+  });
+});
+
 describe("looksLikeConfabulation", () => {
   it("flags real M365 give-up confabulations", () => {
     expect(looksLikeConfabulation("I'm unable to access or list any files in the working directory (all shell commands are returning no output).")).toBe(true);
@@ -285,6 +332,32 @@ describe("looksLikeConfabulation", () => {
     expect(looksLikeConfabulation("I ran the commands. - pwd -> /mnt/data")).toBe(true);
     // Exact GPT-5.6 follow-up from the live OMP failure (2026-08-06).
     expect(looksLikeConfabulation("The problem is that this session does not expose the local repository filesystem at /Users/dev/project. My filesystem only contained /mnt/data.")).toBe(true);
+  });
+
+  it("flags Turkish give-ups (the model answers in the user's language)", () => {
+    // Exact strings from live Windows/pi/GPT-5.6 runs that went straight to the user.
+    expect(looksLikeConfabulation("Projeyi inceledim ancak bu oturumda dosya oluşturma özelliğim devre dışı olduğu için `ozet.md` dosyasını doğrudan kaydedemiyorum.")).toBe(true);
+    expect(looksLikeConfabulation("Projeyi inceleyip ozet.md oluşturabilmem için bu oturumda depo dosyalarını okuma ve dosya yazma aracı etkin değil.")).toBe(true);
+    expect(looksLikeConfabulation("Bu oturumda yeni bir araç çağrısı yapamadığım için dosyayı güvenilir biçimde oluşturamadım.")).toBe(true);
+    expect(looksLikeConfabulation("Dosya erişimi etkin bir kodlama oturumunda aynı isteği yeniden çalıştırdığınızda hazırlanabilir.")).toBe(true);
+    expect(looksLikeConfabulation("İçeriği kopyalayıp ozet.md adıyla kaydedebilirsin.")).toBe(true);
+    expect(looksLikeConfabulation("Üzgünüm, dosyaya erişemiyorum.")).toBe(true);
+    // Missed live (pdf + docx tasks): "ability" and "produce" weren't in the lists.
+    expect(looksLikeConfabulation("Dosya oluşturma yeteneğim şu anda devre dışı olduğu için `notlar.pdf` dosyasını doğrudan üretemiyorum.")).toBe(true);
+    expect(looksLikeConfabulation("Word belgesini hazırlayamıyorum.")).toBe(true);
+    // Missed live on the final build (pdf task, after a real tool call).
+    expect(looksLikeConfabulation("PDF oluşturma işlemini bu oturumda tamamlayamıyorum. Alternatif olarak Markdown dosyasını Visual Studio Code’da açabilirsiniz.")).toBe(true);
+    expect(looksLikeConfabulation("`pandoc` sistemde kurulu olmadığı için PDF oluşturma komutu başarısız oldu. Bu oturumda yeni araç kurma veya indirilebilir PDF oluşturma yetkim bulunmuyor.")).toBe(true);
+  });
+
+  it("does NOT flag a Turkish project summary that merely talks about sessions or disabled flags", () => {
+    // This repo's own vocabulary — a summary of it must not read as a give-up.
+    expect(looksLikeConfabulation("Kimlik doğrulama ve oturum yönetimi MSAL ile yapılır.")).toBe(false);
+    expect(looksLikeConfabulation("M365_NO_CONFAB_RETRY ile retry devre dışı bırakılır.")).toBe(false);
+    expect(looksLikeConfabulation("Harness dosyayı okuyamıyorsa hata döner; proxy komutu kendisi çalıştıramaz.")).toBe(false);
+    expect(looksLikeConfabulation("ozet.md oluşturuldu: 18 bölüm, paket mimarisi ve araç çağrısı akışı.")).toBe(false);
+    // Third person ("yetkisi"), not first ("yetkim"): describes the code, not a give-up.
+    expect(looksLikeConfabulation("Kullanıcının yetkisi bulunmuyorsa proxy 403 döner.")).toBe(false);
   });
 
   it("does NOT flag genuine final answers or normal prose", () => {

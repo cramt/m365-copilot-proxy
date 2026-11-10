@@ -122,7 +122,7 @@ export function secondsUntilReset(
 // and every turn on the paid scenario carries `throttling.metering`, a map of
 // `{<budget>: {remainingAllowance: n}}`. Each turn of a metered model takes one
 // from its daily and its weekly allowance, whatever its size. Included-scenario
-// turns carry no `metering` (Opus 4.5 and Sonnet 4.6 aren't metered).
+// turns carry no `metering` (Opus 4.8 and Sonnet 4.6 aren't metered).
 
 /** A separately metered model's priority-access budget. */
 export type MeteredBudget = "opus" | "sonnet-5.5";

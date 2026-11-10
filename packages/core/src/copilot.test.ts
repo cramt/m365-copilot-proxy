@@ -7,13 +7,13 @@ import {
   getScenarioForTone,
   getToneForModel,
   INCLUDED_SCENARIO_MODELS,
-  isOpus45Model,
+  isIncludedOpusModel,
   meteredBudgetOf,
   priorityAccessFallbackModel,
   isSonnet5Model,
   isSonnet55Model,
   isAgentRouteAlive,
-  modelRequiresAgent,
+  isPremiumOnlyModel,
   noteAgentRouteAlive,
   noteAgentRouteDead,
   PAID_SCENARIO_TONES,
@@ -162,9 +162,9 @@ describe("which tool requests carry the tool agent", () => {
     }
   });
 
-  it("gives both Opus models the agent — Opus 4.5 is served only with it (§24)", () => {
+  it("gives both Opus models the agent — agent-less, Opus 4.8 works in its own sandbox (§24, §36)", () => {
     expect(AGENT_CLAUDE_TONES.has("Claude_Opus")).toBe(true);
-    for (const id of ["claude-opus", "claude-opus-5", "claude-opus-5.5", "claude-opus-4.5", "claude-opus-5[1m]", "claude-opus-4-5-20251101"]) {
+    for (const id of ["claude-opus", "claude-opus-5", "claude-opus-5.5", "claude-opus-4.8", "claude-opus-4.5", "claude-opus-5[1m]", "claude-opus-4-8-20261001"]) {
       expect(usesAgent(id)).toBe(true);
     }
   });
@@ -262,8 +262,9 @@ describe("Opus routing", () => {
     expect(getToneForModel("claude-opus")).toBe("Claude_Opus");
     expect(getToneForModel("claude-opus-5")).toBe("Claude_Opus");
     expect(getToneForModel("claude-opus-5.5")).toBe("Claude_Opus");
+    expect(getToneForModel("claude-opus-4.8")).toBe("Claude_Opus");
     expect(getToneForModel("claude-opus-4.5")).toBe("Claude_Opus");
-    for (const id of ["claude-opus", "claude-opus-5.5", "claude-opus-4.5"]) {
+    for (const id of ["claude-opus", "claude-opus-5.5", "claude-opus-4.8", "claude-opus-4.5"]) {
       expect(getAvailableModels()).toContain(id);
     }
   });
@@ -277,56 +278,60 @@ describe("Opus routing", () => {
     expect(getToneForModel("claude-haiku-9")).toBe("Claude_Sonnet");
   });
 
-  it("sends claude-opus-4.5 to the shared tone under the INCLUDED scenario (Opus 4.5)", () => {
-    expect(INCLUDED_SCENARIO_MODELS.has("claude-opus-4.5")).toBe(true);
-    expect(isOpus45Model("claude-opus-4.5")).toBe(true);
-    expect(getScenarioForModel("claude-opus-4.5")).toEqual(INCLUDED);
+  it("sends claude-opus-4.8 to the shared tone under the INCLUDED scenario (Opus 4.8)", () => {
+    // claude-opus-4.5 is the legacy ID of the same route (Opus 4.5 until October 2026, §36).
+    for (const id of ["claude-opus-4.8", "claude-opus-4.5"]) {
+      expect(INCLUDED_SCENARIO_MODELS.has(id)).toBe(true);
+      expect(isIncludedOpusModel(id)).toBe(true);
+      expect(getScenarioForModel(id)).toEqual(INCLUDED);
+    }
   });
 
   it("keeps every other Opus ID on the paid scenario (Opus 5.5)", () => {
-    for (const id of ["claude-opus", "claude-opus-5", "claude-opus-5.5", "claude-opus-5[1m]", "claude-opus-4", "claude-opus-4-1", "claude-opus-4.6", "claude-opus-4.50"]) {
-      expect(isOpus45Model(id)).toBe(false);
+    for (const id of ["claude-opus", "claude-opus-5", "claude-opus-5.5", "claude-opus-5[1m]", "claude-opus-4", "claude-opus-4-1", "claude-opus-4.6", "claude-opus-4.50", "claude-opus-4.80"]) {
+      expect(isIncludedOpusModel(id)).toBe(false);
       expect(getScenarioForModel(id)).toEqual(PAID);
     }
     // The tone itself stays paid; only the model ID opts out.
     expect(getScenarioForTone("Claude_Opus")).toEqual(PAID);
   });
 
-  it("routes unmapped Opus 4.5 strings a client may send to Opus 4.5, not Opus 5.5", () => {
-    for (const id of ["claude-opus-4-5", "claude-opus-4-5-20251101", "claude-opus-4.5[1m]", "Claude-Opus-4.5", "opus_4_5"]) {
+  it("routes unmapped Opus 4.8 (and legacy 4.5) strings a client may send to the included Opus, not Opus 5.5", () => {
+    for (const id of [
+      "claude-opus-4-8", "claude-opus-4-8-20261001", "claude-opus-4.8[1m]", "Claude-Opus-4.8", "opus_4_8",
+      "claude-opus-4-5", "claude-opus-4-5-20251101", "claude-opus-4.5[1m]", "Claude-Opus-4.5", "opus_4_5",
+    ]) {
       expect(getToneForModel(id)).toBe("Claude_Opus");
-      expect(isOpus45Model(id)).toBe(true);
+      expect(isIncludedOpusModel(id)).toBe(true);
       expect(getScenarioForModel(id)).toEqual(INCLUDED);
     }
   });
 
-  it("never treats a non-Opus tone as Opus 4.5, whatever the string says", () => {
-    expect(isOpus45Model("claude-sonnet-4.5")).toBe(false);
-    expect(isOpus45Model("gpt-4.5")).toBe(false);
+  it("never treats a non-Opus tone as the included Opus, whatever the string says", () => {
+    expect(isIncludedOpusModel("claude-sonnet-4.5")).toBe(false);
+    expect(isIncludedOpusModel("claude-sonnet-4.8")).toBe(false);
+    expect(isIncludedOpusModel("gpt-4.5")).toBe(false);
   });
 
-  it("lets the env override win for Opus 4.5 too", () => {
+  it("lets the env override win for Opus 4.8 too", () => {
     process.env.M365_SCENARIO = "SomeOtherScenario";
-    expect(getScenarioForModel("claude-opus-4.5").scenario).toBe("SomeOtherScenario");
+    expect(getScenarioForModel("claude-opus-4.8").scenario).toBe("SomeOtherScenario");
   });
 
-  it("attaches the agent to Opus 4.5 even without tools — agent-less it is a dead route", () => {
-    expect(modelRequiresAgent("claude-opus-4.5")).toBe(true);
-    expect(requestUsesAgent("claude-opus-4.5", false)).toBe(true);
-    expect(requestUsesAgent("claude-opus-4.5", true)).toBe(true);
-    // Opus 5.5 serves agent-less, so only its tool requests carry the agent.
-    expect(modelRequiresAgent("claude-opus")).toBe(false);
-    expect(requestUsesAgent("claude-opus", false)).toBe(false);
-    expect(requestUsesAgent("claude-opus", true)).toBe(true);
+  it("attaches the agent to Opus 4.8's tool requests only — it serves agent-less too, unlike Opus 4.5 (§36)", () => {
+    for (const id of ["claude-opus-4.8", "claude-opus-4.5", "claude-opus"]) {
+      expect(requestUsesAgent(id, false)).toBe(false);
+      expect(requestUsesAgent(id, true)).toBe(true);
+    }
     // Unchanged for everything else: tool-less requests go agent-less.
     expect(requestUsesAgent("gpt-5.5", false)).toBe(false);
     expect(requestUsesAgent("claude-sonnet", true)).toBe(false);
   });
 
-  it("knows which turns are metered — Opus 5.5's and Sonnet 5.5's, not Opus 4.5's or Sonnet 5's", () => {
+  it("knows which turns are metered — Opus 5.5's and Sonnet 5.5's, not Opus 4.8's or Sonnet 5's", () => {
     for (const id of ["claude-opus", "claude-opus-5", "claude-opus-5.5", "claude-opus-5[1m]"]) expect(meteredBudgetOf(id)).toBe("opus");
     for (const id of ["claude-sonnet-5.5", "claude-sonnet-5-5-20261001"]) expect(meteredBudgetOf(id)).toBe("sonnet-5.5");
-    for (const id of ["claude-opus-4.5", "claude-opus-4-5-20251101", "claude-sonnet-5", "claude-sonnet", "gpt-6-think-deeper"]) {
+    for (const id of ["claude-opus-4.8", "claude-opus-4.5", "claude-opus-4-5-20251101", "claude-sonnet-5", "claude-sonnet", "gpt-6-think-deeper"]) {
       expect(meteredBudgetOf(id)).toBeNull();
     }
   });
@@ -339,8 +344,8 @@ describe("Opus routing", () => {
 
   it("reads each budget's fallback env var, and refuses a metered model as the fallback", () => {
     expect(priorityAccessFallbackModel("opus")).toBeNull();
-    process.env.M365_OPUS_FALLBACK_MODEL = "claude-opus-4.5";
-    expect(priorityAccessFallbackModel("opus")).toBe("claude-opus-4.5");
+    process.env.M365_OPUS_FALLBACK_MODEL = "claude-opus-4.8";
+    expect(priorityAccessFallbackModel("opus")).toBe("claude-opus-4.8");
     expect(priorityAccessFallbackModel("sonnet-5.5")).toBeNull();
     process.env.M365_OPUS_FALLBACK_MODEL = "claude-opus";
     expect(priorityAccessFallbackModel("opus")).toBeNull();
@@ -354,10 +359,14 @@ describe("Opus routing", () => {
     delete process.env.M365_SONNET_FALLBACK_MODEL;
   });
 
-  it("lets M365_FORCE_AGENT=0 take the agent off Opus 4.5 as well", () => {
+  it("lets M365_FORCE_AGENT=0 take the agent off Opus 4.8 as well", () => {
     process.env.M365_FORCE_AGENT = "0";
-    expect(requestUsesAgent("claude-opus-4.5", false)).toBe(false);
-    expect(requestUsesAgent("claude-opus-4.5", true)).toBe(false);
+    expect(requestUsesAgent("claude-opus-4.8", true)).toBe(false);
+  });
+
+  it("knows the included Opus is premium-only on either path, and nothing else is", () => {
+    for (const id of ["claude-opus-4.8", "claude-opus-4.5", "claude-opus-4-8-20261001"]) expect(isPremiumOnlyModel(id)).toBe(true);
+    for (const id of ["claude-opus", "claude-opus-5.5", "claude-sonnet", "gpt-6-sol"]) expect(isPremiumOnlyModel(id)).toBe(false);
   });
 });
 

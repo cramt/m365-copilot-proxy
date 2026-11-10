@@ -86,6 +86,85 @@ export function isCodeModeExecTool(tool: ToolDef): boolean {
     /\bJavaScript\b/.test(tool.function.description ?? "");
 }
 
+const WRITE_PATH_PARAM = /^(path|file_path|filepath|filename|file)$/i;
+const WRITE_CONTENT_PARAM = /^(content|contents|text|body)$/i;
+
+/** The harness tool (if any) that writes a whole file from a path + content —
+ *  pi's `write`, others' `write_file`. An edit tool (old/new pair) doesn't count. */
+export function findWriteTool(tools: ToolDef[]): ToolDef | undefined {
+  return tools.find((t) => {
+    const props = Object.keys(t.function.parameters?.properties ?? {});
+    return props.some((p) => WRITE_PATH_PARAM.test(p)) &&
+      props.some((p) => WRITE_CONTENT_PARAM.test(p)) &&
+      !props.some((p) => SEARCH_KEYS.includes(p));
+  });
+}
+
+/** Longest shell command the Windows command line carries intact. pi's shell
+ *  tool cuts a longer one SILENTLY: a 12,070-char command arrived as its first
+ *  ~8,186 chars, a 7,000-char one whole (measured model-free with a scripted
+ *  tool call). Margin left below the measured edge. */
+export const WINDOWS_COMMAND_CAP = 8000;
+
+// `cat > PATH <<'DELIM'` … a line that is exactly DELIM. It may start a line or
+// follow `… && ` on one (`mkdir -p d && cat > d/f <<'EOF'`); the model also
+// bundles it after exploration commands — measured: a 13,185-char call that
+// ran `printf`/`find` first and wrote ozet.md last. Quoted delimiter only: bash
+// does no expansion in that body, so the file it writes is byte-for-byte the
+// body plus its final newline. A path bash would expand ($, `, ~) is left alone.
+const HEREDOC_WRITE = /(?:^|\n)([^\n]*?&&[ \t]*)?[ \t]*cat[ \t]*>[ \t]*(?:"([^"$`\\\n]+)"|'([^'\n]+)'|([^\s'"$`~;|&<>]+))[ \t]*<<[ \t]*(['"])([A-Za-z_][A-Za-z0-9_]*)\5[ \t]*\n([\s\S]*?)\n\6(?=\n|$)/;
+
+/** A shell call that is too long for the Windows command line AND is a single
+ *  quoted heredoc writing a file, re-expressed as the harness's write tool —
+ *  or null to leave the call as it is.
+ *
+ *  The framing teaches `cat > f <<'EOF'` for file writes, so on Windows every
+ *  file past ~8k chars (a project summary, a README) landed truncated, and the
+ *  model can't see why — bash only says "here-document delimited by
+ *  end-of-file". Telling it to use the write tool instead was measured not to
+ *  hold: it still wrote one big heredoc. The proxy holds the WHOLE command, so
+ *  it can run the same write losslessly. Only one call runs per turn, so the
+ *  rest of the command doesn't run; it's returned as `skipped` for the caller to
+ *  tell the model. That costs a re-run of cheap commands (ls, find, wc) to keep
+ *  the expensive part — the file the model just generated. */
+export function longHeredocAsWrite(
+  call: ParsedToolCall,
+  tools: ToolDef[] | undefined,
+  platform: NodeJS.Platform = process.platform,
+): { call: ParsedToolCall; path: string; skipped: string } | null {
+  if (platform !== "win32" || !tools?.length) return null;
+  const shell = findShellTool(tools);
+  const write = findWriteTool(tools);
+  if (!shell || !write || call.function.name !== shell.function.name) return null;
+  const bodyParam = deriveFencedSpec(shell).bodyParam;
+  let args: Record<string, unknown>;
+  try {
+    args = JSON.parse(call.function.arguments);
+  } catch {
+    return null;
+  }
+  const command = bodyParam ? args[bodyParam] : undefined;
+  if (typeof command !== "string" || command.length <= WINDOWS_COMMAND_CAP) return null;
+  const m = HEREDOC_WRITE.exec(command);
+  if (!m) return null;
+  const path = m[2] ?? m[3] ?? m[4];
+  const props = Object.keys(write.function.parameters?.properties ?? {});
+  const pathKey = props.find((p) => WRITE_PATH_PARAM.test(p))!;
+  const contentKey = props.find((p) => WRITE_CONTENT_PARAM.test(p))!;
+  // Everything that isn't the heredoc: commands before it (including a `… &&`
+  // on its own line) and after its delimiter.
+  const before = `${command.slice(0, m.index)}\n${(m[1] ?? "").replace(/&&[ \t]*$/, "")}`.trim();
+  const after = command.slice(m.index + m[0].length).trim();
+  // A `cd` before the heredoc moves where a relative PATH lands; the write
+  // tool resolves against the harness's cwd, so it would write elsewhere.
+  if (/(?:^|[\n;&|(])[ \t]*(?:cd|pushd)\b/.test(before)) return null;
+  return {
+    call: makeCall(write.function.name, { [pathKey]: path, [contentKey]: `${m[7]}\n` }),
+    path,
+    skipped: [before, after].filter(Boolean).join("\n"),
+  };
+}
+
 /** The harness tool (if any) that runs a shell command — the target for ```bash routing.
  *  Codex's Code Mode `exec` is the last resort: shell fences reach it wrapped as a
  *  nested `exec_command` call (codeModeShellScript). */
@@ -315,7 +394,41 @@ export function formatFencedToolDefinitions(tools: ToolDef[], variantOverride?: 
   // baseline framing plus a synthetic reply() tool (see tools.ts).
   const key = variant === "reply_tool" ? "baseline" : variant;
   const build = FRAMING_VARIANTS[key] ?? FRAMING_VARIANTS.baseline;
-  return build(tools) + hostPlatformNote(findShellTool(tools), process.platform, tools);
+  return build(tools) + hostPlatformNote(findShellTool(tools), undefined, findWriteTool(tools), findPowerShellTool(tools));
+}
+
+/** Which dialect the harness's shell tool actually speaks.
+ *
+ *  `process.platform` cannot answer this — it describes the host, and on Windows
+ *  the two common agent harnesses disagree: pi gives a Git Bash-backed `bash`
+ *  tool, others give PowerShell. Guessing wrong costs the whole session, because
+ *  every shell turn fails on syntax and the model reads that as "I have no tools".
+ *
+ *  Decided from the tool definition the harness sent (name + description, which is
+ *  what the harness itself claims to run). `M365_HOST_SHELL=bash|powershell`
+ *  overrides for a harness whose tool is named misleadingly. */
+export function shellDialect(
+  shell: ToolDef | undefined,
+  platform: NodeJS.Platform = process.platform,
+): "posix" | "powershell" | undefined {
+  if (!shell) return undefined;
+  const override = process.env.M365_HOST_SHELL?.toLowerCase();
+  if (override === "bash" || override === "sh" || override === "posix") return "posix";
+  if (override === "powershell" || override === "pwsh") return "powershell";
+
+  // Claude Code's `Bash` says it "runs Git Bash (POSIX sh), not cmd.exe or
+  // PowerShell": it names PowerShell only to rule it out.
+  if (runsGitBash(shell)) return "posix";
+  // Codex Code Mode's description documents its JavaScript API, not the shell its
+  // nested `exec_command` runs, so only the name is read (and the host decides).
+  const description = isCodeModeExecTool(shell) ? "" : shell.function.description ?? "";
+  const claim = `${shell.function.name} ${description}`.toLowerCase();
+  // PowerShell first: a tool described as "run a powershell command" may still be
+  // *named* something generic like `shell`, and `sh` would match it by substring.
+  if (/\b(powershell|pwsh|cmd\.exe)\b/.test(claim)) return "powershell";
+  if (/\b(bash|zsh|sh|posix|wsl)\b/.test(claim)) return "posix";
+  // Nothing declared: fall back to the host's native shell.
+  return platform === "win32" ? "powershell" : "posix";
 }
 
 /** Per-turn correction telling the model which OS it is actually driving.
@@ -332,24 +445,56 @@ export function formatFencedToolDefinitions(tools: ToolDef[], variantOverride?: 
  *  the whole point, since this repo had no Windows host to verify against.
  *  Returns "" off Windows, leaving the bench-tuned variants byte-for-byte unchanged.
  *
- *  A shell tool that says it runs Git Bash (Claude Code's `Bash`) is the
- *  exception: the POSIX idioms are right for it, and telling the model it runs
- *  PowerShell would be wrong. Then the note only points PowerShell commands at
- *  the harness's PowerShell tool, if it has one. */
+ *  A shell tool that says it runs Git Bash (Claude Code's `Bash`) reads as POSIX
+ *  (shellDialect) but gets no POSIX note: its own description already says Git
+ *  Bash, and the command-line cap below was measured on pi's tool, not on it. The
+ *  note then only points PowerShell commands at the harness's PowerShell tool, if
+ *  it has one. */
 export function hostPlatformNote(
   shell: ToolDef | undefined,
   platform: NodeJS.Platform = process.platform,
-  tools: ToolDef[] = [],
+  writeTool?: ToolDef,
+  powerShellTool?: ToolDef,
 ): string {
   if (platform !== "win32" || !shell) return "";
-  if (runsGitBash(shell)) {
-    const pwsh = findPowerShellTool(tools);
-    return pwsh
-      ? `
 
-HOST PLATFORM: Windows. The \`${shell.function.name}\` tool runs Git Bash (POSIX sh) and the \`${pwsh.function.name}\` tool runs PowerShell: put POSIX commands in a \`\`\`bash block and PowerShell commands in a \`\`\`powershell block.`
-      : "";
+  // A Windows HOST does not imply a PowerShell SHELL. pi on Windows ships a tool
+  // named `bash`, described as "Execute a bash command", backed by Git Bash — the
+  // tool_response says `/usr/bin/bash`. Telling that harness to emit ```powershell
+  // makes every shell turn come back as
+  //     /usr/bin/bash: line 2: Write-Output: command not found
+  // and after a failure or two the model concludes it has no working tools and
+  // gives up in prose — the exact "it just says it can't" report in #7, now with
+  // the shell dialect rather than the fence routing as the cause. So read the
+  // dialect off the tool the harness actually gave us, not off process.platform.
+  if (shellDialect(shell, platform) === "posix") {
+    if (runsGitBash(shell)) {
+      return powerShellTool && powerShellTool !== shell
+        ? `
+
+HOST PLATFORM: Windows. The \`${shell.function.name}\` tool runs Git Bash (POSIX sh) and the \`${powerShellTool.function.name}\` tool runs PowerShell: put POSIX commands in a \`\`\`bash block and PowerShell commands in a \`\`\`powershell block.`
+        : "";
+    }
+    // The Windows command line is capped near 8,190 characters and pi's shell
+    // tool CUTS a longer command silently — measured model-free against pi with
+    // a scripted tool call: a 12,070-char heredoc wrote 8,164 bytes, its trailing
+    // `wc`/`echo` never ran, and bash only said "here-document delimited by
+    // end-of-file"; a 7,000-char one was intact. pi's `write` tool took 50,000
+    // chars intact. The framing teaches heredocs for file writes, so without this
+    // every long file (a project summary, a README) lands truncated. Unmeasured
+    // for the PowerShell branch below, so it isn't claimed there.
+    const longWrite = writeTool
+      ? `write any file longer than a few thousand characters with the \`${writeTool.function.name}\` tool, never in one heredoc`
+      : "write a long file in parts: create it with the first part, then append the rest with `cat >> file <<'EOF'` in later turns";
+    return `
+
+HOST PLATFORM: Windows, but the \`${shell.function.name}\` tool is a POSIX shell on it (Git Bash or WSL), NOT PowerShell and NOT a container. Keep using \`\`\`${"bash"} blocks and POSIX idioms — \`<<'EOF'\` heredocs, \`sed -i\`, \`ls\`/\`grep\` all work. Do NOT emit PowerShell: \`Get-ChildItem\`, \`Set-Content\` and \`Write-Output\` are not commands here and the turn will fail.
+
+The Windows command line is capped near 8,000 characters and a longer command is cut off silently, so a big heredoc leaves a truncated file. Keep each command short and ${longWrite}.
+
+Only the filesystem is Windows: paths may be \`C:/Users/...\` or contain spaces, so quote them and prefer forward slashes. You are NOT in a Linux sandbox and have no \`/mnt/data\`; the working directory is the caller's real project directory — run \`pwd\` if you need to see it.`;
   }
+
   return `
 
 HOST PLATFORM: Windows. The \`${shell.function.name}\` tool runs PowerShell on a real Windows machine — not Linux, and not a container. Any POSIX idiom named above is wrong here and will fail: there are no \`<<'EOF'\` heredocs, no \`sed -i\`, no \`ls\`/\`grep\`. Emit \`\`\`powershell blocks instead of \`\`\`bash, and use the Windows equivalents:
@@ -387,9 +532,10 @@ export function currentFramingVariant(toneDefault?: string): string {
 
 /** The framing a tone should default to when the caller hasn't overridden it.
  *
- *  `Claude_Opus` — both models, Opus 4.5 (`claude-opus-4.5`, included scenario)
- *  and Opus 5.5 (`claude-opus`, paid), both with the tool agent — defaults to
- *  `relay_batch` (docs §24 F56, F60). Two findings decide it:
+ *  `Claude_Opus` — both models, Opus 4.8 (`claude-opus-4.8`, included scenario;
+ *  Opus 4.5 until October 2026) and Opus 5.5 (`claude-opus`, paid), both with
+ *  the tool agent — defaults to `relay_batch` (docs §24 F56, F60). Two findings
+ *  decide it, both measured on Opus 4.5:
  *  - The JailBreak Classifier. Opus 4.5 solves almost every bench task under
  *    any framing; the `<system>`-tagged rule framings tripped the classifier on
  *    20 of 60 tasks (`minimal` 12/30, `baseline` 8/30), the user-voice relays
@@ -400,7 +546,8 @@ export function currentFramingVariant(toneDefault?: string): string {
  *    issue #18), whatever the prompt size — which is why the old lean
  *    `minimal` default saved nothing. relay_batch asks for as much as fits in
  *    each block: 2.30 turns per bench task vs relay's 3.65 (20/20 each), and
- *    3.5 vs 6.0 per real-pi run (10/10 each), measured on Opus 4.5.
+ *    3.5 vs 6.0 per real-pi run (10/10 each).
+ *  Opus 4.8 solves the bench with it too (30/30, 2.53 turns per task, §36).
  *  The cost to watch: a batched block acts before it has seen output. In pi
  *  every edit still followed a read. Opus 5.5 is benched under relay (10/10),
  *  not yet under relay_batch.
@@ -880,12 +1027,78 @@ export const FRAMING_VARIANT_NAMES = Object.keys(FRAMING_VARIANTS);
 
 // --- Parsing -----------------------------------------------------------------
 
-// Match a fenced block with a tool-like info-string. Dots and hyphens are allowed
-// so namespaced runtime tool names (```container.exec) can be recognised and
-// routed; an info-string that resolves to no spec is left in prose by
-// parseFencedToolCalls, so widening this costs nothing. Non-greedy body; the
-// closing fence is a line that is exactly ``` (start of line).
-const FENCE_REGEX = /```([A-Za-z0-9_.-]+)[ \t]*\r?\n([\s\S]*?)\r?\n?```/g;
+// Info-string of a fence that can be a tool call. Dots and hyphens are allowed so
+// namespaced runtime tool names (```container.exec) can be recognised and routed;
+// an info-string that resolves to no spec is left in prose by
+// parseFencedToolCalls, so widening this costs nothing.
+const FENCE_OPEN = /^[ \t]*```([A-Za-z0-9_.-]*)[ \t]*$/;
+const FENCE_CLOSE = /^[ \t]*```[ \t]*$/;
+// The looser shapes the pre-scanner regex also took, and the model does emit:
+// prose then an opener on one line ("Running it: ```bash"), and a closer glued
+// to the last line of the body ("ls -la```"). Only honoured at the outermost
+// level, where they can't be mistaken for nesting.
+const FENCE_OPEN_MIDLINE = /```([A-Za-z0-9_.-]+)[ \t]*$/;
+const FENCE_CLOSE_GLUED = /\S```[ \t]*$/;
+
+interface FenceBlock {
+  info: string;
+  inner: string;
+  start: number;
+  end: number;
+}
+
+/** Top-level fenced blocks, with nesting counted.
+ *
+ *  The model nests same-length fences — a ```markdown document containing
+ *  ```bash examples, or a write_file whose body is a README with code in it —
+ *  and means them as nested. The old regex closed a fence at the first ``` it
+ *  met, including the backticks that OPEN an inner ```bash, so the outer block
+ *  ended early and every later inner block surfaced at the top level as a real
+ *  tool call. Measured: a ```markdown answer holding 3 illustrative ```bash
+ *  examples parsed as 2 executable bash calls — illustration run as a command;
+ *  an `rm -rf` in a code sample would have run.
+ *
+ *  So: an opener WITH an info-string inside an open fence nests; a bare ```
+ *  line closes the innermost; only depth-0 blocks are returned. Inner fences
+ *  stay part of their parent's body, which also lets a write_file carry a body
+ *  containing balanced fences — the limitation noted at the top of this file.
+ *  An unterminated fence at end of text is dropped, as the regex did. */
+function scanFences(text: string): FenceBlock[] {
+  const blocks: FenceBlock[] = [];
+  let depth = 0;
+  let open: { info: string; start: number; bodyStart: number } | null = null;
+  let offset = 0;
+  for (const raw of text.split("\n")) {
+    const line = raw.endsWith("\r") ? raw.slice(0, -1) : raw;
+    const lineEnd = offset + raw.length;
+    const opener = FENCE_OPEN.exec(line)?.[1];
+    if (depth === 0) {
+      const midline = opener ? null : FENCE_OPEN_MIDLINE.exec(line);
+      if (opener || midline) {
+        open = { info: opener || midline![1], start: offset + (midline?.index ?? 0), bodyStart: lineEnd + 1 };
+        depth = 1;
+      }
+    } else if (FENCE_CLOSE.test(line)) {
+      if (--depth === 0 && open) {
+        let inner = text.slice(open.bodyStart, Math.max(open.bodyStart, offset - 1));
+        if (inner.endsWith("\r")) inner = inner.slice(0, -1);
+        blocks.push({ info: open.info, inner, start: open.start, end: lineEnd });
+        open = null;
+      }
+    } else if (opener) {
+      depth++;
+    } else if (depth === 1 && open && FENCE_CLOSE_GLUED.test(line)) {
+      const inner = text.slice(open.bodyStart, offset + line.trimEnd().length - 3);
+      blocks.push({ info: open.info, inner, start: open.start, end: lineEnd });
+      open = null;
+      depth = 0;
+    }
+    offset = lineEnd + 1;
+  }
+  return blocks;
+}
+
+// A fence opening with a tool-like info-string, for findUnclosedToolFence.
 const FENCE_OPEN_REGEX = /```([A-Za-z0-9_.-]+)[ \t]*\r?\n/g;
 const SEARCH_REPLACE_REGEX =
   /<{5,}\s*SEARCH\s*\r?\n([\s\S]*?)\r?\n={5,}\s*\r?\n([\s\S]*?)\r?\n>{5,}\s*REPLACE/;
@@ -912,10 +1125,30 @@ function nativeCloserRegex(name: string): RegExp {
   );
 }
 
+// The closer can also come glued to the end of the last line, with no newline
+// before it: `…index.html</bash>`, `… | sort -u</parameter>` (2 of 364
+// fences in the frame dumps, Sonnet 5.5 among them). Left in, it is the
+// command's last word, and bash reads `</bash>` as a redirect: a syntax error.
+// A line that also opens the same tag is a file's own markup
+// (`<parameter>x</parameter>`), so it is kept.
+function gluedNativeCloserRegex(name: string): RegExp {
+  return new RegExp(
+    String.raw`(?<=\S)[ \t]*<\/(invoke|function_calls|parameter|${escapeRegExp(name)})>[ \t]*(?:\r?\n${NATIVE_TRAILER_LINE})*\s*$`,
+    "u",
+  );
+}
+
 /** The fence body without a trailing native-call closer line, or null if it has none. */
 function stripNativeCloser(inner: string, name: string): string | null {
   const m = nativeCloserRegex(name).exec(inner);
-  return m ? inner.slice(0, m.index) : null;
+  const rest = m ? inner.slice(0, m.index) : inner;
+  // A glued closer can also come before closer lines (`…</parameter>` then `</invoke>`).
+  const g = gluedNativeCloserRegex(name).exec(rest);
+  if (g) {
+    const line = rest.slice(rest.lastIndexOf("\n", g.index) + 1, g.index);
+    if (!new RegExp(String.raw`<${escapeRegExp(g[1])}\b`).test(line)) return rest.slice(0, g.index);
+  }
+  return m ? rest : null;
 }
 
 /** A tool fence that is never closed with ``` but ends in a native-call closer
@@ -933,15 +1166,10 @@ function findUnclosedToolFence(
   if (!spec) return null;
   const bodyStart = last.index + last[0].length;
   const tail = text.slice(bodyStart);
-  if (tail.includes("```")) return null; // closed: FENCE_REGEX's case
+  if (tail.includes("```")) return null; // closed: scanFences' case
   const inner = stripNativeCloser(tail, last[1]);
   if (inner === null) return null; // no end marker: maybe a truncated reply
   return { start: last.index, end: text.length, spec, inner };
-}
-
-/** A closed fence's body, minus a trailing native-call closer line. */
-function fenceInner(name: string, raw: string): string {
-  return stripNativeCloser(raw, name) ?? raw;
 }
 
 function makeCall(name: string, args: Record<string, unknown>): ParsedToolCall {
@@ -1167,6 +1395,30 @@ function parseYamlBlockScalar(lines: string[], parentIndent: number, folded: boo
   return chomp === "-" ? text : `${text}\n`;
 }
 
+/** A header-only fence's string value that runs on over `more` lines (#82),
+ *  trailing blank lines dropped. Text after `key: ` is the first line and the
+ *  rest keep their indentation, which is the file's own. Under an empty `key:`
+ *  the lines lose the indent they share, and under `key: |` / `key: >` they
+ *  read as a YAML block scalar. */
+function headerTextValue(inline: string, more: string[]): string {
+  const rows = [...more];
+  while (rows.length && rows[rows.length - 1].trim() === "") rows.pop();
+  if (!rows.length) return inline;
+  const block = inline.match(/^([|>])([-+]?)$/);
+  if (block) {
+    try {
+      return parseYamlBlockScalar(rows, 0, block[1] === ">", block[2]);
+    } catch {
+      // not indented as a block scalar: read it like an empty `key:`
+    }
+  }
+  if (inline === "" || block) {
+    const indent = Math.min(...rows.filter((l) => l.trim() !== "").map(indentOf));
+    return rows.map((l) => l.slice(Math.min(indent, indentOf(l)))).join("\n");
+  }
+  return [inline, ...rows].join("\n");
+}
+
 /** Parse the inner text of one fenced block into an arguments object, schema-aware. */
 function parseFencedInner(spec: FencedToolSpec, inner: string): Record<string, unknown> | null {
   const lines = inner.split("\n");
@@ -1176,13 +1428,28 @@ function parseFencedInner(spec: FencedToolSpec, inner: string): Record<string, u
   // terminated by a blank line (consumed) or the first non-header line (kept).
   // An array- or object-typed param may instead hold an indented YAML block
   // under an empty `key:` line (#50, see parseYamlBlockValue).
+  //
+  // A tool with no body param and no edit pair is all header (opencode's `edit`:
+  // path, oldString, newString, replaceAll), so nothing else can follow a header
+  // line: a string value runs on over the lines below it, blank ones included,
+  // until the next `key:` line (#82). The model fills `oldString: <oldString>`
+  // with the text as it is in the file, its second line at the code's own
+  // indentation, and reading one line per value cut `oldString` to its first
+  // line and lost `newString` below it. Header-only fences without such lines
+  // read as before (47 of 47 pi `read` fences in the dumps).
+  const headerOnly = !spec.editPair && spec.bodyParam === undefined;
+  let open: { key: string; inline: string; more: string[] } | null = null;
+  const closeOpen = () => {
+    if (open?.more.length) args[open.key] = headerTextValue(open.inline, open.more);
+    open = null;
+  };
   let i = 0;
   if (spec.headerParams.length) {
     for (; i < lines.length; i++) {
       const line = lines[i];
-      if (line.trim() === "") { i++; break; }
       const m = line.match(/^([A-Za-z0-9_]+):[ \t]?(.*)$/);
       if (m && spec.headerParams.includes(m[1])) {
+        closeOpen();
         const key = m[1];
         const type = spec.parameterTypes[key];
         if (m[2].trim() === "" && (type === "array" || type === "object")) {
@@ -1195,10 +1462,17 @@ function parseFencedInner(spec: FencedToolSpec, inner: string): Record<string, u
           }
         }
         args[key] = coerceHeaderValue(m[2].trim(), type);
+        if (headerOnly && (type ?? "string") === "string") open = { key, inline: m[2].trim(), more: [] };
+      } else if (open) {
+        open.more.push(line);
+      } else if (line.trim() === "") {
+        i++;
+        break;
       } else {
         break;
       }
     }
+    closeOpen();
   }
 
   const rest = lines.slice(i).join("\n");
@@ -1224,6 +1498,70 @@ export interface FencedParseResult {
   leftover: string;
 }
 
+// A model that notices its own call came out malformed sometimes writes it
+// again in the same reply: "Oops, that closing fence is wrong. Here is the same
+// command, correctly formatted:" and the command once more (Sonnet 5.5, with a
+// glued `</bash>` on the first copy). Counted as two calls, the reply's long
+// lead-in made the document guard return it all as text and nothing ran; and
+// without the guard, one-call-per-turn would have run the first copy and told
+// the model its correction never ran. A restatement replaces the call before
+// it: same tool, nearly the same arguments (token Jaccard ≥ 0.85), a short gap
+// between them, and a sign it is a correction (the first copy carried native
+// markup, or the gap says so). Different commands, or the same one without
+// such a sign, stay two calls.
+const RESTATED_SIMILARITY = 0.85;
+const RESTATEMENT_GAP_CHARS = 300;
+const CORRECTION_WORDS = /\b(?:oops|sorry|apolog\w*|mistake|typo|wrong|malformed|broken|incorrect\w*|corrected|correctly|fixed|same command|re-?formatted|properly formatted|try(?:ing)? again|let me redo)\b/i;
+
+interface ToolFence {
+  start: number;
+  end: number;
+  name: string;
+  args: Record<string, unknown>;
+  /** The body ended in native-call markup, which was stripped. */
+  hadNativeCloser: boolean;
+}
+
+function argTokens(args: Record<string, unknown>): Set<string> {
+  // A Code Mode call's input is the proxy's wrapper around the command; compared
+  // as is, its boilerplate would make any two commands look like one restated.
+  const text = Object.values(args)
+    .map((v) => (typeof v === "string" ? unwrapCodeModeShellScript(v) ?? v : JSON.stringify(v)))
+    .join(" ");
+  return new Set(text.split(/\s+/).filter(Boolean));
+}
+
+function restates(prev: ToolFence, next: ToolFence, gap: string): boolean {
+  if (prev.name !== next.name || gap.trim().length > RESTATEMENT_GAP_CHARS) return false;
+  if (!prev.hadNativeCloser && !CORRECTION_WORDS.test(gap)) return false;
+  const a = argTokens(prev.args);
+  const b = argTokens(next.args);
+  const shared = [...a].filter((t) => b.has(t)).length;
+  return shared / Math.max(1, new Set([...a, ...b]).size) >= RESTATED_SIMILARITY;
+}
+
+/** The closed tool fences in `text`, in order, a restated call replacing the
+ *  one it corrects (its span then covers both copies and the gap). */
+function toolFences(text: string, specs: Map<string, FencedToolSpec>): ToolFence[] {
+  const fences: ToolFence[] = [];
+  for (const block of scanFences(text)) {
+    const spec = specs.get(block.info);
+    if (!spec) continue; // ```python illustration etc. — not a tool, leave in prose
+    const stripped = stripNativeCloser(block.inner, block.info);
+    const args = parseFencedInner(spec, stripped ?? block.inner);
+    if (!args) continue;
+    const fence: ToolFence = { start: block.start, end: block.end, name: spec.name, args, hadNativeCloser: stripped !== null };
+    const prev = fences[fences.length - 1];
+    if (prev && restates(prev, fence, text.slice(prev.end, fence.start))) {
+      log.info(`Restated ${spec.name} call: running the corrected copy, not the first`);
+      fences[fences.length - 1] = { ...fence, start: prev.start };
+      continue;
+    }
+    fences.push(fence);
+  }
+  return fences;
+}
+
 /** Parse all fenced tool calls whose info-string matches a known tool name. */
 export function parseFencedToolCalls(
   text: string,
@@ -1232,15 +1570,9 @@ export function parseFencedToolCalls(
   const calls: ParsedToolCall[] = [];
   let leftover = text;
 
-  const re = new RegExp(FENCE_REGEX.source, "g");
-  let match: RegExpExecArray | null;
-  while ((match = re.exec(text)) !== null) {
-    const spec = specs.get(match[1]);
-    if (!spec) continue; // ```python illustration etc. — not a tool, leave in prose
-    const args = parseFencedInner(spec, fenceInner(match[1], match[2]));
-    if (!args) continue;
-    calls.push(makeCall(spec.name, args));
-    leftover = leftover.replace(match[0], "");
+  for (const fence of toolFences(text, specs)) {
+    calls.push(makeCall(fence.name, fence.args));
+    leftover = leftover.replace(text.slice(fence.start, fence.end), "");
   }
 
   if (calls.length === 0) {
@@ -1256,17 +1588,15 @@ export function parseFencedToolCalls(
 }
 
 /** Where the first fence that parses as a real tool call starts and ends —
- *  the same acceptance rule as parseFencedToolCalls — or null if there is none. */
+ *  the same acceptance rule as parseFencedToolCalls — or null if there is none.
+ *  A restated call spans both copies, so the text after it is what follows the
+ *  corrected one. */
 export function findFirstToolFence(
   text: string,
   specs: Map<string, FencedToolSpec>,
 ): { start: number; end: number } | null {
-  const re = new RegExp(FENCE_REGEX.source, "g");
-  let match: RegExpExecArray | null;
-  while ((match = re.exec(text)) !== null) {
-    const spec = specs.get(match[1]);
-    if (spec && parseFencedInner(spec, fenceInner(match[1], match[2]))) return { start: match.index, end: match.index + match[0].length };
-  }
+  const first = toolFences(text, specs)[0];
+  if (first) return { start: first.start, end: first.end };
   const open = findUnclosedToolFence(text, specs);
   if (open && parseFencedInner(open.spec, open.inner)) return { start: open.start, end: open.end };
   return null;

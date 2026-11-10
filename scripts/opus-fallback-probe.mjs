@@ -10,8 +10,8 @@
 // history: the numbering continues where it was (no restart at 1) and the final
 // sum is right. Prints, per turn, which model answered.
 //
-// Usage (inside nix develop; spends up to --steps Opus units, then free 4.5 turns):
-//   M365_OPUS_FALLBACK_MODEL=claude-opus-4.5 M365_DEBUG=1 M365_DUMP_FRAMES=1 \
+// Usage (inside nix develop; spends up to --steps Opus units, then free 4.8 turns):
+//   M365_OPUS_FALLBACK_MODEL=claude-opus-4.8 M365_DEBUG=1 M365_DUMP_FRAMES=1 \
 //     node scripts/opus-fallback-probe.mjs [--steps=20] [--model=claude-opus]
 // Without the fallback env var it shows the plain 429 at the wall instead.
 import { pathToFileURL } from "node:url";

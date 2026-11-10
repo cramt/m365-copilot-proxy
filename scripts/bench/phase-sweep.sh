@@ -22,6 +22,10 @@
 #   @KEY=VAL   extra env for this phase's proxies. Repeatable. VAL may be empty
 #              (`@M365_NO_CONFAB_RETRY=` turns the confab retry back on) but
 #              can't contain whitespace or any of @ : | ,
+#              `@MODEL=ID` is the model this phase's arms ask for instead of
+#              MODEL, so one sweep can interleave two models arm by arm; it stays
+#              in the phase env (the proxy ignores it), so analyze-arms can
+#              select on `+MODEL=ID`
 #   ARM        a framing variant (FRAMING_VARIANT_NAMES in fenced.ts);
 #              `default` = no override, i.e. the model's shipped default (or the
 #              phase's own M365_FRAMING_VARIANT); or `pi=TASK` = PI_N runs of
@@ -35,23 +39,27 @@
 # A proxy per arm, not per phase, so no arm inherits what an earlier one taught
 # the proxy (a dead agent route, say) — that would be an order effect.
 #
-# Knobs (env): MODEL and PHASES (required), TAG (sweep), PORT (4141), REPEAT (1,
+# Knobs (env): MODEL and PHASES (required; MODEL may be left out when every
+#   phase sets @MODEL=), TAG (sweep), PORT (4141), REPEAT (1,
 #   bench reps per task), TASKS (all bench tasks), PI_N (5), COOLDOWN (60 s
 #   between arms), PHASE_COOLDOWN (60 s), TASK_GAP (0 s between bench tasks, on
-#   top of the pacing below),
+#   top of the turn-budget wait below),
 #   ARCHIVE (~/.config/opencode-m365/
 #   sweeps/$TAG), PROXY_CMD (the built proxy; `node scripts/bench/_mock-proxy.mjs`
 #   exercises the driver without spending M365 threads), DRY_RUN=1 (validate and
 #   print the plan, spend nothing), and M365_AVOID_THROTTLING / M365_BUDGET_*
-#   (pacing, below).
+#   (throttle avoidance, below).
 #
-# Pacing, only with M365_AVOID_THROTTLING=1: the account throttles once a bucket
+# Throttle avoidance, only with M365_AVOID_THROTTLING=1: the account throttles once a bucket
 # of ~100 turns, refilled at ~1.6 a minute, runs dry (hypotheses §24 F58).
 # Before every bench task and every pi run the drivers then wait until the
 # proxies' debug logs (this archive included) say there's room for a whole task
-# plus a reserve — scripts/bench/turn-budget.mjs. The sweep runs at the account's
-# pace instead of tripping the throttle, which makes it much slower: ~1.6 turns
-# a minute once the bucket is down to the reserve. Off by default.
+# plus a reserve — scripts/bench/turn-budget.mjs. The proxies inherit the
+# variable and also wait before each upstream turn (the same model, same
+# reserve), which only matters when a task runs past its allowance. The sweep
+# runs at the bucket's refill rate instead of tripping the throttle, which makes
+# it much slower: ~1.6 turns a minute once the bucket is down to the reserve. Off
+# by default.
 # `node scripts/bench/turn-budget.mjs status` shows where the bucket stands.
 #
 # The sweep stops at the first throttled bench task or pi run (FAILED says where);
@@ -60,14 +68,15 @@
 # real-pi arm doesn't see that one, and analyze-arms marks its runs.
 #
 # One sweep per account at a time: two would spend the same turn budget and
-# throttle each other. For a long sweep, run it detached and wait for
-# $ARCHIVE/DONE (or FAILED):
+# throttle each other. Sweeps on several accounts on one host need a PORT each:
+# an arm whose port another proxy holds fails rather than use that proxy. For a
+# long sweep, run it detached and wait for $ARCHIVE/DONE (or FAILED):
 #   setsid -f env MODEL=… PHASES=… nix develop --command bash scripts/bench/phase-sweep.sh </dev/null >/dev/null 2>&1
 set -u
 REPO="$(cd "$(dirname "$0")/../.." && pwd)"
 cd "$REPO" || exit 1
 
-MODEL="${MODEL:?set MODEL, e.g. MODEL=gpt-6-sol}"
+MODEL="${MODEL:-}"
 PHASES="${PHASES:?set PHASES, see the header of scripts/bench/phase-sweep.sh}"
 TAG="${TAG:-sweep}"
 PORT="${PORT:-4141}"
@@ -83,7 +92,7 @@ ARCHIVE="${ARCHIVE:-$CFG/sweeps/$TAG}"
 [[ "$ARCHIVE" == /* ]] || ARCHIVE="$REPO/$ARCHIVE"
 PROXY_CMD="${PROXY_CMD:-node packages/proxy/bin/m365-proxy.mjs}"
 BASE_ENV=(M365_DEBUG=1 M365_DUMP_FRAMES=1 M365_NO_CONFAB_RETRY=1 M365_NO_INTERACTIVE=1)
-# Pacing (M365_AVOID_THROTTLING=1) reads the debug logs under $CFG; an archive
+# Throttle avoidance (M365_AVOID_THROTTLING=1) reads the debug logs under $CFG; an archive
 # kept elsewhere has to be named.
 export M365_BUDGET_LOGS="$ARCHIVE${M365_BUDGET_LOGS:+:$M365_BUDGET_LOGS}"
 
@@ -99,23 +108,28 @@ known_variants=""
 if [ -f packages/core/dist/index.mjs ]; then
   known_variants=" default $(node -e 'import("./packages/core/dist/index.mjs").then((m) => console.log(m.FRAMING_VARIANT_NAMES.join(" ")))') "
 fi
-names=(); envs=(); armlists=(); need_pi=0; need_docker=0; total_arms=0
+names=(); envs=(); models=(); armlists=(); need_pi=0; need_docker=0; total_arms=0
 IFS='|' read -ra specs <<<"$PHASES"
 for spec in "${specs[@]}"; do
   [[ "$spec" == *:* ]] || die "phase '$spec' has no ':ARM,…' part"
   head="${spec%%:*}"; arms="${spec#*:}"; name="${head%%@*}"
   [[ "$name" =~ ^[A-Za-z0-9_]+$ ]] || die "bad phase name '$name' in '$spec'"
   for n in "${names[@]}"; do [ "$n" != "$name" ] || die "phase name '$name' is used twice"; done
-  env=""
+  env=""; model="$MODEL"
   if [[ "$head" == *@* ]]; then
     IFS='@' read -ra kvs <<<"${head#*@}"
     for kv in "${kvs[@]}"; do
       [[ "$kv" =~ ^[A-Za-z_][A-Za-z0-9_]*=[^[:space:]]*$ ]] || die "bad env '$kv' in phase $name"
       [[ "$kv" =~ ^M365_(LOG_FILE|FRAME_DIR)= ]] && die "phase $name sets ${kv%%=*}, which the sweep sets per arm"
+      if [[ "$kv" == MODEL=* ]]; then
+        model="${kv#MODEL=}"
+        [ -n "$model" ] || die "phase $name sets an empty MODEL"
+      fi
       env+="$kv "
     done
   fi
   [ -n "$arms" ] || die "phase $name has no arms"
+  [ -n "$model" ] || die "phase $name has no model — set MODEL, or @MODEL= on the phase"
   IFS=',' read -ra al <<<"$arms"
   for a in "${al[@]}"; do
     total_arms=$((total_arms + 1))
@@ -129,12 +143,12 @@ for spec in "${specs[@]}"; do
       need_docker=1
     fi
   done
-  names+=("$name"); envs+=("${env% }"); armlists+=("$arms")
+  names+=("$name"); envs+=("${env% }"); models+=("$model"); armlists+=("$arms")
 done
 
-echo "[sweep] model=$MODEL tag=$TAG port=$PORT archive=$ARCHIVE"
+echo "[sweep] model=${MODEL:-per phase} tag=$TAG port=$PORT archive=$ARCHIVE"
 for i in "${!names[@]}"; do
-  echo "[sweep]   phase ${names[$i]}  env=[${envs[$i]:-none}]  arms: ${armlists[$i]//,/ }"
+  echo "[sweep]   phase ${names[$i]}  model=${models[$i]}  env=[${envs[$i]:-none}]  arms: ${armlists[$i]//,/ }"
 done
 if [ -n "${DRY_RUN:-}" ]; then echo "[sweep] DRY_RUN — nothing started"; exit 0; fi
 
@@ -186,20 +200,39 @@ start_proxy() {
     $penv $PROXY_CMD "$PORT" > "$ARCHIVE/$label-proxy.out" 2>&1 &
   PROXY_PID=$!
   for _ in $(seq 1 120); do
-    curl -s -m2 "http://localhost:$PORT/health" >/dev/null && return 0
+    curl -s -m2 "http://localhost:$PORT/health" >/dev/null && owns_port && return 0
     kill -0 "$PROXY_PID" 2>/dev/null || { PROXY_PID=""; return 1; }
     sleep 1
   done
   return 1
 }
 
+# Whether $PORT is held by this arm's proxy. Another sweep's proxy on the same
+# port answers /health too; ours then dies with EADDRINUSE and the bench talks to
+# the other account's proxy (#72). Asks ss, else lsof, else netstat; without
+# root they show the pid only for our own processes, so another account's proxy
+# reads as not ours. With none of them on PATH, trust /health.
+owns_port() {
+  if command -v ss >/dev/null 2>&1; then
+    ss -ltnpH "sport = :$PORT" 2>/dev/null | grep -q "pid=$PROXY_PID,"
+  elif command -v lsof >/dev/null 2>&1; then
+    lsof -niTCP:"$PORT" -sTCP:LISTEN 2>/dev/null |
+      awk -v pid="$PROXY_PID" 'NR > 1 && $2 == pid { found = 1 } END { exit !found }'
+  elif command -v netstat >/dev/null 2>&1; then
+    netstat -ltnp 2>/dev/null |
+      awk -v port="$PORT" -v pid="$PROXY_PID" '$4 ~ ":" port "$" && $7 ~ "^" pid "/" { found = 1 } END { exit !found }'
+  else
+    return 0
+  fi
+}
+
 RESULT=""
 THROTTLED=""
 EXHAUSTED=""
 run_bench_arm() {
-  local label="$1" arm="$2" json
+  local label="$1" arm="$2" model="$3" json
   if [ "$arm" = default ]; then : > "$CONTROL"; else echo "$arm" > "$CONTROL"; fi
-  node scripts/bench/run.mjs --base-url "http://localhost:$PORT/v1" --model "$MODEL" \
+  node scripts/bench/run.mjs --base-url "http://localhost:$PORT/v1" --model "$model" \
     --label "$label" --repeat "$REPEAT" --task-gap "$TASK_GAP" ${TASKS:+--tasks "$TASKS"} 2>&1 | tee "$ARCHIVE/$label-bench.txt"
   json="$(sed -n 's/^\[bench\] → //p' "$ARCHIVE/$label-bench.txt" | tail -1)"
   [ -n "$json" ] && [ -f "$json" ] && cp "$json" "$ARCHIVE/$label.json"
@@ -209,9 +242,9 @@ run_bench_arm() {
 }
 
 run_pi_arm() {
-  local label="$1" task="${2#pi=}" rc
+  local label="$1" task="${2#pi=}" model="$3" rc
   : > "$CONTROL"
-  N="$PI_N" TASK="$task" PORT="$PORT" MODEL="$MODEL" COOLDOWN="$COOLDOWN" CSV="$ARCHIVE/$label.csv" \
+  N="$PI_N" TASK="$task" PORT="$PORT" MODEL="$model" COOLDOWN="$COOLDOWN" CSV="$ARCHIVE/$label.csv" \
     bash scripts/bench/pi-reliability.sh
   rc=$?
   # pi-reliability leaves a failed run's dir in /tmp; keep its output with the arm.
@@ -225,9 +258,9 @@ run_pi_arm() {
 # --- run -------------------------------------------------------------------
 slot=0
 for i in "${!names[@]}"; do
-  name="${names[$i]}"; penv="${envs[$i]}"
+  name="${names[$i]}"; penv="${envs[$i]}"; model="${models[$i]}"
   [ "$i" -gt 0 ] && { echo "[sweep] phase cooldown ${PHASE_COOLDOWN}s"; sleep "$PHASE_COOLDOWN"; }
-  echo "==================== PHASE $name  env=[${penv:-none}]  $(date -u +%T)Z ===================="
+  echo "==================== PHASE $name  model=$model  env=[${penv:-none}]  $(date -u +%T)Z ===================="
   IFS=',' read -ra al <<<"${armlists[$i]}"
   for j in "${!al[@]}"; do
     arm="${al[$j]}"
@@ -237,9 +270,9 @@ for i in "${!names[@]}"; do
     echo "==================== ARM $slot/$total_arms: $arm  ($label)  $(date -u +%T)Z ===================="
     start_proxy "$label" "$penv" || die "the proxy for $label didn't come up — see $ARCHIVE/$label-proxy.out"
     start="$(date -u +%FT%TZ)"
-    if [ "$kind" = pi ]; then run_pi_arm "$label" "$arm"; else run_bench_arm "$label" "$arm"; fi
+    if [ "$kind" = pi ]; then run_pi_arm "$label" "$arm" "$model"; else run_bench_arm "$label" "$arm" "$model"; fi
     stop_proxy
-    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$label" "$name" "$penv" "$arm" "$kind" "$MODEL" \
+    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$label" "$name" "$penv" "$arm" "$kind" "$model" \
       "$start" "$(date -u +%FT%TZ)" "$RESULT" >> "$ARCHIVE/manifest.tsv"
     echo "$label : $RESULT" >> "$ARCHIVE/summary.txt"
     # A throttled account fails every later arm the same way, and each attempt

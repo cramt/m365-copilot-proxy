@@ -8,6 +8,9 @@ import {
   formatFencedToolDefinitions,
   findShellTool,
   hostPlatformNote,
+  shellDialect,
+  findWriteTool,
+  longHeredocAsWrite,
   currentFramingVariant,
   defaultFramingForTone,
   defaultFramingForModel,
@@ -22,6 +25,23 @@ const bash: ToolDef = {
   function: {
     name: "bash",
     description: "Run a shell command.",
+    parameters: { type: "object", properties: { command: { type: "string" } }, required: ["command"] },
+  },
+};
+// A harness whose shell really is PowerShell, and one that declares nothing.
+const powershell: ToolDef = {
+  type: "function",
+  function: {
+    name: "shell",
+    description: "Run a PowerShell command.",
+    parameters: { type: "object", properties: { command: { type: "string" } }, required: ["command"] },
+  },
+};
+const unlabelledShell: ToolDef = {
+  type: "function",
+  function: {
+    name: "run_terminal_cmd",
+    description: "Run a command.",
     parameters: { type: "object", properties: { command: { type: "string" } }, required: ["command"] },
   },
 };
@@ -152,6 +172,58 @@ describe("parseFencedToolCalls", () => {
     expect(calls).toHaveLength(2);
   });
 
+  // The model nests same-length fences and means them as nested. The old regex
+  // closed the outer fence on the backticks that OPEN the first inner ```bash, so
+  // inner examples 2..N surfaced at top level and were executed.
+  it("never executes ```bash examples nested inside a prose document", () => {
+    const doc = [
+      "Here is the summary, ready to save as ozet.md:", "", "```markdown", "# Summary", "",
+      "```bash", "echo ONE", "```", "", "```bash", "rm -rf /tmp/demo", "```", "",
+      "```bash", "echo THREE", "```", "```",
+    ].join("\n");
+    const { calls, leftover } = parseFencedToolCalls(doc, specs);
+    expect(calls).toHaveLength(0);
+    expect(leftover).toContain("rm -rf /tmp/demo"); // stays prose
+  });
+
+  it("carries a write_file body that itself contains balanced fences", () => {
+    const body = ["# Readme", "", "```bash", "pnpm install", "```", "", "Done."].join("\n");
+    const { calls } = parseFencedToolCalls(`\`\`\`write_file\npath: README.md\n\n${body}\n\`\`\``, specs);
+    expect(calls).toHaveLength(1);
+    expect(JSON.parse(calls[0].function.arguments)).toEqual({ path: "README.md", content: body });
+  });
+
+  // The baseline framing teaches `cat > f <<'EOF'` for writing files. Writing a
+  // Markdown file that contains code fences that way used to be cut at the first
+  // inner fence — the old closer matched the backticks opening "```bash" — so the
+  // shell got `cat > ozet.md <<'EOF'\n# Title` and an unterminated heredoc.
+  it("keeps a heredoc that writes a fenced Markdown file intact", () => {
+    const heredoc = ["cat > ozet.md <<'EOF'", "# Title", "", "```bash", "pnpm install", "```", "EOF"].join("\n");
+    const { calls } = parseFencedToolCalls(`\`\`\`bash\n${heredoc}\n\`\`\``, specs);
+    expect(calls).toHaveLength(1);
+    expect(JSON.parse(calls[0].function.arguments).command).toBe(heredoc);
+  });
+
+  it("still parses top-level calls that follow a nested document", () => {
+    const text = "```markdown\n```bash\necho x\n```\n```\n```bash\nls\n```";
+    const { calls } = parseFencedToolCalls(text, specs);
+    expect(calls.map((c) => JSON.parse(c.function.arguments).command)).toEqual(["ls"]);
+  });
+
+  // Shapes the pre-scanner regex accepted, so a call the model already got
+  // through must not now vanish into prose: the model would read the empty turn
+  // as "I have no tools".
+  it("still parses a call whose closing fence is glued to the command", () => {
+    const { calls } = parseFencedToolCalls("```bash\nls -la```", specs);
+    expect(calls.map((c) => JSON.parse(c.function.arguments).command)).toEqual(["ls -la"]);
+  });
+
+  it("still parses a call whose opening fence follows prose on the same line", () => {
+    const { calls, leftover } = parseFencedToolCalls("Running it: ```bash\nls -la\n```", specs);
+    expect(calls.map((c) => JSON.parse(c.function.arguments).command)).toEqual(["ls -la"]);
+    expect(leftover.trim()).toBe("Running it:");
+  });
+
   it("drops an edit fence missing SEARCH/REPLACE markers", () => {
     const { calls } = parseFencedToolCalls("```edit_file\npath: a.py\njust some text\n```", specs);
     expect(calls).toHaveLength(0);
@@ -173,6 +245,22 @@ describe("native call closer leaking into a fence (Opus)", () => {
     const { calls, leftover } = parseFencedToolCalls(text, specs);
     return { calls, leftover, args: calls[0] ? JSON.parse(calls[0].function.arguments) : null };
   }
+
+  it("strips a closer glued to the command's last line (Sonnet 5.5: `…</bash>`)", () => {
+    const { args } = argsOf("```bash\ncd /tmp/proj && ls logs</bash>\n```");
+    expect(args).toEqual({ command: "cd /tmp/proj && ls logs" });
+  });
+
+  it("strips a glued </parameter>, with native lines after it", () => {
+    const { args } = argsOf("```bash\ngit diff --stat | sort -u</parameter>\n</invoke>\n```");
+    expect(args).toEqual({ command: "git diff --stat | sort -u" });
+  });
+
+  it("keeps a last line that is the file's own balanced markup", () => {
+    const xml = "<config>\n<parameter>x</parameter>";
+    const { args } = argsOf(`\`\`\`write_file\npath: a.xml\n\n${xml}\n\`\`\``);
+    expect(args).toEqual({ path: "a.xml", content: xml });
+  });
 
   it("keeps </invoke> out of the file when the fence is closed too", () => {
     const { args } = argsOf(`\`\`\`write_file\npath: count.sh\n\n${SCRIPT}\n</invoke>\n\`\`\``);
@@ -335,15 +423,72 @@ describe("hostPlatformNote", () => {
   it("is empty off Windows, so POSIX framing stays byte-for-byte", () => {
     expect(hostPlatformNote(bash, "linux")).toBe("");
     expect(hostPlatformNote(bash, "darwin")).toBe("");
-    expect(formatFencedToolDefinitions([bash, readFile])).not.toContain("HOST PLATFORM");
+    // formatFencedToolDefinitions has no platform parameter, so this assertion
+    // reads the HOST — it only means "off Windows" when the suite runs off Windows.
+    // Asserted against the real platform instead of hardcoded absent, or the suite
+    // fails on a Windows checkout (where the note is the correct output).
+    expect(formatFencedToolDefinitions([bash, readFile]).includes("HOST PLATFORM"))
+      .toBe(process.platform === "win32");
   });
 
   it("is empty on Windows when the harness gave no shell tool", () => {
     expect(hostPlatformNote(undefined, "win32")).toBe("");
   });
 
-  it("names the platform and overrides every POSIX idiom the framing teaches", () => {
+  // A Windows HOST is not a PowerShell SHELL. pi on Windows sends a tool named
+  // `bash`, described as "Execute a bash command", backed by Git Bash — telling it
+  // to emit PowerShell returns `/usr/bin/bash: Write-Output: command not found`
+  // and the model gives up concluding it has no tools (#7).
+  it("keeps POSIX idioms when the harness's shell tool is a bash on Windows", () => {
     const note = hostPlatformNote(bash, "win32");
+    expect(note).toContain("HOST PLATFORM: Windows");
+    expect(note).not.toContain("```powershell");
+    for (const ps of ["Set-Content", "Get-ChildItem", "Write-Output"]) {
+      expect(note, `${ps} must not be prescribed to a bash`).not.toContain(`use ${ps}`);
+    }
+    expect(note).toContain("POSIX shell");
+    expect(note).toContain("/mnt/data");
+  });
+
+  // pi's shell tool on Windows cuts a command past ~8,190 chars silently (a
+  // 12,070-char heredoc wrote 8,164 bytes); its write tool took 50,000 intact.
+  it("steers long file writes to the harness's write tool on a Windows bash", () => {
+    const write: ToolDef = {
+      type: "function",
+      function: {
+        name: "write",
+        description: "Write a file.",
+        parameters: { type: "object", properties: { path: { type: "string" }, content: { type: "string" } }, required: ["path", "content"] },
+      },
+    };
+    expect(findWriteTool([bash, readFile, write])?.function.name).toBe("write");
+    const note = hostPlatformNote(bash, "win32", write);
+    expect(note).toContain("8,000 characters");
+    expect(note).toContain("with the `write` tool, never in one heredoc");
+    // No write tool: fall back to appending in parts rather than one heredoc.
+    expect(hostPlatformNote(bash, "win32")).toContain("cat >> file");
+  });
+
+  it("does not mistake an edit tool for a write tool", () => {
+    expect(findWriteTool([editFile])).toBeUndefined();
+  });
+
+  it("reads the dialect off the tool, and M365_HOST_SHELL overrides it", () => {
+    expect(shellDialect(bash, "win32")).toBe("posix");
+    expect(shellDialect(powershell, "win32")).toBe("powershell");
+    // Undeclared name falls back to the host's native shell.
+    expect(shellDialect(unlabelledShell, "win32")).toBe("powershell");
+    expect(shellDialect(unlabelledShell, "linux")).toBe("posix");
+    process.env.M365_HOST_SHELL = "powershell";
+    try {
+      expect(shellDialect(bash, "win32")).toBe("powershell");
+    } finally {
+      delete process.env.M365_HOST_SHELL;
+    }
+  });
+
+  it("names the platform and overrides every POSIX idiom the framing teaches", () => {
+    const note = hostPlatformNote(powershell, "win32");
     expect(note).toContain("HOST PLATFORM: Windows");
     expect(note).toContain("```powershell");
     // The specific idioms baseline framing teaches by name must be countermanded.
@@ -358,15 +503,87 @@ describe("hostPlatformNote", () => {
   });
 
   it("names the harness's own shell tool rather than assuming `bash`", () => {
-    const shell: ToolDef = {
-      type: "function",
-      function: {
-        name: "run_terminal_cmd",
-        description: "Run a command.",
-        parameters: { type: "object", properties: { command: { type: "string" } }, required: ["command"] },
-      },
-    };
-    expect(hostPlatformNote(shell, "win32")).toContain("`run_terminal_cmd`");
+    expect(hostPlatformNote(unlabelledShell, "win32")).toContain("`run_terminal_cmd`");
+  });
+});
+
+describe("longHeredocAsWrite", () => {
+  const write: ToolDef = {
+    type: "function",
+    function: {
+      name: "write",
+      description: "Write a file.",
+      parameters: { type: "object", properties: { path: { type: "string" }, content: { type: "string" } }, required: ["path", "content"] },
+    },
+  };
+  const tools = [bash, write];
+  // Over the cap, with a fence and Turkish text, like the real ozet.md write.
+  const body = ["# Proje Özeti", "", "```bash", "pnpm install", "```", "", "ı ş ğ ü ö ç " + "x".repeat(9000)].join("\n");
+  const shellCall = (command: string) => ({
+    id: "call_x",
+    type: "function" as const,
+    function: { name: "bash", arguments: JSON.stringify({ command }) },
+  });
+  const args = (c: { function: { arguments: string } }) => JSON.parse(c.function.arguments);
+
+  it("sends an over-cap quoted heredoc as the write tool, byte-for-byte", () => {
+    const r = longHeredocAsWrite(shellCall(`cat > ozet.md <<'EOF'\n${body}\nEOF`), tools, "win32");
+    expect(r?.call.function.name).toBe("write");
+    // A heredoc writes its body plus the final newline.
+    expect(args(r!.call)).toEqual({ path: "ozet.md", content: `${body}\n` });
+    expect(r?.skipped).toBe("");
+  });
+
+  it("reports the commands after the heredoc, which were past the cap anyway", () => {
+    const r = longHeredocAsWrite(shellCall(`cat > "docs/my notes.md" <<"END"\n${body}\nEND\nwc -l "docs/my notes.md"`), tools, "win32");
+    expect(args(r!.call).path).toBe("docs/my notes.md");
+    expect(r?.skipped).toBe('wc -l "docs/my notes.md"');
+  });
+
+  it("terminates only on a line that is exactly the delimiter, as bash does", () => {
+    const tricky = `${body}\nEOF \nEOFX\nmore`;
+    const r = longHeredocAsWrite(shellCall(`cat > a.md <<'EOF'\n${tricky}\nEOF`), tools, "win32");
+    expect(args(r!.call).content).toBe(`${tricky}\n`);
+  });
+
+  it("leaves everything else alone", () => {
+    const long = (c: string) => shellCall(c);
+    // Under the cap: the command line carries it intact.
+    expect(longHeredocAsWrite(long("cat > a.md <<'EOF'\nshort\nEOF"), tools, "win32")).toBeNull();
+    // Off Windows: no cap to work around.
+    expect(longHeredocAsWrite(long(`cat > a.md <<'EOF'\n${body}\nEOF`), tools, "linux")).toBeNull();
+    // Unquoted delimiter: bash expands $ and ` in the body, so a literal write could differ.
+    expect(longHeredocAsWrite(long(`cat > a.md <<EOF\n${body}\nEOF`), tools, "win32")).toBeNull();
+    // Append: the write tool would overwrite.
+    expect(longHeredocAsWrite(long(`cat >> a.md <<'EOF'\n${body}\nEOF`), tools, "win32")).toBeNull();
+    // A path bash would expand.
+    expect(longHeredocAsWrite(long(`cat > $HOME/a.md <<'EOF'\n${body}\nEOF`), tools, "win32")).toBeNull();
+    // No write tool to route to.
+    expect(longHeredocAsWrite(long(`cat > a.md <<'EOF'\n${body}\nEOF`), [bash], "win32")).toBeNull();
+    // A `cd` first: a relative path would land somewhere else via the write tool.
+    expect(longHeredocAsWrite(long(`cd docs && cat > a.md <<'EOF'\n${body}\nEOF`), tools, "win32")).toBeNull();
+    expect(longHeredocAsWrite(long(`cd docs\ncat > a.md <<'EOF'\n${body}\nEOF`), tools, "win32")).toBeNull();
+    // A piped cat is not a plain file write.
+    expect(longHeredocAsWrite(long(`echo x | cat > a.md <<'EOF'\n${body}\nEOF`), tools, "win32")).toBeNull();
+  });
+
+  // Measured: the model bundled exploration and the write into one 13,185-char
+  // call (`printf`/`find` first, `cat > ozet.md <<'EOF'` last) and the file
+  // landed truncated. Keep the write; report what didn't run.
+  it("pulls the heredoc out of a compound command and reports the rest", () => {
+    const r = longHeredocAsWrite(
+      shellCall(`printf '%s\\n' '--- tree ---'\nfind packages -type f | sort\ncat > ozet.md <<'EOF'\n${body}\nEOF\nwc -l ozet.md`),
+      tools,
+      "win32",
+    );
+    expect(args(r!.call)).toEqual({ path: "ozet.md", content: `${body}\n` });
+    expect(r?.skipped).toBe("printf '%s\\n' '--- tree ---'\nfind packages -type f | sort\nwc -l ozet.md");
+  });
+
+  it("handles `mkdir -p dir && cat > dir/f` (the write tool creates parent dirs)", () => {
+    const r = longHeredocAsWrite(shellCall(`mkdir -p docs && cat > docs/a.md <<'EOF'\n${body}\nEOF`), tools, "win32");
+    expect(args(r!.call).path).toBe("docs/a.md");
+    expect(r?.skipped).toBe("mkdir -p docs");
   });
 });
 
@@ -389,7 +606,7 @@ describe("defaultFramingForTone", () => {
     // relay_batch: 2.30 turns per bench task vs relay's 3.65 — and Opus 5.5's
     // budget counts turns (F55). `minimal`'s shorter prompt saved nothing.
     expect(defaultFramingForTone("Claude_Opus")).toBe("relay_batch");
-    for (const id of ["claude-opus", "claude-opus-5.5", "claude-opus-4.5", "claude-opus-4-5-20251101", "claude-opus-5[1m]"]) {
+    for (const id of ["claude-opus", "claude-opus-5.5", "claude-opus-4.8", "claude-opus-4.5", "claude-opus-4-8-20261001", "claude-opus-5[1m]"]) {
       expect(defaultFramingForModel(id)).toBe("relay_batch");
     }
   });
@@ -680,6 +897,66 @@ describe("array and object params written as a YAML block (#50)", () => {
   });
 });
 
+describe("multi-line string values in a header-only fence (#82)", () => {
+  // opencode's `edit`: every param is a header line (no body, no edit pair).
+  const ocEdit: ToolDef = {
+    type: "function",
+    function: {
+      name: "edit",
+      description: "Performs exact string replacements in files.",
+      parameters: {
+        type: "object",
+        properties: { path: { type: "string" }, oldString: { type: "string" }, newString: { type: "string" }, replaceAll: { type: "boolean" } },
+        required: ["path", "oldString", "newString"],
+      },
+    },
+  };
+  const read: ToolDef = {
+    type: "function",
+    function: { name: "read", parameters: { type: "object", properties: { path: { type: "string" }, offset: { type: "number" }, limit: { type: "number" } } } },
+  };
+  const specs = buildSpecMap([ocEdit, read, bash]);
+  const argsOf = (text: string) => {
+    const { calls } = parseFencedToolCalls(text, specs);
+    expect(calls).toHaveLength(1);
+    return JSON.parse(calls[0].function.arguments);
+  };
+
+  it("reads both values whole — verbatim from Sonnet 5 in opencode, which lost newString", () => {
+    const args = argsOf("```edit\npath: calc.py\noldString: def add(a, b):\n    return a - b\nnewString: def add(a, b):\n    return a + b\n```");
+    expect(args).toEqual({ path: "calc.py", oldString: "def add(a, b):\n    return a - b", newString: "def add(a, b):\n    return a + b" });
+  });
+
+  it("ends a value at the next key, which keeps its type", () => {
+    const args = argsOf("```edit\npath: a.py\noldString: x = 1\ny = 2\nnewString: x = 3\ny = 4\nreplaceAll: true\n```");
+    expect(args).toEqual({ path: "a.py", oldString: "x = 1\ny = 2", newString: "x = 3\ny = 4", replaceAll: true });
+  });
+
+  it("keeps blank lines inside a value and drops the trailing ones", () => {
+    const args = argsOf("```edit\npath: a.py\noldString: def f():\n\n    pass\n\nnewString: def f():\n    return 1\n\n\n```");
+    expect(args.oldString).toBe("def f():\n\n    pass");
+    expect(args.newString).toBe("def f():\n    return 1");
+  });
+
+  it("reads `key: |` as a block scalar and an empty `key:` as an indented block", () => {
+    const args = argsOf("```edit\npath: a.py\noldString: |\n  if x:\n      y()\nnewString:\n  if x:\n      z()\n```");
+    expect(args.oldString).toBe("if x:\n    y()\n");
+    expect(args.newString).toBe("if x:\n    z()");
+  });
+
+  it("leaves one-line values and a clean read fence as they were", () => {
+    expect(argsOf("```edit\npath: a.py\noldString: return a - b\nnewString: return a + b\n```"))
+      .toEqual({ path: "a.py", oldString: "return a - b", newString: "return a + b" });
+    expect(argsOf("```read\npath: src/main.py\noffset: 10\nlimit: 20\n```")).toEqual({ path: "src/main.py", offset: 10, limit: 20 });
+  });
+
+  it("doesn't touch a tool with a body: the header still ends at the first non-key line", () => {
+    const write: ToolDef = { type: "function", function: { name: "write", parameters: { type: "object", properties: { path: { type: "string" }, content: { type: "string" } } } } };
+    const { calls } = parseFencedToolCalls("```write\npath: a.txt\nhello\nworld\n```", buildSpecMap([write]));
+    expect(JSON.parse(calls[0].function.arguments)).toEqual({ path: "a.txt", content: "hello\nworld" });
+  });
+});
+
 describe("Codex and Claude Code shells", () => {
   const tool = (name: string, properties: Record<string, { type?: string }>, description: string): ToolDef => ({
     type: "function",
@@ -755,14 +1032,34 @@ describe("Codex and Claude Code shells", () => {
   });
 
   it("doesn't tell the model Claude Code's Git Bash tool runs PowerShell", () => {
-    expect(hostPlatformNote(claudeBash, "win32", [claudeBash])).toBe("");
-    const both = hostPlatformNote(claudeBash, "win32", [claudeBash, claudePowerShell]);
+    expect(hostPlatformNote(claudeBash, "win32")).toBe("");
+    const both = hostPlatformNote(claudeBash, "win32", undefined, claudePowerShell);
     expect(both).toContain("HOST PLATFORM: Windows");
     expect(both).toContain("Git Bash");
     expect(both).toContain("```powershell");
     expect(both).not.toContain("runs PowerShell on a real Windows machine");
-    expect(hostPlatformNote(claudeBash, "linux", [claudeBash, claudePowerShell])).toBe("");
+    expect(hostPlatformNote(claudeBash, "linux", undefined, claudePowerShell)).toBe("");
     // Codex's exec_command does run PowerShell on Windows: that note stands.
-    expect(hostPlatformNote(execCommand, "win32", [execCommand])).toContain("runs PowerShell on a real Windows machine");
+    expect(hostPlatformNote(execCommand, "win32")).toContain("runs PowerShell on a real Windows machine");
+  });
+
+  it("reads Claude Code's Git Bash as POSIX, though its description names PowerShell to rule it out", () => {
+    expect(shellDialect(claudeBash, "win32")).toBe("posix");
+    // Code Mode's description is its JavaScript API: the host decides, whatever shells it names.
+    const codeModeNamingBash = tool("functions__exec", { input: { type: "string" } }, `${CODE_MODE_DESCRIPTION}\n- Nested tools run a bash command through exec_command.`);
+    expect(shellDialect(codeModeNamingBash, "win32")).toBe("powershell");
+    expect(hostPlatformNote(codeModeNamingBash, "win32")).toContain("runs PowerShell on a real Windows machine");
+  });
+
+  it("compares a restated Code Mode call by its command, not by the wrapper", () => {
+    const specs = buildSpecMap([codeModeExec]);
+    const commands = (text: string) => parseFencedToolCalls(text, specs).calls
+      .map((c) => unwrapCodeModeShellScript(JSON.parse(c.function.arguments).input));
+    // Two different commands stay two calls, as they do for any other shell…
+    expect(commands("```bash\nls\n```\nSorry, wrong one. This is the command:\n```bash\ncat notes.txt\n```"))
+      .toEqual(["ls", "cat notes.txt"]);
+    // …and a corrected copy of the same one still replaces it.
+    expect(commands("```bash\nls -la</bash>\n```\nOops, here is the same command, correctly formatted:\n```bash\nls -la\n```"))
+      .toEqual(["ls -la"]);
   });
 });

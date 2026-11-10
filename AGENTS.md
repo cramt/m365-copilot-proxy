@@ -189,34 +189,38 @@ pnpm test:live      # M365_LIVE=1; live tests that hit real M365 (uses quota)
   pi works and heavy harnesses (opencode) don't. The proxy also enforces one tool call per
   turn and strips M365's invented `{confidence}`/`{final}` JSON (`M365_ALLOW_MULTI_TOOL` to opt out).
 - **`claude-opus` is entitlement-gated and separately metered.** The WS `scenario` decides which
-  models will serve: agent-less, Opus is a dead route on `OfficeWebIncludedCopilot` and a real model
-  (Opus 5.5) on `OfficeWebPaidCopilot` (`getScenarioForModel`, derived per-turn from the model ID).
+  model serves: `Claude_Opus` is Opus 5.5 on `OfficeWebPaidCopilot` and another model, Opus 4.8 (below), on
+  `OfficeWebIncludedCopilot` (`getScenarioForModel`, derived per-turn from the model ID).
   `licenseType: Premium` pairs with it but unlocks nothing alone. Opus 5.5 also has a small
   priority-access budget — 75/week (`ClaudeOpusQuery75`) and 40/day (`ClaudeOpusQueryDaily`), **one unit
   per turn whatever the prompt size** — so a leaner framing saves nothing; only fewer turns do
   (the proxy's own retries count too). The refusal is **not streamed**: it is only in the final
   item (`result.value: "OutOfCredits"`, `result.message`), so a stream reader sees an empty turn —
   read the result (`priorityAccessExhaustionOf`), not the text. The proxy 429s, remembers the wall
-  until the reset (midnight UTC; weekly: Monday) and, with `M365_OPUS_FALLBACK_MODEL=claude-opus-4.5`,
-  serves Opus 4.5 instead. Every paid turn carries `throttling.metering` (surfaced in `usage`).
+  until the reset (midnight UTC; weekly: Monday) and, with `M365_OPUS_FALLBACK_MODEL=claude-opus-4.8`,
+  serves Opus 4.8 instead. Every paid turn carries `throttling.metering` (surfaced in `usage`).
   **Sonnet 5.5 has the same kind of budget, its own** (80/day `ClaudeSonnet55QueryDaily`, 150/week
-  `ClaudeSonnet55QueryWeekly`; `M365_SONNET_FALLBACK_MODEL`). Budgets live in `METERED_BUDGETS`
+  `ClaudeSonnet55QueryWeekly` — which has reset daily, not on Monday, §30; `M365_SONNET_FALLBACK_MODEL`). Budgets live in `METERED_BUDGETS`
   (`priority-access.ts`) and `meteredBudgetOf()` maps a model to one; walls are remembered per budget.
   A new `*Query*` key in `metering` is how a new metered model shows up — add a budget, don't hard-code Opus.
   Don't burn it on sweeps. See docs/hypotheses.md §15, §24 F55, F59 (issue #18), §26.
-- **`claude-opus-4.5` is the same tone on the included scenario — reachable only through the tool
-  agent, only on a premium account, and unmetered.** Agent-less it is the dead route everywhere, so
-  `modelRequiresAgent` attaches the agent even to tool-less requests, and there is no agent-less
-  fallback (it is NOT in `PREMIUM_ONLY_AGENT_TONES`). Routing is the mirror of Sonnet 5.5: the tone is
-  paid and the model ID opts back into the included scenario (`INCLUDED_SCENARIO_MODELS`, plus
-  `opus-4-5`-style strings). Its system prompt calls it "Claude Opus 5"; trust its "Opus 4.5" and
-  its `ChainOfThoughtSummary`, not the name in the prompt. Both Opus models carry the agent on tool
-  requests (`AGENT_CLAUDE_TONES`) and default to `relay_batch`: every framing solves on Opus 4.5,
+- **`claude-opus-4.8` is the same tone on the included scenario — only on a premium account, and
+  unmetered.** It replaced Opus 4.5 (`claude-opus-4.5`, now an alias) unannounced between Oct 4 and
+  Oct 11 2026, so re-run the self-ID probes now and then. Opus 4.5 served only through the tool agent;
+  Opus 4.8 serves agent-less too, so tool-less requests go without it. On a non-premium account it is
+  the dead route on both paths: there is no fallback (it is NOT in `PREMIUM_ONLY_AGENT_TONES`), and
+  `isPremiumOnlyModel` turns the `InternalError`s into a 502 that says so. Its tool requests keep the
+  agent (§36): agent-less ties on the bench but costs 22% more turns in real pi (F90), and has its own
+  code interpreter, which it works in under a framing that doesn't steer it out (`baseline` 1/10 vs
+  8/10), and writes its own `<tool_response>`s (13 of 134 turns, 0 with the agent; F91). Routing is the
+  mirror of Sonnet 5.5: the tone is paid and the model ID opts back into the included scenario
+  (`INCLUDED_SCENARIO_MODELS`, plus `opus-4-8` / `opus-4-5`-style strings). Both Opus models carry the
+  agent on tool requests (`AGENT_CLAUDE_TONES`) and default to `relay_batch`: every framing solved on Opus 4.5,
   so rank framings by Disengaged turns and turns per task, not the solve rate — the `<system>`-tagged
   ones tripped the jailbreak classifier on a third of tasks (§24 F56), and relay_batch's "put as much
-  as you can into one block" cut turns per task 37% (F60), which is what Opus 5.5's budget counts. Opus sometimes ends a tool fence with its native call
-  markup (`</invoke>`, `</parameter>`…); the parser strips it (F57), don't "simplify" that away. Only a premium account can
-  bench it. See docs/hypotheses.md §24.
+  as you can into one block" cut turns per task 37% (F60), which is what Opus 5.5's budget counts. Opus 4.5 sometimes ended a tool fence with its native call
+  markup (`</invoke>`, `</parameter>`…); the parser strips it (F57), on its own line or glued to the last one (Sonnet 5.5 too), don't "simplify" that away. A call the model writes again as a correction ("Oops… here is the same command") replaces the first copy rather than counting as two. Only a premium account can
+  bench it. See docs/hypotheses.md §24, §36.
 - **Entitlement-gated ≠ metered.** `gpt-6-think-deeper` (`Gpt_6_Reasoning`) and `claude-sonnet-5`
   (`Claude_Sonnet_5`) need the same paid
   scenario as Opus but carry **no** priority-access budget and throttle like everything else,
@@ -250,7 +254,13 @@ pnpm test:live      # M365_LIVE=1; live tests that hit real M365 (uses quota)
   **Read its `ChainOfThoughtSummary` frames** (`M365_DUMP_FRAMES=1`) — they say why it refused.
 - **Not every tone serves with the tool agent — `toneUsesToolAgent()` decides, per exact tone**
   (`M365_FORCE_AGENT=1`/`0` overrides it either way).
-  Claude tones (except `Claude_Opus`, see above) and `Gpt_6_Reasoning` go agent-less even with tools. With the agent attached GPT-6 is
+  Claude tones (except `Claude_Opus`, see above) and `Gpt_6_Reasoning` go agent-less even with tools.
+  `Claude_Sonnet` and `Claude_Sonnet_5` were benched with the agent on a premium account (§30 F75): it
+  removes the sandbox of Sonnet 4.6, Sonnet 5 and Sonnet 5.5, but Sonnet 5 (`Claude_Sonnet_5` @ paid)
+  then refuses the harness and Sonnet 4.6 (`Claude_Sonnet` and `Claude_Sonnet_5` @ included) spends a
+  turn more per pi run — don't add them.
+  That extra turn is the agent path's own: four other agent instruction texts didn't move it (§34 F87).
+  With the agent attached GPT-6 is
   a dead route on every account (`result: InternalError`; the proxy used to 502 on it, #41), and
   Claude is dead on non-premium accounts. Add a tone to `AGENTLESS_TOOL_TONES` only after
   `scripts/agent-tone-probe.mjs` says so. Agent-less also means M365's code interpreter is on, and under `baseline` GPT-6
@@ -281,11 +291,26 @@ pnpm test:live      # M365_LIVE=1; live tests that hit real M365 (uses quota)
 - **A turn can hold several bot messages; assemble text per message.** Each new message's head
   arrives only as a snapshot with a `cursor`; folding everything into one string drops it (it ate
   a fence's backticks). `TurnTextComposer` in `session.ts` — don't "simplify" it away. #29.
+- **A conversation is keyed on the first user message *and* the tool names** (`SessionPool.fingerprint`).
+  opencode's title request shares the task's opener but has no tools; keyed on the opener alone it ran in
+  the task's M365 conversation, concurrently (#83). Don't add the system prompt or tool descriptions to
+  the key: those are where a harness puts per-turn text, and every change starts a new thread.
+- **A tool turn is stopped once the model's own `<tool_response>` after a call runs past 2,000 chars**
+  (#65, `runBuffered` in `handler.ts`): waiting for M365 to finish let invented continuations run for
+  minutes, past pi's timeout. Not at the tag itself: M365 keeps the whole message, Sonnet 4.6 seems to
+  follow a short tail as its plan, and stopping at the tag cost it 10% more turns in real pi; the
+  2,000-char cap costs none measurable and still ends the runaways (hyp §35 F88, F89). The
+  after-the-fact cut stays; the stop only ends the turn sooner. `M365_EARLY_STOP_AFTER` sets the cap
+  (`0` = at the tag), `M365_NO_EARLY_STOP=1` opts out.
 - **Array/object tool params come back in two shapes; the parser reads both.** The tools block shows
   `edits: <edits>`. Opus writes inline JSON (`edits: [{…}]`); Sonnet 4.6 writes a YAML block list under
   an empty `edits:`, which used to arrive as `edits: []` — 44 of its 47 pi `edit` calls, each a wasted
   round trip (#50). `parseYamlBlockValue` in `fenced.ts` reads the YAML subset models write; keep both
   paths. The bench can't catch a regression here (no array-typed tools), so test with real pi's `edit`.
+  Multi-line *strings* have a shape of their own: in a tool whose params are all header lines (no
+  body, no edit pair; opencode's `edit` with `oldString`/`newString`) the model writes `oldString: <first
+  line>` and the rest of the text below it, so a string value runs on to the next `key:` line (#82). A
+  tool with a body still ends its header at the first line that isn't `key:`; don't extend the run-on to it.
 - **Claude Code and Codex arrive through copilot-api, as `claude-cli/…` / `codex…` user-agents.**
   Codex's Code Mode `exec` (`functions__exec` there) runs JavaScript, not a shell: `findShellTool`
   keeps it as the last resort and every shell fence routed to it becomes a nested
@@ -293,7 +318,9 @@ pnpm test:live      # M365_LIVE=1; live tests that hit real M365 (uses quota)
   wrapper. For those user-agents a stream that fails after its 200 ends as assistant text
   (`M365_STREAM_ERROR_MODE`): copilot-api can't parse the error chunk, and Claude Code retried
   the turn ten times, each retry opening fresh conversations. Claude Code's `Bash` is Git Bash on
-  Windows, so it gets no PowerShell note. See docs/claude-code-codex.md, docs/hypotheses.md §30.
+  Windows, so it gets no PowerShell note (`shellDialect` reads it as POSIX). The client's
+  `prompt_cache_key` (its session id) scopes the conversation key, on top of the opener and the
+  tool names. See docs/claude-code-codex.md, docs/hypotheses.md §39.
 - **Account degradation is THREAD-rate, not message-count** (docs/hypotheses.md §9 F13).
   Microsoft throttles *conversations started*, not messages sent — the per-conversation
   counter resets each thread. A bench that opens one fresh conversation per task burns the
@@ -303,7 +330,11 @@ pnpm test:live      # M365_LIVE=1; live tests that hit real M365 (uses quota)
   the final `type:2` item says `result.value:"Throttled"`, `errorCode:"PerUserThrottled"`, and
   the proxy now returns 429 `m365_throttled` without retrying (#35). ~190 fresh threads in a
   day tripped it on the premium account. The bench and phase-sweep stop at the first throttled
-  task, and `TASK_GAP` paces bench tasks. **A fresh login does NOT clear it:** the throttle is
+  task, and `TASK_GAP` paces bench tasks. F58's per-turn bucket fits the onsets better than any
+  thread count, and by it a busy pi session drains the account too: every turn takes one, mid-thread
+  or not. `M365_AVOID_THROTTLING=1` waits for that bucket: the bench before each task, the proxy
+  before each upstream turn, inside the open stream (§37). The model is `packages/core/src/turn-budget.ts`;
+  `scripts/bench/turn-budget.mjs` re-exports it, so tune it in one place. **A fresh login does NOT clear it:** the throttle is
   keyed on the account's `oid`, which a new token keeps (API doc §2/§7, hypotheses §11 H-R1 —
   F13's "fresh login clears it" was n=1 and confounded with a rest). It lifts with idle time,
   which is why the proxy's degradation backoff replaced the old auto-reauth. Space experiment

@@ -46,6 +46,8 @@
 //   --tones     probe these instead of the default list; `@paid` / `@included`
 //               pins the scenario, otherwise it's what the proxy would send
 //   --baseline  also run every cell agent-less and compare self-IDs (2x cost)
+//   --prompt    ask this instead of the default self-ID question (the reply is
+//               still classified by the model it names)
 // Cost: 1 message AND 1 fresh conversation per cell (2 with --baseline), so it
 // spends the thread-rate budget (F13) — don't loop it. The sweep stops at the
 // first Throttled turn. Claude_Opus@paid and Claude_Sonnet@paid (Sonnet 5.5)
@@ -93,9 +95,9 @@ export const DEFAULT_CELLS = [
   { tone: "Claude_Sonnet", note: "claude-sonnet (Sonnet 4.6 agent-less)", ...INCLUDED },
   { tone: "Claude_Sonnet", note: "claude-sonnet-5.5 (Sonnet 5.5 agent-less) — spends priority access", ...PAID },
   { tone: "Claude_Sonnet_5", note: "claude-sonnet-5 (Sonnet 5 agent-less)", ...PAID },
-  // One tone, two models with the agent: Opus 4.5 included (premium only; the
-  // agent is its only route), Opus 5.5 paid (§24).
-  { tone: "Claude_Opus", note: "claude-opus-4.5 (Opus 4.5, premium only)", ...INCLUDED },
+  // One tone, two models with the agent: Opus 4.8 included (premium only),
+  // Opus 5.5 paid (§24, §36).
+  { tone: "Claude_Opus", note: "claude-opus-4.8 (Opus 4.8, premium only)", ...INCLUDED },
   { tone: "Claude_Opus", note: "claude-opus (Opus 5.5, paid) — spends priority access", ...PAID },
   { tone: CONTROL_TONE, note: "CONTROL: invalid tone" },
 ];
@@ -318,14 +320,14 @@ function scanFrame(frame, acc) {
   walk(frame);
 }
 
-async function probeTurn({ oneTurn, token, claims, agentId, cell, framesFile }) {
+async function probeTurn({ oneTurn, token, claims, agentId, cell, framesFile, prompt = PROMPT }) {
   const scenario = cell.scenario ?? getScenarioForTone(cell.tone).scenario;
   const licenseType = cell.licenseType ?? getScenarioForTone(cell.tone).licenseType;
   const acc = { origins: new Set(), agentNames: new Set(), result: null };
   const frames = [];
   const r = await oneTurn({
     token, claims, agentId, tone: cell.tone, scenario, licenseType,
-    timeoutMs: 90000, text: PROMPT,
+    timeoutMs: 90000, text: prompt,
     onFrame: (f) => { frames.push(f); scanFrame(f, acc); },
   });
   writeFileSync(framesFile, frames.map((f) => JSON.stringify(f)).join("\n") + "\n");
@@ -355,6 +357,7 @@ async function main(argv) {
   const BASELINE = !!flag("baseline");
   const COOLDOWN_MS = Number(flagValue("cooldown-ms") ?? 5000);
   const CELLS = flagValue("tones") ? parseCells(flagValue("tones")) : DEFAULT_CELLS;
+  const prompt = flagValue("prompt") || PROMPT;
 
   // Loaded here, not at the top: _probe-chat resolves `ws` from the cwd, and
   // importing this module for its classifiers shouldn't depend on that.
@@ -384,12 +387,12 @@ async function main(argv) {
   for (const [i, cell] of CELLS.entries()) {
     const slug = `${String(i).padStart(2, "0")}-${cell.tone}-${cell.scenario ?? "default"}`;
     if (i > 0) await sleep(COOLDOWN_MS);
-    const agent = await probeTurn({ oneTurn, token, claims, agentId, cell, framesFile: join(OUT, `${slug}.agent.jsonl`) });
+    const agent = await probeTurn({ oneTurn, token, claims, agentId, cell, prompt, framesFile: join(OUT, `${slug}.agent.jsonl`) });
 
     let baseline = null;
     if (BASELINE && agent.result?.value !== "Throttled") {
       await sleep(COOLDOWN_MS);
-      baseline = await probeTurn({ oneTurn, token, claims, agentId: null, cell, framesFile: join(OUT, `${slug}.agentless.jsonl`) });
+      baseline = await probeTurn({ oneTurn, token, claims, agentId: null, cell, prompt, framesFile: join(OUT, `${slug}.agentless.jsonl`) });
     }
 
     const row = classifyRow(cell, agent, baseline);
@@ -402,7 +405,7 @@ async function main(argv) {
     }
   }
 
-  const run = { account, agentId, prompt: PROMPT, baseline: BASELINE, stoppedEarly, results };
+  const run = { account, agentId, prompt, baseline: BASELINE, stoppedEarly, results };
   writeFileSync(join(OUT, "results.json"), JSON.stringify(run, null, 2));
   console.log("");
   for (const line of summarize(run)) console.log(line);

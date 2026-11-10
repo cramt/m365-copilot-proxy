@@ -73,10 +73,12 @@ describe("generateOpenClawConfig", () => {
     expect(models.find((m) => m.id === "quick")?.reasoning).toBe(false);
   });
 
-  it("names the two Opus models apart — one tone, two models (§24)", () => {
+  it("names the two Opus models apart — one tone, two models (§24, §36)", () => {
     const models = generateOpenClawConfig().models.providers.m365.models;
     expect(models.find((m) => m.id === "claude-opus")?.name).toBe("Claude Opus 5.5");
-    expect(models.find((m) => m.id === "claude-opus-4.5")?.name).toMatch(/^Claude Opus 4\.5/);
+    expect(models.find((m) => m.id === "claude-opus-4.8")?.name).toMatch(/^Claude Opus 4\.8/);
+    // The legacy ID reaches the same route, so it names the model that answers.
+    expect(models.find((m) => m.id === "claude-opus-4.5")?.name).toMatch(/^Claude Opus 4\.8/);
   });
 });
 

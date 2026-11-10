@@ -12,6 +12,7 @@
 import { getToken, getImageArtifactToken } from "./auth.js";
 import { CopilotSession } from "./session.js";
 import { createLogger, trunc } from "./log.js";
+import { awaitTurnBudget } from "./turn-budget.js";
 import type { CapturedImage } from "./copilot.js";
 
 const log = createLogger("image");
@@ -141,6 +142,7 @@ export async function generateImage(
   const effectivePrompt = buildImagePrompt(prompt, { orientation: opts.orientation, style: opts.style });
 
   const session = new CopilotSession();
+  await awaitTurnBudget({ signal: opts.signal });
   const stream = await session.chat(token, effectivePrompt, model, opts.signal, { generateImages: true });
 
   // Image frames arrive as Progress updates and again in the final type:2 item;
