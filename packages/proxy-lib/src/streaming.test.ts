@@ -11,7 +11,7 @@ const scripted: {
   /** Text of every run() call, in order. */
   texts: string[];
   /** Per-call overrides, consumed front-first (e.g. a Disengaged turn, then an answer). */
-  queue: Array<{ fullText: string; messageType?: string | null; contentOrigin?: string; result?: { value: string; errorCode?: string; message?: string }; metering?: Record<string, number> }>;
+  queue: Array<{ fullText: string; messageType?: string | null; contentOrigin?: string; apology?: boolean; result?: { value: string; errorCode?: string; message?: string }; metering?: Record<string, number> }>;
   /** The model argument of every run() call, in order. */
   models: string[];
   /** The `useAgent` argument of every run() call, in order. */
@@ -70,6 +70,7 @@ vi.mock("@m365-copilot/core", async (importActual) => {
         images: [],
         throttle: { current: 1, max: 600 },
         contentOrigin: next?.contentOrigin ?? "Claude",
+        apology: next?.apology ?? false,
         messageType: (next?.messageType ?? null) as string | null,
         messageId: "m1",
         scores: null,
@@ -521,7 +522,8 @@ describe("Disengage retry keeps a model's <system>-free framing", () => {
     scripted.result = null;
     scripted.texts = [];
     scripted.newConversations = 0;
-    scripted.queue = [{ fullText: APOLOGY, contentOrigin: "Apology" }, { fullText: "```bash\nls\n```" }];
+    // Live: the apology streams as contentOrigin "Apology"; the final item restates it under another origin.
+    scripted.queue = [{ fullText: APOLOGY, contentOrigin: "DeepLeo", apology: true }, { fullText: "```bash\nls\n```" }];
     const body = ChatCompletionRequest.parse({
       model: "gpt-5.6-think-deeper", stream: false, tools,
       messages: [{ role: "user", content: "change the port in config.json to 8080, leave everything else unchanged" }],

@@ -551,6 +551,11 @@ export interface CopilotStream {
   throttle: { current: number; max: number } | null;
   /** `DeepLeo` (reasoning) / `3PDeclarativeAgent` (agent) / etc.  */
   contentOrigin?: string | null;
+  /** True if any bot message this turn came from `contentOrigin: "Apology"` — the
+   *  prompt filter's canned refusal ("Sorry, it looks like I can't chat about
+   *  this…"). `contentOrigin` keeps only the last message's origin, and the final
+   *  item restates the bot message under another one. */
+  apology?: boolean;
   /** Last seen messageType (e.g. `Disengaged`, `EndOfRequest`). Null when M365 sends an unmistakably content message. */
   messageType?: string | null;
   /** Server-assigned bot message id, useful for telemetry correlation. */
