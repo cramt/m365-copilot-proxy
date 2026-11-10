@@ -17,6 +17,11 @@
 //   node scripts/harness-check.mjs --harness=claude --tasks=web-search          # Claude Code WebSearch
 //   node scripts/harness-check.mjs --cooldown=0 ...                              # against gateway-fake-m365.mjs
 //
+// Prompt arms (H39d): --claude-system-prompt-file=F replaces Claude Code's system
+// prompt (--system-prompt-file), --claude-append-system-prompt-file=F appends to it,
+// --codex-instructions-file=F replaces Codex's base instructions
+// (model_instructions_file). --label=NAME tags the rows and the results file.
+//
 // The models' commands run on THIS machine, in a throwaway temp dir per run
 // (benign tasks, like pi-reliability.sh). A THROTTLED run stops the loop.
 import { spawn, execFileSync } from "node:child_process";
@@ -47,7 +52,14 @@ const opt = {
   recommendedEnv: args["recommended-env"] !== "false",
   shim: args.shim !== "false",
   keep: args.keep === "true",
+  label: args.label ?? null,
+  claudeSystemPromptFile: args["claude-system-prompt-file"] ? path.resolve(args["claude-system-prompt-file"]) : null,
+  claudeAppendSystemPromptFile: args["claude-append-system-prompt-file"] ? path.resolve(args["claude-append-system-prompt-file"]) : null,
+  codexInstructionsFile: args["codex-instructions-file"] ? path.resolve(args["codex-instructions-file"]) : null,
 };
+for (const f of [opt.claudeSystemPromptFile, opt.claudeAppendSystemPromptFile, opt.codexInstructionsFile]) {
+  if (f && !fs.existsSync(f)) throw new Error(`prompt file not found: ${f}`);
+}
 
 const PYTHON = process.platform === "win32" ? "python" : "python3";
 const read = (dir, f) => { try { return fs.readFileSync(path.join(dir, f), "utf8"); } catch { return ""; } };
@@ -203,6 +215,8 @@ async function runClaude(task, dir, base) {
     "--tools", task.claudeTools ?? "Bash,Read,Edit,Write",
     "--permission-mode", "acceptEdits", "--allowedTools", task.claudeTools ?? "Bash",
     "--model", opt.model, "--settings", settings,
+    ...(opt.claudeSystemPromptFile ? ["--system-prompt-file", opt.claudeSystemPromptFile] : []),
+    ...(opt.claudeAppendSystemPromptFile ? ["--append-system-prompt-file", opt.claudeAppendSystemPromptFile] : []),
   ], { cwd: dir, env: procEnv, timeoutMs: opt.timeout * 1000 });
   let answer = r.stdout.trim(), harnessTurns = null;
   try {
@@ -220,6 +234,7 @@ async function runCodex(task, dir, base) {
     `model_provider = "m365gw"`,
     `approval_policy = "never"`,
     `web_search = "disabled"`,
+    ...(opt.codexInstructionsFile ? [`model_instructions_file = ${JSON.stringify(opt.codexInstructionsFile)}`] : []),
     ``,
     `[model_providers.m365gw]`,
     `name = "m365 via copilot-api"`,
@@ -270,7 +285,7 @@ async function main() {
   await preflight();
   fs.mkdirSync(opt.out, { recursive: true });
   const stamp = new Date().toISOString().replace(/[:.]/g, "-");
-  const jsonl = path.join(opt.out, `runs-${stamp}.jsonl`);
+  const jsonl = path.join(opt.out, `runs-${stamp}${opt.label ? `-${opt.label}` : ""}.jsonl`);
   const shim = opt.shim ? await startShim(opt.gateway) : null;
   const base = shim?.url ?? opt.gateway;
   const plan = [];
@@ -300,7 +315,7 @@ async function main() {
     }
     const solved = VERIFY[name](dir, r.answer);
     const row = {
-      run: i + 1, harness, task: name, outcome: outcomeOf(solved, r, metrics),
+      run: i + 1, label: opt.label, harness, task: name, outcome: outcomeOf(solved, r, metrics),
       seconds: Math.round((Date.now() - t0) / 1000), harnessTurns: r.harnessTurns, ...metrics,
       harnessRequests: events.length, requestClasses: classes,
       answer: r.answer.slice(0, 300), exitCode: r.code, dir,
