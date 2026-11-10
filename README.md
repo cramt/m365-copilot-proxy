@@ -266,7 +266,9 @@ add it to copilot-api as an `openai-compatible` provider. Then point Claude Code
 (`ANTHROPIC_BASE_URL`) or Codex (`wire_api = "responses"`) at copilot-api, and give
 Claude Code a lean toolset (`--tools "Bash,Read,Edit,Write"`), and start the proxy with
 `M365_HARNESS_PROMPT=lean`: without it, M365's models often refuse to act as these harnesses. First
-live runs: Claude Code 6/6 on `claude-sonnet-5` with it, Codex 2/3. Full setup, what the proxy does
+live runs: Claude Code 6/6 on `claude-sonnet-5` with it, Codex 2/3. Of the GPT models, only
+`gpt-5.6-think-deeper` worked on the test account; without the tool agent it needs
+`M365_FRAMING_VARIANT=relay_batch` and `M365_NO_CODE_INTERPRETER=1`. Full setup, what the proxy does
 for these clients, and the known limits are in [docs/claude-code-codex.md](docs/claude-code-codex.md).
 
 ### 6. Run on NixOS (systemd service)

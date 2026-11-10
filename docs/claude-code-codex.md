@@ -101,6 +101,16 @@ priority-access budget) solved 6/6 live with `M365_HARNESS_PROMPT=lean`. Otherwi
 `m365/claude-sonnet` (Sonnet 4.6). `claude-opus` (Opus 5.5) and `claude-sonnet-5.5` spend small daily
 budgets (40 and 80 turns), shared with your own Copilot Chat use, and every tool call is a turn.
 
+GPT models need more care ([F105](hypotheses.md)):
+- Some GPT tones can be dead on an account: on Nov 10, `gpt-6.1-sol`, `gpt-6-sol`, `gpt-6-think-deeper`
+  and `gpt-5.5-think-deeper` refused every prompt with `InputTokenLimitExceeded` ("prompt is too long"),
+  even a 46-character one. The proxy now answers that with a 400 `context_length_exceeded` after one turn.
+- `gpt-5.6-think-deeper` worked: Claude Code 3/3 and Codex 5/8. Without the tool agent it needs the
+  user-voice framing and no code interpreter, or it works in its own cloud sandbox (`/mnt/data`) instead
+  of yours: `M365_FRAMING_VARIANT=relay_batch M365_NO_CODE_INTERPRETER=1 M365_NO_IMAGE_GEN=1`.
+- In Codex, don't name a GPT-5.5 model: Codex then adds its hosted `tool_search` tool, which copilot-api
+  rejects. `m365/think-deeper` is the same tone under a name Codex doesn't know.
+
 **4. Codex** (`~/.codex/config.toml`):
 
 ```toml
@@ -178,6 +188,11 @@ proxy handles both modes; see below.
   and date reminders are kept as plain text. `lean` also cuts each tool description to ~700
   characters, so Bash keeps its Git Bash line and loses the git and PR protocol. Claude Code's first
   turn goes from 17.2k to 5.1k characters.
+- **Smaller fixes from the live runs (any client).** A sub-1000 value for a parameter the tool's
+  schema documents in milliseconds is read as seconds: GPT-5.6 wrote `Bash` `timeout: 30`, Claude Code
+  backgrounded every command after 1 s, and `claude -p` never exited. M365's canned
+  "Sorry, it looks like I can't chat about this" (`contentOrigin: "Apology"`) is retried once in a fresh
+  conversation, like a Disengage. A turn refused as `InputTokenLimitExceeded` fails fast with a 400.
 
 ## Search
 

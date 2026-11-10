@@ -5818,3 +5818,41 @@ Codex's turns per run from 5.3 to 2.3 (`edit-config`: 12 → 4).
   **Next:** for Codex, rename the `<harness_system_prompt>` wrapper for harness user-agents and present
   `exec_command` as a plain shell without `write_stdin`. Also run a `clean`-only arm (is the description
   cap needed?), Sonnet 4.6 under `lean`, and `--repeat` to firm up 6/6.
+
+### F105 — GPT models in Codex: four tones refuse every prompt; GPT-5.6 Think Deeper works agent-less under relay_batch 🟡
+Same account, same evening, `M365_HARNESS_PROMPT=lean`, `M365_FORCE_AGENT=0` (no tool agent: on this
+tenant it would be created in its default environment, so it stayed off).
+- **`gpt-6.1-sol`, `gpt-6-sol`, `gpt-6-think-deeper` and `gpt-5.5-think-deeper` refuse every prompt**
+  with no content and `result: InvalidRequest`, `errorCode: InputTokenLimitExceeded`, error
+  "InputTokenLimitExceededException … EnterpriseDeepLeoClientDecorator.cs:811 - prompt is too long".
+  That held for a 46-character prompt and for `optionsSets: []` (no code interpreter, no image
+  generation). `gpt-5.5`, `gpt-5.6`, `gpt-5.6-think-deeper` and the Claude models answered: `gpt-5.5` took
+  32k characters, `gpt-5.6-think-deeper` 50k. So it's the tone, not the prompt; the account and the
+  service ring are the likely cause. The
+  handler used to retry these turns as empty replies, three times each. It now fails fast with a 400
+  `context_length_exceeded` naming the prompt size (one turn).
+- **Codex adds its hosted `tool_search` tool for GPT-5.5-named models**, even as `m365/gpt-5.5-…`, and
+  copilot-api rejects it like `web_search` ("Responses Messages fallback does not support tool
+  'tool_search'"). `[features] tool_search = false` doesn't remove it. The alias `m365/think-deeper`
+  (the same tone) avoids it, and Codex 0.157 has no metadata for GPT-5.6 or GPT-6.x, so those names pass.
+- **GPT-5.6 Think Deeper without the agent:**
+
+  | framing | solved | M365 turns per run | failures |
+  |---|---|---|---|
+  | default (`baseline`) | 0/3 | 1.3 | worked in its own sandbox ("files … not mounted under `/mnt/data`") |
+  | `relay_batch` (`M365_FRAMING_VARIANT`, code interpreter and image generation off) | 5/8 | 2.3–3 | edit-config: canned apology on 3 of 4 first attempts |
+
+  fix-bug and find-needle solved 2/2 each. The apology is M365's prompt filter answering with text
+  ("Sorry, it looks like I can't chat about this. Let's try a different topic.", `contentOrigin:
+  "Apology"`) instead of a `Disengaged` message, on F22's "change X, leave everything else unchanged"
+  shape. The handler passed it on as the model's answer. It now retries once in a fresh conversation, like
+  a Disengage (`apology`, a flag sticky across the turn: the final item restates the message under another
+  origin). Live, the retry fired and was refused again (n=1). The repo's GPT-6 lesson (§22, §25) carries
+  over: agent-less GPT tones need a user-voice framing to stay out of their sandbox.
+- **Claude Code on GPT-5.6 Think Deeper** (same setup): 2/3, then 3/3 after the fix below (32–83 s,
+  2–7 M365 turns per task). GPT-5.6 fills every optional header of Claude Code's `Bash` block, and wrote
+  `timeout: 30`, meaning seconds. Claude Code reads milliseconds: it "did not complete within its 1s
+  timeout and was moved to the background", and `claude -p` never exited, so the harness killed a solved
+  task at 300 s. The handler now multiplies by 1000 any argument that the tool's schema documents in
+  milliseconds and that is under 1000 (`millisecondArgsFixed`). The one remaining failure was a reply that
+  broke off mid-fence and started over, which parsed as text (n=1).
