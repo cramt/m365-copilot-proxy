@@ -59,19 +59,93 @@ interface SystemMessageLike {
   content?: string | ContentPart[] | null;
 }
 
-/** The messages with copilot-api's tool tips removed from system messages. */
-export function stripGatewayToolTipsFromMessages<M extends SystemMessageLike>(messages: M[]): M[] {
+/** The messages with `fn` applied to the text of every message whose role `applies`;
+ *  unchanged messages (and parts) stay the same objects. */
+function mapMessageText<M extends SystemMessageLike>(
+  messages: M[],
+  applies: (role: string) => boolean,
+  fn: (text: string) => string,
+): M[] {
   return messages.map((m) => {
-    if (m.role !== "system" || !m.content) return m;
+    if (!applies(m.role) || !m.content) return m;
     if (typeof m.content === "string") {
-      const content = stripGatewayToolTips(m.content);
+      const content = fn(m.content);
       return content === m.content ? m : { ...m, content };
     }
     const parts = m.content.map((p) => {
       if (typeof p.text !== "string") return p;
-      const text = stripGatewayToolTips(p.text);
+      const text = fn(p.text);
       return text === p.text ? p : { ...p, text };
     });
     return parts.some((p, i) => p !== (m.content as ContentPart[])[i]) ? { ...m, content: parts } : m;
+  });
+}
+
+/** The messages with copilot-api's tool tips removed from system messages. */
+export function stripGatewayToolTipsFromMessages<M extends SystemMessageLike>(messages: M[]): M[] {
+  return mapMessageText(messages, (role) => role === "system", stripGatewayToolTips);
+}
+
+// Claude Code's and Codex's prompts carry text that M365's models read as an
+// identity override or an injected prompt, and refuse on (hypotheses §39 H39d):
+// Anthropic's billing header, "You are Claude Code, Anthropic's official CLI" /
+// "a Claude agent, built on Anthropic's Claude Agent SDK" / "a coding agent running
+// in the Codex CLI", and <system-reminder> blocks in the user turn — one names the
+// model ID, one dictates git attribution. Sonnet 5 refused three Claude Code tasks
+// out of three quoting exactly those. M365_HARNESS_PROMPT, for harness user-agents:
+//   off   — send them as they are (default);
+//   clean — drop those lines, unwrap the reminders that hold the environment or
+//           the date and drop the others;
+//   lean  — clean, and cut each tool description to ~700 characters at a line
+//           break (Claude Code's Bash is 10k, mostly git and PR protocol).
+export type HarnessPromptMode = "off" | "clean" | "lean";
+
+export function harnessPromptMode(userAgent: string | null | undefined): HarnessPromptMode {
+  if (!isAgentHarnessUserAgent(userAgent)) return "off";
+  const mode = process.env.M365_HARNESS_PROMPT?.trim().toLowerCase();
+  return mode === "clean" || mode === "lean" ? mode : "off";
+}
+
+const BILLING_HEADER = /^x-anthropic-billing-header:[^\n]*(?:\n|$)/gm;
+const HARNESS_IDENTITY =
+  /^You are (?:Claude Code, Anthropic's official CLI for Claude|a Claude agent, built on Anthropic's Claude Agent SDK|a coding agent running in the Codex CLI)\b[^\n]*(?:\n|$)/gm;
+const SYSTEM_REMINDER = /<system-reminder>\s*([\s\S]*?)\s*<\/system-reminder>\n?/g;
+const KEPT_REMINDER = /^(?:# Environment\b|Today's date is\b)/;
+
+/** One message's text without the harness's identity lines and reminders. */
+export function cleanHarnessText(text: string): string {
+  let changed = false;
+  const removed = (keep = "") => { changed = true; return keep; };
+  const out = text
+    .replace(BILLING_HEADER, () => removed())
+    .replace(HARNESS_IDENTITY, () => removed())
+    .replace(SYSTEM_REMINDER, (_block, inner: string) => removed(KEPT_REMINDER.test(inner) ? `${inner}\n` : ""));
+  return changed ? out.replace(/\n{3,}/g, "\n\n").replace(/^\s+/, "") : text;
+}
+
+/** The messages with `cleanHarnessText` applied to every non-assistant message. */
+export function cleanHarnessMessages<M extends SystemMessageLike>(messages: M[]): M[] {
+  return mapMessageText(messages, (role) => role !== "assistant", cleanHarnessText);
+}
+
+const LEAN_DESCRIPTION_CHARS = 700;
+
+/** A tool description cut to `max` characters at the last line break before it. */
+export function leanToolDescription(description: string, max = LEAN_DESCRIPTION_CHARS): string {
+  if (description.length <= max) return description;
+  const cut = description.lastIndexOf("\n", max);
+  return description.slice(0, cut > 0 ? cut : max).trimEnd();
+}
+
+interface ToolLike {
+  function: { description?: string };
+}
+
+/** The tools with long descriptions cut by `leanToolDescription`. */
+export function leanHarnessTools<T extends ToolLike>(tools: T[] | undefined): T[] | undefined {
+  return tools?.map((t) => {
+    const description = t.function.description;
+    if (!description || description.length <= LEAN_DESCRIPTION_CHARS) return t;
+    return { ...t, function: { ...t.function, description: leanToolDescription(description) } };
   });
 }

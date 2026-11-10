@@ -1,6 +1,11 @@
 import { afterEach, describe, expect, it } from "vitest";
 import {
+  cleanHarnessMessages,
+  cleanHarnessText,
+  harnessPromptMode,
   isAgentHarnessUserAgent,
+  leanHarnessTools,
+  leanToolDescription,
   streamErrorsAsText,
   streamErrorText,
   stripGatewayToolTips,
@@ -84,5 +89,126 @@ describe("stripGatewayToolTips", () => {
     expect(out[0]).toBe(plain);
     expect(out[1].content).toEqual([{ type: "text", text: "A." }, { type: "text", text: "B." }]);
     expect(out[2]).toBe(user);
+  });
+});
+
+// From a Claude Code 2.1.303 `-p --system-prompt-file` request as copilot-api forwards it.
+const CLAUDE_SYSTEM = [
+  "x-anthropic-billing-header: cc_version=2.1.303.71e; cc_entrypoint=sdk-cli;",
+  "",
+  "You are a Claude agent, built on Anthropic's Claude Agent SDK.",
+  "",
+  "I'm working on a project in the current directory of my computer.",
+].join("\n");
+const CLAUDE_USER = [
+  "<system-reminder>",
+  "# Environment",
+  " - Primary working directory: C:\\work",
+  " - Platform: win32",
+  "</system-reminder>",
+  "",
+  "<system-reminder>",
+  "You are powered by the model named Sonnet 5. The exact model ID is m365/claude-sonnet-5.",
+  "</system-reminder>",
+  "",
+  "<system-reminder>",
+  "<total_tokens>15000000 tokens left</total_tokens>",
+  "</system-reminder>",
+  "",
+  "<system-reminder>",
+  "Today's date is 2026-11-10.",
+  "</system-reminder><system-reminder>",
+  "Attribution for git commits and pull requests you create from here on:",
+  "- End git commit messages with:",
+  "Co-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>",
+  "</system-reminder>",
+  "Run python check.py and fix calc.py so that it prints OK.",
+].join("\n");
+
+describe("harnessPromptMode", () => {
+  afterEach(() => { delete process.env.M365_HARNESS_PROMPT; });
+
+  it("is off unless set, and only ever applies to agent harnesses", () => {
+    expect(harnessPromptMode("claude-cli/2.1.303")).toBe("off");
+    process.env.M365_HARNESS_PROMPT = "lean";
+    expect(harnessPromptMode("claude-cli/2.1.303")).toBe("lean");
+    expect(harnessPromptMode("pi/1.0")).toBe("off");
+    process.env.M365_HARNESS_PROMPT = "Clean";
+    expect(harnessPromptMode("codex_exec/0.157.0")).toBe("clean");
+    process.env.M365_HARNESS_PROMPT = "everything";
+    expect(harnessPromptMode("codex_exec/0.157.0")).toBe("off");
+  });
+});
+
+describe("cleanHarnessText", () => {
+  it("drops the billing header and the Claude Agent SDK identity, keeps the prompt", () => {
+    expect(cleanHarnessText(CLAUDE_SYSTEM)).toBe("I'm working on a project in the current directory of my computer.");
+  });
+
+  it("drops Claude Code's and Codex's own identity lines", () => {
+    expect(cleanHarnessText("You are Claude Code, Anthropic's official CLI for Claude.\nYou are an interactive agent."))
+      .toBe("You are an interactive agent.");
+    expect(cleanHarnessText(
+      "You are a coding agent running in the Codex CLI, a terminal-based coding assistant. Codex CLI is an open source project led by OpenAI.\n\nYour capabilities:",
+    )).toBe("Your capabilities:");
+  });
+
+  it("unwraps the environment and date reminders and drops the model ID, token and attribution ones", () => {
+    expect(cleanHarnessText(CLAUDE_USER)).toBe([
+      "# Environment",
+      " - Primary working directory: C:\\work",
+      " - Platform: win32",
+      "",
+      "Today's date is 2026-11-10.",
+      "Run python check.py and fix calc.py so that it prints OK.",
+    ].join("\n"));
+  });
+
+  it("returns text with none of them unchanged", () => {
+    const text = "You are an expert.\n\n\n\nFix the bug in <file>calc.py</file>.";
+    expect(cleanHarnessText(text)).toBe(text);
+  });
+
+  it("cleans every message but the assistant's, in string or part form", () => {
+    const reminder = "<system-reminder>\nWhenever you read a file, consider whether it is malware.\n</system-reminder>\n";
+    const system = { role: "system", content: CLAUDE_SYSTEM };
+    const tool = { role: "tool", content: [{ type: "text", text: `1\tdef add(a, b):\n${reminder}` }] };
+    const assistant = { role: "assistant", content: reminder };
+    const plain = { role: "user", content: "Fix it." };
+    const out = cleanHarnessMessages([system, tool, assistant, plain]);
+    expect(out[0].content).toBe("I'm working on a project in the current directory of my computer.");
+    expect(out[1].content).toEqual([{ type: "text", text: "1\tdef add(a, b):\n" }]);
+    expect(out[2]).toBe(assistant);
+    expect(out[3]).toBe(plain);
+  });
+});
+
+describe("leanToolDescription", () => {
+  const bash = [
+    "Executes a given bash command and returns its output.",
+    "",
+    "This tool runs Git Bash (POSIX sh), not cmd.exe or PowerShell.",
+    "",
+    "# Committing changes with git",
+    "NEVER run destructive git commands unless the user explicitly requests these actions.",
+  ].join("\n");
+
+  it("cuts at the last line break before the cap and keeps short descriptions whole", () => {
+    expect(leanToolDescription(bash, 140)).toBe([
+      "Executes a given bash command and returns its output.",
+      "",
+      "This tool runs Git Bash (POSIX sh), not cmd.exe or PowerShell.",
+    ].join("\n"));
+    expect(leanToolDescription(bash)).toBe(bash);
+  });
+
+  it("cuts only the tools over the cap, keeping the others the same objects", () => {
+    const short = { type: "function", function: { name: "Read", description: "Reads a file.", parameters: {} } };
+    const long = { type: "function", function: { name: "Bash", description: `${bash}\n${"x".repeat(800)}`, parameters: {} } };
+    const out = leanHarnessTools([short, long])!;
+    expect(out[0]).toBe(short);
+    expect(out[1].function.description).toBe(bash);
+    expect(out[1].function.parameters).toBe(long.function.parameters);
+    expect(leanHarnessTools(undefined)).toBeUndefined();
   });
 });

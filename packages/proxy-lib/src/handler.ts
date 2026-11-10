@@ -48,7 +48,14 @@ import {
   type ParseResult,
 } from "@m365-copilot/core";
 import { ChatCompletionRequest } from "./schemas.js";
-import { streamErrorsAsText, streamErrorText, stripGatewayToolTipsFromMessages } from "./harness.js";
+import {
+  cleanHarnessMessages,
+  harnessPromptMode,
+  leanHarnessTools,
+  streamErrorsAsText,
+  streamErrorText,
+  stripGatewayToolTipsFromMessages,
+} from "./harness.js";
 import type { z } from "zod/v4";
 
 const log = createLogger("handler");
@@ -357,8 +364,17 @@ export async function handleChatCompletion(
   pool: SessionPool,
   opts: { signal?: AbortSignal; userAgent?: string | null } = {},
 ): Promise<Response> {
-  // copilot-api's Codex tool tips contradict the shell routing (see harness.ts).
-  const body: ChatBody = { ...request, messages: stripGatewayToolTipsFromMessages(request.messages) };
+  // copilot-api's Codex tool tips contradict the shell routing; Claude Code's and
+  // Codex's identity lines and reminders read as injections (M365_HARNESS_PROMPT,
+  // see harness.ts).
+  const promptMode = harnessPromptMode(opts.userAgent);
+  const tipless = stripGatewayToolTipsFromMessages(request.messages);
+  const body: ChatBody = {
+    ...request,
+    messages: promptMode === "off" ? tipless : cleanHarnessMessages(tipless),
+    tools: promptMode === "lean" ? leanHarnessTools(request.tools) : request.tools,
+  };
+  if (promptMode !== "off") log.debug(`Harness prompt: ${promptMode}`);
   const conv = pool.resolve(body.messages, body.tools, body.prompt_cache_key ?? body.user);
   const { session } = conv;
   const hasTools = body.tools && body.tools.length > 0 && body.tool_choice !== "none";
