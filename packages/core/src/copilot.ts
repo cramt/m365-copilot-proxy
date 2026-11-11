@@ -427,7 +427,80 @@ export function toolRequestUsesAgent(tone: string): boolean {
  * replaced it, serves agent-less too (§36).
  */
 export function requestUsesAgent(model: string, hasTools: boolean): boolean {
+  // The StreamHub transport carries no declarative agent (session.ts).
+  if (getTransport() === "streamhub") return false;
   return hasTools && toolRequestUsesAgent(getToneForModel(model));
+}
+
+// --- Bing on the agent-less path -------------------------------------------------
+//
+// An agent-less turn carries M365's Bing plugin (`BingWebSearch`), as the web
+// client's does. On some accounts that alone pushes a tone over its input
+// limit: on the test account GPT-6 and GPT-5.5 Think Deeper answer even a
+// one-line prompt with `InvalidRequest` / `InputTokenLimitExceeded` when the
+// plugin rides along, and serve it without (2026-11-11, §40; the §39 F105
+// refusals). Elsewhere these tones search fine, so the proxy learns it per
+// tone at runtime, like the dead agent route: the handler re-sends the refused
+// request without the plugin and records the tone here.
+const webSearchOverflowTones = new Set<string>();
+
+/** Record that the Bing plugin pushes `tone` over its input limit. Returns false if already known. */
+export function noteWebSearchOverflow(tone: string): boolean {
+  if (webSearchOverflowTones.has(tone)) return false;
+  webSearchOverflowTones.add(tone);
+  return true;
+}
+
+/** Whether an agent-less turn on this tone carries the Bing plugin. */
+export function toneUsesWebSearch(tone: string): boolean {
+  return !webSearchOverflowTones.has(tone);
+}
+
+/** Forget what was learned about the Bing plugin. For tests. */
+export function resetWebSearchOverflow(): void {
+  webSearchOverflowTones.clear();
+}
+
+// --- Transport -----------------------------------------------------------------
+//
+// Two chat transports reach the same backend. Chathub
+// (`wss://substrate.office.com/m365Copilot/Chathub/…`) is the old web client's
+// (m365.cloud.microsoft), and the one the proxy was built on. StreamHub
+// (`wss://substrate.svc.cloud.microsoft/m365Copilot/StreamHub/…`) is the new web
+// client's (copilot.cloud.microsoft): the same SignalR JSON protocol, but the
+// chat goes up as a `chat_request` stream item and the answer comes back as
+// `message_part` items (session.ts, docs/m365-copilot-api.md §13). The same
+// Sydney token opens both.
+
+export type Transport = "chathub" | "streamhub";
+
+/**
+ * The transport turns travel on: StreamHub under `M365_TRANSPORT=streamhub`,
+ * Chathub otherwise.
+ *
+ * StreamHub is for accounts whose Chathub refuses tones that StreamHub serves:
+ * on the test account, Chathub answers every GPT-6 prompt with
+ * `InputTokenLimitExceeded`, even a 46-character one, under the paid scenario
+ * (§39 F105) and under `officeweb`, and GPT-6 serves over StreamHub (§40).
+ */
+export function getTransport(): Transport {
+  return process.env.M365_TRANSPORT?.trim().toLowerCase() === "streamhub" ? "streamhub" : "chathub";
+}
+
+/**
+ * The `scenario`/`licenseType` pair for a StreamHub turn: the new web client's
+ * own, `officeweb` + `Premium`, for every model. The Chathub-era scenarios
+ * don't carry over: under `OfficeWebIncludedCopilot` StreamHub refuses GPT-6.1
+ * Sol with `InputTokenLimitExceeded`, as Chathub does (§39 F105), and serves it
+ * under `officeweb`. The price is the model-ID distinctions that ride on the
+ * scenario: under `officeweb` `Claude_Sonnet` is Sonnet 5.5 (2026-11-11, §40).
+ * `M365_SCENARIO` / `M365_LICENSE_TYPE` win, as on Chathub.
+ */
+export function getStreamHubScenario(): ScenarioRouting {
+  return {
+    scenario: process.env.M365_SCENARIO ?? "officeweb",
+    licenseType: process.env.M365_LICENSE_TYPE ?? PAID_LICENSE_TYPE,
+  };
 }
 
 /**

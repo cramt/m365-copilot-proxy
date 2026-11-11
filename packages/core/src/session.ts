@@ -9,11 +9,17 @@ import {
   ThrottlingUpdate,
   CompletionFrame,
   CloseFrame,
+  StreamHubDelta,
+  StreamHubRequestEnd,
+  StreamHubError,
 } from "./schemas.js";
 import {
   decodeJwt,
   getScenarioForModel,
+  getStreamHubScenario,
   getToneForModel,
+  getTransport,
+  toneUsesWebSearch,
   type CopilotStream,
   type CapturedImage,
 } from "./copilot.js";
@@ -135,6 +141,17 @@ const VARIANTS = [
   "Agt_bizchat_enableGpt5ForHelix",
 ].join(",");
 
+// StreamHub's own flags, from the new web client's 261. `streamhub11` turns on
+// the items that bracket a turn (`request_start` … `answer_complete`,
+// `request_end`): without it the answer streams but nothing ends the turn, and
+// the socket idles on pings (2026-11-11). `feature.enablestreamhubstop` is the
+// client's switch for its `stop` item.
+const STREAMHUB_VARIANTS = `${VARIANTS},streamhub11,feature.enablestreamhubstop`;
+
+// How long a StreamHub turn waits for `request_end` after its `EndOfRequest`
+// message (it follows within milliseconds), before closing the socket anyway.
+const STREAMHUB_END_GRACE_MS = 5_000;
+
 /**
  * Fold one incoming piece of streamed text — a token DeltaUpdate (passed as
  * `answer + writeAtCursor`) or a full-text MessageUpdate snapshot — into the
@@ -164,6 +181,11 @@ export function foldStreamText(
 export function cursorMessageId(j: string | undefined): string | null {
   const m = j?.match(/^\$\['([^']+)'\]/);
   return m ? m[1] : null;
+}
+
+/** A request id as StreamHub may echo it: GUIDs compare without dashes or case. */
+function normalizeRequestId(id: string): string {
+  return id.replace(/-/g, "").toLowerCase();
 }
 
 /**
@@ -207,6 +229,15 @@ export class TurnTextComposer {
   delta(text: string): void {
     const key = this.target ?? "";
     this.texts.set(key, (this.texts.get(key) ?? "") + text);
+  }
+
+  /** A StreamHub cursor frame: message `id` now reads exactly `text`, and the
+   *  following deltas extend it. StreamHub restates a message at each cursor,
+   *  usually empty, and then re-sends its whole text as deltas, so folding the
+   *  restatement in (as `snapshot` does) would duplicate the message. */
+  restart(id: string, text: string): void {
+    this.target = id;
+    this.texts.set(id, text);
   }
 
   get text(): string {
@@ -295,6 +326,65 @@ export function buildCopilotWebSocketHeaders(conversationId: string): Record<str
 }
 
 /**
+ * The StreamHub URL: the chat transport of the new web client
+ * (copilot.cloud.microsoft). Same SignalR JSON protocol as Chathub, but the chat
+ * goes up as a `chat_request` stream item and the answer comes back as
+ * `message_part` items on a server stream (docs/m365-copilot-api.md §13).
+ */
+export function buildStreamHubUrl(
+  objectId: string,
+  tenantId: string,
+  params: URLSearchParams,
+): string {
+  return `wss://substrate.svc.cloud.microsoft/m365Copilot/StreamHub/${objectId}@${tenantId}?${params}`;
+}
+
+/**
+ * The StreamHub query string, in the new web client's order and with its values.
+ * A browser can't put headers on a WebSocket, so the routing key travels here,
+ * and the client keys it on the user (`oid`), not the conversation.
+ * `disableMemory=1` makes it a temporary chat, as on Chathub.
+ */
+export function buildStreamHubParams(o: {
+  requestId: string;
+  objectId: string;
+  sessionId: string;
+  token: string;
+  temporaryChat: boolean;
+  scenario: string;
+  licenseType: string;
+}): URLSearchParams {
+  const params = new URLSearchParams({
+    chatsessionid: o.requestId,
+    XRoutingParameterSessionKey: o.objectId,
+    clientrequestid: o.requestId,
+    "X-SessionId": o.sessionId,
+  });
+  if (o.temporaryChat) params.set("disableMemory", "1");
+  params.set("access_token", o.token);
+  params.set("variants", STREAMHUB_VARIANTS);
+  params.set("source", "officeweb");
+  params.set("product", "Office");
+  params.set("agentHost", "Bizchat.FullScreen");
+  params.set("licenseType", o.licenseType);
+  params.set("isEdu", "false");
+  params.set("agent", "work");
+  params.set("scenario", o.scenario);
+  return params;
+}
+
+/** Headers for the StreamHub upgrade: the new web client's origin and browser. */
+export function buildStreamHubHeaders(): Record<string, string> {
+  return {
+    "Origin": "https://copilot.cloud.microsoft",
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/157.0.0.0 Safari/537.36",
+    "Accept-Language": "en-US,en;q=0.9",
+    "Cache-Control": "no-cache",
+    "Pragma": "no-cache",
+  };
+}
+
+/**
  * A persistent conversation session with M365 Copilot.
  * Reuses the same sessionId/conversationId across turns,
  * reconnecting the WebSocket for each message.
@@ -346,31 +436,48 @@ export class CopilotSession {
     // the paid one only.
     // See getScenarioForModel / docs §5.
     const tone = getToneForModel(model);
-    const { scenario, licenseType } = getScenarioForModel(model);
-    log.info(`Routing: tone=${tone}, scenario=${scenario}, licenseType=${licenseType}`);
+    const transport = getTransport();
+    const streamHub = transport === "streamhub";
+    const { scenario, licenseType } = streamHub ? getStreamHubScenario() : getScenarioForModel(model);
+    log.info(`Routing: tone=${tone}, scenario=${scenario}, licenseType=${licenseType}, transport=${transport}`);
 
-    const params = new URLSearchParams({
-      chatsessionid: requestId,
-      clientrequestid: requestId,
-      "X-SessionId": this.sessionId,
-      ConversationId: this.conversationId,
-      access_token: token,
-      variants: VARIANTS,
-      source: '"officeweb"',
-      product: "Office",
-      agentHost: "Bizchat.FullScreen",
-      licenseType,
-      agent: "web",
-      scenario,
-    });
+    const params = streamHub
+      ? buildStreamHubParams({
+          requestId,
+          objectId: claims.oid,
+          sessionId: this.sessionId,
+          token,
+          temporaryChat: this.temporaryChat,
+          scenario,
+          licenseType,
+        })
+      : new URLSearchParams({
+          chatsessionid: requestId,
+          clientrequestid: requestId,
+          "X-SessionId": this.sessionId,
+          ConversationId: this.conversationId,
+          access_token: token,
+          variants: VARIANTS,
+          source: '"officeweb"',
+          product: "Office",
+          agentHost: "Bizchat.FullScreen",
+          licenseType,
+          agent: "web",
+          scenario,
+        });
 
-    if (this.temporaryChat) params.set("disableMemory", "1");
+    if (this.temporaryChat && !streamHub) params.set("disableMemory", "1");
 
-    const wsUrl = buildCopilotWebSocketUrl(claims.oid, claims.tid, params);
-    const agentId = this.agentId;
+    const wsUrl = streamHub
+      ? buildStreamHubUrl(claims.oid, claims.tid, params)
+      : buildCopilotWebSocketUrl(claims.oid, claims.tid, params);
+    const agentId = streamHub ? undefined : this.agentId;
     const sessionId = this.sessionId;
     const conversationId = this.conversationId;
-    const nativeActions = this.nativeActions;
+    const nativeActions = streamHub ? undefined : this.nativeActions;
+    if (streamHub && (this.agentId || this.nativeActions)) {
+      log.info("StreamHub carries no declarative agent or native actions: sending this turn agent-less");
+    }
 
     return new Promise((resolve, reject) => {
       // The authoritative reconstructed answer. M365 streams a MIX of token-level
@@ -547,24 +654,65 @@ export class CopilotSession {
         },
       };
 
-      const ws = new WebSocket(wsUrl, { headers: buildCopilotWebSocketHeaders(conversationId) });
+      const ws = new WebSocket(wsUrl, {
+        headers: streamHub ? buildStreamHubHeaders() : buildCopilotWebSocketHeaders(conversationId),
+      });
 
       let handshakeDone = false;
       let stopped = false;
+
+      // StreamHub frames go up as stream items of the client stream ("0").
+      const sendItem = (item: Record<string, unknown>) => {
+        const frame = { invocationId: "0", item: { ...item, noteId: crypto.randomUUID() }, type: 2 };
+        dumpFrame(requestId, frame, "send");
+        ws.send(JSON.stringify(frame) + RS);
+      };
+
+      // StreamHub restates a message and re-sends its text (TurnTextComposer.restart),
+      // so its final text can differ from what the streaming fold kept: the
+      // composer is authoritative once the turn ends.
+      const settleStreamHubAnswer = () => {
+        const final = composer.text;
+        if (final && final !== answer) {
+          answer = final;
+          receivedContent = true;
+        }
+      };
+
+      // Safety net for a StreamHub turn whose `request_end` never comes (see
+      // STREAMHUB_VARIANTS): close shortly after its `EndOfRequest` message.
+      let endGrace: ReturnType<typeof setTimeout> | null = null;
+      const armEndGrace = () => {
+        if (endGrace) return;
+        endGrace = setTimeout(() => {
+          log.info(`StreamHub: no request_end ${STREAMHUB_END_GRACE_MS} ms after EndOfRequest — closing`);
+          try { ws.close(); } catch {}
+        }, STREAMHUB_END_GRACE_MS);
+      };
 
       // Cancellation: when the caller's signal aborts (HTTP client disconnected),
       // cancel the in-flight M365 turn the same way the real UI does — send the
       // Stop frame, then let the server's type:3 ack close the socket (with a
       // hard-close fallback). Before the handshake completes there's nothing to
-      // stop, so just close.
+      // stop, so just close. StreamHub's stop is a `stop` item naming the turn.
       const onAbort = () => {
         if (stopped) return;
         stopped = true;
         try {
           if (ws.readyState === WebSocket.OPEN && handshakeDone) {
             log.info("Aborted — sending Stop frame to cancel the turn");
-            dumpFrame(requestId, { target: "stop", type: 1 }, "send");
-            ws.send(STOP_FRAME);
+            if (streamHub) {
+              sendItem({
+                type: "stop",
+                topicId: `/conversations/${conversationId}`,
+                turnId: requestId,
+                requestId,
+                reason: "ClientRequested",
+              });
+            } else {
+              dumpFrame(requestId, { target: "stop", type: 1 }, "send");
+              ws.send(STOP_FRAME);
+            }
             setTimeout(() => { try { ws.close(); } catch {} }, 2_000);
           } else {
             try { ws.close(); } catch {}
@@ -630,6 +778,8 @@ export class CopilotSession {
 
       ws.on("close", () => {
         clearAbort();
+        if (endGrace) clearTimeout(endGrace);
+        if (streamHub) settleStreamHubAnswer();
         log.info("WS closed, answer length:", answer.length);
         log.debug("Final response:", trunc(answer, 1000));
         onDone();
@@ -733,10 +883,11 @@ export class CopilotSession {
               // run with M365_DUMP_FRAMES=1 to see what the server accepts.
               ...(nativeActions?.gptDefinitions ? { gptDefinitions: nativeActions.gptDefinitions } : {}),
               // plugins[]: an explicit native-action list wins; otherwise Bing on the
-              // plain (agent-less) path only, exactly as before.
+              // plain (agent-less) path only, exactly as before — unless Bing pushes
+              // this tone over its input limit on this account (toneUsesWebSearch).
               ...(nativeActions?.plugins
                 ? { plugins: nativeActions.plugins }
-                : (!agentId ? { plugins: [{ Id: "BingWebSearch", Source: "BuiltIn" }] } : {})),
+                : (!agentId ? { plugins: toneUsesWebSearch(tone) ? [{ Id: "BingWebSearch", Source: "BuiltIn" }] : [] } : {})),
               // Skill flags that gate the action/confirmation flow — the real client
               // sends these in the chat payload (bundle 8af68b68f4a2 destructure at
               // :9373-9378 → payload :11111). Without them the server has no reason to
@@ -756,6 +907,11 @@ export class CopilotSession {
               disconnectBehavior: "continue",
         };
         baseArgs = args;
+        if (streamHub) {
+          sendStreamHubChat(args);
+          resolve(stream);
+          return;
+        }
         const chatMsg = {
           arguments: [args],
           invocationId: "0",
@@ -786,6 +942,58 @@ export class CopilotSession {
         resolve(stream);
       };
 
+      // StreamHub, in the new web client's order: a ping, the server stream
+      // (invocation "1", fed by client stream "0"), the conversation's topic,
+      // then the chat itself. The client subscribes with `action: "create"` on
+      // every fresh socket, a resumed conversation included (2026-11-11 capture);
+      // without it a follow-up turn got no answer at all. The request is the web
+      // client's shape, with this turn's optionsSets, message types, plugins and
+      // tone; the agent fields stay off (no agent).
+      const sendStreamHubChat = (args: { optionsSets: string[]; allowedMessageTypes: string[]; plugins?: unknown[]; message: Record<string, unknown> }) => {
+        const topicId = `/conversations/${conversationId}`;
+        const clientInfo = {
+          clientPlatform: "ccmcopilot-web",
+          clientAppName: "Office",
+          clientEntrypoint: "ccmcopilot-officeweb",
+          clientSessionId: sessionId,
+          ProductCategory: "Chat",
+          clientAppType: "Web",
+          productEntryPoint: "ChatPanel",
+          deviceOS: "Windows",
+          deviceType: "Desktop",
+          clientPlatformVersion: "10",
+        };
+        const { entityAnnotationTypes: _e, experienceType: _x, ...message } = args.message;
+        const chatStreamRequest = {
+          source: "officeweb",
+          optionsSets: args.optionsSets,
+          streamingMode: "ConciseV2",
+          options: {},
+          extraExtensionParameters: {},
+          allowedMessageTypes: args.allowedMessageTypes,
+          sliceIds: [] as string[],
+          threadLevelGptId: {},
+          conversationId,
+          requestId,
+          traceId: requestId,
+          isStartOfSession: isFirst,
+          clientInfo,
+          message: { ...message, locale: "en-us", clientInfo },
+          gpts: [{ id: "bizchat-as-gpt-scenario", source: "BuiltInAgents" }],
+          plugins: args.plugins ?? [],
+          tone,
+          disconnectBehavior: "continue",
+        };
+        const ping = { type: 6 };
+        const open = { arguments: [], invocationId: "1", streamIds: ["0"], target: "stream", type: 4 };
+        dumpFrame(requestId, ping, "send");
+        dumpFrame(requestId, open, "send");
+        ws.send(JSON.stringify(ping) + RS + JSON.stringify(open) + RS);
+        sendItem({ type: "subscribe", topicId, action: "create" });
+        sendItem({ type: "chat_request", chatStreamRequest, topicId });
+        log.debug("StreamHub chat_request sent:", trunc(JSON.stringify(chatStreamRequest), 500));
+      };
+
       // When the model triggers a native custom action, the server sends a
       // confirmation TRIGGER (an adaptive card) and waits for us to approve it on
       // THIS socket. We reuse the exact chat envelope (baseArgs) with a
@@ -810,11 +1018,147 @@ export class CopilotSession {
         return true;
       };
 
+      // A `throttling` block (Chathub's final item, a StreamHub message_part): the
+      // message cap, and the priority-access allowances in `metering` (§24 F55).
+      const noteThrottling = (t: any) => {
+        throttleInfo = { current: t.numUserMessagesInConversation, max: t.maxNumUserMessagesInConversation };
+        metering = parseMetering(t.metering);
+        for (const [budget, { label }] of Object.entries(METERED_BUDGETS)) {
+          const left = meteredAllowance(metering, budget as MeteredBudget);
+          if (left) log.info(`${label} priority access left: ${left.daily ?? "?"} today, ${left.weekly ?? "?"} this week`);
+        }
+      };
+
+      const noteResult = (value: string, errorCode?: string, message?: string) => {
+        serverResult = {
+          value,
+          ...(errorCode ? { errorCode } : {}),
+          ...(message ? { message } : {}),
+        };
+        if (value !== "Success") log.info(`Turn result: ${value}${errorCode ? ` (${errorCode})` : ""}`);
+        if (value === "Throttled") recordThrottle();
+      };
+
+      // One streaming update: a Chathub `update` invocation's argument, or a
+      // StreamHub `message_part` item's.
+      const handleUpdateArg = (arg: unknown) => {
+        const delta = DeltaUpdate.safeParse(arg);
+        if (delta.success) {
+          composer.delta(delta.data.writeAtCursor);
+          advance(composer.text);
+          return;
+        }
+        if (streamHub) {
+          const w = StreamHubDelta.safeParse(arg);
+          if (w.success) {
+            composer.delta(w.data.w);
+            advance(composer.text);
+            return;
+          }
+        }
+
+        const msgUpdate = MessageUpdate.safeParse(arg);
+        if (msgUpdate.success) {
+          // A cursor names the message that the following deltas extend.
+          const cursorId = cursorMessageId(msgUpdate.data.cursor?.j);
+          if (cursorId) composer.cursor(cursorId);
+          for (const m of msgUpdate.data.messages) {
+            // Capture diagnostic meta from every bot message — including the
+            // control-typed ones — so callers can tell apart `DeepLeo` from
+            // `3PDeclarativeAgent` and surface `Disengaged` cleanly.
+            if (m.author === "bot") {
+              captureImages(m);
+              if (m.contentOrigin) contentOrigin = m.contentOrigin;
+              if (m.contentOrigin === "Apology") sawApology = true;
+              if (m.messageType) messageType = m.messageType;
+              if (m.messageId) messageId = m.messageId;
+              if (m.scores) {
+                for (const s of m.scores) {
+                  if (!(s.component in maxScores) || s.score > maxScores[s.component]) {
+                    maxScores[s.component] = s.score;
+                  }
+                }
+              }
+              if (typeof m.turnCount === "number") turnCountServer = m.turnCount;
+              if (m.turnState) turnState = m.turnState;
+              // A confirmation TRIGGER for a native action arrives here as a
+              // messageType'd bot frame (which the plain-chat path drops). Detect
+              // it and auto-approve on the same socket (H-NATIVE-6).
+              maybeResumeAction(m);
+            }
+            if (m.author !== "bot" || m.messageType || typeof m.text !== "string") continue;
+            if (streamHub && cursorId && m.messageId === cursorId) {
+              composer.restart(cursorId, m.text);
+              advance(composer.text);
+            } else if (m.text) {
+              composer.snapshot(m.messageId, m.text);
+              advance(composer.text);
+            }
+          }
+          return;
+        }
+
+        const throttle = ThrottlingUpdate.safeParse(arg);
+        if (throttle.success) {
+          const t = throttle.data.throttling;
+          if (streamHub) noteThrottling((arg as { throttling: unknown }).throttling);
+          else throttleInfo = { current: t.numUserMessagesInConversation, max: t.maxNumUserMessagesInConversation };
+          log.info(`Throttle: ${t.numUserMessagesInConversation}/${t.maxNumUserMessagesInConversation} messages`);
+        }
+      };
+
+      // StreamHub server items (invocation "1"). `message_part` carries what a
+      // Chathub `update` did; `request_end` ends the turn where Chathub's final
+      // type:2 item did; an `error` item is a rejected note, after which the
+      // server holds the socket open for two minutes, so close it here.
+      // `network_info`, `request_pending`, `request_start` and `answer_complete`
+      // carry nothing the proxy uses.
+      const handleStreamHubItem = (item: unknown) => {
+        const type = (item as { type?: unknown } | undefined)?.type;
+        // Subscribing to a conversation's topic replays its earlier turns' items,
+        // `request_end` included: keep to this turn's.
+        const itemRequestId = (item as { requestId?: unknown } | undefined)?.requestId;
+        if (typeof itemRequestId === "string" && normalizeRequestId(itemRequestId) !== normalizeRequestId(requestId)) {
+          log.debug(`StreamHub: skipping a replayed ${String(type)} of request ${itemRequestId}`);
+          return;
+        }
+        if (type === "message_part") {
+          const arg = (item as { argument?: unknown }).argument;
+          if (!arg || typeof arg !== "object") return;
+          // `author: null`, so MessageUpdate doesn't parse it: check it raw.
+          const messages = (arg as { messages?: unknown }).messages;
+          if (Array.isArray(messages) && messages.some((m) => (m as { messageType?: unknown } | null)?.messageType === "EndOfRequest")) {
+            armEndGrace();
+          }
+          handleUpdateArg(arg);
+          return;
+        }
+        if (type === "request_end") {
+          const end = StreamHubRequestEnd.safeParse(item);
+          const outcome = end.success ? end.data.outcome : undefined;
+          if (outcome && !serverResult) noteResult(outcome.category, outcome.errorCode ?? outcome.code, outcome.message);
+          ws.close();
+          return;
+        }
+        if (type === "error") {
+          const err = StreamHubError.safeParse(item);
+          const e: { errorCategory?: string; errorCode?: string; message?: string; detail?: string } = err.success ? err.data : {};
+          log.info(`StreamHub error item: ${e.errorCategory ?? "?"} ${e.errorCode ?? ""} ${trunc(e.detail ?? e.message ?? "", 300)}`);
+          noteResult(e.errorCategory ?? "InternalError", e.errorCode, e.message);
+          ws.close();
+        }
+      };
+
       function handleMsg(raw: unknown) {
         const base = raw as { type?: number; target?: string; arguments?: unknown[] };
 
         if (base.type === 6) {
           ws.send(JSON.stringify({ type: 6 }) + RS);
+          return;
+        }
+
+        if (streamHub && base.type === 2) {
+          handleStreamHubItem((raw as { item?: unknown }).item);
           return;
         }
 
@@ -842,23 +1186,14 @@ export class CopilotSession {
           const item = (raw as { item?: { messages?: any[]; throttling?: any; turnState?: string; result?: { value?: unknown; errorCode?: unknown; message?: unknown } } }).item;
           if (item) {
             if (typeof item.result?.value === "string") {
-              serverResult = {
-                value: item.result.value,
-                ...(typeof item.result.errorCode === "string" ? { errorCode: item.result.errorCode } : {}),
-                ...(typeof item.result.message === "string" ? { message: item.result.message } : {}),
-              };
-              if (item.result.value !== "Success") log.info(`Turn result: ${item.result.value}${serverResult.errorCode ? ` (${serverResult.errorCode})` : ""}`);
-              if (item.result.value === "Throttled") recordThrottle();
+              noteResult(
+                item.result.value,
+                typeof item.result.errorCode === "string" ? item.result.errorCode : undefined,
+                typeof item.result.message === "string" ? item.result.message : undefined,
+              );
             }
             if (item.turnState) turnState = item.turnState;
-            if (item.throttling) {
-              throttleInfo = { current: item.throttling.numUserMessagesInConversation, max: item.throttling.maxNumUserMessagesInConversation };
-              metering = parseMetering(item.throttling.metering);
-              for (const [budget, { label }] of Object.entries(METERED_BUDGETS)) {
-                const left = meteredAllowance(metering, budget as MeteredBudget);
-                if (left) log.info(`${label} priority access left: ${left.daily ?? "?"} today, ${left.weekly ?? "?"} this week`);
-              }
-            }
+            if (item.throttling) noteThrottling(item.throttling);
             let resumedHere = false;
             for (const m of item.messages ?? []) {
               if (m.author !== "bot") continue;
@@ -888,58 +1223,7 @@ export class CopilotSession {
         }
 
         if (base.type === 1 && base.target === "update" && Array.isArray(base.arguments)) {
-          for (const arg of base.arguments) {
-            const delta = DeltaUpdate.safeParse(arg);
-            if (delta.success) {
-              composer.delta(delta.data.writeAtCursor);
-              advance(composer.text);
-              continue;
-            }
-
-            const msgUpdate = MessageUpdate.safeParse(arg);
-            if (msgUpdate.success) {
-              // A cursor names the message that the following deltas extend.
-              const cursorId = cursorMessageId(msgUpdate.data.cursor?.j);
-              if (cursorId) composer.cursor(cursorId);
-              for (const m of msgUpdate.data.messages) {
-                // Capture diagnostic meta from every bot message — including the
-                // control-typed ones — so callers can tell apart `DeepLeo` from
-                // `3PDeclarativeAgent` and surface `Disengaged` cleanly.
-                if (m.author === "bot") {
-                  captureImages(m);
-                  if (m.contentOrigin) contentOrigin = m.contentOrigin;
-                  if (m.contentOrigin === "Apology") sawApology = true;
-                  if (m.messageType) messageType = m.messageType;
-                  if (m.messageId) messageId = m.messageId;
-                  if (m.scores) {
-                    for (const s of m.scores) {
-                      if (!(s.component in maxScores) || s.score > maxScores[s.component]) {
-                        maxScores[s.component] = s.score;
-                      }
-                    }
-                  }
-                  if (typeof m.turnCount === "number") turnCountServer = m.turnCount;
-                  if (m.turnState) turnState = m.turnState;
-                  // A confirmation TRIGGER for a native action arrives here as a
-                  // messageType'd bot frame (which the plain-chat path drops). Detect
-                  // it and auto-approve on the same socket (H-NATIVE-6).
-                  maybeResumeAction(m);
-                }
-                if (m.author === "bot" && m.text && !m.messageType) {
-                  composer.snapshot(m.messageId, m.text);
-                  advance(composer.text);
-                }
-              }
-              continue;
-            }
-
-            const throttle = ThrottlingUpdate.safeParse(arg);
-            if (throttle.success) {
-              const t = throttle.data.throttling;
-              throttleInfo = { current: t.numUserMessagesInConversation, max: t.maxNumUserMessagesInConversation };
-              log.info(`Throttle: ${t.numUserMessagesInConversation}/${t.maxNumUserMessagesInConversation} messages`);
-            }
-          }
+          for (const arg of base.arguments) handleUpdateArg(arg);
         }
       }
     });
