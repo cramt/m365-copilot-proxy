@@ -9,6 +9,8 @@ import {
   noteAgentRouteDead,
   noteAgentRouteAlive,
   isAgentRouteAlive,
+  noteWebSearchOverflow,
+  toneUsesWebSearch,
   PREMIUM_ONLY_AGENT_TONES,
   defaultFramingForModel,
   currentFramingVariant,
@@ -495,6 +497,7 @@ export async function handleChatCompletion(
     let agentRefreshed = false;
     let disengageRetried = false;
     let agentFallbackDone = false;
+    let webSearchFallbackDone = false;
     let priorityFallbackDone = false;
     let internalErrorFreshRetried = false;
     let originalText = text;
@@ -603,6 +606,28 @@ export async function handleChatCompletion(
         noteRequestOutcome(true, convId);
         log.info(`Upstream Throttled (${copilotStream.result.errorCode ?? "no errorCode"}) — 429, no retry`);
         return { error: throttledResponse(copilotStream.result) };
+      }
+
+      // An agent-less turn carries the Bing plugin, and on some accounts that
+      // alone pushes a tone over its input limit: GPT-6 and GPT-5.5 Think Deeper
+      // refuse a one-line prompt with it and serve without it (§40). Remember
+      // that for the process, and re-send the WHOLE request without the plugin
+      // in a fresh conversation. At most once per request: a prompt that's
+      // really too long then fails fast below.
+      if (
+        !webSearchFallbackDone && !useToolAgent && toneUsesWebSearch(tone) &&
+        copilotStream.result?.value === "InvalidRequest" &&
+        copilotStream.result.errorCode === "InputTokenLimitExceeded"
+      ) {
+        webSearchFallbackDone = true;
+        noteWebSearchOverflow(tone);
+        session.newConversation();
+        text = formatMessages(body.messages, body.tools, body.tool_choice, session.conversationId, framingVariant);
+        inputImages = imageUrls(body.messages);
+        originalText = text;
+        log.info(`${tone} refused the prompt with the Bing plugin attached (InputTokenLimitExceeded) — re-sending without it in a fresh conversation`);
+        attempt--;
+        continue;
       }
 
       // M365 rejects a prompt over the model's input limit outright: no content,

@@ -102,7 +102,7 @@ vi.mock("@m365-copilot/core", async (importActual) => {
 const servedBy: number[] = [];
 
 const { handleChatCompletion, SessionPool, ChatCompletionRequest } = await import("./index.js");
-const { resetAgentRoutes, resetPriorityAccessState, TurnBudgetHold } = await import("@m365-copilot/core");
+const { resetAgentRoutes, resetPriorityAccessState, TurnBudgetHold, noteWebSearchOverflow, toneUsesWebSearch, resetWebSearchOverflow } = await import("@m365-copilot/core");
 
 // The proxy remembers a priority-access wall for the process (until the reset);
 // don't let one test's refusal 429 the next test's Opus request.
@@ -415,8 +415,10 @@ describe("an explicitly Throttled turn (result.value = Throttled)", () => {
 describe("a prompt over the model's input limit (result.value = InvalidRequest)", () => {
   // Live, GPT-6.1 Sol on a Codex first turn: no content, only this final result.
   const TOO_LONG = { value: "InvalidRequest", errorCode: "InputTokenLimitExceeded" };
+  afterEach(() => resetWebSearchOverflow());
 
   it("fails fast with a 400 that says the prompt is too long — no retries", async () => {
+    noteWebSearchOverflow("Gpt_61_Sol_Reasoning"); // Bing already ruled out (see the next test)
     scripted.deltas = [];
     scripted.fullText = "";
     scripted.result = TOO_LONG;
@@ -435,6 +437,29 @@ describe("a prompt over the model's input limit (result.value = InvalidRequest)"
     expect(err.param).toBe("InputTokenLimitExceeded");
     expect(err.message).toContain("too long for gpt-6.1-sol");
     expect(scripted.runs).toBe(1); // the empty-reply path spent 3 attempts here
+  });
+
+  it("re-sends an agent-less request once without the Bing plugin, and remembers the tone", async () => {
+    // Live, GPT-6 and GPT-5.5 Think Deeper on the test account: a one-line
+    // prompt is "too long" with Bing attached and answers without it (§40).
+    const ask = () => handleChatCompletion(
+      ChatCompletionRequest.parse({ model: "gpt-6-think-deeper", stream: false, messages: [{ role: "user", content: "hi" }] }),
+      new SessionPool(),
+    );
+    scripted.runs = 0;
+    scripted.newConversations = 0;
+    scripted.queue = [{ fullText: "", result: TOO_LONG }, { fullText: "hello" }];
+    const res = await ask();
+    expect(res.status).toBe(200);
+    expect((await res.json()).choices[0].message.content).toBe("hello");
+    expect(scripted.runs).toBe(2);
+    expect(scripted.newConversations).toBe(1);
+    expect(toneUsesWebSearch("Gpt_6_Reasoning")).toBe(false);
+
+    // Known now: a refusal without Bing is a real limit, so no second retry.
+    scripted.queue = [{ fullText: "", result: TOO_LONG }];
+    expect((await ask()).status).toBe(400);
+    expect(scripted.runs).toBe(3);
   });
 });
 
