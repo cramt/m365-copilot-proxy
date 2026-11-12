@@ -5,7 +5,9 @@ import {
   getAvailableModels,
   getScenarioForModel,
   getScenarioForTone,
+  getStreamHubScenario,
   getToneForModel,
+  getTransport,
   INCLUDED_SCENARIO_MODELS,
   isIncludedOpusModel,
   meteredBudgetOf,
@@ -452,5 +454,32 @@ describe("getScenarioForTone", () => {
       scenario: "OfficeWebIncludedCopilot",
       licenseType: "Enterprise",
     });
+  });
+});
+
+describe("StreamHub transport routing (§40)", () => {
+  afterEach(() => {
+    delete process.env.M365_TRANSPORT;
+    delete process.env.M365_SCENARIO;
+  });
+
+  it("keeps every model on Chathub unless M365_TRANSPORT=streamhub", () => {
+    expect(getTransport()).toBe("chathub");
+    process.env.M365_TRANSPORT = "chathub";
+    expect(getTransport()).toBe("chathub");
+  });
+
+  it("moves every model to StreamHub under M365_TRANSPORT=streamhub, and drops the agent there", () => {
+    expect(requestUsesAgent("gpt-6.1-sol", true)).toBe(true);
+    process.env.M365_TRANSPORT = "streamhub";
+    expect(getTransport()).toBe("streamhub");
+    expect(requestUsesAgent("gpt-6.1-sol", true)).toBe(false);
+    expect(requestUsesAgent("claude-opus", true)).toBe(false);
+  });
+
+  it("routes StreamHub turns under the web client's own scenario, unless overridden", () => {
+    expect(getStreamHubScenario()).toEqual({ scenario: "officeweb", licenseType: "Premium" });
+    process.env.M365_SCENARIO = "SomeOtherScenario";
+    expect(getStreamHubScenario().scenario).toBe("SomeOtherScenario");
   });
 });

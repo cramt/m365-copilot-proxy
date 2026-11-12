@@ -11,10 +11,13 @@ import {
   shellDialect,
   findWriteTool,
   longHeredocAsWrite,
+  strippedTypeMember,
   currentFramingVariant,
   defaultFramingForTone,
   defaultFramingForModel,
   transcriptStyleForVariant,
+  codeModeShellScript,
+  unwrapCodeModeShellScript,
 } from "./fenced.js";
 import type { ToolDef } from "./tools.js";
 
@@ -952,5 +955,147 @@ describe("multi-line string values in a header-only fence (#82)", () => {
     const write: ToolDef = { type: "function", function: { name: "write", parameters: { type: "object", properties: { path: { type: "string" }, content: { type: "string" } } } } };
     const { calls } = parseFencedToolCalls("```write\npath: a.txt\nhello\nworld\n```", buildSpecMap([write]));
     expect(JSON.parse(calls[0].function.arguments)).toEqual({ path: "a.txt", content: "hello\nworld" });
+  });
+});
+
+describe("Codex and Claude Code shells", () => {
+  const tool = (name: string, properties: Record<string, { type?: string }>, description: string): ToolDef => ({
+    type: "function",
+    function: { name, description, parameters: { type: "object", properties } },
+  });
+  // Shapes as captured from Codex 0.157 and Claude Code 2.1.286 behind copilot-api.
+  const execCommand = tool("exec_command", { cmd: { type: "string" }, workdir: { type: "string" }, yield_time_ms: { type: "number" } }, "Runs a command in a PTY, returning output or a session ID for ongoing interaction.");
+  const shellCommand = tool("shell_command", { command: { type: "string" }, workdir: { type: "string" } }, "Runs a shell command and returns its output.");
+  const CODE_MODE_DESCRIPTION = "Run JavaScript code to orchestrate/compose tool calls\n- Evaluates the provided JavaScript code in a fresh V8 isolate as an async module.";
+  const codeModeExec = tool("functions__exec", { input: { type: "string" } }, CODE_MODE_DESCRIPTION);
+  const claudeBash = tool("Bash", { command: { type: "string" }, description: { type: "string" } }, "Executes a given bash command.\n\nThis tool runs Git Bash (POSIX sh), not cmd.exe or PowerShell.");
+  const claudePowerShell = tool("PowerShell", { command: { type: "string" } }, "Executes a given PowerShell command with optional timeout.");
+
+  it("routes ```bash to Codex's exec_command and shell_command", () => {
+    for (const [shell, param] of [[execCommand, "cmd"], [shellCommand, "command"]] as const) {
+      const { calls } = parseFencedToolCalls("```bash\nls -la\n```", buildSpecMap([shell]));
+      expect(calls, shell.function.name).toHaveLength(1);
+      expect(calls[0].function.name).toBe(shell.function.name);
+      expect(JSON.parse(calls[0].function.arguments)).toEqual({ [param]: "ls -la" });
+    }
+  });
+
+  it("never takes Code Mode's JavaScript exec for a shell while a real one exists", () => {
+    expect(findShellTool([codeModeExec, execCommand])?.function.name).toBe("exec_command");
+    const directExec = tool("exec", { input: { type: "string" } }, CODE_MODE_DESCRIPTION);
+    expect(findShellTool([directExec, shellCommand])?.function.name).toBe("shell_command");
+  });
+
+  it("wraps a ```bash body as a nested exec_command call for Code Mode", () => {
+    const { calls } = parseFencedToolCalls("```bash\necho 'hi' && ls\n```", buildSpecMap([codeModeExec]));
+    expect(calls).toHaveLength(1);
+    expect(calls[0].function.name).toBe("functions__exec");
+    const { input } = JSON.parse(calls[0].function.arguments);
+    expect(input).toBe(codeModeShellScript("echo 'hi' && ls"));
+    expect(input).toContain(`tools.exec_command({ cmd: ${JSON.stringify("echo 'hi' && ls")}`);
+    expect(unwrapCodeModeShellScript(input)).toBe("echo 'hi' && ls");
+  });
+
+  it("round-trips commands with quotes, backslashes and newlines", () => {
+    const command = "cat > a.py <<'EOF'\nprint(\"a\\tb\")\nEOF\nGet-ChildItem C:\\Users";
+    expect(unwrapCodeModeShellScript(codeModeShellScript(command))).toBe(command);
+    expect(unwrapCodeModeShellScript("const r = 1;")).toBeNull();
+  });
+
+  it("passes JavaScript through a fence named after the Code Mode tool, and wraps a command", () => {
+    const specs = buildSpecMap([codeModeExec]);
+    const js = "const r = await tools.exec_command({cmd: \"ls\"});\ntext(JSON.stringify(r));";
+    const asJs = parseFencedToolCalls("```functions__exec\n" + js + "\n```", specs).calls[0];
+    expect(JSON.parse(asJs.function.arguments).input).toBe(js);
+    const asShell = parseFencedToolCalls("```functions__exec\nls -la\n```", specs).calls[0];
+    expect(JSON.parse(asShell.function.arguments).input).toBe(codeModeShellScript("ls -la"));
+  });
+
+  it("presents Code Mode as a shell, not as its JavaScript API", () => {
+    const defs = formatFencedToolDefinitions([codeModeExec], "baseline");
+    expect(defs).toContain("```functions__exec\n<command>\n```");
+    expect(defs).toContain("WRITING A SHELL SCRIPT");
+    expect(defs).not.toContain("V8 isolate");
+  });
+
+  it("renders a past Code Mode call as the command the model wrote", () => {
+    const spec = deriveFencedSpec(codeModeExec);
+    expect(renderFencedCall(spec, { input: codeModeShellScript("cat a.txt") })).toBe("```functions__exec\ncat a.txt\n```");
+  });
+
+  it("sends PowerShell fences to Claude Code's PowerShell tool and bash to its Git Bash", () => {
+    const specs = buildSpecMap([claudeBash, claudePowerShell]);
+    expect(parseFencedToolCalls("```powershell\nGet-ChildItem\n```", specs).calls[0].function.name).toBe("PowerShell");
+    expect(parseFencedToolCalls("```bash\nls\n```", specs).calls[0].function.name).toBe("Bash");
+    // Without a PowerShell tool every shell fence still reaches the one shell (#7).
+    const bashOnly = buildSpecMap([claudeBash]);
+    expect(parseFencedToolCalls("```powershell\nGet-ChildItem\n```", bashOnly).calls[0].function.name).toBe("Bash");
+  });
+
+  it("doesn't tell the model Claude Code's Git Bash tool runs PowerShell", () => {
+    expect(hostPlatformNote(claudeBash, "win32")).toBe("");
+    const both = hostPlatformNote(claudeBash, "win32", undefined, claudePowerShell);
+    expect(both).toContain("HOST PLATFORM: Windows");
+    expect(both).toContain("Git Bash");
+    expect(both).toContain("```powershell");
+    expect(both).not.toContain("runs PowerShell on a real Windows machine");
+    expect(hostPlatformNote(claudeBash, "linux", undefined, claudePowerShell)).toBe("");
+    // Codex's exec_command does run PowerShell on Windows: that note stands.
+    expect(hostPlatformNote(execCommand, "win32")).toContain("runs PowerShell on a real Windows machine");
+  });
+
+  it("reads Claude Code's Git Bash as POSIX, though its description names PowerShell to rule it out", () => {
+    expect(shellDialect(claudeBash, "win32")).toBe("posix");
+    // Code Mode's description is its JavaScript API: the host decides, whatever shells it names.
+    const codeModeNamingBash = tool("functions__exec", { input: { type: "string" } }, `${CODE_MODE_DESCRIPTION}\n- Nested tools run a bash command through exec_command.`);
+    expect(shellDialect(codeModeNamingBash, "win32")).toBe("powershell");
+    expect(hostPlatformNote(codeModeNamingBash, "win32")).toContain("runs PowerShell on a real Windows machine");
+  });
+
+  it("compares a restated Code Mode call by its command, not by the wrapper", () => {
+    const specs = buildSpecMap([codeModeExec]);
+    const commands = (text: string) => parseFencedToolCalls(text, specs).calls
+      .map((c) => unwrapCodeModeShellScript(JSON.parse(c.function.arguments).input));
+    // Two different commands stay two calls, as they do for any other shell…
+    expect(commands("```bash\nls\n```\nSorry, wrong one. This is the command:\n```bash\ncat notes.txt\n```"))
+      .toEqual(["ls", "cat notes.txt"]);
+    // …and a corrected copy of the same one still replaces it.
+    expect(commands("```bash\nls -la</bash>\n```\nOops, here is the same command, correctly formatted:\n```bash\nls -la\n```"))
+      .toEqual(["ls -la"]);
+  });
+});
+
+describe("strippedTypeMember (a PowerShell [Type]:: M365 stripped, §40 F111)", () => {
+  const execTool: ToolDef = {
+    type: "function",
+    function: { name: "exec_command", description: "Runs a command.", parameters: { type: "object", properties: { cmd: { type: "string" } }, required: ["cmd"] } },
+  };
+  const call = (cmd: string) => ({ id: "c", type: "function" as const, function: { name: "exec_command", arguments: JSON.stringify({ cmd }) } });
+
+  it("finds the member whose type was deleted, in Codex's Windows shell", () => {
+    expect(strippedTypeMember(call("$u = :Replace($c, 'a', 'b')\nSet-Content f $u"), [execTool], "win32")).toBe(":Replace");
+    expect(strippedTypeMember(call("if (:IsNullOrWhiteSpace($t)) { 'empty' }"), [execTool], "win32")).toBe(":IsNullOrWhiteSpace");
+    expect(strippedTypeMember(call("$nl = :NewLine"), [execTool], "win32")).toBe(":NewLine");
+  });
+
+  it("leaves whole type names, scopes, drives and labels alone", () => {
+    for (const cmd of [
+      "$u = [regex]::Replace($c, 'a', 'b')",
+      "[System.IO.File]::Exists('a')",
+      "$env:Path; $script:count = 1; Get-Item Env:PATH; cd C:\\work",
+      ":outer foreach ($x in 1..3) { break outer }",
+      "Write-Output \"time: $(Get-Date)\"",
+    ]) expect(strippedTypeMember(call(cmd), [execTool], "win32"), cmd).toBeNull();
+  });
+
+  it("only judges a PowerShell shell", () => {
+    expect(strippedTypeMember(call("$u = :Replace($c, 'a', 'b')"), [execTool], "linux")).toBeNull();
+  });
+});
+
+describe("the Windows PowerShell host note", () => {
+  it("asks for full dotted .NET type names", () => {
+    const note = hostPlatformNote({ type: "function", function: { name: "exec_command", description: "Runs a command.", parameters: { type: "object", properties: { cmd: { type: "string" } } } } }, "win32");
+    expect(note).toContain("[System.Text.RegularExpressions.Regex]::Replace(...)");
   });
 });

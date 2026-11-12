@@ -117,6 +117,41 @@ export const CloseFrame = z.object({
   error: z.string().optional(),
 });
 
+// --- StreamHub (the new web client's transport, session.ts) ---
+// Server items arrive as SignalR type-2 stream items on invocation "1".
+
+// A `message_part` argument with delta text: Chathub's `writeAtCursor`, renamed.
+export const StreamHubDelta = z.object({
+  w: z.string(),
+});
+
+// The turn's last item. `outcome.category` is `Success` on a served turn; a
+// refused one names the reason in `code` (e.g. `InvalidRequest` +
+// `InputTokenLimitExceeded`) and the server exception in `error`.
+export const StreamHubRequestEnd = z.object({
+  type: z.literal("request_end"),
+  requestId: z.string().optional(),
+  outcome: z
+    .object({
+      category: z.string(),
+      code: z.string().optional(),
+      errorCode: z.string().optional(),
+      message: z.string().optional(),
+      error: z.string().optional(),
+    })
+    .optional(),
+});
+
+// A rejected note, e.g. an unknown tone: `errorCategory: "InvalidRequest"`,
+// `errorCode: "InvalidNote"`. No `request_end` follows.
+export const StreamHubError = z.object({
+  type: z.literal("error"),
+  errorCategory: z.string().optional(),
+  errorCode: z.string().optional(),
+  message: z.string().optional(),
+  detail: z.string().optional(),
+});
+
 // --- JWT Claims ---
 
 export const JwtClaims = z.object({

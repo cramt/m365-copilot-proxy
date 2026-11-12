@@ -5640,3 +5640,353 @@ bursty. Falsifier: fresh-conversation retries failing at the same rate as same-c
 Cost to watch: each such retry starts a conversation, which is what the F13 thread-rate throttle
 counts. Bounded to one per dropped turn, but on a bad `InternalError` day it adds up; the same
 afternoon's benching (one conversation per run) did trip `PerUserThrottled`.
+
+---
+
+## 39. Oct 7 2026 — Claude Code and Codex through copilot-api (real CLIs and gateway, no M365 traffic)
+
+**Question.** What does it take to drive the proxy from Claude Code and Codex? Neither speaks Chat
+Completions — Claude Code only Anthropic Messages, Codex only the Responses API since it dropped
+`wire_api = "chat"` (Feb 2026, openai/codex#7782) — so they need a translator. copilot-api's
+multi-provider fork (`@jeffreycao/copilot-api` 2.6.23) adapts both onto any `openai-compatible`
+provider, i.e. onto this proxy unchanged.
+
+**Design.** Quota-free. Claude Code 2.1.286 and Codex 0.157.0-alpha.9 on Windows, pointed at (a) a mock
+of the Anthropic/Responses APIs that records the requests, (b) copilot-api with a provider `m365` whose
+upstream is a recording mock, and (c) copilot-api in front of the real proxy-lib handler with only
+`ModelSession.run` faked (`scripts/gateway-fake-m365.mjs`). The proxy's own formatter and parser were
+also run offline on the captured requests. Prompts: "Reply with the single word hi.", "Say hello from
+the shell.". n=1 per cell: these are protocol facts, not model behaviour. Setup and fixes:
+[claude-code-codex.md](claude-code-codex.md).
+
+### F97 — the harnesses' first prompts are big: 4–27 tools, 31k–71k characters to M365 🟡
+| request | tools | tool definitions | system | first turn the proxy builds |
+|---|---|---|---|---|
+| Claude Code default (`--safe-mode`) | 27 | 89.7k chars | 14.5k | — |
+| Claude Code `--tools Bash,Read,Edit,Write` | 4 | 17.4k (Bash's description alone 10.1k) | 13.6k | 31.4k (`claude-sonnet`, relay_batch) |
+| Codex, fallback metadata | 12 | 18.3k | 41.1k | 53.0k |
+| Codex, copilot-api catalog (Code Mode) | 9 | 19.7k | 53.1k | 71.1k |
+
+Default Claude Code is far past the ~12-tool Disengage range ([api §9](m365-copilot-api.md#the-disengaged-filter));
+lean Claude Code has pi's tool count. Size alone doesn't trigger Disengaged (F10); whether these
+prompts' *shape* does is H39a.
+
+### F98 — through copilot-api the loop broke in three places; fixed in the proxy 🟢
+1. Codex's shells, `exec_command` (unified exec) and `shell_command`, weren't recognised: a ```` ```bash ````
+   reply produced no tool call. Now routed (`SHELL_TOOL_NAME`).
+2. copilot-api serves every non-GPT model to Codex in Code Mode (`tool_mode: code_mode_only`). The only
+   shell-like tool, `functions__exec`, runs **JavaScript**, and the proxy's single-`input` fallback sent it
+   raw bash. The gateway also appends "Tool Call Tips" saying `exec_command` doesn't exist. Now the tool
+   is presented as a shell, each fence is wrapped as a nested `tools.exec_command` call — Codex ran it and
+   returned the command's output, exit code 0 — and the tips are stripped.
+3. On Windows `hostPlatformNote` told the model Claude Code's `Bash` runs PowerShell; Claude Code's own
+   description says it "runs Git Bash (POSIX sh), not cmd.exe or PowerShell". Now no note for a Git Bash
+   tool, and ```` ```powershell ```` goes to Claude Code's `PowerShell` tool when it has one. §31 F76's
+   `shellDialect`, merged in later, read that description as PowerShell too (it names PowerShell to rule
+   it out), so a Git Bash claim is read as POSIX before the PowerShell words.
+
+Also keyed sessions on `prompt_cache_key` (copilot-api sends Claude Code's and Codex's session id):
+Codex opens every session in a repo with the same environment message, which merged sessions. Merged
+with #83 (§31), the key is the session key plus the opener and the tool names.
+
+### F99 — an error chunk after the 200 turned one Disengage into ~22 M365 turns 🟢
+copilot-api can't parse the proxy's in-stream `error` chunk. Claude Code got "API Error: 500 Unexpected
+token 'd'…" and retried 10 times in ~150 s (`CLAUDE_CODE_MAX_RETRIES` defaults to 10), and each retry of
+a Disengaged turn runs the F22 retry in a fresh conversation. Now, for Claude Code and Codex user-agents,
+the reason goes out as assistant text with `finish_reason: "stop"` (`M365_STREAM_ERROR_MODE`): Claude Code
+finished in 7 s with `[m365-proxy: disengaged] …`, 2 M365 turns in all (fake-M365 run, default retries).
+
+### F100 — search survives `web_search = "disabled"` 🟡 (routing verified with mocks, M365's output not)
+Codex's hosted `web_search` gets a 400 from copilot-api for `openai-compatible` providers. What works:
+Codex standalone search (`web.run`, executed by Codex through copilot-api's `/v1/alpha/search`, which
+needs a `codex`/Copilot login or an `openai-responses` search provider), and Claude Code `WebSearch`
+(routed to such a provider, it gets structured links; with `messageApiWebSearchModel: ""` it reaches the
+proxy as tool-less chat, where the agent-less turn carries the Bing plugin). M365 marks in-turn citations
+with private-use markers (`\uE200cite\uE202turnNsearchM\uE201`) and the proxy drops `sourceAttributions`,
+so search results need resolving before a harness can use them (H39b).
+
+### Open
+- **H39a** — the lean Claude Code (4 tools, 31k chars) and Codex (53–71k chars, written for GPT) first
+  prompts disengage no more often than pi's on the agent-less Claude tones. **Falsify:** a paced run of
+  `claude -p` / `codex exec` over the bench tasks on a rested account, with Disengaged above pi's rate;
+  watch `x_m365_dea_score`. **Kit:** `scripts/harness-check.mjs` (the proxy now writes each turn's scores
+  to the debug log, since the gateway drops `usage` extensions). Not yet run: it needs a signed-in account.
+- **H39b** — an agent-less turn with Bing returns usable sources: titles and URLs in `sourceAttributions`,
+  with the text's markers indexing them in order. **Probe:** one search prompt with `M365_DUMP_FRAMES=1`
+  (the never-run H8.9 toggle probe fits alongside). Unblocks a search-only `/v1/responses` for both
+  clients. **Kit:** `scripts/search-citations-probe.mjs` (`--from-dump` re-reads an existing dump). Not
+  yet run.
+- **H39c** — Claude Code's side requests (compaction, `WebFetch` summaries, `WebSearch` sub-requests,
+  subagents) are most of a session's new conversations (F13). **Probe:** count conversations per real
+  session; if they dominate, pool tool-less one-shot requests into one conversation per session key.
+  Headless structure measured (F101); live counts pending.
+
+### F101 — a headless session costs one conversation, plus one per web search and per subagent 🟡 (structure only, fake M365)
+`scripts/harness-check.mjs` drove Claude Code 2.1.286 (`-p`) and Codex 0.157 (`exec`) through copilot-api
+into the proxy, with only the M365 turn faked (`scripts/gateway-fake-m365.mjs`). Conversations are the
+distinct `cid`s in the proxy's `[model] run:` lines.
+
+| run | M365 conversations | M365 turns |
+|---|---|---|
+| Claude Code, plain task (`fix-bug`, `find-needle`, `edit-config`) | 1 | 2 |
+| Claude Code, one `WebSearch` call | 2 — the search sub-request is a tool-less conversation of its own | 3 |
+| Claude Code, one subagent | 2 — the subagent's own | 6: the subagent's 2, plus a main turn for the async "[SYSTEM NOTIFICATION …]" its completion sends |
+| Codex `exec`, plain task | 1 | 2 |
+
+Headless Claude Code made no other requests, with or without the quiet settings
+(`DISABLE_NON_ESSENTIAL_MODEL_CALLS` etc.), and Codex `exec` sent no task-title request. Claude Code
+2.1.286 sends `x-claude-code-session-id` but **not** `x-claude-code-request-class`, so side requests can
+only be told apart by their first message. Not covered: interactive sessions (titles, prompt suggestions,
+recaps; no TTY here) and compaction. What's left of H39c needs live sessions: how often the model searches
+or spawns a subagent, and what interactive mode adds. Also seen: Codex 0.157's `workspace-write` sandbox
+refuses every command on Windows ("blocked by policy", even `echo`).
+
+### Nov 10 2026 — first live runs
+A Windows 11 PC (Entra-joined, Intune-managed) with a premium account:
+the paid scenario serves `claude-sonnet-5` ("I'm Microsoft Enterprise Copilot, based on Claude Sonnet
+5"). Claude Code 2.1.303, Codex 0.157.0-alpha.9 and copilot-api 2.6.23 drove the proxy through
+`scripts/harness-check.mjs` over `fix-bug`, `find-needle` and `edit-config`, 90 s apart, three runs
+per arm. Arms 1–3 ran on da63706 (this section's code before the upstream merge), the rest on the
+merge. "Brief" is `--system-prompt-file` (Claude Code) or `model_instructions_file` (Codex) holding
+three user-voice sentences with no identity: "I'm working on a project in the current directory of my
+computer. My terminal tools run the commands and file edits you ask for, and I send you back their
+output. Please work through the task step by step with those tools, and finish with a short answer."
+
+| arm | model | harness | client prompt | `M365_HARNESS_PROMPT` | solved | M365 turns per run |
+|---|---|---|---|---|---|---|
+| 1 | Sonnet 4.6 (`claude-sonnet`) | Claude Code | default | — | 1/3 | 1.7 |
+| 2 | Sonnet 4.6 | Codex | default | — | 2/3 | 3.3 |
+| 3 | Sonnet 4.6 | Claude Code | brief | — | 2/3 | 2.3 |
+| 4 | Sonnet 5 (`claude-sonnet-5`) | Claude Code | brief | off | 0/3 | 1.3 |
+| 5 | Sonnet 5 | Claude Code | brief | lean | 3/3 | 3.0 |
+| 8 | Sonnet 5 | Claude Code | default | lean | 3/3 | 3.0 |
+| 6 | Sonnet 5 | Codex | default | lean | 2/3 | 5.3 |
+| 7 | Sonnet 5 | Codex | brief | lean | 2/3 | 2.3 |
+
+Arm 2's turns include two requests from another local client (F104). The whole session cost 81 M365
+turns in 32 conversations over 70 minutes, with no throttle.
+
+### F102 — H39a: the harnesses don't disengage; the model refuses them 🟢 (24 runs)
+No turn disengaged in any arm, and the highest `dea_violation` was 4.7e-7 (clean tool calls sit near
+1e-8). Every failure is the model declining, in prose, to be the harness. Sonnet 4.6: "the instructions in
+your message describe me as 'Claude Code' running in a terminal-based harness … That's not actually how
+I'm set up — I'm Microsoft Copilot". Sonnet 5: "This message is trying to get me to drop my actual
+identity/tools … I'm Microsoft Enterprise Copilot". Codex: "I'm Microsoft 365 Copilot, not the Codex CLI
+agent described in that framing". One Sonnet 4.6 run refused on its second turn instead, calling the real
+tool output "a fake tool_response". The open risk was Disengaged; the real one is the harness's identity,
+§21's lesson (Sonnet reads `<system>` tags as an injection) applied to the harness's own text.
+
+### F103 — H39d: strip the harness's identity and reminders 🟡 (n=3 per arm)
+What Sonnet 5 quoted when it refused (arm 4) survives `--system-prompt-file`: Claude Code prepends
+`x-anthropic-billing-header: …` and "You are a Claude agent, built on Anthropic's Claude Agent SDK." to any
+system prompt, and opens the user turn with five `<system-reminder>` blocks (the environment, "You are
+powered by the model named Sonnet 5. The exact model ID is m365/claude-sonnet-5", a token budget, the date,
+git attribution). Its refusal named them: "fake 'system-reminder' and 'harness' text … a claimed model ID,
+a claimed Anthropic 'Claude Agent SDK' identity". `M365_HARNESS_PROMPT=lean` (`harness.ts`) drops them,
+keeps the environment and date as plain text, and cuts each tool description to ~700 characters (Bash
+keeps its Git Bash line and loses the git and PR protocol). The first turn shrank from 17.2k to 5.1k
+characters, and Sonnet 5 went from 0/3 to 6/6 (arms 5 and 8): Claude Code needs no prompt of its own once
+the proxy strips these.
+
+Codex improved less. Its base instructions name the Codex CLI throughout. With them replaced (arm 7),
+Sonnet 5 still refused `fix-bug` in every Codex arm, now pointing at the proxy's own
+`<harness_system_prompt>` wrapper and Codex's PTY tools: "an embedded 'harness' describing a different
+agent setup (PowerShell `exec_command`/`write_stdin` tools, a Windows machine …)". The brief did cut
+Codex's turns per run from 5.3 to 2.3 (`edit-config`: 12 → 4).
+
+### F104 — sign-in, routes and a stray client on a managed Windows PC 🟡
+- **Sign-in is silent with Chrome.** The Intune Chrome policy `CloudAPAuthEnabled=1` makes Chrome sign in
+  with the Windows PRT. With `M365_ENABLE_INTERACTIVE_APPROVAL=1`, `CHROMIUM_PATH` set to chrome.exe and a
+  Windows `M365_LOGIN_UA`, the interactive path had its code in about a second, with no prompt. Edge
+  failed (`Browser.getWindowForTarget: Browser window not found`) because the user policy
+  `BrowserSignin=2` forces a profile sign-in before any window opens. `resolveChromiumPath` probes with
+  `command -v`, which Windows lacks, so `CHROMIUM_PATH` has to be set there.
+- **`claude-opus-4.8` is a dead route here.** It returned `InternalError` on every attempt (tool-less,
+  agent-less), on an account whose paid scenario serves Sonnet 5. §36 has premium accounts serving it
+  (n=1 request, two attempts).
+- **Every turn carried `metering`** (Opus 40/75, Sonnet 5.5 80/150), Sonnet 4.6's included-scenario
+  turns too.
+- **An unknown local client sent two requests.** Both read "Operational connectivity test <hex>. Do not
+  search, access files, call tools, or generate images" and used `gpt-6.1-sol` and `gpt-6-think-deeper`.
+  They went straight to the proxy's port, not through the gateway. The text isn't in this repo,
+  copilot-api or Codex. With no auth on a well-known port, any local process can spend the account's
+  turns (#93).
+
+### Open (Nov 10)
+- **H39a** — answered for Disengaged (F102). The refusals moved to H39d.
+- **H39d** — the harness's identity text causes the refusals; removing it fixes Claude Code (F103).
+  **Next:** for Codex, rename the `<harness_system_prompt>` wrapper for harness user-agents and present
+  `exec_command` as a plain shell without `write_stdin`. Also run a `clean`-only arm (is the description
+  cap needed?), Sonnet 4.6 under `lean`, and `--repeat` to firm up 6/6.
+
+### F105 — GPT models in Codex: four tones refuse every prompt; GPT-5.6 Think Deeper works agent-less under relay_batch 🟡
+Same account, same evening, `M365_HARNESS_PROMPT=lean`, `M365_FORCE_AGENT=0` (no tool agent: on this
+tenant it would be created in its default environment, so it stayed off).
+- **`gpt-6.1-sol`, `gpt-6-sol`, `gpt-6-think-deeper` and `gpt-5.5-think-deeper` refuse every prompt**
+  with no content and `result: InvalidRequest`, `errorCode: InputTokenLimitExceeded`, error
+  "InputTokenLimitExceededException … EnterpriseDeepLeoClientDecorator.cs:811 - prompt is too long".
+  That held for a 46-character prompt and for `optionsSets: []` (no code interpreter, no image
+  generation). `gpt-5.5`, `gpt-5.6`, `gpt-5.6-think-deeper` and the Claude models answered: `gpt-5.5` took
+  32k characters, `gpt-5.6-think-deeper` 50k. So it's the tone, not the prompt; the account and the
+  service ring are the likely cause. The
+  handler used to retry these turns as empty replies, three times each. It now fails fast with a 400
+  `context_length_exceeded` naming the prompt size (one turn).
+- **Codex adds its hosted `tool_search` tool for GPT-5.5-named models**, even as `m365/gpt-5.5-…`, and
+  copilot-api rejects it like `web_search` ("Responses Messages fallback does not support tool
+  'tool_search'"). `[features] tool_search = false` doesn't remove it. The alias `m365/think-deeper`
+  (the same tone) avoids it, and Codex 0.157 has no metadata for GPT-5.6 or GPT-6.x, so those names pass.
+- **GPT-5.6 Think Deeper without the agent:**
+
+  | framing | solved | M365 turns per run | failures |
+  |---|---|---|---|
+  | default (`baseline`) | 0/3 | 1.3 | worked in its own sandbox ("files … not mounted under `/mnt/data`") |
+  | `relay_batch` (`M365_FRAMING_VARIANT`, code interpreter and image generation off) | 5/8 | 2.3–3 | edit-config: canned apology on 3 of 4 first attempts |
+
+  fix-bug and find-needle solved 2/2 each. The apology is M365's prompt filter answering with text
+  ("Sorry, it looks like I can't chat about this. Let's try a different topic.", `contentOrigin:
+  "Apology"`) instead of a `Disengaged` message, on F22's "change X, leave everything else unchanged"
+  shape. The handler passed it on as the model's answer. It now retries once in a fresh conversation, like
+  a Disengage (`apology`, a flag sticky across the turn: the final item restates the message under another
+  origin). Live, the retry fired and was refused again (n=1). The repo's GPT-6 lesson (§22, §25) carries
+  over: agent-less GPT tones need a user-voice framing to stay out of their sandbox.
+- **Claude Code on GPT-5.6 Think Deeper** (same setup): 2/3, then 3/3 after the fix below (32–83 s,
+  2–7 M365 turns per task). GPT-5.6 fills every optional header of Claude Code's `Bash` block, and wrote
+  `timeout: 30`, meaning seconds. Claude Code reads milliseconds: it "did not complete within its 1s
+  timeout and was moved to the background", and `claude -p` never exited, so the harness killed a solved
+  task at 300 s. The handler now multiplies by 1000 any argument that the tool's schema documents in
+  milliseconds and that is under 1000 (`millisecondArgsFixed`). The one remaining failure was a reply that
+  broke off mid-fence and started over, which parsed as text (n=1).
+
+## 40. Nov 11 2026 — StreamHub, the new web client's transport
+
+The user found GPT-5.5/5.6 too weak for Codex and asked for the web app's Cowork and Code modes. Driving
+the new web client (`copilot.cloud.microsoft`, Chrome with the Windows SSO of §39 F104) with a CDP
+recorder showed three surfaces: Chat, Cowork and Code. Chat runs on a new WebSocket endpoint, StreamHub;
+Cowork and Code on a separate agent runtime. Same premium account as §39.
+
+### F106 — StreamHub takes the proxy's Sydney token 🟢
+`wss://substrate.svc.cloud.microsoft/m365Copilot/StreamHub/{oid}@{tid}` speaks Chathub's SignalR JSON,
+but a turn is a `chat_request` item on a client stream and the answer `message_part` items on a server
+stream (API doc §13). A probe with the proxy's own token, one prompt per tone, agent-less, scenario
+`officeweb`: `Gpt_61_Sol_Reasoning`, `Gpt_6_Reasoning` and `Claude_Opus` ("Claude Opus 5.5") all
+answered. The proxy now has a StreamHub transport (`session.ts`), used for every model under
+`M365_TRANSPORT=streamhub`.
+
+### F107 — four protocol details the probe didn't show 🟢
+Each one broke a live proxy turn before it was handled:
+1. **`variants` must include `streamhub11`.** With the proxy's Chathub flags the answer streamed, then
+   nothing: no `request_end`, only pings until the client gave up (240 s). `streamhub11` alone brings
+   `request_start` … `request_end` back. A 5 s close after the `EndOfRequest` message is the safety net.
+2. **A long answer is sent twice.** Deltas (`{w}`, Chathub's `writeAtCursor`) carried 1,264 characters;
+   then a second cursor frame restated the message as `""` and one delta carried all 1,531. Chathub's
+   keep-the-longest fold would have glued them together, so a cursor frame now replaces its message.
+3. **Re-subscribing replays the conversation.** Turn 2 "answered" instantly with turn 1's text: the
+   subscribe replayed turn 1's items, its `request_end` included. Items are now filtered by `requestId`.
+4. **Every fresh socket subscribes with `action: "create"`.** Without it turn 2 got no reply at all. The
+   web client, resuming a conversation after a reload, sends `create` too (capture). With all four,
+   `gpt-6.1-sol` recalled a code word across turns.
+
+An unknown tone is rejected with an `error` item (`InvalidRequest` / `InvalidNote`) and no
+`request_end`; the server then holds the socket for ~120 s, so the proxy closes it.
+
+### F108 — F105's refusals: the scenario and the Bing plugin, not the account 🟢 (probes, n=1 each)
+F105 read `InputTokenLimitExceeded` on a 46-character prompt as a dead tone. It is two causes:
+
+| tone | Chathub, its scenario (F105) | StreamHub, `OfficeWebIncludedCopilot` | Chathub, `officeweb` | StreamHub, `officeweb`, Bing | StreamHub, `officeweb`, no Bing |
+|---|---|---|---|---|---|
+| `Gpt_61_Sol_Reasoning` | refused | refused | answers | answers | answers |
+| `Gpt_6_Sol_Reasoning` | refused | – | – | answers | answers |
+| `Gpt_6_Reasoning` | refused (paid) | – | refused, with Bing | refused | answers |
+| `Gpt_5_5_Reasoning` | refused | – | – | refused | answers |
+
+On StreamHub the refusal arrives as `request_end` with `outcome: {category: "InvalidRequest", code:
+"InputTokenLimitExceeded"}`, after an apology message. The web client sends the Bing plugin too, so
+GPT-6 presumably fails there the same way. The proxy now learns the Bing case at runtime: a refused
+agent-less request is re-sent once without the plugin in a fresh conversation, and the tone keeps it
+off for the process (`noteWebSearchOverflow`). Live, `gpt-6-think-deeper` and `gpt-5.5-think-deeper`
+then answered. Agent-less GPT-6 self-identified as "the GPT-5 chat model" (H40a). StreamHub turns use
+`officeweb` for every model; `licenseType` changed nothing (`Claude_Sonnet` was Sonnet 5.5 under
+`officeweb` with `Starter` and with `Premium`), while the included scenario made it "Sonnet 5".
+
+### F109 — Codex on GPT-6.1 Sol over StreamHub: 7/7 🟢
+`scripts/harness-check.mjs` with the user's own Codex brief (`model_instructions_file`), the seven tasks
+that have a Node verifier, once each, `M365_HARNESS_PROMPT=lean`, `M365_TRANSPORT=streamhub`,
+agent-less, `relay_batch`, no code interpreter or image generation, after F111's fix: 7/7 solved at
+2.1 M365 turns per run. `edit-config` and `ec-notes`, the two that emptied their file before the fix,
+took 2 turns each. On Chathub this account refuses GPT-6.1 Sol outright (F105, F108); the best §39
+Codex result there was `gpt-5.6-think-deeper` at 5/8.
+
+### F110 — Cowork and Code are an agent runtime, not a model endpoint 🟡
+Both tabs talk to an agent runtime (Copilot Studio) rather than to a chat endpoint: a message is queued
+over REST and the run streams back as server-sent events. The agent runs its tools in Microsoft's cloud,
+so it can't act on the machine a local harness runs on, and it isn't a model endpoint Codex or Claude
+Code could use. Not integrated.
+
+### F111 — M365 deletes `[word]:` from the final text; in Codex on Windows that emptied files 🟢
+A Codex pressure test over StreamHub (the user-voice brief, the seven harness-check tasks with a Node
+verifier, twice each) solved 10/14. All four failures were in-place edits (`edit-config`, `ec-notes`),
+and each left the edited file **empty**. The model wrote `$updated = [regex]::Replace($content, …)`;
+Codex received `$updated = :Replace($content, …)`. PowerShell rejected the call, `$updated` stayed
+empty, and the `Set-Content` after it wrote nothing over the file; the model then apologised for erasing it.
+
+M365's post-processing deletes a bracketed word, the colon after it and the whitespace after that from a
+message's **final** text, code blocks included. One probe over StreamHub, asked to echo:
+
+| sent | final text |
+|---|---|
+| `[int]::Parse('5')`, `[Regex]::Escape('x')` | `:Parse('5')`, `:Escape('x')` |
+| `if row[col]: pass` | `if rowpass` |
+| `const o = {[key]: 1};` | `const o = {1};` |
+| `[a_b]: c`, `[1]: footnote`, `x = d[k]:y`, `[regex]:Escape` | `c`, `footnote`, `x = dy`, `Escape` |
+| `[IO.File]::Exists('a')`, `[regex] ::Escape('x')`, `[int]'42'`, `$arr[0]`, `[docs]` | unchanged |
+
+Not every occurrence: a 4.6k-character answer lost 6 of its 8 (all the PowerShell ones, and one Python
+`for node in buckets[idx]:` whose newline and indent went too, gluing two lines). Chathub does the same
+with GPT-5.6 Think Deeper and Sonnet 5, so it predates StreamHub; `streamingMode` (`ConciseV2`,
+`ConciseWithPadding`, `Delta`) makes no difference. The **deltas** carry the model's own text; a short
+reply often has none and arrives only as the final snapshot.
+
+The proxy now handles it in three layers:
+1. **Restore** (`restoreStrippedBrackets`, both transports): each message's longest delta-built text is
+   aligned with its final text, allowing only these deletions; the result is the model's text plus any
+   tail only the final carried. The client also gets that tail streamed.
+2. **Prevent:** the Windows PowerShell host note asks for full dotted .NET type names
+   (`[System.Text.RegularExpressions.Regex]::Replace`) or `-replace`/`-match`.
+3. **Guard:** a PowerShell tool call that still contains `:Member(` — no PowerShell syntax has it — isn't
+   run. The proxy asks once for the command with full type names; damaged again, it fails closed (502
+   `damaged_tool_call`).
+
+Live, the two failing tasks went 6/6 at 2 turns each (from 0/4): the model wrote dotted names every time,
+so nothing was stripped there. Layer 1 fired in a depth test like F112's: the model's Python rewrite of
+`store.py` had `def items(self) -> list[Item]:` and `-> list[str]:`, and the final snapshot read
+`def items(self) -> listreturn list(self._items.values())`; the deltas had the whole text, and the proxy
+sent that. Modern Python type hints hit this all the time. Still exposed: a reply short enough to arrive
+without deltas (here every reply under ~210 characters did) in a language the guard doesn't read (H40d).
+
+### F112 — pressure test before real use: Codex on `gpt-6.1-sol` over StreamHub 🟢
+Nov 11, F109's setup.
+- **API:** three parallel requests finished in 24.5 s together. A needle in the middle of a 60k, 150k and
+  300k-character prompt came back right each time, in 6–7.5 s. A streamed 600-word story arrived whole
+  and once. A 40-function module came to 11,037 characters with its closing fence; one earlier try
+  stopped at 10,820 without it and with `finish_reason: stop`, under the proxy's 12,000-character
+  `length` ceiling.
+- **Breadth:** F109, 7/7. Before F111's fix, an earlier run of the same tasks, twice each, had solved
+  10/14, all four failures F111.
+- **Depth:** one session on a three-module Python package with four planted bugs (multiplication,
+  case-insensitive merge, over-removal, report order and format), plus a new `Store.low_stock`, a test
+  for it and a README section: solved in 3 M365 turns and about 40 s, 5/5 tests and 8/8 hidden checks,
+  original tests untouched. The restore (F111) fired on the turn that carried the fixes.
+
+### Open (Nov 11)
+- **H40a** — Agent-less `Gpt_6_Reasoning` under `officeweb` is GPT-6. It self-identified as "the GPT-5
+  chat model" (n=2). **Falsify:** a task GPT-5.5 Chat fails and GPT-6 solved on the bench (§22).
+- **H40b** — The tool agent works over StreamHub (`gpts` with the agent's MOS3 id). Untested; the proxy
+  sends StreamHub turns agent-less.
+- **H40c** — StreamHub holds up beyond these short runs: long real sessions, compaction, many
+  conversations. **Probe:** `--repeat=2` on the bench tasks over StreamHub; watch the priority-access
+  and credit budgets.
+- **H40d** — Outside PowerShell, the `[word]:` deletion (F111) in a reply without deltas mostly costs a
+  syntax error the model then fixes, not silent damage: `-> list[str]:` or `if x[k]:` lose the token and
+  the line break after it. **Probe:** count Python/JS syntax errors right after a short write in real
+  Codex sessions; if they're frequent, extend the guard to them or the host note's advice to every
+  platform.

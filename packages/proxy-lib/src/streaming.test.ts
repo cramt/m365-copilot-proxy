@@ -11,7 +11,7 @@ const scripted: {
   /** Text of every run() call, in order. */
   texts: string[];
   /** Per-call overrides, consumed front-first (e.g. a Disengaged turn, then an answer). */
-  queue: Array<{ fullText: string; messageType?: string | null; result?: { value: string; errorCode?: string; message?: string }; metering?: Record<string, number> }>;
+  queue: Array<{ fullText: string; messageType?: string | null; contentOrigin?: string; apology?: boolean; result?: { value: string; errorCode?: string; message?: string }; metering?: Record<string, number> }>;
   /** The model argument of every run() call, in order. */
   models: string[];
   /** The `useAgent` argument of every run() call, in order. */
@@ -69,7 +69,8 @@ vi.mock("@m365-copilot/core", async (importActual) => {
         metering: next?.metering ?? null,
         images: [],
         throttle: { current: 1, max: 600 },
-        contentOrigin: "Claude",
+        contentOrigin: next?.contentOrigin ?? "Claude",
+        apology: next?.apology ?? false,
         messageType: (next?.messageType ?? null) as string | null,
         messageId: "m1",
         scores: null,
@@ -101,7 +102,7 @@ vi.mock("@m365-copilot/core", async (importActual) => {
 const servedBy: number[] = [];
 
 const { handleChatCompletion, SessionPool, ChatCompletionRequest } = await import("./index.js");
-const { resetAgentRoutes, resetPriorityAccessState, TurnBudgetHold } = await import("@m365-copilot/core");
+const { resetAgentRoutes, resetPriorityAccessState, TurnBudgetHold, noteWebSearchOverflow, toneUsesWebSearch, resetWebSearchOverflow } = await import("@m365-copilot/core");
 
 // The proxy remembers a priority-access wall for the process (until the reset);
 // don't let one test's refusal 429 the next test's Opus request.
@@ -411,6 +412,57 @@ describe("an explicitly Throttled turn (result.value = Throttled)", () => {
   });
 });
 
+describe("a prompt over the model's input limit (result.value = InvalidRequest)", () => {
+  // Live, GPT-6.1 Sol on a Codex first turn: no content, only this final result.
+  const TOO_LONG = { value: "InvalidRequest", errorCode: "InputTokenLimitExceeded" };
+  afterEach(() => resetWebSearchOverflow());
+
+  it("fails fast with a 400 that says the prompt is too long — no retries", async () => {
+    noteWebSearchOverflow("Gpt_61_Sol_Reasoning"); // Bing already ruled out (see the next test)
+    scripted.deltas = [];
+    scripted.fullText = "";
+    scripted.result = TOO_LONG;
+    scripted.runs = 0;
+    const body = ChatCompletionRequest.parse({
+      model: "gpt-6.1-sol",
+      stream: false,
+      messages: [{ role: "user", content: "a very long prompt" }],
+    });
+    const res = await handleChatCompletion(body, new SessionPool());
+    scripted.result = null;
+    expect(res.status).toBe(400);
+    const err = (await res.json()).error;
+    expect(err.type).toBe("invalid_request_error");
+    expect(err.code).toBe("context_length_exceeded");
+    expect(err.param).toBe("InputTokenLimitExceeded");
+    expect(err.message).toContain("too long for gpt-6.1-sol");
+    expect(scripted.runs).toBe(1); // the empty-reply path spent 3 attempts here
+  });
+
+  it("re-sends an agent-less request once without the Bing plugin, and remembers the tone", async () => {
+    // Live, GPT-6 and GPT-5.5 Think Deeper on the test account: a one-line
+    // prompt is "too long" with Bing attached and answers without it (§40).
+    const ask = () => handleChatCompletion(
+      ChatCompletionRequest.parse({ model: "gpt-6-think-deeper", stream: false, messages: [{ role: "user", content: "hi" }] }),
+      new SessionPool(),
+    );
+    scripted.runs = 0;
+    scripted.newConversations = 0;
+    scripted.queue = [{ fullText: "", result: TOO_LONG }, { fullText: "hello" }];
+    const res = await ask();
+    expect(res.status).toBe(200);
+    expect((await res.json()).choices[0].message.content).toBe("hello");
+    expect(scripted.runs).toBe(2);
+    expect(scripted.newConversations).toBe(1);
+    expect(toneUsesWebSearch("Gpt_6_Reasoning")).toBe(false);
+
+    // Known now: a refusal without Bing is a real limit, so no second retry.
+    scripted.queue = [{ fullText: "", result: TOO_LONG }];
+    expect((await ask()).status).toBe(400);
+    expect(scripted.runs).toBe(3);
+  });
+});
+
 describe("M365_AVOID_THROTTLING holds a turn it would have to wait too long for", () => {
   const hold = () => new TurnBudgetHold("throttle hold", 65 * 60_000, Date.parse("2026-10-12T08:00:00.000Z"));
 
@@ -489,6 +541,27 @@ describe("M365_AVOID_THROTTLING holds a turn it would have to wait too long for"
 
 describe("Disengage retry keeps a model's <system>-free framing", () => {
   const tools = [{ type: "function", function: { name: "bash", parameters: { type: "object", properties: { command: { type: "string" } } } } }];
+
+  it("retries the prompt filter's canned apology once in a fresh conversation, like a Disengage", async () => {
+    const APOLOGY = "Sorry, it looks like I can't chat about this. Let's try a different topic.";
+    scripted.result = null;
+    scripted.texts = [];
+    scripted.newConversations = 0;
+    // Live: the apology streams as contentOrigin "Apology"; the final item restates it under another origin.
+    scripted.queue = [{ fullText: APOLOGY, contentOrigin: "DeepLeo", apology: true }, { fullText: "```bash\nls\n```" }];
+    const body = ChatCompletionRequest.parse({
+      model: "gpt-5.6-think-deeper", stream: false, tools,
+      messages: [{ role: "user", content: "change the port in config.json to 8080, leave everything else unchanged" }],
+    });
+    const res = await handleChatCompletion(body, new SessionPool());
+    scripted.queue = [];
+    expect(res.status).toBe(200);
+    expect(scripted.texts).toHaveLength(2);
+    expect(scripted.newConversations).toBe(1);
+    const message = (await res.json()).choices[0].message;
+    expect(message.content ?? "").not.toContain("can't chat about this");
+    expect(message.tool_calls[0].function.name).toBe("bash");
+  });
   async function disengageThenAnswer(model: string): Promise<string> {
     scripted.result = null;
     scripted.texts = [];
@@ -1223,5 +1296,163 @@ describe("stopping a turn that writes its own <tool_response> (early stop)", () 
     expect(scripted.signals.at(-1)?.aborted ?? false).toBe(false);
     expect(scripted.stoppedAfter).toBeNull();
     expect(JSON.parse(msg.tool_calls[0].function.arguments).command).toBe("ls");
+  });
+});
+
+describe("Claude Code and Codex behind copilot-api", () => {
+  const CLAUDE_CODE_UA = "claude-cli/2.1.286 (external, sdk-cli)";
+  const bashTool = [{ type: "function", function: { name: "Bash", parameters: { type: "object", properties: { command: { type: "string" } } } } }];
+
+  /** One streaming request; returns the content text, the error chunks and the finish reason. */
+  async function streamAs(userAgent: string, prompt: string) {
+    const body = ChatCompletionRequest.parse({
+      model: "claude-sonnet", stream: true, messages: [{ role: "user", content: prompt }],
+    });
+    const res = await handleChatCompletion(body, new SessionPool(), { userAgent });
+    expect(res.status).toBe(200);
+    let content = "";
+    const errors: any[] = [];
+    let finish: string | null = null;
+    for (const line of (await res.text()).split("\n")) {
+      if (!line.startsWith("data: ") || line === "data: [DONE]") continue;
+      const chunk = JSON.parse(line.slice(6));
+      if (chunk.error) errors.push(chunk.error);
+      content += chunk.choices?.[0]?.delta?.content ?? "";
+      finish = chunk.choices?.[0]?.finish_reason ?? finish;
+    }
+    return { content, errors, finish };
+  }
+
+  it("ends a failed streaming turn with the reason as text, so the harness doesn't retry it", async () => {
+    scripted.queue = [];
+    scripted.deltas = [];
+    scripted.fullText = "";
+    scripted.result = { value: "Throttled", errorCode: "PerUserThrottled", message: "Try again later." };
+    const { content, errors, finish } = await streamAs(CLAUDE_CODE_UA, "throttled for the harness");
+    scripted.result = null;
+    expect(errors).toHaveLength(0);
+    expect(content).toContain("[m365-proxy: m365_throttled]");
+    expect(content).toContain("Try again later.");
+    expect(finish).toBe("stop");
+  });
+
+  it("keeps the error chunk for other clients", async () => {
+    scripted.queue = [];
+    scripted.result = { value: "Throttled", errorCode: "PerUserThrottled", message: "Try again later." };
+    const { content, errors } = await streamAs("OpenAI/JS 5.1.0", "throttled for pi");
+    scripted.result = null;
+    expect(content).toBe("");
+    expect(errors).toHaveLength(1);
+    expect(errors[0].code).toBe("m365_throttled");
+  });
+
+  it("sends keepalive chunks while the turn is silent, and the reason as the very last chunk", async () => {
+    scripted.queue = [];
+    scripted.deltas = [];
+    scripted.fullText = "";
+    scripted.result = { value: "Throttled", errorCode: "PerUserThrottled", message: "Try again later." };
+    let release!: () => void;
+    scripted.gate = new Promise<void>((r) => { release = r; });
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
+    try {
+      const body = ChatCompletionRequest.parse({
+        model: "claude-sonnet", stream: true, messages: [{ role: "user", content: "silent, then throttled" }],
+      });
+      const pending = handleChatCompletion(body, new SessionPool(), { userAgent: CLAUDE_CODE_UA }).then((res) => res.text());
+      await vi.advanceTimersByTimeAsync(31_000);
+      release();
+      const chunks = (await pending).split("\n")
+        .filter((l) => l.startsWith("data: ") && l !== "data: [DONE]")
+        .map((l) => JSON.parse(l.slice(6)));
+      const beats = chunks.filter((c) => c.choices?.[0]?.finish_reason === null && Object.keys(c.choices[0].delta ?? {}).length === 0);
+      expect(beats.length).toBeGreaterThanOrEqual(2);
+      expect(chunks.some((c) => c.error)).toBe(false);
+      // The keepalive stops before the reason goes out: nothing follows the finish chunk.
+      expect(chunks.at(-2).choices[0].delta.content).toContain("[m365-proxy: m365_throttled]");
+      expect(chunks.at(-1).choices[0].finish_reason).toBe("stop");
+    } finally {
+      vi.useRealTimers();
+      scripted.gate = null;
+      scripted.result = null;
+    }
+  });
+
+  it("gives two sessions that open with the same message their own conversations (prompt_cache_key)", async () => {
+    const pool = new SessionPool();
+    const opener = { role: "user", content: "same first message" };
+    const ask = (key: string, messages: unknown[]) => handleChatCompletion(ChatCompletionRequest.parse({
+      model: "claude-sonnet", prompt_cache_key: key, messages,
+    }), pool);
+    scripted.queue = [{ fullText: "one" }, { fullText: "two" }, { fullText: "three" }];
+    scripted.texts = [];
+    servedBy.length = 0;
+    scripted.newConversations = 0;
+    await ask("session-a", [opener]);
+    await ask("session-b", [opener]);
+    // Session a carries on in its own conversation, as a delta: keyed on the opener
+    // alone, b's request would have rotated a's conversation and a's delta gone there.
+    await ask("session-a", [opener, { role: "assistant", content: "one" }, { role: "user", content: "and then?" }]);
+    scripted.queue = [];
+    expect(pool.size).toBe(2);
+    expect(scripted.texts[1]).toContain("same first message");
+    expect(scripted.texts[2]).toContain("and then?");
+    expect(scripted.texts[2]).not.toContain("same first message");
+    expect(servedBy[1]).not.toBe(servedBy[0]);
+    expect(servedBy[2]).toBe(servedBy[0]);
+    expect(scripted.newConversations).toBe(0);
+  });
+
+  it("drops copilot-api's JavaScript tool tips from the system prompt", async () => {
+    scripted.queue = [{ fullText: "```bash\nls\n```" }];
+    scripted.texts = [];
+    const system = "You are Codex.\n\n# Tool Call Tips\n- Do NOT call `exec_command` directly; that tool does not exist. Use `functions__exec` to run commands instead.";
+    const res = await handleChatCompletion(ChatCompletionRequest.parse({
+      model: "claude-sonnet", tools: bashTool,
+      messages: [{ role: "system", content: system }, { role: "user", content: "list the files, tips test" }],
+    }), new SessionPool());
+    expect(res.status).toBe(200);
+    expect(scripted.texts[0]).toContain("You are Codex.");
+    expect(scripted.texts[0]).not.toContain("Tool Call Tips");
+    expect(scripted.texts[0]).not.toContain("functions__exec");
+  });
+});
+
+describe("a PowerShell command that lost a [Type]: to M365's post-processing (§40 F111)", () => {
+  // Codex's shell on Windows. Live, `[regex]::Replace(` arrived as `:Replace(`, the
+  // edit set its result to nothing, and Set-Content emptied the file (4 of 4).
+  const psTool = [{ type: "function", function: { name: "exec_command", description: "Runs a PowerShell command", parameters: { type: "object", properties: { cmd: { type: "string" } }, required: ["cmd"] } } }];
+  const damaged = "```powershell\n$c = Get-Content config.json -Raw\n$u = :Replace($c, '3000', '8080')\nSet-Content config.json $u\n```";
+  const whole = "```powershell\n$c = Get-Content config.json -Raw\n$u = [System.Text.RegularExpressions.Regex]::Replace($c, '3000', '8080')\nSet-Content config.json $u\n```";
+  const ask = () => handleChatCompletion(
+    ChatCompletionRequest.parse({ model: "gpt-6.1-sol", stream: false, messages: [{ role: "user", content: "set the port to 8080" }], tools: psTool }),
+    new SessionPool(),
+  );
+
+  it("doesn't run it: asks once for full type names and passes on the re-sent command", async () => {
+    scripted.runs = 0;
+    scripted.queue = [{ fullText: damaged }, { fullText: whole }];
+    const res = await ask();
+    expect(res.status).toBe(200);
+    const call = (await res.json()).choices[0].message.tool_calls[0];
+    expect(JSON.parse(call.function.arguments).cmd).toContain("[System.Text.RegularExpressions.Regex]::Replace(");
+    expect(scripted.runs).toBe(2);
+    expect(scripted.texts.at(-1)).toContain("didn't run your last command");
+  });
+
+  it("fails closed when the command comes back damaged again", async () => {
+    scripted.runs = 0;
+    scripted.queue = [{ fullText: damaged }, { fullText: damaged }];
+    const res = await ask();
+    expect(res.status).toBe(502);
+    expect((await res.json()).error.type).toBe("damaged_tool_call");
+    expect(scripted.runs).toBe(2);
+  });
+
+  it("leaves an intact static call alone", async () => {
+    scripted.runs = 0;
+    scripted.queue = [{ fullText: whole }];
+    const res = await ask();
+    expect(res.status).toBe(200);
+    expect(scripted.runs).toBe(1);
   });
 });

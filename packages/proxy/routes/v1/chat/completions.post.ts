@@ -29,5 +29,8 @@ export default defineEventHandler(async (event) => {
 
   // handleChatCompletion returns a Web Response (JSON or an SSE ReadableStream
   // when stream:true). Returning it directly lets h3 forward it untouched.
-  return handleChatCompletion(body, pool, { signal: ac.signal });
+  return handleChatCompletion(body, pool, {
+    signal: ac.signal,
+    userAgent: getRequestHeader(event, "user-agent"),
+  });
 });

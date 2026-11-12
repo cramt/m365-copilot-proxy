@@ -72,8 +72,19 @@ const SHELL_LANGS = new Set([
   "powershell", "pwsh", "ps1", "posh", "cmd", "bat", "batch", "dosbatch",
 ]);
 // A tool counts as "the shell" if its name looks like a run-a-command tool. pi
-// uses `bash`, opencode `bash`, hermes `shell`/`run`, openclaw `run_command` — all caught.
-const SHELL_TOOL_NAME = /^(bash|sh|shell|zsh|run|exec|execute|command|cmd|terminal|run_command|run_terminal_cmd|execute_command|execute_bash|shell_exec|system)$/i;
+// uses `bash`, opencode `bash`, hermes `shell`/`run`, openclaw `run_command`,
+// Claude Code `Bash`, Codex `exec_command` (unified exec) or `shell_command` — all caught.
+const SHELL_TOOL_NAME = /^(bash|sh|shell|zsh|run|exec|execute|command|cmd|terminal|run_command|run_terminal_cmd|execute_command|execute_bash|shell_exec|system|exec_command|shell_command)$/i;
+
+/** Codex's Code Mode `exec` (`functions__exec` through copilot-api). It runs
+ *  JavaScript in a V8 isolate, not a shell: a ```bash body sent to it as-is is a
+ *  SyntaxError. Its one param is `input` and its description says JavaScript. */
+export function isCodeModeExecTool(tool: ToolDef): boolean {
+  const props = Object.keys(tool.function.parameters?.properties ?? {});
+  return /(?:^|__|\.)exec$/i.test(tool.function.name) &&
+    props.length === 1 && props[0] === "input" &&
+    /\bJavaScript\b/.test(tool.function.description ?? "");
+}
 
 const WRITE_PATH_PARAM = /^(path|file_path|filepath|filename|file)$/i;
 const WRITE_CONTENT_PARAM = /^(content|contents|text|body)$/i;
@@ -154,14 +165,118 @@ export function longHeredocAsWrite(
   };
 }
 
-/** The harness tool (if any) that runs a shell command — the target for ```bash routing. */
+// A static .NET member reference with its type gone: `[regex]::Replace(` after
+// M365's post-processing deleted `[regex]:` (restoreStrippedBrackets in
+// session.ts) reads `:Replace(`. PowerShell has no such syntax — a leading colon
+// only starts a loop label (`:outer foreach …`) — so the match IS the damage.
+// Not after a word character (`$env:Path`, `Env:Path`), a colon or `]`
+// (`[System.IO.File]::Exists(` is whole), a closer, quote, `$` or `[`.
+const STRIPPED_TYPE_MEMBER = /(?<![\w:\]})'"`$[])(:[A-Za-z_]\w*)(?=[(.),;]|[ \t]*(?:\r?\n|$))/m;
+
+/** The damaged member reference (e.g. `:Replace`) in a PowerShell call that
+ *  M365 stripped a `[Type]:` from, or null. Run as it reads, such a command can
+ *  destroy data: `$new = :Replace($old, …)` sets `$new` to nothing, and the
+ *  `Set-Content` after it writes that over the file (§40 F111). Only checked
+ *  where the harness's shell is PowerShell (shellDialect). */
+export function strippedTypeMember(
+  call: ParsedToolCall,
+  tools: ToolDef[] | undefined,
+  platform: NodeJS.Platform = process.platform,
+): string | null {
+  const shell = tools?.length ? findShellTool(tools) : undefined;
+  if (!shell || shellDialect(shell, platform) !== "powershell") return null;
+  let args: unknown;
+  try {
+    args = JSON.parse(call.function.arguments);
+  } catch {
+    return null;
+  }
+  const strings: string[] = [];
+  const collect = (v: unknown): void => {
+    if (typeof v === "string") strings.push(v);
+    else if (Array.isArray(v)) v.forEach(collect);
+    else if (v && typeof v === "object") Object.values(v).forEach(collect);
+  };
+  collect(args);
+  for (const s of strings) {
+    const m = STRIPPED_TYPE_MEMBER.exec(s);
+    if (m) return m[1];
+  }
+  return null;
+}
+
+/** The harness tool (if any) that runs a shell command — the target for ```bash routing.
+ *  Codex's Code Mode `exec` is the last resort: shell fences reach it wrapped as a
+ *  nested `exec_command` call (codeModeShellScript). */
 export function findShellTool(tools: ToolDef[]): ToolDef | undefined {
-  return tools.find((t) => SHELL_TOOL_NAME.test(t.function.name)) ??
+  const shells = tools.filter((t) => !isCodeModeExecTool(t));
+  return shells.find((t) => SHELL_TOOL_NAME.test(t.function.name)) ??
     // fallback: a single-string-param tool whose param is command-ish
-    tools.find((t) => {
+    shells.find((t) => {
       const props = Object.keys(t.function.parameters?.properties ?? {});
       return props.length === 1 && /^(command|cmd|script|input)$/i.test(props[0]);
-    });
+    }) ??
+    tools.find(isCodeModeExecTool);
+}
+
+// Claude Code on Windows offers a `PowerShell` tool next to `Bash`, which runs Git
+// Bash there; PowerShell fences belong to the former.
+const POWERSHELL_TOOL_NAME = /^(powershell|pwsh)$/i;
+const POWERSHELL_LANGS = new Set(["powershell", "pwsh", "ps1", "posh"]);
+
+/** The harness's PowerShell tool, if it has one by that name. */
+export function findPowerShellTool(tools: ToolDef[]): ToolDef | undefined {
+  return tools.find((t) => POWERSHELL_TOOL_NAME.test(t.function.name));
+}
+
+/** A shell tool that says it runs Git Bash — Claude Code's `Bash` on Windows:
+ *  "This tool runs Git Bash (POSIX sh), not cmd.exe or PowerShell." */
+function runsGitBash(tool: ToolDef): boolean {
+  return /\bGit Bash\b/i.test(tool.function.description ?? "");
+}
+
+// What the model is told the Code Mode tool does. Its own description documents
+// a JavaScript API ("Accepts raw JavaScript source text, not … markdown code
+// fences"), the opposite of the shell-routing lever the framings rely on.
+const CODE_MODE_SHELL_DESCRIPTION =
+  "Runs shell commands on the user's machine, in the project directory, and returns their output. Put the command, or a whole script, in the block body.";
+
+// Marks the JavaScript the proxy generated, so the command can be read back out
+// when the call is rendered into a transcript (renderFencedCall, toolCallSummary).
+const CODE_MODE_SHELL_MARKER = "// m365-proxy: shell command";
+
+/** The Code Mode JavaScript that runs `command` through Codex's nested
+ *  `exec_command` and prints its output. Checked end to end against Codex 0.157
+ *  behind copilot-api: the result object ({ output, exit_code, … }) comes back as
+ *  the tool output. 30 s is the longest wait Codex allows on Windows. */
+export function codeModeShellScript(command: string): string {
+  return [
+    CODE_MODE_SHELL_MARKER,
+    `const r = await tools.exec_command({ cmd: ${JSON.stringify(command)}, yield_time_ms: 30000 });`,
+    `text(typeof r === "string" ? r : [r.output ?? "", r.exit_code ? "[exit code " + r.exit_code + "]" : "", r.session_id != null ? "[still running as session " + r.session_id + "]" : ""].filter(Boolean).join("\\n") || JSON.stringify(r));`,
+  ].join("\n");
+}
+
+/** The shell command inside a script codeModeShellScript generated, or null. */
+export function unwrapCodeModeShellScript(script: string): string | null {
+  if (!script.startsWith(CODE_MODE_SHELL_MARKER)) return null;
+  const m = /tools\.exec_command\(\{ cmd: ("(?:[^"\\]|\\.)*")/.exec(script);
+  if (!m) return null;
+  try {
+    const command = JSON.parse(m[1]);
+    return typeof command === "string" ? command : null;
+  } catch {
+    return null;
+  }
+}
+
+// A body the model already wrote as Code Mode JavaScript, in a fence named after
+// the tool; only those pass through unwrapped.
+const CODE_MODE_JAVASCRIPT = /\bawait\s+tools\.|\btools\.[A-Za-z_$][\w$]*\s*\(|^\s*\/\/\s*@exec:/m;
+
+function toCodeModeInput(body: string, mode: "always" | "auto"): string {
+  if (mode === "auto" && CODE_MODE_JAVASCRIPT.test(body)) return body;
+  return codeModeShellScript(body);
 }
 
 export interface FencedToolSpec {
@@ -175,11 +290,29 @@ export interface FencedToolSpec {
   bodyParam?: string;
   /** An (old → new) pair rendered as a SEARCH/REPLACE diff. */
   editPair?: { search: string; replace: string };
+  /** Codex Code Mode's `exec`, presented to the model as a shell: the body is a
+   *  shell command, wrapped into the JavaScript the tool takes (codeModeShellScript).
+   *  "always" for the ```bash/```powershell aliases; "auto" for a fence named after
+   *  the tool, where a body that is already JavaScript passes through. */
+  codeModeShell?: "always" | "auto";
+  /** Placeholder for the body in the <tools> template; defaults to bodyParam. */
+  bodyLabel?: string;
 }
 
 /** Derive how a single OpenAI tool maps onto the fenced shape. */
 export function deriveFencedSpec(tool: ToolDef): FencedToolSpec {
   const name = tool.function.name;
+  if (isCodeModeExecTool(tool)) {
+    return {
+      name,
+      description: CODE_MODE_SHELL_DESCRIPTION,
+      parameterTypes: { input: "string" },
+      headerParams: [],
+      bodyParam: "input",
+      bodyLabel: "command",
+      codeModeShell: "auto",
+    };
+  }
   const description = tool.function.description;
   const propsSchema = tool.function.parameters?.properties ?? {};
   const props = Object.keys(propsSchema);
@@ -225,9 +358,14 @@ export function buildSpecMap(tools: ToolDef[]): Map<string, FencedToolSpec> {
   // harness still receives a structured tool_call under its own tool's name.
   const shell = findShellTool(tools);
   if (shell) {
-    const shellSpec = m.get(shell.function.name)!;
+    const own = m.get(shell.function.name)!;
+    // A ```bash fence is a shell command by definition: Code Mode always wraps it.
+    const shellSpec: FencedToolSpec = own.codeModeShell ? { ...own, codeModeShell: "always" } : own;
+    // Claude Code's `PowerShell` tool takes the PowerShell fences its Git Bash can't run.
+    const pwsh = findPowerShellTool(tools);
+    const pwshSpec = pwsh && pwsh !== shell ? m.get(pwsh.function.name) : undefined;
     for (const lang of SHELL_LANGS) {
-      if (!m.has(lang)) m.set(lang, shellSpec);
+      if (!m.has(lang)) m.set(lang, pwshSpec && POWERSHELL_LANGS.has(lang) ? pwshSpec : shellSpec);
     }
   }
   return m;
@@ -241,6 +379,12 @@ function scalarToString(v: unknown): string {
 
 /** Render one concrete tool call (name + args object) as a fenced block. */
 export function renderFencedCall(spec: FencedToolSpec, args: Record<string, unknown>): string {
+  // Show a Code Mode call as the shell command the model wrote, not the wrapper.
+  const body = spec.bodyParam !== undefined ? args[spec.bodyParam] : undefined;
+  if (spec.codeModeShell && typeof body === "string") {
+    const command = unwrapCodeModeShellScript(body);
+    if (command !== null) args = { ...args, [spec.bodyParam!]: command };
+  }
   const lines: string[] = [];
   for (const h of spec.headerParams) {
     if (args[h] !== undefined) lines.push(`${h}: ${scalarToString(args[h])}`);
@@ -272,7 +416,7 @@ function renderFencedTemplate(spec: FencedToolSpec): string {
     lines.push(">>>>>>> REPLACE");
   } else if (spec.bodyParam !== undefined) {
     if (lines.length) lines.push("");
-    lines.push(`<${spec.bodyParam}>`);
+    lines.push(`<${spec.bodyLabel ?? spec.bodyParam}>`);
   }
   const header = spec.description ? `${spec.name} — ${spec.description}` : spec.name;
   return `${header}\n\`\`\`${spec.name}\n${lines.join("\n")}\n\`\`\``;
@@ -290,7 +434,7 @@ export function formatFencedToolDefinitions(tools: ToolDef[], variantOverride?: 
   // baseline framing plus a synthetic reply() tool (see tools.ts).
   const key = variant === "reply_tool" ? "baseline" : variant;
   const build = FRAMING_VARIANTS[key] ?? FRAMING_VARIANTS.baseline;
-  return build(tools) + hostPlatformNote(findShellTool(tools), undefined, findWriteTool(tools));
+  return build(tools) + hostPlatformNote(findShellTool(tools), undefined, findWriteTool(tools), findPowerShellTool(tools));
 }
 
 /** Which dialect the harness's shell tool actually speaks.
@@ -312,7 +456,13 @@ export function shellDialect(
   if (override === "bash" || override === "sh" || override === "posix") return "posix";
   if (override === "powershell" || override === "pwsh") return "powershell";
 
-  const claim = `${shell.function.name} ${shell.function.description ?? ""}`.toLowerCase();
+  // Claude Code's `Bash` says it "runs Git Bash (POSIX sh), not cmd.exe or
+  // PowerShell": it names PowerShell only to rule it out.
+  if (runsGitBash(shell)) return "posix";
+  // Codex Code Mode's description documents its JavaScript API, not the shell its
+  // nested `exec_command` runs, so only the name is read (and the host decides).
+  const description = isCodeModeExecTool(shell) ? "" : shell.function.description ?? "";
+  const claim = `${shell.function.name} ${description}`.toLowerCase();
   // PowerShell first: a tool described as "run a powershell command" may still be
   // *named* something generic like `shell`, and `sh` would match it by substring.
   if (/\b(powershell|pwsh|cmd\.exe)\b/.test(claim)) return "powershell";
@@ -333,11 +483,18 @@ export function shellDialect(
  *
  *  `platform` is injectable so the Windows branch is testable from a POSIX box —
  *  the whole point, since this repo had no Windows host to verify against.
- *  Returns "" off Windows, leaving the bench-tuned variants byte-for-byte unchanged. */
+ *  Returns "" off Windows, leaving the bench-tuned variants byte-for-byte unchanged.
+ *
+ *  A shell tool that says it runs Git Bash (Claude Code's `Bash`) reads as POSIX
+ *  (shellDialect) but gets no POSIX note: its own description already says Git
+ *  Bash, and the command-line cap below was measured on pi's tool, not on it. The
+ *  note then only points PowerShell commands at the harness's PowerShell tool, if
+ *  it has one. */
 export function hostPlatformNote(
   shell: ToolDef | undefined,
   platform: NodeJS.Platform = process.platform,
   writeTool?: ToolDef,
+  powerShellTool?: ToolDef,
 ): string {
   if (platform !== "win32" || !shell) return "";
 
@@ -351,6 +508,13 @@ export function hostPlatformNote(
   // the shell dialect rather than the fence routing as the cause. So read the
   // dialect off the tool the harness actually gave us, not off process.platform.
   if (shellDialect(shell, platform) === "posix") {
+    if (runsGitBash(shell)) {
+      return powerShellTool && powerShellTool !== shell
+        ? `
+
+HOST PLATFORM: Windows. The \`${shell.function.name}\` tool runs Git Bash (POSIX sh) and the \`${powerShellTool.function.name}\` tool runs PowerShell: put POSIX commands in a \`\`\`bash block and PowerShell commands in a \`\`\`powershell block.`
+        : "";
+    }
     // The Windows command line is capped near 8,190 characters and pi's shell
     // tool CUTS a longer command silently — measured model-free against pi with
     // a scripted tool call: a 12,070-char heredoc wrote 8,164 bytes, its trailing
@@ -379,6 +543,7 @@ HOST PLATFORM: Windows. The \`${shell.function.name}\` tool runs PowerShell on a
 - edit in place: \`(Get-Content f) -replace 'old','new' | Set-Content f\`
 - inspect: \`Get-Content\` / \`Get-ChildItem\` / \`Select-String\`
 - paths use \`\\\` and may contain spaces — quote them.
+- write .NET types by their full dotted names, e.g. \`[System.Text.RegularExpressions.Regex]::Replace(...)\` or \`[System.String]::IsNullOrEmpty(...)\`, or use operators like \`-replace\` and \`-match\`: this chat deletes a one-word type name in square brackets when a colon follows it, even inside code.
 
 You are NOT in a Linux sandbox and have no \`/mnt/data\`. The working directory is a real Windows path; run \`Get-Location\` if you need to see it.`;
 }
@@ -1362,7 +1527,7 @@ function parseFencedInner(spec: FencedToolSpec, inner: string): Record<string, u
     args[spec.editPair.search] = sr[1];
     args[spec.editPair.replace] = sr[2];
   } else if (spec.bodyParam !== undefined) {
-    args[spec.bodyParam] = rest;
+    args[spec.bodyParam] = spec.codeModeShell ? toCodeModeInput(rest, spec.codeModeShell) : rest;
   }
 
   return args;
@@ -1399,7 +1564,11 @@ interface ToolFence {
 }
 
 function argTokens(args: Record<string, unknown>): Set<string> {
-  const text = Object.values(args).map((v) => (typeof v === "string" ? v : JSON.stringify(v))).join(" ");
+  // A Code Mode call's input is the proxy's wrapper around the command; compared
+  // as is, its boilerplate would make any two commands look like one restated.
+  const text = Object.values(args)
+    .map((v) => (typeof v === "string" ? unwrapCodeModeShellScript(v) ?? v : JSON.stringify(v)))
+    .join(" ");
   return new Set(text.split(/\s+/).filter(Boolean));
 }
 
