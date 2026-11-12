@@ -11,6 +11,7 @@ import {
   shellDialect,
   findWriteTool,
   longHeredocAsWrite,
+  strippedTypeMember,
   currentFramingVariant,
   defaultFramingForTone,
   defaultFramingForModel,
@@ -1061,5 +1062,40 @@ describe("Codex and Claude Code shells", () => {
     // …and a corrected copy of the same one still replaces it.
     expect(commands("```bash\nls -la</bash>\n```\nOops, here is the same command, correctly formatted:\n```bash\nls -la\n```"))
       .toEqual(["ls -la"]);
+  });
+});
+
+describe("strippedTypeMember (a PowerShell [Type]:: M365 stripped, §40 F111)", () => {
+  const execTool: ToolDef = {
+    type: "function",
+    function: { name: "exec_command", description: "Runs a command.", parameters: { type: "object", properties: { cmd: { type: "string" } }, required: ["cmd"] } },
+  };
+  const call = (cmd: string) => ({ id: "c", type: "function" as const, function: { name: "exec_command", arguments: JSON.stringify({ cmd }) } });
+
+  it("finds the member whose type was deleted, in Codex's Windows shell", () => {
+    expect(strippedTypeMember(call("$u = :Replace($c, 'a', 'b')\nSet-Content f $u"), [execTool], "win32")).toBe(":Replace");
+    expect(strippedTypeMember(call("if (:IsNullOrWhiteSpace($t)) { 'empty' }"), [execTool], "win32")).toBe(":IsNullOrWhiteSpace");
+    expect(strippedTypeMember(call("$nl = :NewLine"), [execTool], "win32")).toBe(":NewLine");
+  });
+
+  it("leaves whole type names, scopes, drives and labels alone", () => {
+    for (const cmd of [
+      "$u = [regex]::Replace($c, 'a', 'b')",
+      "[System.IO.File]::Exists('a')",
+      "$env:Path; $script:count = 1; Get-Item Env:PATH; cd C:\\work",
+      ":outer foreach ($x in 1..3) { break outer }",
+      "Write-Output \"time: $(Get-Date)\"",
+    ]) expect(strippedTypeMember(call(cmd), [execTool], "win32"), cmd).toBeNull();
+  });
+
+  it("only judges a PowerShell shell", () => {
+    expect(strippedTypeMember(call("$u = :Replace($c, 'a', 'b')"), [execTool], "linux")).toBeNull();
+  });
+});
+
+describe("the Windows PowerShell host note", () => {
+  it("asks for full dotted .NET type names", () => {
+    const note = hostPlatformNote({ type: "function", function: { name: "exec_command", description: "Runs a command.", parameters: { type: "object", properties: { cmd: { type: "string" } } } } }, "win32");
+    expect(note).toContain("[System.Text.RegularExpressions.Regex]::Replace(...)");
   });
 });

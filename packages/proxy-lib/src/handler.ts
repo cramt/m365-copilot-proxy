@@ -37,6 +37,7 @@ import {
   fabricatedToolResponseAt,
   textAfterFirstToolCall,
   longHeredocAsWrite,
+  strippedTypeMember,
   formatToolResponse,
   isProseDocument,
   getMessageContent,
@@ -112,6 +113,12 @@ const HALLUCINATION_FORCE_PROMPT =
 // harness tools instead of letting the remote patch leak into the conversation.
 const REMOTE_ARTIFACT_FORCE_PROMPT =
   "The patch or download link you produced exists only in M365's remote environment and is NOT a file in the caller's working directory. Do NOT create, download, or apply a patch, and do NOT use a Teams artifact link. Use the provided local edit/write tool directly; if needed, emit ONE ```bash block that modifies the named local file in place. Output only that single local tool call, nothing else.";
+
+/** The re-prompt for a PowerShell command that lost a `[Type]:` to M365's
+ *  post-processing (strippedTypeMember): `member` is what arrived, e.g. `:Replace`. */
+function strippedTypeMemberPrompt(member: string): string {
+  return `(Note: I didn't run your last command, because it reached my terminal damaged. This chat deletes a one-word type name in square brackets when a colon follows it, even inside code, so [Type]::${member.slice(1)} arrived as \`${member}\`, which would have run as nothing. Please send the same command again with full dotted .NET type names, such as [System.Text.RegularExpressions.Regex]::Replace(...), [System.String]::IsNullOrWhiteSpace(...) or [System.Math]::Max(...), or with operators like -replace and -match.)`;
+}
 
 // M365 soft-caps output around ~3k tokens (~12k chars) and — critically —
 // CONCLUDES EARLY rather than truncating mid-stream, so a too-long answer comes
@@ -937,6 +944,37 @@ export async function handleChatCompletion(
           },
         }),
       };
+    }
+
+    // M365's post-processing can strip a `[Type]:` out of a PowerShell command
+    // that the deltas couldn't restore (a short reply arrives only as its final
+    // snapshot): `$new = :Replace($old, …)` sets `$new` to nothing and the
+    // `Set-Content` after it empties the file — Codex's in-place edits lost the
+    // file 4 times in 4 that way (§40 F111). Don't run such a command: ask once,
+    // in the same conversation, for it with full type names. If it comes back
+    // damaged again, fail closed.
+    const damaged = parsed.hasToolCalls ? strippedTypeMember(parsed.toolCalls[0], body.tools) : null;
+    if (damaged) {
+      log.info(`PowerShell command lost a [Type]: before ${damaged} to M365's post-processing — not running it, asking for it again`);
+      text = strippedTypeMemberPrompt(damaged);
+      const retry = await runBuffered();
+      if ("error" in retry) return { kind: "error", resp: retry.error };
+      conv.sentMessageCount = body.messages.length;
+      fullText = stopAtFabricatedResult(retry.fullText);
+      ({ parsed, judged } = parseReply(fullText, body.tools));
+      const still = parsed.hasToolCalls ? strippedTypeMember(parsed.toolCalls[0], body.tools) : null;
+      log.info(`After the damaged-command retry: hasToolCalls=${parsed.hasToolCalls}, damaged=${still ?? "no"}`);
+      if (still) {
+        return {
+          kind: "error",
+          resp: jsonResponse(502, {
+            error: {
+              message: `M365 Copilot stripped a .NET type name from the PowerShell command twice (it arrived as \`${still}\`), so it was not run: run as written it would have done nothing, or emptied a file. Retry; asking for full type names such as [System.Text.RegularExpressions.Regex]::Replace usually avoids it.`,
+              type: "damaged_tool_call",
+            },
+          }),
+        };
+      }
     }
 
     // Fail-closed: if model mixed text with tool calls, strip text and re-prompt once.

@@ -1416,3 +1416,43 @@ describe("Claude Code and Codex behind copilot-api", () => {
     expect(scripted.texts[0]).not.toContain("functions__exec");
   });
 });
+
+describe("a PowerShell command that lost a [Type]: to M365's post-processing (§40 F111)", () => {
+  // Codex's shell on Windows. Live, `[regex]::Replace(` arrived as `:Replace(`, the
+  // edit set its result to nothing, and Set-Content emptied the file (4 of 4).
+  const psTool = [{ type: "function", function: { name: "exec_command", description: "Runs a PowerShell command", parameters: { type: "object", properties: { cmd: { type: "string" } }, required: ["cmd"] } } }];
+  const damaged = "```powershell\n$c = Get-Content config.json -Raw\n$u = :Replace($c, '3000', '8080')\nSet-Content config.json $u\n```";
+  const whole = "```powershell\n$c = Get-Content config.json -Raw\n$u = [System.Text.RegularExpressions.Regex]::Replace($c, '3000', '8080')\nSet-Content config.json $u\n```";
+  const ask = () => handleChatCompletion(
+    ChatCompletionRequest.parse({ model: "gpt-6.1-sol", stream: false, messages: [{ role: "user", content: "set the port to 8080" }], tools: psTool }),
+    new SessionPool(),
+  );
+
+  it("doesn't run it: asks once for full type names and passes on the re-sent command", async () => {
+    scripted.runs = 0;
+    scripted.queue = [{ fullText: damaged }, { fullText: whole }];
+    const res = await ask();
+    expect(res.status).toBe(200);
+    const call = (await res.json()).choices[0].message.tool_calls[0];
+    expect(JSON.parse(call.function.arguments).cmd).toContain("[System.Text.RegularExpressions.Regex]::Replace(");
+    expect(scripted.runs).toBe(2);
+    expect(scripted.texts.at(-1)).toContain("didn't run your last command");
+  });
+
+  it("fails closed when the command comes back damaged again", async () => {
+    scripted.runs = 0;
+    scripted.queue = [{ fullText: damaged }, { fullText: damaged }];
+    const res = await ask();
+    expect(res.status).toBe(502);
+    expect((await res.json()).error.type).toBe("damaged_tool_call");
+    expect(scripted.runs).toBe(2);
+  });
+
+  it("leaves an intact static call alone", async () => {
+    scripted.runs = 0;
+    scripted.queue = [{ fullText: whole }];
+    const res = await ask();
+    expect(res.status).toBe(200);
+    expect(scripted.runs).toBe(1);
+  });
+});

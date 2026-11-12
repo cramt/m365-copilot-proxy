@@ -162,6 +162,21 @@ describe("CopilotSession over StreamHub", () => {
     expect(new URL(ws.url).searchParams.get("variants")!.split(",")).toContain("streamhub11");
   });
 
+  it("returns the model's own text where the final snapshot lost a [Type]: (live edit-config shape)", async () => {
+    // Codex edit-config, live: a partial delta, a restatement, then the
+    // final snapshot with `[regex]:` gone — run as is, it emptied config.json.
+    const raw = "```powershell\n$u = [regex]::Replace($c, '3000', '8080')\n";
+    const { stream, streamed } = await turn(new CopilotSession(), [
+      restate("m1"),
+      part({ w: raw }),
+      restate("m1"),
+      part({ messages: [{ author: "bot", text: "```powershell\n$u = :Replace($c, '3000', '8080')\nSet-Content config.json $u\n```", contentOrigin: "DeepLeo", messageId: "m1" }], isLastUpdate: true }),
+      end,
+    ]);
+    expect(stream.fullText).toBe(raw + "Set-Content config.json $u\n```");
+    expect(streamed.join("")).toBe(stream.fullText);
+  });
+
   it("closes the turn after EndOfRequest when request_end never comes", async () => {
     vi.useFakeTimers({ shouldAdvanceTime: true });
     try {
