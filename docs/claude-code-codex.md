@@ -101,13 +101,19 @@ priority-access budget) solved 6/6 live with `M365_HARNESS_PROMPT=lean`. Otherwi
 `m365/claude-sonnet` (Sonnet 4.6). `claude-opus` (Opus 5.5) and `claude-sonnet-5.5` spend small daily
 budgets (40 and 80 turns), shared with your own Copilot Chat use, and every tool call is a turn.
 
-GPT models need more care ([F105](hypotheses.md)):
-- Some GPT tones can be dead on an account: on Nov 10, `gpt-6.1-sol`, `gpt-6-sol`, `gpt-6-think-deeper`
-  and `gpt-5.5-think-deeper` refused every prompt with `InputTokenLimitExceeded` ("prompt is too long"),
-  even a 46-character one. The proxy now answers that with a 400 `context_length_exceeded` after one turn.
-- `gpt-5.6-think-deeper` worked: Claude Code 3/3 and Codex 5/8. Without the tool agent it needs the
-  user-voice framing and no code interpreter, or it works in its own cloud sandbox (`/mnt/data`) instead
-  of yours: `M365_FRAMING_VARIANT=relay_batch M365_NO_CODE_INTERPRETER=1 M365_NO_IMAGE_GEN=1`.
+GPT models need more care ([F105](hypotheses.md), §40):
+- On Nov 10, `gpt-6.1-sol`, `gpt-6-sol`, `gpt-6-think-deeper` and `gpt-5.5-think-deeper` refused every
+  prompt with `InputTokenLimitExceeded` ("prompt is too long"), even a 46-character one. Neither the
+  prompt nor the tone was the cause: GPT-6.1 Sol is refused under the old included scenario and GPT-6 and
+  GPT-5.5 Think Deeper with the Bing plugin attached. The proxy now re-sends such a refusal once without
+  Bing and remembers that for the model; `M365_TRANSPORT=streamhub` moves every model to the new web
+  client's transport and scenario, where all four answer. A refusal that survives both fails fast with a
+  400 `context_length_exceeded`.
+- Best GPT result: `gpt-6.1-sol` over StreamHub (`M365_TRANSPORT=streamhub`), Codex 7/7 at 2.1
+  M365 turns per task (Nov 11).
+  `gpt-5.6-think-deeper`: Claude Code 3/3 and Codex 5/8. Without the tool agent GPT models need the
+  user-voice framing and no code interpreter, or they work in their own cloud sandbox (`/mnt/data`)
+  instead of yours: `M365_FRAMING_VARIANT=relay_batch M365_NO_CODE_INTERPRETER=1 M365_NO_IMAGE_GEN=1`.
 - In Codex, don't name a GPT-5.5 model: Codex then adds its hosted `tool_search` tool, which copilot-api
   rejects. `m365/think-deeper` is the same tone under a name Codex doesn't know.
 
@@ -231,6 +237,13 @@ Disabling Codex's hosted `web_search` doesn't rule out search:
   been measured. The settings above turn off the avoidable ones.
 - **One tool call per turn, and about 3k output tokens per turn.** A large `Write` or
   heredoc gets cut off. Codex's `apply_patch` isn't used; edits go through the shell.
+- **M365 deletes `[word]:` from a reply's final text** ([F111](hypotheses.md)): `[regex]::Replace(`
+  becomes `:Replace(`, a Python `-> list[str]:` loses the token and the line break after it. Before the
+  fix, Codex's in-place PowerShell edits emptied the file 4 times in 4. The proxy now
+  restores the text from the streamed deltas, asks for full dotted .NET type names on Windows, and won't
+  run a PowerShell command that still lost one (it asks again, then answers 502 `damaged_tool_call`).
+  A short reply without deltas can still carry a broken Python/JS line; the model usually sees the
+  syntax error and fixes it.
 - **No token counts.** M365 reports none, so usage shows 0 tokens and the harness can't track its
   context window. The proxy sends only new messages per turn, and M365 holds the conversation
   (600 messages each).

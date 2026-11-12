@@ -5856,3 +5856,137 @@ tenant it would be created in its default environment, so it stayed off).
   task at 300 s. The handler now multiplies by 1000 any argument that the tool's schema documents in
   milliseconds and that is under 1000 (`millisecondArgsFixed`). The one remaining failure was a reply that
   broke off mid-fence and started over, which parsed as text (n=1).
+
+## 40. Nov 11 2026 — StreamHub, the new web client's transport
+
+The user found GPT-5.5/5.6 too weak for Codex and asked for the web app's Cowork and Code modes. Driving
+the new web client (`copilot.cloud.microsoft`, Chrome with the Windows SSO of §39 F104) with a CDP
+recorder showed three surfaces: Chat, Cowork and Code. Chat runs on a new WebSocket endpoint, StreamHub;
+Cowork and Code on a separate agent runtime. Same premium account as §39.
+
+### F106 — StreamHub takes the proxy's Sydney token 🟢
+`wss://substrate.svc.cloud.microsoft/m365Copilot/StreamHub/{oid}@{tid}` speaks Chathub's SignalR JSON,
+but a turn is a `chat_request` item on a client stream and the answer `message_part` items on a server
+stream (API doc §13). A probe with the proxy's own token, one prompt per tone, agent-less, scenario
+`officeweb`: `Gpt_61_Sol_Reasoning`, `Gpt_6_Reasoning` and `Claude_Opus` ("Claude Opus 5.5") all
+answered. The proxy now has a StreamHub transport (`session.ts`), used for every model under
+`M365_TRANSPORT=streamhub`.
+
+### F107 — four protocol details the probe didn't show 🟢
+Each one broke a live proxy turn before it was handled:
+1. **`variants` must include `streamhub11`.** With the proxy's Chathub flags the answer streamed, then
+   nothing: no `request_end`, only pings until the client gave up (240 s). `streamhub11` alone brings
+   `request_start` … `request_end` back. A 5 s close after the `EndOfRequest` message is the safety net.
+2. **A long answer is sent twice.** Deltas (`{w}`, Chathub's `writeAtCursor`) carried 1,264 characters;
+   then a second cursor frame restated the message as `""` and one delta carried all 1,531. Chathub's
+   keep-the-longest fold would have glued them together, so a cursor frame now replaces its message.
+3. **Re-subscribing replays the conversation.** Turn 2 "answered" instantly with turn 1's text: the
+   subscribe replayed turn 1's items, its `request_end` included. Items are now filtered by `requestId`.
+4. **Every fresh socket subscribes with `action: "create"`.** Without it turn 2 got no reply at all. The
+   web client, resuming a conversation after a reload, sends `create` too (capture). With all four,
+   `gpt-6.1-sol` recalled a code word across turns.
+
+An unknown tone is rejected with an `error` item (`InvalidRequest` / `InvalidNote`) and no
+`request_end`; the server then holds the socket for ~120 s, so the proxy closes it.
+
+### F108 — F105's refusals: the scenario and the Bing plugin, not the account 🟢 (probes, n=1 each)
+F105 read `InputTokenLimitExceeded` on a 46-character prompt as a dead tone. It is two causes:
+
+| tone | Chathub, its scenario (F105) | StreamHub, `OfficeWebIncludedCopilot` | Chathub, `officeweb` | StreamHub, `officeweb`, Bing | StreamHub, `officeweb`, no Bing |
+|---|---|---|---|---|---|
+| `Gpt_61_Sol_Reasoning` | refused | refused | answers | answers | answers |
+| `Gpt_6_Sol_Reasoning` | refused | – | – | answers | answers |
+| `Gpt_6_Reasoning` | refused (paid) | – | refused, with Bing | refused | answers |
+| `Gpt_5_5_Reasoning` | refused | – | – | refused | answers |
+
+On StreamHub the refusal arrives as `request_end` with `outcome: {category: "InvalidRequest", code:
+"InputTokenLimitExceeded"}`, after an apology message. The web client sends the Bing plugin too, so
+GPT-6 presumably fails there the same way. The proxy now learns the Bing case at runtime: a refused
+agent-less request is re-sent once without the plugin in a fresh conversation, and the tone keeps it
+off for the process (`noteWebSearchOverflow`). Live, `gpt-6-think-deeper` and `gpt-5.5-think-deeper`
+then answered. Agent-less GPT-6 self-identified as "the GPT-5 chat model" (H40a). StreamHub turns use
+`officeweb` for every model; `licenseType` changed nothing (`Claude_Sonnet` was Sonnet 5.5 under
+`officeweb` with `Starter` and with `Premium`), while the included scenario made it "Sonnet 5".
+
+### F109 — Codex on GPT-6.1 Sol over StreamHub: 7/7 🟢
+`scripts/harness-check.mjs` with the user's own Codex brief (`model_instructions_file`), the seven tasks
+that have a Node verifier, once each, `M365_HARNESS_PROMPT=lean`, `M365_TRANSPORT=streamhub`,
+agent-less, `relay_batch`, no code interpreter or image generation, after F111's fix: 7/7 solved at
+2.1 M365 turns per run. `edit-config` and `ec-notes`, the two that emptied their file before the fix,
+took 2 turns each. On Chathub this account refuses GPT-6.1 Sol outright (F105, F108); the best §39
+Codex result there was `gpt-5.6-think-deeper` at 5/8.
+
+### F110 — Cowork and Code are an agent runtime, not a model endpoint 🟡
+Both tabs talk to an agent runtime (Copilot Studio) rather than to a chat endpoint: a message is queued
+over REST and the run streams back as server-sent events. The agent runs its tools in Microsoft's cloud,
+so it can't act on the machine a local harness runs on, and it isn't a model endpoint Codex or Claude
+Code could use. Not integrated.
+
+### F111 — M365 deletes `[word]:` from the final text; in Codex on Windows that emptied files 🟢
+A Codex pressure test over StreamHub (the user-voice brief, the seven harness-check tasks with a Node
+verifier, twice each) solved 10/14. All four failures were in-place edits (`edit-config`, `ec-notes`),
+and each left the edited file **empty**. The model wrote `$updated = [regex]::Replace($content, …)`;
+Codex received `$updated = :Replace($content, …)`. PowerShell rejected the call, `$updated` stayed
+empty, and the `Set-Content` after it wrote nothing over the file; the model then apologised for erasing it.
+
+M365's post-processing deletes a bracketed word, the colon after it and the whitespace after that from a
+message's **final** text, code blocks included. One probe over StreamHub, asked to echo:
+
+| sent | final text |
+|---|---|
+| `[int]::Parse('5')`, `[Regex]::Escape('x')` | `:Parse('5')`, `:Escape('x')` |
+| `if row[col]: pass` | `if rowpass` |
+| `const o = {[key]: 1};` | `const o = {1};` |
+| `[a_b]: c`, `[1]: footnote`, `x = d[k]:y`, `[regex]:Escape` | `c`, `footnote`, `x = dy`, `Escape` |
+| `[IO.File]::Exists('a')`, `[regex] ::Escape('x')`, `[int]'42'`, `$arr[0]`, `[docs]` | unchanged |
+
+Not every occurrence: a 4.6k-character answer lost 6 of its 8 (all the PowerShell ones, and one Python
+`for node in buckets[idx]:` whose newline and indent went too, gluing two lines). Chathub does the same
+with GPT-5.6 Think Deeper and Sonnet 5, so it predates StreamHub; `streamingMode` (`ConciseV2`,
+`ConciseWithPadding`, `Delta`) makes no difference. The **deltas** carry the model's own text; a short
+reply often has none and arrives only as the final snapshot.
+
+The proxy now handles it in three layers:
+1. **Restore** (`restoreStrippedBrackets`, both transports): each message's longest delta-built text is
+   aligned with its final text, allowing only these deletions; the result is the model's text plus any
+   tail only the final carried. The client also gets that tail streamed.
+2. **Prevent:** the Windows PowerShell host note asks for full dotted .NET type names
+   (`[System.Text.RegularExpressions.Regex]::Replace`) or `-replace`/`-match`.
+3. **Guard:** a PowerShell tool call that still contains `:Member(` — no PowerShell syntax has it — isn't
+   run. The proxy asks once for the command with full type names; damaged again, it fails closed (502
+   `damaged_tool_call`).
+
+Live, the two failing tasks went 6/6 at 2 turns each (from 0/4): the model wrote dotted names every time,
+so nothing was stripped there. Layer 1 fired in a depth test like F112's: the model's Python rewrite of
+`store.py` had `def items(self) -> list[Item]:` and `-> list[str]:`, and the final snapshot read
+`def items(self) -> listreturn list(self._items.values())`; the deltas had the whole text, and the proxy
+sent that. Modern Python type hints hit this all the time. Still exposed: a reply short enough to arrive
+without deltas (here every reply under ~210 characters did) in a language the guard doesn't read (H40d).
+
+### F112 — pressure test before real use: Codex on `gpt-6.1-sol` over StreamHub 🟢
+Nov 11, F109's setup.
+- **API:** three parallel requests finished in 24.5 s together. A needle in the middle of a 60k, 150k and
+  300k-character prompt came back right each time, in 6–7.5 s. A streamed 600-word story arrived whole
+  and once. A 40-function module came to 11,037 characters with its closing fence; one earlier try
+  stopped at 10,820 without it and with `finish_reason: stop`, under the proxy's 12,000-character
+  `length` ceiling.
+- **Breadth:** F109, 7/7. Before F111's fix, an earlier run of the same tasks, twice each, had solved
+  10/14, all four failures F111.
+- **Depth:** one session on a three-module Python package with four planted bugs (multiplication,
+  case-insensitive merge, over-removal, report order and format), plus a new `Store.low_stock`, a test
+  for it and a README section: solved in 3 M365 turns and about 40 s, 5/5 tests and 8/8 hidden checks,
+  original tests untouched. The restore (F111) fired on the turn that carried the fixes.
+
+### Open (Nov 11)
+- **H40a** — Agent-less `Gpt_6_Reasoning` under `officeweb` is GPT-6. It self-identified as "the GPT-5
+  chat model" (n=2). **Falsify:** a task GPT-5.5 Chat fails and GPT-6 solved on the bench (§22).
+- **H40b** — The tool agent works over StreamHub (`gpts` with the agent's MOS3 id). Untested; the proxy
+  sends StreamHub turns agent-less.
+- **H40c** — StreamHub holds up beyond these short runs: long real sessions, compaction, many
+  conversations. **Probe:** `--repeat=2` on the bench tasks over StreamHub; watch the priority-access
+  and credit budgets.
+- **H40d** — Outside PowerShell, the `[word]:` deletion (F111) in a reply without deltas mostly costs a
+  syntax error the model then fixes, not silent damage: `-> list[str]:` or `if x[k]:` lose the token and
+  the line break after it. **Probe:** count Python/JS syntax errors right after a short write in real
+  Codex sessions; if they're frequent, extend the guard to them or the host note's advice to every
+  platform.

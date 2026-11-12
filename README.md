@@ -266,9 +266,10 @@ add it to copilot-api as an `openai-compatible` provider. Then point Claude Code
 (`ANTHROPIC_BASE_URL`) or Codex (`wire_api = "responses"`) at copilot-api, and give
 Claude Code a lean toolset (`--tools "Bash,Read,Edit,Write"`), and start the proxy with
 `M365_HARNESS_PROMPT=lean`: without it, M365's models often refuse to act as these harnesses. First
-live runs: Claude Code 6/6 on `claude-sonnet-5` with it, Codex 2/3. Of the GPT models, only
-`gpt-5.6-think-deeper` worked on the test account; without the tool agent it needs
-`M365_FRAMING_VARIANT=relay_batch` and `M365_NO_CODE_INTERPRETER=1`. Full setup, what the proxy does
+live runs: Claude Code 6/6 on `claude-sonnet-5` with it, Codex 2/3. For GPT, Codex solved 7/7 on
+`gpt-6.1-sol` over StreamHub (see [StreamHub](#streamhub-the-new-web-clients-transport));
+without the tool agent GPT models need `M365_FRAMING_VARIANT=relay_batch` and
+`M365_NO_CODE_INTERPRETER=1`. Full setup, what the proxy does
 for these clients, and the known limits are in [docs/claude-code-codex.md](docs/claude-code-codex.md).
 
 ### 6. Run on NixOS (systemd service)
@@ -537,6 +538,30 @@ went 10/10 on the bench with `relay`; it hasn't been benched with `relay_batch` 
 replaced Opus 4.5, went 30/30 with it at 2.5 turns per task.
 Override with `M365_FRAMING_VARIANT` as usual. Details: [hypotheses §24, §36](docs/hypotheses.md).
 
+### StreamHub, the new web client's transport
+
+The new web client (`copilot.cloud.microsoft`) reaches Copilot over a second WebSocket, StreamHub.
+The proxy speaks both: `M365_TRANSPORT=streamhub` sends every model over StreamHub, under the web
+client's own `officeweb` scenario and without the tool agent (it hasn't been tried there).
+
+That switch is for accounts whose Chathub refuses GPT-6.x: on the test account, `gpt-6-think-deeper`,
+`gpt-6-sol`, `gpt-6.1-sol` and `gpt-5.5-think-deeper` answered every prompt with
+`InputTokenLimitExceeded`, even one line (§39 F105). Two separate causes, neither the prompt
+([hypotheses §40](docs/hypotheses.md)):
+- **The scenario.** GPT-6.1 Sol is refused under `OfficeWebIncludedCopilot` on either transport and
+  served under `officeweb`.
+- **The Bing plugin** an agent-less turn carries. GPT-6 and GPT-5.5 Think Deeper are refused with it
+  and answer without it. The proxy now learns this per model: the first refusal is re-sent once
+  without Bing, in a fresh conversation, and later requests leave Bing off for that model.
+
+With `M365_TRANSPORT=streamhub` all of them answer on that account. Through copilot-api (`lean`
+harness prompt, `relay_batch`, no code interpreter), Codex on `gpt-6.1-sol` over StreamHub solved
+7/7 of the harness-check tasks at 2.1 M365 turns each, where `gpt-5.6-think-deeper` on Chathub
+managed 5/8. Under
+`officeweb` the scenario no longer picks between models, so `claude-sonnet` is Sonnet 5.5 there, and
+StreamHub turns carry no priority-access `metering`, so the proxy can't log or pre-empt those budgets.
+Wire details: [API doc §13](docs/m365-copilot-api.md).
+
 ## Image generation
 
 M365 Copilot generates images through a built-in server-side tool, and the core
@@ -637,6 +662,7 @@ Three token scopes are acquired:
 | `M365_OPUS_FALLBACK_MODEL` | Model to serve `claude-opus` (Opus 5.5) requests with once its priority-access budget is used up, instead of returning a 429 — typically `claude-opus-4.8`, which isn't metered (premium accounts only). Applies until the budget resets; the response's `model` field names the model that answered. Unset by default. |
 | `M365_SONNET_FALLBACK_MODEL` | The same for `claude-sonnet-5.5` (Sonnet 5.5) once its priority-access budget is used up — e.g. `claude-sonnet-5` (unmetered) or `claude-sonnet` (Sonnet 4.6, any account). A fallback naming a metered model is ignored. Unset by default. |
 | `M365_SCENARIO` / `M365_LICENSE_TYPE` | Override the entitlement the WebSocket is opened under (defaults: `OfficeWebIncludedCopilot` / `Starter`, switching to `OfficeWebPaidCopilot` / `Premium` for the entitlement-gated models — `claude-opus`, `gpt-6-think-deeper`, `claude-sonnet-5` and `claude-sonnet-5.5`; `claude-opus-4.8` and `gpt-6.1-sol` stay on the included one). `scenario` is what gates the model list (and picks Sonnet 4.6 vs 5.5 for the `Claude_Sonnet` tone, Sonnet 4.6 vs 5 for `Claude_Sonnet_5`, Opus 4.8 vs 5.5 for `Claude_Opus`); `licenseType` rides along and unlocks nothing by itself. Forcing the paid scenario on `gpt-6.1-sol` spends its separate GPT-6.1 Sol allowance (40 turns a day, 75 a week), which the proxy doesn't track. |
+| `M365_TRANSPORT` | `streamhub` sends every model over StreamHub, the new web client's WebSocket (`copilot.cloud.microsoft`), under its `officeweb` scenario and without the tool agent; unset, every model uses Chathub. For accounts whose Chathub refuses GPT-6 (`InputTokenLimitExceeded` on any prompt). Under it the scenario no longer picks between models: `claude-sonnet` is Sonnet 5.5 there. See [StreamHub](#streamhub-the-new-web-clients-transport). |
 | `M365_CACHE_FILE` | Override MSAL token cache location |
 | `M365_SECRETS_FILE` | Override credentials file location |
 | `CHROMIUM_PATH` | Path to Chromium binary for automated login |
@@ -710,6 +736,8 @@ pnpm run test:live    # Run live integration tests against M365
 - `claude-opus` needs a paid/premium seat and has its own small priority-access quota (40 turns a day, 75 a week; every tool call is a turn) that resets at midnight UTC (weekly on Monday); exhaustion surfaces as a 429, or as a switch to `M365_OPUS_FALLBACK_MODEL`. `claude-opus-4.8` needs a premium account too, but has no such quota
 - `claude-sonnet-5.5` needs a paid/premium seat and has a priority-access quota of its own (80 turns a day, 150 a week), handled the same way (`M365_SONNET_FALLBACK_MODEL`). `claude-sonnet-5` needs the seat but has no quota
 - Streaming: **tool-less** responses stream incrementally (deltas forwarded as they arrive). **Tool-calling** turns are still buffered server-side — the raw text has to be parsed for tool-call fences before it can be emitted — so those arrive as a single chunk at the end (with an immediate HTTP 200 + heartbeats so the client never times out waiting)
+- **M365 deletes `[word]:` from a reply's final text**, code blocks included, and not every time: `[regex]::Replace(` arrives as `:Replace(`, and a Python `def f(self) -> list[str]:` or `if row[col]:` loses the token and the line break after it. The proxy puts the text back from the streamed deltas where it has them; on Windows it asks for full dotted .NET type names (`[System.Text.RegularExpressions.Regex]::Replace`) and won't run a PowerShell command that still lost one. A short reply may come without deltas, so Python or JavaScript written that way can still arrive broken (usually as a syntax error the model then sees). See [hypotheses §40 F111](docs/hypotheses.md)
+- A single reply is capped by M365 at roughly 11-12k characters; a longer file written in one go can end early (finish_reason `length` from 12,000 characters, `M365_OUTPUT_CHAR_CEILING`)
 
 ## License
 
