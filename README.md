@@ -270,7 +270,8 @@ live runs: Claude Code 6/6 on `claude-sonnet-5` with it, Codex 2/3. For GPT, Cod
 `gpt-6.1-sol` over StreamHub (see [StreamHub](#streamhub-the-new-web-clients-transport));
 without the tool agent GPT models need `M365_FRAMING_VARIANT=relay_batch` and
 `M365_NO_CODE_INTERPRETER=1`. Full setup, what the proxy does
-for these clients, and the known limits are in [docs/claude-code-codex.md](docs/claude-code-codex.md).
+for these clients, and the known limits are in [docs/claude-code-codex.md](docs/claude-code-codex.md);
+a step-by-step install from scratch, Windows and macOS, is [docs/setup.md](docs/setup.md).
 
 ### 6. Run on NixOS (systemd service)
 

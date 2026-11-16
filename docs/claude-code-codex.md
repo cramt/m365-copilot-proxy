@@ -24,6 +24,9 @@ Codex ─────── OpenAI Responses ─────┘   (provider "m36
 
 ## Setup
 
+Installing everything from scratch, with Windows and macOS commands and whether you need the
+copilot-api repo (you don't): [setup.md](setup.md). The steps below are the reference.
+
 **1. Start the proxy on a port other than 4141.** copilot-api also defaults to 4141.
 `M365_HARNESS_PROMPT=lean` removes what the models refuse (see
 [What the proxy does](#what-the-proxy-does-for-these-clients)), and `M365_AVOID_THROTTLING=1` paces
