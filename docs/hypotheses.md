@@ -5990,3 +5990,66 @@ Nov 11, F109's setup.
   the line break after it. **Probe:** count Python/JS syntax errors right after a short write in real
   Codex sessions; if they're frequent, extend the guard to them or the host note's advice to every
   platform.
+
+## 41. Nov 16 2026 — the Codex app: account, catalog, context windows
+
+The Codex app (Desktop, its Codex engine 0.169) on §40's setup, with a second Codex provider for an Azure
+OpenAI router next to the gateway. Three things the CLI runs hadn't shown, and what the proxy's StreamHub
+turns say about metering. Setup notes: claude-code-codex.md, step 5.
+
+### F113 — the app shows your ChatGPT account only when the provider requires OpenAI auth 🟢
+The app's account menu reads `requiresOpenaiAuth` (app-server `account/read`, default true): with
+`requires_openai_auth = false` it shows the provider's `name` where the account was, and hides Remote.
+Setting it to `true` brought the account back (`account/read`: `requiresOpenaiAuth: true`, a `chatgpt`
+account). Which bearer then reaches the gateway, from a local listener logging `Authorization` (the
+app's 0.169 engine; the last case on CLI 0.157 too):
+- `requires_openai_auth = true` alone: the ChatGPT access token (a JWT), on `GET /models` and
+  `POST /responses`.
+- `env_key`: the variable's value. With the variable unset, nothing was sent and the run failed.
+- `experimental_bearer_token`: the literal, in both versions.
+
+copilot-api 2.6.23 with no `auth.apiKeys` and not network-exposed lets any bearer through
+(`allowWhenNoApiKeys: !networkExposed`), and forwards only `accept` and `user-agent` to a provider
+(`SHARED_FORWARDABLE_HEADERS`), so a placeholder is all it needs. A real Codex task through the gateway
+with the placeholder passed.
+
+### F114 — context windows come from the catalog; without one the app lists only its own GPT models 🟢
+0.169 has no `model_context_window` key. A model's window is its catalog entry's `context_window`;
+Codex counts 95% of it as usable (`effective_context_window_percent`) and compacts at 90%
+(`ModelInfo::auto_compact_token_limit`). For the `m365` provider the app's `model/list` returned the 9
+GPT models it ships with: no `m365/*`, so no Claude. In codex-rs
+(`ConfiguredModelProvider::models_manager_with_settings`) a top-level `model_catalog_json` becomes the
+catalog for every provider, ahead of the provider's `/models` and its `model_catalog_url`.
+
+copilot-api serves Codex a catalog at `/models` (Codex User-Agent): every provider model, Claude
+included, as `tool_mode: code_mode_only` and `use_responses_lite: true`, windowed by the model's
+`contextWindow`, except names its upstream catalog also has, which keep that entry's 272k/872k. A
+`model_catalog_json` made of eight of those entries, renamed and given their windows, put them in the
+app's picker. One real task each through the app's engine passed: `m365/claude-sonnet-5` (usable window
+950,000, Code Mode `exec`) and `m365/gpt-6.1-sol` (950,000, 26 s).
+
+### F115 — the app saves the picked model as the default, but not its provider 🟢
+Picking a model in a thread made the app rewrite `config.toml`: `model = "<that model>"` and
+`model_reasoning_effort`, with `model_provider` untouched. The model belonged to the other provider (the
+Azure router), so new threads sent its bare name to copilot-api, which answered 400 "This model does
+not support the responses endpoint". The fix makes one provider serve every model in the catalog:
+copilot-api took the router as a second provider (`type: "openai-responses"`) with `modelMappings` from
+the bare names to `<provider>/<name>`. The saved default then passed a real task through the gateway,
+and threads started on the router's own Codex provider kept using it.
+
+### F116 — no StreamHub turn carried a `metering` map 🟡
+From Nov 11 to 16 the proxy ran 185 turns, 183 of them over StreamHub (`officeweb`; GPT-6.1 Sol, GPT-6,
+Sonnet 5 and GPT-5.5 Think Deeper among the tones), and none of the 175 `throttling` items logged in
+those days had a `metering` key. On Chathub's paid scenario every turn carries one (API doc, priority
+access), and GPT-6.1 Sol spends a budget of its own there. So either `officeweb` doesn't meter these
+models or StreamHub doesn't report it. The web client's picker also marks some models as using Copilot
+credits, and their turns show nothing either. The proxy talks only to Copilot Chat (Chathub or
+StreamHub); Cowork and Code are F110's agent runtime, which it doesn't call.
+
+### Open (Nov 16)
+- **H41a** — StreamHub meters these turns as Chathub does but doesn't report it. **Falsify:** an Opus
+  5.5 turn over StreamHub carries `metering`, or leaves Opus's daily key (read on Chathub's paid
+  scenario before and after) unchanged.
+- **H41b** — A model the web client marks as using Copilot credits draws on the account's Copilot credit
+  balance, one charge per M365 turn. **Probe:** read the balance in the web client before and after one
+  proxy turn on such a model.

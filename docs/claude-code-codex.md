@@ -151,6 +151,36 @@ Codex 0.160+ can load copilot-api's catalog (`model_catalog_url =
 "http://localhost:4141/models"`), which puts gateway models in Codex **Code Mode**. The
 proxy handles both modes; see below.
 
+**5. The Codex app** (Desktop, on Codex 0.169) needs three more settings
+([hypotheses §41](hypotheses.md)):
+
+- **Your ChatGPT account.** With `requires_openai_auth = false` (the default, `env_key` included) the
+  app's account menu shows the provider's name instead of your account and hides Remote. Set it to
+  `true`, with a placeholder bearer, so Codex doesn't send your ChatGPT token to the gateway:
+
+  ```toml
+  [model_providers.m365]
+  requires_openai_auth = true
+  experimental_bearer_token = "not-needed"   # instead of env_key
+  ```
+
+  `requires_openai_auth = true` on its own sends the ChatGPT access token. With `env_key` and the
+  variable unset (a shell opened before you exported it), 0.169 sends no request at all. copilot-api
+  with no `auth.apiKeys`, on loopback, accepts any bearer and forwards only `accept` and `user-agent`
+  upstream (F113).
+- **Models and context windows.** 0.169 has no `model_context_window`: a model's window is its catalog
+  entry's `context_window`, and Codex compacts at 90% of it. With no catalog the app lists the GPT
+  models it ships with, not `m365/*`, so no Claude. copilot-api's `/models` serves a Codex catalog
+  (to a `codex…` User-Agent) with every `m365/<id>`, Claude included, as Code Mode entries windowed
+  by each model's `contextWindow`. Save the entries you want to a file, set `context_window` and
+  `max_context_window`, and point a top-level `model_catalog_json` at it. A top-level catalog applies
+  to every provider and overrides both discovery and `model_catalog_url` (F114).
+- **One provider for every model.** The app saves the model you last picked as `model` in
+  `config.toml`, without its provider. With a second provider, picking one of its models breaks new
+  threads: copilot-api answers "This model does not support the responses endpoint". Put the other
+  backend behind copilot-api as a provider too, and map its bare model names with `modelMappings`
+  (`"<model>": "<provider>/<model>"`). Threads keep the provider they started with (F115).
+
 ## What the proxy does for these clients
 
 - **Shell routing knows their shells.** Claude Code's `Bash` was always caught. Codex's
