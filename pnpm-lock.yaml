@@ -32,9 +32,6 @@ importers:
       playwright:
         specifier: ^1.58.2
         version: 1.58.2
-      selenium-webdriver:
-        specifier: ^4.49.0
-        version: 4.52.0
       ws:
         specifier: ^8.20.0
         version: 8.20.0
@@ -48,6 +45,9 @@ importers:
       '@types/ws':
         specifier: ^8.18.1
         version: 8.18.1
+      selenium-webdriver:
+        specifier: ^4.49.0
+        version: 4.52.0
 
   packages/openclaw-plugin:
     dependencies:

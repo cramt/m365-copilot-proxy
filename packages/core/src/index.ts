@@ -139,16 +139,6 @@ export {
 export { createLogger, trunc, LOG_PATH, FRAME_DIR, fileLoggingEnabled } from "./log.js";
 
 export {
-  createSeleniumAuthDriver,
-  createSeleniumChromeOptions,
-  driveSeleniumAzureLogin,
-  parseOAuthCodeFromPerformanceEntry,
-  waitForSeleniumOAuthCode,
-  type SeleniumAuthOptions,
-  type SeleniumAuthDriver,
-  type SeleniumCredentials,
-} from "./selenium-auth.js";
-export {
   budgetConfig,
   parseEvents,
   findLogs,
