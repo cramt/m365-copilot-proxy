@@ -1,9 +1,18 @@
 import { type ModelSessionOptions, getAvailableModels } from "@m365-copilot/core";
 import { ChatCompletionRequest } from "./schemas.js";
 import { SessionPool, handleChatCompletion } from "./handler.js";
+import { checkAccess, corsHeaders, corsPolicy } from "./access.js";
 
 export { SessionPool, handleChatCompletion } from "./handler.js";
 export { ChatCompletionRequest, ChatMessage, ToolCall, ToolDefinition } from "./schemas.js";
+export {
+  isAgentHarnessUserAgent,
+  streamErrorsAsText,
+  streamErrorText,
+  stripGatewayToolTips,
+  stripGatewayToolTipsFromMessages,
+} from "./harness.js";
+export { checkAccess, corsHeaders, corsPolicy, type AccessDecision, type AccessRequest, type CorsPolicy } from "./access.js";
 
 // Re-export tool utilities from core
 export {
@@ -55,19 +64,6 @@ export function buildModelsPayload() {
   };
 }
 
-// --- CORS (permissive, matches the previous Hono `cors()` default) ---
-
-const CORS_HEADERS: Record<string, string> = {
-  "Access-Control-Allow-Origin": "*",
-  "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
-  "Access-Control-Allow-Headers": "Content-Type, Authorization",
-};
-
-function withCors(res: Response): Response {
-  for (const [k, v] of Object.entries(CORS_HEADERS)) res.headers.set(k, v);
-  return res;
-}
-
 function json(status: number, body: unknown): Response {
   return new Response(JSON.stringify(body), {
     status,
@@ -95,6 +91,23 @@ export function createApp(sessionOptions: ModelSessionOptions = {}): FetchApp {
   async function fetch(req: Request): Promise<Response> {
     const { pathname } = new URL(req.url);
     const method = req.method.toUpperCase();
+    const origin = req.headers.get("origin");
+    const cors = corsHeaders(corsPolicy(), origin);
+    const withCors = (res: Response): Response => {
+      for (const [k, v] of Object.entries(cors)) res.headers.set(k, v);
+      return res;
+    };
+
+    const access = checkAccess({
+      method,
+      pathname,
+      origin,
+      authorization: req.headers.get("authorization"),
+      apiKey: req.headers.get("x-api-key"),
+    });
+    if (access.kind === "deny") {
+      return withCors(json(access.status, { error: { message: access.message, type: "invalid_request_error" } }));
+    }
 
     if (method === "OPTIONS") {
       return withCors(new Response(null, { status: 204 }));
@@ -118,7 +131,10 @@ export function createApp(sessionOptions: ModelSessionOptions = {}): FetchApp {
         );
       }
       // req.signal aborts when the client disconnects → cancels the M365 turn.
-      return withCors(await handleChatCompletion(body, pool, { signal: req.signal }));
+      return withCors(await handleChatCompletion(body, pool, {
+        signal: req.signal,
+        userAgent: req.headers.get("user-agent"),
+      }));
     }
 
     return withCors(

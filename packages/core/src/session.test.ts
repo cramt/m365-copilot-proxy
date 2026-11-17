@@ -1,5 +1,5 @@
 import { describe, it, expect, afterEach } from "vitest";
-import { buildCopilotWebSocketHeaders, buildCopilotWebSocketUrl, cursorMessageId, foldStreamText, TurnTextComposer } from "./session.js";
+import { buildCopilotWebSocketHeaders, buildCopilotWebSocketUrl, cursorMessageId, foldStreamText, restoreStrippedBrackets, TurnTextComposer } from "./session.js";
 import { MessageUpdate } from "./schemas.js";
 
 /** Replay a sequence of raw M365 frames (deltas as {d}, snapshots as {s}) through
@@ -231,5 +231,54 @@ describe("TurnTextComposer (multi-message turns)", () => {
     expect(cursorMessageId("$['1051ab91-f905'].adaptiveCards[0].body[0].text")).toBe("1051ab91-f905");
     expect(cursorMessageId(undefined)).toBeNull();
     expect(cursorMessageId("garbage")).toBeNull();
+  });
+});
+
+describe("restoreStrippedBrackets (M365 deletes `[word]:` from the final text, §40 F111)", () => {
+  it("puts back a stripped PowerShell type and keeps the tail only the final carried", () => {
+    // Live (Codex on Windows): the deltas stopped early; the final snapshot
+    // had the rest, minus `[regex]:`.
+    const raw = "$updated = [regex]::Replace($content, $pattern, '${1}8080')\n\nSet-Content -LiteralPath $path -Value $updated -NoNewline\n\n#";
+    const final = "$updated = :Replace($content, $pattern, '${1}8080')\n\nSet-Content -LiteralPath $path -Value $updated -NoNewline\n\n# Verify the change";
+    expect(restoreStrippedBrackets(raw, final)).toBe(raw + " Verify the change");
+  });
+
+  it("puts back a token whose stripping also ate the newline and indent after it", () => {
+    const raw = "for node in buckets[idx]:\n                print(node)\n";
+    expect(restoreStrippedBrackets(raw, "for node in bucketsprint(node)\n")).toBe(raw);
+  });
+
+  it("gives up on any other difference, and changes nothing when nothing was stripped", () => {
+    expect(restoreStrippedBrackets("x = [regex]::A(1)", "x = :B(1)")).toBeNull();
+    expect(restoreStrippedBrackets("abc", "abd")).toBeNull();
+    expect(restoreStrippedBrackets("hello", "hello world")).toBe("hello world");
+  });
+
+  it("restores through a StreamHub restatement, from the deltas before it", () => {
+    const c = new TurnTextComposer();
+    const raw = "$u = [regex]::Replace($c, 'a', 'b')\n";
+    c.restart("m", "");
+    c.delta(raw);
+    c.restart("m", "");
+    c.snapshot("m", "$u = :Replace($c, 'a', 'b')\nSet-Content f $u");
+    expect(c.text).toBe("$u = :Replace($c, 'a', 'b')\nSet-Content f $u");
+    expect(c.finalText).toBe(raw + "Set-Content f $u");
+  });
+
+  it("handles leading '<' across StreamHub restart cursors and finalText bracket restore (§44 F121)", () => {
+    const sh = new TurnTextComposer();
+    sh.restart("m1", "");
+    sh.delta("<");
+    sh.delta("<EOF");
+    expect(sh.text).toBe("<<EOF");
+    expect(sh.finalText).toBe("<<EOF");
+
+    const c = new TurnTextComposer();
+    c.restart("m1", "<");
+    c.delta("<document [regex]::Replace()\n");
+    c.restart("m1", "");
+    c.snapshot("m1", "<document :Replace()\nend");
+    expect(c.text).toBe("<document :Replace()\nend");
+    expect(c.finalText).toBe("<document [regex]::Replace()\nend");
   });
 });

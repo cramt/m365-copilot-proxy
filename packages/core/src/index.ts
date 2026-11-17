@@ -22,6 +22,7 @@ export {
 } from "./image.js";
 
 export { uploadImage, imageUrls, type ImageAnnotation } from "./image-input.js";
+export { uploadFile, attachmentUrls, type FileAnnotation } from "./file-upload.js";
 
 export {
   noteRequestOutcome,
@@ -47,6 +48,12 @@ export {
   toolRequestUsesAgent,
   isPremiumOnlyModel,
   requestUsesAgent,
+  getTransport,
+  getStreamHubScenario,
+  type Transport,
+  noteWebSearchOverflow,
+  toneUsesWebSearch,
+  resetWebSearchOverflow,
   meteredBudgetOf,
   priorityAccessFallbackModel,
   PRIORITY_ACCESS_FALLBACK_ENV,
@@ -89,6 +96,7 @@ export {
   FRAMING_VARIANT_NAMES,
   longHeredocAsWrite,
   longCommandAsScript,
+  strippedTypeMember,
   type TranscriptStyle,
 } from "./fenced.js";
 

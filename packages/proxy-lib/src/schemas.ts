@@ -38,6 +38,8 @@ export const ChatMessage = z.object({
         text: z.string().optional(),
         // OpenAI image parts (pi sends a read image as a data URL): kept for image input.
         image_url: z.object({ url: z.string() }).passthrough().optional(),
+        // OpenAI file parts (a document as a data URL): uploaded to OneDrive (core file-upload.ts).
+        file: z.object({ filename: z.string().optional(), file_data: z.string().optional() }).passthrough().optional(),
       }),
     ),
   ]).nullable().optional(),
@@ -66,4 +68,10 @@ export const ChatCompletionRequest = z.object({
       function: z.object({ name: z.string() }),
     }),
   ]).optional(),
+  // A stable per-session key. copilot-api fills it from Claude Code's
+  // `metadata.user_id` session and from Codex's own `prompt_cache_key`: both are
+  // the client's session id, which tells two sessions with the same first
+  // message apart (see SessionPool).
+  prompt_cache_key: z.string().optional(),
+  user: z.string().optional(),
 });

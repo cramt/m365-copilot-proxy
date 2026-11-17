@@ -9,6 +9,8 @@ import {
   noteAgentRouteDead,
   noteAgentRouteAlive,
   isAgentRouteAlive,
+  noteWebSearchOverflow,
+  toneUsesWebSearch,
   PREMIUM_ONLY_AGENT_TONES,
   defaultFramingForModel,
   currentFramingVariant,
@@ -26,7 +28,7 @@ import {
   secondsUntilReset,
   type PriorityAccessExhaustion,
   formatMessages,
-  imageUrls,
+  attachmentUrls,
   parseToolCalls,
   looksLikeConfabulation,
   looksLikeHallucinatedCompletion,
@@ -36,6 +38,7 @@ import {
   textAfterFirstToolCall,
   longHeredocAsWrite,
   longCommandAsScript,
+  strippedTypeMember,
   formatToolResponse,
   isProseDocument,
   getMessageContent,
@@ -50,6 +53,15 @@ import {
   type ParsedToolCall,
 } from "@m365-copilot/core";
 import { ChatCompletionRequest } from "./schemas.js";
+import {
+  cleanHarnessMessages,
+  harnessPromptMode,
+  leanHarnessTools,
+  millisecondArgsFixed,
+  streamErrorsAsText,
+  streamErrorText,
+  stripGatewayToolTipsFromMessages,
+} from "./harness.js";
 import type { z } from "zod/v4";
 
 const log = createLogger("handler");
@@ -103,6 +115,12 @@ const HALLUCINATION_FORCE_PROMPT =
 // harness tools instead of letting the remote patch leak into the conversation.
 const REMOTE_ARTIFACT_FORCE_PROMPT =
   "The patch or download link you produced exists only in M365's remote environment and is NOT a file in the caller's working directory. Do NOT create, download, or apply a patch, and do NOT use a Teams artifact link. Use the provided local edit/write tool directly; if needed, emit ONE ```bash block that modifies the named local file in place. Output only that single local tool call, nothing else.";
+
+/** The re-prompt for a PowerShell command that lost a `[Type]:` to M365's
+ *  post-processing (strippedTypeMember): `member` is what arrived, e.g. `:Replace`. */
+function strippedTypeMemberPrompt(member: string): string {
+  return `(Note: I didn't run your last command, because it reached my terminal damaged. This chat deletes a one-word type name in square brackets when a colon follows it, even inside code, so [Type]::${member.slice(1)} arrived as \`${member}\`, which would have run as nothing. Please send the same command again with full dotted .NET type names, such as [System.Text.RegularExpressions.Regex]::Replace(...), [System.String]::IsNullOrWhiteSpace(...) or [System.Math]::Max(...), or with operators like -replace and -match.)`;
+}
 
 // M365 soft-caps output around ~3k tokens (~12k chars) and — critically —
 // CONCLUDES EARLY rather than truncating mid-stream, so a too-long answer comes
@@ -207,9 +225,10 @@ export function executedOnlyFirstNote(fabricated: boolean, droppedCalls: number,
 const MAX_IDLE_MS = 30 * 60 * 1000; // evict after 30 min idle
 
 export class SessionPool {
-  /** Keyed by fingerprint (first user message + tool names). Several can share
-   *  one: two pi sessions opened with "merhaba", parallel subagents given one
-   *  prompt, a session resumed after another started the same way. */
+  /** Keyed by fingerprint (first user message + tool names, scoped to
+   *  sessionKey when given). Several can share one: two pi sessions opened with
+   *  "merhaba", parallel subagents given one prompt, a session resumed after
+   *  another started the same way. */
   private conversations = new Map<string, ConversationState[]>();
   private sessionOptions: ModelSessionOptions;
 
@@ -220,7 +239,8 @@ export class SessionPool {
   /**
    * Resolve the conversation state for an incoming request.
    * Fingerprint is the hash of the first user message and the request's tool
-   * names — same opener and same tool set = same conversation family.
+   * names — same opener and same tool set = same conversation family — scoped
+   * to the client's session key when it sends one (prompt_cache_key / user).
    *
    * A harness re-sends the whole history and only ever appends, so a
    * continuation carries more messages than its conversation has sent, and at
@@ -229,10 +249,10 @@ export class SessionPool {
    * falls back to the most recent one, so a client that rewrites old replies
    * still continues (one conversation per fingerprint works as before).
    */
-  resolve(messages: ParsedMessage[], tools?: ChatBody["tools"]): ConversationState {
+  resolve(messages: ParsedMessage[], tools?: ChatBody["tools"], sessionKey?: string): ConversationState {
     this.evictStale();
 
-    const fingerprint = this.fingerprint(messages, tools);
+    const fingerprint = this.fingerprint(messages, tools, sessionKey);
     const bucket = this.conversations.get(fingerprint) ?? [];
     const candidates = bucket.filter((s) => !s.busy && messages.length > s.sentMessageCount);
     const own = candidates.find((s) => s.lastReply !== null && s.lastReply === replyKey(messages[s.sentMessageCount]))
@@ -252,7 +272,7 @@ export class SessionPool {
     // the pass rate fell 7/10 → 4/10 → 3/10 over the sweep. Resetting that thread
     // instead (F84) broke the earlier session when it was still alive: two
     // measurement jobs that ran at once threw each other's conversations away
-    // every turn (F98). The full prompt re-sends the whole history, so nothing
+    // every turn (§44 F120). The full prompt re-sends the whole history, so nothing
     // the harness holds is lost.
     if (bucket.length) log.info(`Conversation ${fingerprint}: not a continuation of the ${bucket.length} on this first message, starting a fresh M365 conversation`);
     else log.info(`New conversation ${fingerprint}, ${this.size} active`);
@@ -279,11 +299,19 @@ export class SessionPool {
   // which costs a thread, not the answer. Names, not definitions: descriptions
   // can carry per-turn text. The system prompt would separate the title request
   // too, but it is the likelier place for a date, a time or a git status.
-  private fingerprint(messages: ParsedMessage[], tools?: ChatBody["tools"]): string {
+  //
+  // The client's session key, when it sends one, scopes all of that: Codex starts
+  // every session in a repo with the same environment message (and the same
+  // tools), and two Claude Code sessions can open with the same prompt, so
+  // without it they'd share one M365 conversation. Subagents share the parent's
+  // session key, so the first message and the tool names still have to be part
+  // of the key.
+  private fingerprint(messages: ParsedMessage[], tools?: ChatBody["tools"], sessionKey?: string): string {
     const firstUser = messages.find(m => m.role === "user");
     const text = firstUser ? getMessageContent(firstUser) : "";
     const toolNames = [...new Set((tools ?? []).map(t => t.function.name))].sort().join(",");
-    return simpleHash(`${toolNames}\n${text}`);
+    const key = `${toolNames}\n${text}`;
+    return simpleHash(sessionKey ? `${sessionKey}\u0000${key}` : key);
   }
 
   private evictStale() {
@@ -385,11 +413,22 @@ export function formatDeltaMessages(messages: ParsedMessage[], history: ParsedMe
  * The SessionPool routes each conversation to its own ModelSession.
  */
 export async function handleChatCompletion(
-  body: ChatBody,
+  request: ChatBody,
   pool: SessionPool,
-  opts: { signal?: AbortSignal } = {},
+  opts: { signal?: AbortSignal; userAgent?: string | null } = {},
 ): Promise<Response> {
-  const conv = pool.resolve(body.messages, body.tools);
+  // copilot-api's Codex tool tips contradict the shell routing; Claude Code's and
+  // Codex's identity lines and reminders read as injections (M365_HARNESS_PROMPT,
+  // see harness.ts).
+  const promptMode = harnessPromptMode(opts.userAgent);
+  const tipless = stripGatewayToolTipsFromMessages(request.messages);
+  const body: ChatBody = {
+    ...request,
+    messages: promptMode === "off" ? tipless : cleanHarnessMessages(tipless),
+    tools: promptMode === "lean" ? leanHarnessTools(request.tools) : request.tools,
+  };
+  if (promptMode !== "off") log.debug(`Harness prompt: ${promptMode}`);
+  const conv = pool.resolve(body.messages, body.tools, body.prompt_cache_key ?? body.user);
   const { session } = conv;
   // The harness saved a long command to a script (longCommandAsScript); run it.
   const last = body.messages[body.messages.length - 1];
@@ -445,7 +484,7 @@ export async function handleChatCompletion(
   // `<system>`-tagged baseline as an injected prompt; on Opus it trips the
   // jailbreak classifier). Opus, Sonnet 4.6, GPT-6, GPT-6 Sol, GPT-6.1 Sol and
   // GPT-5.6 Think Deeper get the turn-saving `relay_batch` (§24 F60, §25, §27, §28,
-  // §39 F97); Sonnet 5 and Sonnet 5.5 plain `relay`. The rest keep the bench-tuned
+  // §44 F119); Sonnet 5 and Sonnet 5.5 plain `relay`. The rest keep the bench-tuned
   // `baseline`.
   // Keyed on the model, not the tone, because one tone can serve two models.
   // M365_FRAMING_* still wins.
@@ -458,18 +497,18 @@ export async function handleChatCompletion(
   const isFirstTurn = session.turnCount === 0;
   const convId = session.conversationId;
   let text: string;
-  // Images ride on the message that carries their text (core image-input.ts).
-  let inputImages: string[] = [];
+  // Images and files ride on the message that carries their text (core image-input.ts, file-upload.ts).
+  let inputAttachments: string[] = [];
   if (run) {
     text = "";
     log.info(`Running the saved long command: ${trunc(run.function.arguments, 200)} (no M365 turn), cid=${convId}`);
   } else if (isFirstTurn || conv.sentMessageCount === 0) {
     text = formatMessages(body.messages, body.tools, body.tool_choice, convId, framingVariant);
-    inputImages = imageUrls(body.messages);
+    inputAttachments = attachmentUrls(body.messages);
     log.info(`Chat completion: model=${model}, stream=${body.stream}, messages=${body.messages.length}, turn=${session.turnCount}, mode=full, cid=${convId}`);
   } else {
     const newMessages = body.messages.slice(conv.sentMessageCount);
-    inputImages = imageUrls(newMessages);
+    inputAttachments = attachmentUrls(newMessages);
     const delta = newMessages.length > 0 ? formatDeltaMessages(newMessages, body.messages) : "";
     if (delta.length > 0) {
       text = delta;
@@ -517,6 +556,7 @@ export async function handleChatCompletion(
     let agentRefreshed = false;
     let disengageRetried = false;
     let agentFallbackDone = false;
+    let webSearchFallbackDone = false;
     let priorityFallbackDone = false;
     let internalErrorFreshRetried = false;
     let originalText = text;
@@ -557,7 +597,7 @@ export async function handleChatCompletion(
         // The agent overrides `tone` (forces GPT-5), so tool-less requests must
         // skip it to reach the model the tone selects (e.g. Claude). See
         // ModelSession.run / docs H8.6.
-        copilotStream = await session.run(text, model, signal, useToolAgent, inputImages, waitForBudget);
+        copilotStream = await session.run(text, model, signal, useToolAgent, inputAttachments, waitForBudget);
       } catch (err: any) {
         if (err instanceof TurnBudgetHold) return { error: turnBudgetHoldResponse(err) };
         return { error: jsonResponse(502, { error: { message: err.message, type: "upstream_error" } }) };
@@ -609,6 +649,11 @@ export async function handleChatCompletion(
       lastScores = copilotStream.scores;
       lastTurnCount = copilotStream.turnCount;
       lastMetering = copilotStream.metering;
+      // The classifier scores reach clients only as `usage` extension fields,
+      // which a gateway drops; experiments read them from the debug log instead.
+      if (lastScores && Object.keys(lastScores).length > 0) {
+        log.info(`Turn scores: ${Object.entries(lastScores).map(([k, v]) => `${k}=${v}`).join(" ")}${lastMessageType ? ` (${lastMessageType})` : ""}, cid=${session.conversationId}`);
+      }
 
       // M365 SAYS when it throttles: the final item's result is `Throttled` /
       // `PerUserThrottled` (#35). Checked BEFORE the content check so
@@ -620,6 +665,38 @@ export async function handleChatCompletion(
         noteRequestOutcome(true, convId);
         log.info(`Upstream Throttled (${copilotStream.result.errorCode ?? "no errorCode"}) — 429, no retry`);
         return { error: throttledResponse(copilotStream.result) };
+      }
+
+      // An agent-less turn carries the Bing plugin, and on some accounts that
+      // alone pushes a tone over its input limit: GPT-6 and GPT-5.5 Think Deeper
+      // refuse a one-line prompt with it and serve without it (§40). Remember
+      // that for the process, and re-send the WHOLE request without the plugin
+      // in a fresh conversation. At most once per request: a prompt that's
+      // really too long then fails fast below.
+      if (
+        !webSearchFallbackDone && !useToolAgent && toneUsesWebSearch(tone) &&
+        copilotStream.result?.value === "InvalidRequest" &&
+        copilotStream.result.errorCode === "InputTokenLimitExceeded"
+      ) {
+        webSearchFallbackDone = true;
+        noteWebSearchOverflow(tone);
+        session.newConversation();
+        text = formatMessages(body.messages, body.tools, body.tool_choice, session.conversationId, framingVariant);
+        inputAttachments = attachmentUrls(body.messages);
+        originalText = text;
+        log.info(`${tone} refused the prompt with the Bing plugin attached (InputTokenLimitExceeded) — re-sending without it in a fresh conversation`);
+        attempt--;
+        continue;
+      }
+
+      // M365 rejects a prompt over the model's input limit outright: no content,
+      // `result: InvalidRequest (InputTokenLimitExceeded)`. GPT-6.1 Sol did on every
+      // Codex first turn, whose ~40k-character instructions Sonnet takes (§39).
+      // Any retry re-sends the same prompt, so fail fast and say what to cut.
+      if (copilotStream.result?.value === "InvalidRequest") {
+        noteRequestOutcome(false, convId);
+        log.info(`Upstream InvalidRequest (${copilotStream.result.errorCode ?? "no errorCode"}), prompt ${text.length} chars — 400, no retry`);
+        return { error: invalidRequestResponse(copilotStream.result, model, text.length) };
       }
 
       // A tone whose agent route serves only on a premium account came back as
@@ -646,7 +723,7 @@ export async function handleChatCompletion(
         useToolAgent = false;
         session.newConversation();
         text = formatMessages(body.messages, body.tools, body.tool_choice, session.conversationId, framingVariant);
-        inputImages = imageUrls(body.messages);
+        inputAttachments = attachmentUrls(body.messages);
         originalText = text;
         log.info(`Agent route dead for ${tone} (InternalError) — this account isn't premium; re-sending agent-less with '${framingVariant}' framing in a fresh conversation`);
         attempt--;
@@ -677,7 +754,7 @@ export async function handleChatCompletion(
           useToolAgent = requestUsesAgent(model, !!hasTools);
           session.newConversation();
           text = formatMessages(body.messages, body.tools, body.tool_choice, session.conversationId, framingVariant);
-          inputImages = imageUrls(body.messages);
+          inputAttachments = attachmentUrls(body.messages);
           originalText = text;
           attempt--;
           continue;
@@ -687,11 +764,34 @@ export async function handleChatCompletion(
         return { error: priorityAccessResponse(exhausted, model) };
       }
 
+      // M365's prompt filter can answer with a canned apology instead of a
+      // Disengaged message: contentOrigin "Apology", "Sorry, it looks like I can't
+      // chat about this. Let's try a different topic." GPT-5.6 Think Deeper did on
+      // a benign Codex edit task (§39). It is F22's refusal with text, and it
+      // reached the client as the model's answer. The final item restates that
+      // message under another origin, so read the turn's sticky `apology` flag.
+      // Retry it like a Disengage, once, in a fresh conversation; a second apology
+      // goes through as before. Tool requests only: they're buffered, so nothing
+      // has been streamed yet.
+      if (
+        (copilotStream.apology || copilotStream.contentOrigin === "Apology") &&
+        hasTools && !disengageRetried && !process.env.M365_NO_DISENGAGE_RETRY
+      ) {
+        disengageRetried = true;
+        session.newConversation();
+        const retryVariant = transcriptStyleForVariant(framingVariant).framingTag === "system" ? "softened" : framingVariant;
+        text = formatMessages(body.messages, body.tools, body.tool_choice, session.conversationId, retryVariant);
+        inputAttachments = attachmentUrls(body.messages);
+        log.info(`Upstream Apology (prompt filter) — retrying once with '${retryVariant}' framing in a fresh conversation (F22)`);
+        attempt--; // free retry; bounded — disengageRetried flips once
+        continue;
+      }
+
       if (copilotStream.hasContent || fullText.length > 0) {
         noteRequestOutcome(false, convId); // clean response → degradation has lifted
         if (useToolAgent) noteAgentRouteAlive(tone); // the agent route answered on this account
         conv.servedModel = model;
-        inputImages = []; // on the server now: a forcing retry in this conversation needn't resend them
+        inputAttachments = []; // on the server now: a forcing retry in this conversation needn't resend them
         return { fullText };
       }
 
@@ -716,7 +816,7 @@ export async function handleChatCompletion(
           // exactly the tag that model reads as a forged system prompt.
           const retryVariant = transcriptStyleForVariant(framingVariant).framingTag === "system" ? "softened" : framingVariant;
           text = formatMessages(body.messages, body.tools, body.tool_choice, session.conversationId, retryVariant);
-          inputImages = imageUrls(body.messages);
+          inputAttachments = attachmentUrls(body.messages);
           log.info(`Upstream Disengaged — retrying once with '${retryVariant}' framing in a fresh conversation (F22)`);
           attempt--; // free retry; bounded — disengageRetried flips once
           continue;
@@ -752,7 +852,7 @@ export async function handleChatCompletion(
         internalErrorFreshRetried = true;
         session.newConversation();
         text = formatMessages(body.messages, body.tools, body.tool_choice, session.conversationId, framingVariant);
-        inputImages = imageUrls(body.messages);
+        inputAttachments = attachmentUrls(body.messages);
         originalText = text;
         log.info(`Upstream InternalError — re-sending the whole request in a fresh conversation (attempt ${attempt + 1}/${MAX_RETRIES})`);
         await new Promise(r => setTimeout(r, SHORT_RETRY_DELAY_MS));
@@ -898,6 +998,37 @@ export async function handleChatCompletion(
       };
     }
 
+    // M365's post-processing can strip a `[Type]:` out of a PowerShell command
+    // that the deltas couldn't restore (a short reply arrives only as its final
+    // snapshot): `$new = :Replace($old, …)` sets `$new` to nothing and the
+    // `Set-Content` after it empties the file — Codex's in-place edits lost the
+    // file 4 times in 4 that way (§40 F111). Don't run such a command: ask once,
+    // in the same conversation, for it with full type names. If it comes back
+    // damaged again, fail closed.
+    const damaged = parsed.hasToolCalls ? strippedTypeMember(parsed.toolCalls[0], body.tools) : null;
+    if (damaged) {
+      log.info(`PowerShell command lost a [Type]: before ${damaged} to M365's post-processing — not running it, asking for it again`);
+      text = strippedTypeMemberPrompt(damaged);
+      const retry = await runBuffered();
+      if ("error" in retry) return { kind: "error", resp: retry.error };
+      conv.sentMessageCount = body.messages.length;
+      fullText = stopAtFabricatedResult(retry.fullText);
+      ({ parsed, judged } = parseReply(fullText, body.tools));
+      const still = parsed.hasToolCalls ? strippedTypeMember(parsed.toolCalls[0], body.tools) : null;
+      log.info(`After the damaged-command retry: hasToolCalls=${parsed.hasToolCalls}, damaged=${still ?? "no"}`);
+      if (still) {
+        return {
+          kind: "error",
+          resp: jsonResponse(502, {
+            error: {
+              message: `M365 Copilot stripped a .NET type name from the PowerShell command twice (it arrived as \`${still}\`), so it was not run: run as written it would have done nothing, or emptied a file. Retry; asking for full type names such as [System.Text.RegularExpressions.Regex]::Replace usually avoids it.`,
+              type: "damaged_tool_call",
+            },
+          }),
+        };
+      }
+    }
+
     // Fail-closed: if model mixed text with tool calls, strip text and re-prompt once.
     // This enforces the "output ONLY a tool call" contract.
     if (parsed.hasToolCalls && parsed.textContent) {
@@ -961,14 +1092,16 @@ export async function handleChatCompletion(
       } else if (asScript) {
         log.info(`Command of ${asScript.length} chars is over the Windows command-line cap — saving it to ${asScript.path}, run on the next request`);
         parsed.toolCalls = [asScript.write];
-        conv.chain = { writeId: asScript.write.id, run: asScript.run };
+        conv.chain = { writeId: asScript.write.id, run: millisecondArgsFixed(asScript.run, body.tools) };
         rewriteNote = `(Note: your command was ${asScript.length.toLocaleString("en-US")} characters, longer than the ~8,000 the Windows command line carries, so it would have been cut off. It was saved unchanged to \`${asScript.path}\` and run from there; this is its output:)`;
       }
       // The model's server-side history holds more than what runs; say so on
       // the turn that carries the real result (executedOnlyFirstNote).
       const notes = [rewriteNote, executedOnlyFirstNote(cutFabricated, droppedCalls, textAfterFirstToolCall(fullText, body.tools).length)].filter(Boolean);
       conv.pendingNote = notes.length ? notes.join("\n") : null;
-      return { kind: "tools", toolCalls: parsed.toolCalls };
+      const fixed = parsed.toolCalls.map((c) => millisecondArgsFixed(c, body.tools));
+      if (fixed.some((c, i) => c !== parsed.toolCalls[i])) log.info("A millisecond argument under 1000 read as seconds (e.g. Bash timeout: 30)");
+      return { kind: "tools", toolCalls: fixed };
     }
     return { kind: "text", text: plainFileNames(fullText) };
   } else {
@@ -1002,6 +1135,7 @@ export async function handleChatCompletion(
 
   // --- Render: JSON (non-stream) or an early-flushed SSE stream (stream) ---
   const includeUsage = !!body.stream_options?.include_usage;
+  const errorsAsText = streamErrorsAsText(opts.userAgent);
   const usage = () => buildUsage(lastThrottle, lastContentOrigin, lastMessageType, lastScores, lastTurnCount, lastMetering);
 
   if (!body.stream) {
@@ -1088,8 +1222,16 @@ export async function handleChatCompletion(
             if (parsed?.code) code = parsed.code;
           } catch {}
           const retryAfter = p.resp.headers.get("Retry-After");
-          // HTTP 200 is already committed, so surface the failure as an in-stream error chunk.
-          send({ ...base, error: { message, type, ...(code ? { code } : {}), ...(retryAfter ? { retry_after: Number(retryAfter) } : {}) } });
+          if (errorsAsText) {
+            // An agent harness behind a gateway can't read an error chunk and
+            // would retry into fresh conversations: end the turn with the reason.
+            const reason = streamErrorText({ message, type, code, retryAfter: retryAfter ? Number(retryAfter) : undefined });
+            send({ ...base, choices: [{ index: 0, delta: { content: (sent ? "\n\n" : "") + reason }, finish_reason: null }] });
+            send({ ...base, choices: [{ index: 0, delta: {}, finish_reason: "stop" }], ...(includeUsage ? { usage: usage() } : {}) });
+          } else {
+            // HTTP 200 is already committed, so surface the failure as an in-stream error chunk.
+            send({ ...base, error: { message, type, ...(code ? { code } : {}), ...(retryAfter ? { retry_after: Number(retryAfter) } : {}) } });
+          }
         } else if (p.kind === "tools") {
           p.toolCalls.forEach((tc, i) => {
             log.debug(`Tool call: ${tc.function.name} ${trunc(tc.function.arguments, 200)}`);
@@ -1256,6 +1398,24 @@ function turnBudgetHoldResponse(hold: TurnBudgetHold): Response {
     },
     { "Retry-After": String(retryAfter) },
   );
+}
+
+/** M365 refused the turn as an invalid request; `InputTokenLimitExceeded` means
+ *  the prompt is too big for this model. A 400: re-sending it can't succeed. */
+function invalidRequestResponse(result: { errorCode?: string; message?: string }, model: string, promptChars: number): Response {
+  const tooLong = result.errorCode === "InputTokenLimitExceeded";
+  const message = tooLong
+    ? `M365 Copilot refused the prompt as too long for ${model} (InputTokenLimitExceeded; ${promptChars} characters sent). ` +
+      `Shorten the system prompt or the tool definitions (for Codex: model_instructions_file), or use another model.`
+    : `M365 Copilot rejected the request (InvalidRequest${result.errorCode ? `: ${result.errorCode}` : ""})${result.message ? `: ${result.message}` : "."}`;
+  return jsonResponse(400, {
+    error: {
+      message,
+      type: "invalid_request_error",
+      code: tooLong ? "context_length_exceeded" : "m365_invalid_request",
+      ...(result.errorCode ? { param: result.errorCode } : {}),
+    },
+  });
 }
 
 /** Empty upstream reply that is NOT an at-limit throttle — a distinct failure
