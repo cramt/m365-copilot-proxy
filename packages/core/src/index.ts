@@ -47,6 +47,12 @@ export {
   toolRequestUsesAgent,
   isPremiumOnlyModel,
   requestUsesAgent,
+  getTransport,
+  getStreamHubScenario,
+  type Transport,
+  noteWebSearchOverflow,
+  toneUsesWebSearch,
+  resetWebSearchOverflow,
   meteredBudgetOf,
   priorityAccessFallbackModel,
   PRIORITY_ACCESS_FALLBACK_ENV,
@@ -88,6 +94,7 @@ export {
   transcriptStyleForVariant,
   FRAMING_VARIANT_NAMES,
   longHeredocAsWrite,
+  strippedTypeMember,
   type TranscriptStyle,
 } from "./fenced.js";
 

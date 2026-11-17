@@ -66,4 +66,10 @@ export const ChatCompletionRequest = z.object({
       function: z.object({ name: z.string() }),
     }),
   ]).optional(),
+  // A stable per-session key. copilot-api fills it from Claude Code's
+  // `metadata.user_id` session and from Codex's own `prompt_cache_key`: both are
+  // the client's session id, which tells two sessions with the same first
+  // message apart (see SessionPool).
+  prompt_cache_key: z.string().optional(),
+  user: z.string().optional(),
 });
