@@ -103,6 +103,8 @@ than "we eyeballed one run." See §M (Methods) for the experimental rig.
   upload (F97, shipped in `file-upload.ts`)
 - §43 — a give-up no detector caught, "I can't generate files in the current session": two first-person
   English patterns catch it and nothing else in 334 replies with no tool call (F118)
+- §44 — a "<" at the head of a message came out twice: `TurnTextComposer` drops a restated leading `"<"`
+  after a cursor or StreamHub restart (F119)
 
 ---
 
@@ -6111,3 +6113,25 @@ this repo's own docs, which a project summary resembles, there is one new hit: a
 quoted in §27 ("I can't create or run scripts in this session").
 **Not measured:** how often the forcing retry then turns this give-up. It is the mid-task prompt, sent after
 a real call.
+
+---
+
+## 44. Oct 5 2026 — Doubled leading `<` in `TurnTextComposer`
+
+Follow-up from the Oct 5 real-pi sweep (#70 split into standalone PRs).
+
+### F119 — a "<" at the head of a message came out twice 🟢
+In the 5.5 sweep three baseline answers began `<<notlar.pdf>`, `<<notlar.docx>`,
+`<<document>notlar.docx</document>`. M365 sent the snapshot `"<"` with the message's cursor and then
+the delta `"<document"`: it holds a leading `<` back until it knows the tag, so the first delta
+restates the head. `TurnTextComposer` appended it, and the final snapshot, one character shorter than
+the doubled text, never replaced it (`foldStreamText` ignores a shorter snapshot). Across the Oct 2–5
+debug logs every cursor has `p: -1`; in 9 of 1,061 cursor frames the first delta restated the
+snapshot, each one a `"<"`.
+
+**Fixed:** the first delta after a cursor (or StreamHub `restart`) replaces a held-back `"<"` head
+when it starts with `"<"`, otherwise appends as before (`afterCursor`). Taken for any head, the rule ate
+a one-character head the delta continues (`"*"` + `"*Summary**"` came out as broken bold, and `` "`" `` +
+`` "``bash" `` as a two-backtick fence); narrowing to `"<"` matches all 9 restated frames while keeping
+markdown continuations intact. On top of StreamHub's `TurnTextComposer`, `run.base` also drops the
+restated `"<"` so `finalText` / `restoreStrippedBrackets` and StreamHub restating cursors stay aligned.

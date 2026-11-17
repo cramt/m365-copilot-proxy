@@ -254,6 +254,8 @@ export function restoreStrippedBrackets(raw: string, final: string): string | nu
 export class TurnTextComposer {
   private texts = new Map<string, string>();
   private target: string | null = null;
+  /** No delta has arrived since the last cursor or restart (see delta). */
+  private afterCursor = false;
   // Per message: the run of deltas in progress (the text it started from, and
   // the deltas since), and the longest text a finished run built. The deltas
   // are the model's own text; see restoreStrippedBrackets.
@@ -271,6 +273,7 @@ export class TurnTextComposer {
   /** A cursor frame: subsequent deltas extend message `id`. */
   cursor(id: string): void {
     this.target = id;
+    this.afterCursor = true;
   }
 
   /** A full-text snapshot of one message. Before any cursor has been seen, the
@@ -282,14 +285,30 @@ export class TurnTextComposer {
     this.texts.set(key, foldStreamText(this.texts.get(key) ?? "", text).answer);
   }
 
-  /** A token delta for the message the cursor last named. */
+  /** A token delta for the message the cursor last named.
+   *
+   *  The first delta after a cursor (or StreamHub restart) can restate the
+   *  head snapshot that came with it. A message that opens with "<" streams the
+   *  snapshot "<" and then the delta "<document" (M365 holds the "<" back until
+   *  it knows the tag), so appending gave "<<document>notlar.docx…", and the
+   *  final snapshot, one character shorter, never replaced it. 9 of 1,061 cursor
+   *  frames in the Oct 2–5 debug logs, each one a "<"; in the rest the first
+   *  delta continues the snapshot. Only that "<" counts as restated: a head of
+   *  "*" or "`" followed by a delta that starts the same way is a continuation
+   *  ("*" + "*Summary**" is bold, "`" + "``bash" a fence), and dropping it would
+   *  break the markdown. Dropping the restated "<" from `run.base` as well keeps
+   *  `finalText` / `restoreStrippedBrackets` aligned with the model's text
+   *  (docs/hypotheses.md §44 F119). */
   delta(text: string): void {
     const key = this.target ?? "";
     const current = this.texts.get(key) ?? "";
-    const run = this.runs.get(key) ?? { base: current, deltas: "" };
+    const restated = this.afterCursor && current === "<" && text.startsWith("<");
+    const base = restated ? "" : current;
+    const run = this.runs.get(key) ?? { base, deltas: "" };
     run.deltas += text;
     this.runs.set(key, run);
-    this.texts.set(key, current + text);
+    this.texts.set(key, base + text);
+    this.afterCursor = false;
   }
 
   /** A StreamHub cursor frame: message `id` now reads exactly `text`, and the
@@ -298,6 +317,7 @@ export class TurnTextComposer {
    *  restatement in (as `snapshot` does) would duplicate the message. */
   restart(id: string, text: string): void {
     this.target = id;
+    this.afterCursor = true;
     this.endRun(id);
     this.texts.set(id, text);
   }
