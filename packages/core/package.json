@@ -24,9 +24,18 @@
     "ws": "^8.20.0",
     "zod": "^4.3.6"
   },
+  "peerDependencies": {
+    "selenium-webdriver": "^4.49.0"
+  },
+  "peerDependenciesMeta": {
+    "selenium-webdriver": {
+      "optional": true
+    }
+  },
   "devDependencies": {
     "@types/node": "^22.0.0",
-    "@types/ws": "^8.18.1"
+    "@types/ws": "^8.18.1",
+    "selenium-webdriver": "^4.49.0"
   },
   "publishConfig": {
     "access": "public"

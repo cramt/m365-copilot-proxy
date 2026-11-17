@@ -34,6 +34,7 @@ export function getImageArtifactToken(): Promise<string | null> {
 }
 
 import { createLogger } from "./log.js";
+import { awaitLoginCode, retryLogin } from "./auth-flow.js";
 const log = createLogger("auth");
 
 const CONFIG_DIR = join(homedir(), ".config", "opencode-m365");
@@ -316,6 +317,104 @@ async function driveAzureLogin(page: any, creds: Credentials): Promise<void> {
   }
 }
 
+function useSeleniumBrowser(): boolean {
+  return (process.env.M365_BROWSER_PROVIDER ?? "playwright").toLowerCase() === "selenium";
+}
+
+function seleniumServerUrl(): string {
+  return process.env.M365_SELENIUM_URL ?? "http://localhost:4444";
+}
+
+async function loadSeleniumAuth() {
+  try {
+    return await import("./selenium-auth.js");
+  } catch (error: any) {
+    if (error?.code === "ERR_MODULE_NOT_FOUND" && String(error?.message).includes("selenium-webdriver")) {
+      throw new Error(
+        "Selenium authentication was selected but the optional selenium-webdriver peer is not installed. Install selenium-webdriver in the application and retry.",
+        { cause: error },
+      );
+    }
+    throw error;
+  }
+}
+
+interface SeleniumLoginOptions {
+  credentials?: Partial<Credentials>;
+  timeoutMs: number;
+  artifactLabel: string;
+  interactive?: boolean;
+}
+
+/** Shared Selenium driver lifecycle and PKCE code exchange for both login paths. */
+async function runSeleniumLoginFlow(
+  app: msal.PublicClientApplication,
+  scopes: string[],
+  options: SeleniumLoginOptions,
+): Promise<string> {
+  const {
+    captureSeleniumPage,
+    createSeleniumAuthDriver,
+    driveSeleniumAzureLogin,
+    waitForSeleniumOAuthCode,
+  } = await loadSeleniumAuth();
+  const { authUrl, verifier } = await buildAuthUrlForScopes(app, scopes);
+  const serverUrl = seleniumServerUrl();
+  const browser = await createSeleniumAuthDriver({
+    serverUrl,
+    browser: process.env.M365_SELENIUM_BROWSER ?? "chrome",
+    userAgent: LOGIN_USER_AGENT,
+    locale: LOGIN_LOCALE,
+    timezone: LOGIN_TIMEZONE,
+  });
+  try {
+    log.info(`Using Selenium RemoteWebDriver${options.interactive ? " for interactive login" : ""}: ${serverUrl}`);
+    if (options.interactive) {
+      console.error("[m365 auth] Interactive approval required in the remote Selenium browser.");
+      console.error("[m365 auth] Complete Microsoft sign-in/MFA through the Grid VNC/noVNC session.");
+      console.error(`[m365 auth] Waiting up to ${Math.round(options.timeoutMs / 1000)}s.`);
+    }
+    await browser.driver.get(authUrl);
+
+    const codePromise = waitForSeleniumOAuthCode(browser.driver, options.timeoutMs);
+    const authCode = options.credentials
+      ? await awaitLoginCode(
+          codePromise,
+          driveSeleniumAzureLogin(browser.driver, options.credentials),
+        )
+      : await codePromise;
+
+    const result = await app.acquireTokenByCode({
+      code: authCode,
+      scopes,
+      redirectUri: REDIRECT_URI,
+      codeVerifier: verifier,
+    });
+    saveCache(app);
+    log.info(`Selenium login succeeded as ${result.account?.username}`);
+    return result.accessToken;
+  } catch (err: any) {
+    await captureSeleniumPage(browser.driver, LOGIN_DEBUG_DIR, options.artifactLabel);
+    throw err;
+  } finally {
+    await browser.close();
+  }
+}
+
+async function runSeleniumBrowserLogin(
+  app: msal.PublicClientApplication,
+  scopes: string[],
+  creds: Partial<Credentials>,
+  timeoutMs = 45_000,
+  attempt = 1,
+): Promise<string> {
+  return runSeleniumLoginFlow(app, scopes, {
+    credentials: creds,
+    timeoutMs,
+    artifactLabel: `selenium-attempt-${attempt}-fail`,
+  });
+}
+
 /**
  * Acquire a token for the given scopes via a headless browser login.
  * Retries up to `attempts` times, capturing screenshots/HTML on each failure.
@@ -328,6 +427,22 @@ async function runBrowserLogin(
   creds: Credentials,
   attempts = 3,
 ): Promise<string | null> {
+  if (useSeleniumBrowser()) {
+    return retryLogin(
+      async (attempt) => {
+        log.info(`Selenium browser login attempt ${attempt}/${attempts} for [${scopes.join(", ")}]`);
+        return runSeleniumBrowserLogin(app, scopes, creds, 45_000, attempt);
+      },
+      attempts,
+      async (attempt, error, willRetry) => {
+        log.error(`Selenium browser login attempt ${attempt}/${attempts} failed: ${(error as any)?.message ?? error}`);
+        if (willRetry) {
+          // TOTP codes are single-use per 30s window; wait for a fresh code.
+          await new Promise((resolve) => setTimeout(resolve, 31_000));
+        }
+      },
+    );
+  }
   const { chromium } = await import("playwright");
 
   for (let attempt = 1; attempt <= attempts; attempt++) {
@@ -483,6 +598,13 @@ export async function loginAutomated(
 async function loginInteractiveForScopes(scopes: string[]): Promise<string> {
   if (!interactiveAllowed()) {
     throw new Error("Interactive login is disabled (M365_NO_INTERACTIVE=1)");
+  }
+  if (useSeleniumBrowser()) {
+    return runSeleniumLoginFlow(getApp(), scopes, {
+      timeoutMs: interactiveTimeoutMs(),
+      artifactLabel: "selenium-interactive-fail",
+      interactive: true,
+    });
   }
   const { chromium } = await import("playwright");
   const app = getApp();
