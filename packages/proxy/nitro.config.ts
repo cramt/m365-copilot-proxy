@@ -4,10 +4,10 @@ export default defineNitroConfig({
   compatibilityDate: "2025-01-01",
   preset: "node-server",
   externals: {
-    // Keep Selenium inside its dynamically imported chunk. Otherwise Nitro's
-    // dependency tracer adds the optional peer to the production package manifest,
-    // making every proxy deployment install it even when Playwright is selected.
-    inline: ["selenium-webdriver"],
+    // selenium-webdriver loads its `lib/atoms` modules through computed CommonJS
+    // require() calls. Keep it external: bundling the package rewrites those calls
+    // into an unsupported dynamic require. Nitro's file tracer copies the package
+    // and its atom files into the standalone server runtime.
     // pnpm2nix serves node_modules from the read-only Nix store. Nitro's
     // node-externals plugin copyFile's each external into
     // .output/server/node_modules/<pkg>/ preserving the source mode
