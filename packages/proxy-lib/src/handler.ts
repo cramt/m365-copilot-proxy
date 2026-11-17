@@ -172,6 +172,17 @@ interface ConversationState {
    *  Opus fallback, #18) can't continue the M365 conversation — it may need
    *  another scenario — so it starts a fresh one with the full history. */
   servedModel?: string;
+  /** replyKey of the last reply this conversation gave the client. */
+  lastReply: string | null;
+  /** A turn is in flight, so no other request is its continuation. */
+  busy: boolean;
+}
+
+/** What a client echoes back of a reply in its next request: the tool-call ids
+ *  (they pair the results, so they come back verbatim), else the text. */
+function replyKey(m: ParsedMessage | undefined): string | null {
+  if (m?.role !== "assistant") return null;
+  return m.tool_calls?.length ? m.tool_calls.map((c) => c.id).join(" ") : getMessageContent(m).trim();
 }
 
 /**
@@ -208,7 +219,11 @@ export function executedOnlyFirstNote(fabricated: boolean, droppedCalls: number,
 const MAX_IDLE_MS = 30 * 60 * 1000; // evict after 30 min idle
 
 export class SessionPool {
-  private conversations = new Map<string, ConversationState>();
+  /** Keyed by fingerprint (first user message + tool names, scoped to
+   *  sessionKey when given). Several can share one: two pi sessions opened with
+   *  "merhaba", parallel subagents given one prompt, a session resumed after
+   *  another started the same way. */
+  private conversations = new Map<string, ConversationState[]>();
   private sessionOptions: ModelSessionOptions;
 
   constructor(sessionOptions: ModelSessionOptions = {}) {
@@ -218,47 +233,53 @@ export class SessionPool {
   /**
    * Resolve the conversation state for an incoming request.
    * Fingerprint is the hash of the first user message and the request's tool
-   * names — same opener and same tool set = same conversation — scoped to the
-   * client's session key when it sends one (prompt_cache_key / user).
+   * names — same opener and same tool set = same conversation family — scoped
+   * to the client's session key when it sends one (prompt_cache_key / user).
+   *
+   * A harness re-sends the whole history and only ever appends, so a
+   * continuation carries more messages than its conversation has sent, and at
+   * that position it echoes the conversation's last reply (replyKey). The echo
+   * tells apart conversations that share a fingerprint. Without a match it
+   * falls back to the most recent one, so a client that rewrites old replies
+   * still continues (one conversation per fingerprint works as before).
    */
   resolve(messages: ParsedMessage[], tools?: ChatBody["tools"], sessionKey?: string): ConversationState {
     this.evictStale();
 
     const fingerprint = this.fingerprint(messages, tools, sessionKey);
-    const existing = this.conversations.get(fingerprint);
-
-    if (existing) {
-      // A request that carries no more messages than this conversation already
-      // sent is not its continuation (a harness re-sends the whole history and
-      // only ever appends). It's a new session that shares the first user message
-      // — two pi sessions opened with the same prompt, even in different
-      // directories — or a re-sent request. Either way it needs a FRESH M365
-      // conversation: reset() kept the conversationId, so the full prompt went
-      // into the old thread, and at equal length nothing reset at all and
-      // "Please continue." went there. Measured (Windows / pi, 30 runs of 2
-      // prompts): later sessions answered from earlier ones — "notlar.docx was
-      // already created and verified" in an empty directory — and the pass rate
-      // fell 7/10 → 4/10 → 3/10 over the sweep. The full prompt re-sends the
-      // whole history, so nothing the harness holds is lost.
-      if (messages.length <= existing.sentMessageCount) {
-        log.info(`Conversation ${fingerprint}: not a continuation (${messages.length} <= ${existing.sentMessageCount} sent), starting a fresh M365 conversation`);
-        existing.session.newConversation();
-        existing.sentMessageCount = 0;
-        existing.pendingNote = null;
-      }
-      existing.lastAccessedAt = Date.now();
-      return existing;
+    const bucket = this.conversations.get(fingerprint) ?? [];
+    const candidates = bucket.filter((s) => !s.busy && messages.length > s.sentMessageCount);
+    const own = candidates.find((s) => s.lastReply !== null && s.lastReply === replyKey(messages[s.sentMessageCount]))
+      ?? candidates.sort((a, b) => b.lastAccessedAt - a.lastAccessedAt)[0];
+    if (own) {
+      own.lastAccessedAt = Date.now();
+      return own;
     }
 
-    // New conversation
-    log.info(`New conversation ${fingerprint}, ${this.conversations.size} active`);
+    // Not a continuation of any of them: a new session that shares the first
+    // user message — two pi sessions opened with the same prompt, even in
+    // different directories — or a re-sent request. Either way it needs a FRESH
+    // M365 conversation, and the others stay as they are, because their sessions
+    // may still be running. Measured (Windows / pi, 30 runs of 2 prompts): joined
+    // to an earlier session's thread, later sessions answered from it —
+    // "notlar.docx was already created and verified" in an empty directory — and
+    // the pass rate fell 7/10 → 4/10 → 3/10 over the sweep. Resetting that thread
+    // instead (F84) broke the earlier session when it was still alive: two
+    // measurement jobs that ran at once threw each other's conversations away
+    // every turn (§44 F119). The full prompt re-sends the whole history, so nothing
+    // the harness holds is lost.
+    if (bucket.length) log.info(`Conversation ${fingerprint}: not a continuation of the ${bucket.length} on this first message, starting a fresh M365 conversation`);
+    else log.info(`New conversation ${fingerprint}, ${this.size} active`);
     const state: ConversationState = {
       session: new ModelSession(this.sessionOptions),
       sentMessageCount: 0,
       pendingNote: null,
+      lastReply: null,
+      busy: false,
       lastAccessedAt: Date.now(),
     };
-    this.conversations.set(fingerprint, state);
+    bucket.push(state);
+    this.conversations.set(fingerprint, bucket);
     return state;
   }
 
@@ -288,16 +309,18 @@ export class SessionPool {
 
   private evictStale() {
     const now = Date.now();
-    for (const [key, state] of this.conversations) {
-      if (now - state.lastAccessedAt > MAX_IDLE_MS) {
-        log.info(`Evicting idle conversation ${key}`);
-        this.conversations.delete(key);
-      }
+    for (const [key, bucket] of this.conversations) {
+      const live = bucket.filter((s) => s.busy || now - s.lastAccessedAt <= MAX_IDLE_MS);
+      if (live.length < bucket.length) log.info(`Evicting ${bucket.length - live.length} idle conversation(s) ${key}`);
+      if (live.length) this.conversations.set(key, live);
+      else this.conversations.delete(key);
     }
   }
 
   get size(): number {
-    return this.conversations.size;
+    let n = 0;
+    for (const bucket of this.conversations.values()) n += bucket.length;
+    return n;
   }
 }
 
@@ -870,7 +893,7 @@ export async function handleChatCompletion(
   // `onDelta` streams text to the client live (non-tool path only — see produce's
   // caller). Tool mode ignores it: the raw text is parsed for tool-call fences and
   // can't be shown verbatim, so it stays fully buffered.
-  async function produce(onDelta?: (delta: string) => void): Promise<Produced> {
+  async function produceTurn(onDelta?: (delta: string) => void): Promise<Produced> {
   // When tools are present, buffer full response to detect tool calls
   if (hasTools) {
     // A <tool_response> the model wrote itself is a stop sequence: everything
@@ -1050,7 +1073,21 @@ export async function handleChatCompletion(
     conv.sentMessageCount = body.messages.length;
     return { kind: "text", text: result.fullText };
   }
-  } // end produce()
+  } // end produceTurn()
+
+  // The turn holds its conversation until it ends, so a request from another
+  // session that opened with the same message can't join it mid-turn (resolve).
+  // Both renders below call this synchronously after resolve(): nothing slips in.
+  async function produce(onDelta?: (delta: string) => void): Promise<Produced> {
+    conv.busy = true;
+    try {
+      const p = await produceTurn(onDelta);
+      if (p.kind !== "error") conv.lastReply = p.kind === "tools" ? p.toolCalls.map((c) => c.id).join(" ") : p.text.trim();
+      return p;
+    } finally {
+      conv.busy = false;
+    }
+  }
 
   // --- Render: JSON (non-stream) or an early-flushed SSE stream (stream) ---
   const includeUsage = !!body.stream_options?.include_usage;
