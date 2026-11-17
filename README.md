@@ -209,6 +209,10 @@ To let the model see images — a screenshot, a chart the agent drew, a PNG it `
 `"input": ["text", "image"]` to each model entry. pi then sends them as `image_url` parts and the proxy
 uploads them to M365 the way the web client does.
 
+Documents (PDF, Office files, text) work as OpenAI `file` parts, `{ "type": "file", "file": { "filename":
+"spec.pdf", "file_data": "data:application/pdf;base64,…" } }`. Like the web client, the proxy uploads them
+to your OneDrive's "Microsoft Copilot Chat Files" folder, where they stay.
+
 Then run pi (use `gpt-5.5-think-deeper` — the reliable tool-calling model — and keep the
 toolset lean; M365 "disengages" on very large tool payloads, see
 [docs/m365-copilot-api.md](docs/m365-copilot-api.md#the-disengaged-filter)):

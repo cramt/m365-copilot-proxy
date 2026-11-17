@@ -22,6 +22,7 @@ export {
 } from "./image.js";
 
 export { uploadImage, imageUrls, type ImageAnnotation } from "./image-input.js";
+export { uploadFile, attachmentUrls, type FileAnnotation } from "./file-upload.js";
 
 export {
   noteRequestOutcome,
