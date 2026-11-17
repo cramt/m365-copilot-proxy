@@ -46,8 +46,20 @@ in
       type = lib.types.str;
       default = "127.0.0.1";
       description = ''
-        Address to bind. Defaults to localhost — this proxy is unauthenticated and
-        fronts a paid M365 account, so do not expose it to untrusted networks.
+        Address to bind. Defaults to localhost — the proxy fronts a paid M365
+        account, so set {option}`apiKeyFile` before exposing it to any network.
+      '';
+    };
+
+    apiKeyFile = lib.mkOption {
+      type = lib.types.nullOr lib.types.path;
+      default = null;
+      example = "/run/secrets/m365-proxy-key";
+      description = ''
+        File holding an API key every client must send as `Authorization: Bearer <key>`
+        or `x-api-key` (`/health` stays open). Null means no key. Delivered via
+        systemd LoadCredential like {option}`secretsFile`, so it stays out of the Nix store.
+        Browser clients additionally need `M365_CORS_ORIGIN` in {option}`environment`.
       '';
     };
 
@@ -109,9 +121,17 @@ in
           # so the plaintext is never persisted into the state directory on disk.
           ln -sf "$CREDENTIALS_DIRECTORY/secrets.json" "$HOME/.config/opencode-m365/secrets.json"
         '';
-        ExecStart = "${cfg.package}/bin/m365-copilot-proxy";
+        # The key's path only exists at runtime ($CREDENTIALS_DIRECTORY); systemd
+        # doesn't expand %d in Environment= for every unit type, so export it here.
+        ExecStart =
+          if cfg.apiKeyFile == null then "${cfg.package}/bin/m365-copilot-proxy"
+          else pkgs.writeShellScript "m365-copilot-proxy-start" ''
+            export M365_PROXY_KEY_FILE="$CREDENTIALS_DIRECTORY/proxy-key"
+            exec ${cfg.package}/bin/m365-copilot-proxy
+          '';
 
-        LoadCredential = [ "secrets.json:${cfg.secretsFile}" ];
+        LoadCredential = [ "secrets.json:${cfg.secretsFile}" ]
+          ++ lib.optional (cfg.apiKeyFile != null) "proxy-key:${cfg.apiKeyFile}";
 
         DynamicUser = true;
         StateDirectory = "m365-copilot-proxy";
