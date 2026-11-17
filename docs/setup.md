@@ -59,6 +59,8 @@ macOS / Linux:
 export HOST=127.0.0.1 NITRO_HOST=127.0.0.1
 export M365_ENABLE_INTERACTIVE_APPROVAL=1
 export CHROMIUM_PATH="/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"   # Linux: your Chrome or Chromium
+major="$("$CHROMIUM_PATH" --version | sed -E 's/[^0-9]*([0-9]+).*/\1/')"
+export M365_LOGIN_UA="Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/$major.0.0.0 Safari/537.36"   # Linux: unset (the default is Linux)
 export M365_HARNESS_PROMPT=lean M365_AVOID_THROTTLING=1 M365_DEBUG=1
 export M365_TRANSPORT=streamhub M365_FORCE_AGENT=0
 export M365_FRAMING_VARIANT=relay_batch M365_NO_CODE_INTERPRETER=1 M365_NO_IMAGE_GEN=1
@@ -69,7 +71,14 @@ What the settings do:
 
 - **Sign-in.** The first start opens Chrome; sign in once and the token refreshes silently from then
   on. On an Intune-managed Windows PC whose Chrome has the `CloudAPAuthEnabled` policy it is silent.
-  Stored credentials work too (README step 2).
+  Stored credentials work too (README step 2). The user agent should name the OS you're on; the
+  proxy's default says Linux.
+- **Conditional Access.** If your organization admits only compliant devices, the sign-in has to come
+  from one, through a browser that presents it. The proxy signs in with its own Chrome profile
+  (`~/.config/opencode-m365/browser-profile`), where extensions don't run: on Windows Chrome presents
+  the device through `CloudAPAuthEnabled`, and on a Mac only if IT has enabled Chrome for Microsoft's
+  Enterprise SSO. A refusal at this step is your organization's policy; nothing in the proxy changes
+  it, so use a device it admits.
 - **`M365_HARNESS_PROMPT=lean`** strips the Codex and Claude Code identity lines and reminders that
   M365's models refuse as injections.
 - **`M365_AVOID_THROTTLING=1`** paces turns before the account's throttle trips.
@@ -211,6 +220,7 @@ Each should create `hello.txt`. After a reboot, start the proxy, then copilot-ap
 
 | Symptom | Cause | Fix |
 |---|---|---|
+| Sign-in refused: the device or browser doesn't meet your organization's requirements | Conditional Access admits only compliant devices | Sign in on a device it admits (step 2, Conditional Access) |
 | Codex: "Reconnecting… waiting for network", then "error sending request" | Nothing answers on the thread's provider port: the proxy or copilot-api is down, or the thread started on a provider whose server isn't running | Start them; or open a new thread |
 | copilot-api 400 "This model does not support the responses endpoint" | A model name without `m365/`, often one the app saved from another provider | Pick an `m365/…` model; keep only gateway models in the catalog |
 | copilot-api 400 "does not support tool 'web_search'" | Codex's hosted search | `web_search = "disabled"` |
