@@ -111,35 +111,19 @@ export function getMessageContent(msg: Message): string {
 
 /** A short one-line description of what a tool call did, for labelling its result
  *  (e.g. the shell command, or the file path). Newlines collapsed, truncated. */
-/** The argument that identifies a tool call, and what to call it in the result's
- *  label: a shell command is a `command`, a file a `path`. Labelling a file edit
- *  `command="todo.mjs"`, or re-quoting a command (`"$f"` shown as `'$f'`, a
- *  different shell command), reads to the model as a mislabelled result — GPT-5.6's
- *  chain of thought said so twice in one long-session test ("the tool is responding
- *  with an unexpected label"). Quotes are escaped, not swapped. */
-function toolCallSummary(rawArgs: string): { key: string; value: string } | null {
+function toolCallSummary(rawArgs: string): string {
   let args: Record<string, unknown> = {};
   try {
     args = typeof rawArgs === "string" ? JSON.parse(rawArgs || "{}") : (rawArgs ?? {});
   } catch {
-    return null;
+    return "";
   }
-  const named: Array<[string, unknown]> = [
-    ["command", args.command], ["command", args.cmd], ["command", args.script],
-    ["path", args.path], ["path", args.file_path], ["path", args.filePath],
-    ["path", args.file], ["path", args.filename], ["query", args.query],
-  ];
-  const hit = named.find(([, v]) => typeof v === "string") ??
-    (() => { const v = Object.values(args).find((x) => typeof x === "string"); return v === undefined ? undefined : ["input", v] as [string, unknown]; })();
-  if (!hit) return null;
-  const unwrapped = unwrapCodeModeShellScript(hit[1] as string);
-  // A long value is cut, and says so: cut silently, the label reads as the call
-  // itself cut short. GPT-5.6 took `command="… margin: 22m"` for its command
-  // truncated there, and gave up ("I can't generate files in the current
-  // session", §44 F120).
-  const flat = (unwrapped ?? (hit[1] as string)).replace(/\s+/g, " ").trim();
-  const value = (flat.length > 100 ? `${flat.slice(0, 100)}…` : flat).replace(/\\/g, "\\\\").replace(/"/g, '\\"');
-  return { key: unwrapped !== null ? "command" : hit[0], value };
+  const primary =
+    args.command ?? args.cmd ?? args.script ?? args.path ?? args.file ??
+    args.filename ?? args.query ?? Object.values(args).find((v) => typeof v === "string");
+  if (typeof primary !== "string") return "";
+  const command = unwrapCodeModeShellScript(primary) ?? primary;
+  return command.replace(/\s+/g, " ").replace(/"/g, "'").trim().slice(0, 100);
 }
 
 /** One tool result as the model is meant to read it: named for the call that
@@ -150,7 +134,7 @@ function toolCallSummary(rawArgs: string): { key: string; value: string } | null
  *  path), which kept the old `name="unknown"` label — and a pi session is
  *  delta turns from turn 2 on, so nearly every result went out unattributed. */
 export function formatToolResponse(m: Message, history: Message[]): string {
-  let meta: { name: string; summary: { key: string; value: string } | null } | undefined;
+  let meta: { name: string; summary: string } | undefined;
   if (m.tool_call_id) {
     for (const a of history) {
       const tc = a.role === "assistant" ? a.tool_calls?.find((c) => c.id === m.tool_call_id) : undefined;
@@ -163,8 +147,8 @@ export function formatToolResponse(m: Message, history: Message[]): string {
   const name = m.name || meta?.name || "tool";
   // Show the command/args that produced this output so the model reads it in
   // context (a directory listing vs file contents vs a command's stdout).
-  const argAttr = meta?.summary ? ` ${meta.summary.key}="${meta.summary.value}"` : "";
-  return `<tool_response tool="${name}"${argAttr}>\n${getMessageContent(m)}\n</tool_response>`;
+  const cmdAttr = meta?.summary ? ` command="${meta.summary}"` : "";
+  return `<tool_response tool="${name}"${cmdAttr}>\n${getMessageContent(m)}\n</tool_response>`;
 }
 
 /**

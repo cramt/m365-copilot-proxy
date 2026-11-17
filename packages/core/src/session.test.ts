@@ -204,24 +204,6 @@ describe("TurnTextComposer (multi-message turns)", () => {
     expect(r.text).toBe("one!\n\ntwo more");
   });
 
-  it("doesn't double a head that the first delta restates (\"<<document>\")", () => {
-    // Live (GPT-5.5 Think Deeper, Oct 5): the snapshot "<", then the delta "<document".
-    const r = compose([
-      { cursor: cur("m1"), s: "<", id: "m1" },
-      { d: "<document" }, { d: ">notlar.docx</document>" }, { d: " oluşturuldu." },
-      { s: "<document>notlar.docx</document> oluşturuldu.", id: "m1" },
-    ]);
-    expect(r.text).toBe("<document>notlar.docx</document> oluşturuldu.");
-    expect(r.streamed).toBe(r.text);
-  });
-
-  it("keeps a one-character head that the first delta continues (\"**bold**\", a ``` fence)", () => {
-    const bold = compose([{ cursor: cur("m1"), s: "*", id: "m1" }, { d: "*Summary**" }, { d: " done." }]);
-    expect(bold.text).toBe("**Summary** done.");
-    const fence = compose([{ cursor: cur("m1"), s: "`", id: "m1" }, { d: "``bash\nls\n```" }]);
-    expect(fence.text).toBe("```bash\nls\n```");
-  });
-
   it("falls back to the snapshot's message when no cursor was ever sent", () => {
     const r = compose([{ s: "x", id: "m1" }, { d: "yz" }]);
     expect(r.text).toBe("xyz");
@@ -263,22 +245,5 @@ describe("restoreStrippedBrackets (M365 deletes `[word]:` from the final text, �
     c.snapshot("m", "$u = :Replace($c, 'a', 'b')\nSet-Content f $u");
     expect(c.text).toBe("$u = :Replace($c, 'a', 'b')\nSet-Content f $u");
     expect(c.finalText).toBe(raw + "Set-Content f $u");
-  });
-
-  it("handles leading '<' across StreamHub restart cursors and finalText bracket restore (§44 F121)", () => {
-    const sh = new TurnTextComposer();
-    sh.restart("m1", "");
-    sh.delta("<");
-    sh.delta("<EOF");
-    expect(sh.text).toBe("<<EOF");
-    expect(sh.finalText).toBe("<<EOF");
-
-    const c = new TurnTextComposer();
-    c.restart("m1", "<");
-    c.delta("<document [regex]::Replace()\n");
-    c.restart("m1", "");
-    c.snapshot("m1", "<document :Replace()\nend");
-    expect(c.text).toBe("<document :Replace()\nend");
-    expect(c.finalText).toBe("<document [regex]::Replace()\nend");
   });
 });

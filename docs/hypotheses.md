@@ -104,9 +104,7 @@ than "we eyeballed one run." See §M (Methods) for the experimental rig.
 - §43 — a give-up no detector caught, "I can't generate files in the current session": two first-person
   English patterns catch it and nothing else in 334 replies with no tool call (F118)
 - §44 — GPT-5.6 Think Deeper through pi: its give-up is an instruction conflict that `relay` dissolves,
-  and `relay_batch` too at baseline's turn count (F119); long sessions: labels that misdescribed calls, sessions sharing an opening message (F120); a
-  doubled "<" (F121); file-chip markup in answers (F122); a pile of global skills (F123); every over-cap
-  command run whole from a script (F124)
+  and `relay_batch` too at baseline's turn count (F119); a pile of global skills (F120)
 
 ---
 
@@ -6118,11 +6116,12 @@ a real call.
 
 ---
 
-## 44. Oct 4–8 2026 — GPT-5.6 Think Deeper through pi on Windows: `relay`, long sessions, and smaller fixes
+## 44. Oct 4–14 2026 — GPT-5.6 Think Deeper through pi on Windows (`relay_batch` default, give-up patterns, and global skills pile)
 
 Follow-ups to §31 and §32 from the same real-pi setup (Windows, `gpt-5.6-think-deeper`, the user's
-Turkish prompts). In the notebook these were written as §24 F62, F63 and F65–F68 on the branch that
-became #44 and #49; they are renumbered here, and F85's fork note moved with them.
+Turkish prompts). Originally opened together in #70; the orthogonal fixes from those runs were split out
+into separate PRs (#113 SessionPool `replyKey`, #114 `TurnTextComposer`, #115 tool-result labels &
+file-chip markup, #116 `longCommandAsScript`).
 
 ### F119 — the give-up is an instruction conflict, and `relay` dissolves it for GPT-5.6 Think Deeper (`relay_batch` ships) 🟢
 **Why it gives up.** M365 streams chain-of-thought summaries as `addToChainOfThought` frames (visible
@@ -6172,9 +6171,7 @@ Both sweeps together: relay 26/26 tasks with 0 give-up runs, baseline 21/26 with
 
 **Shipped:** `Gpt_5_6_Reasoning` → `relay`; the `conflict` note is not shipped. **Not measured:**
 `Gpt_5_6_Chat`, and GPT-5.5 Think Deeper (the README's recommended model), which runs the same agent
-path under baseline. **Probe:** the document sweep on `gpt-5.5-think-deeper`; an English
-"wasn't able to …" confabulation pattern, checked against real final answers for false positives
-before it ships. **Shipped (Oct 4, evening):** three English patterns from the give-ups our pi
+path under baseline. **Shipped (Oct 4, evening):** three English patterns from the give-ups our pi
 transcripts hold — "no execution tool is enabled", "file tools aren't enabled in this chat", and "I
 wasn't able to complete … in this run" scoped to the whole task or run, so "I couldn't complete the
 integration tests because they need Docker" stays an answer — plus "erişilebilir değil" for Turkish.
@@ -6195,7 +6192,7 @@ the verifier's plain-bytes `/Type /Page` search can't see it; the verifier now a
 **GPT-5.6 Think Deeper after the fork fix (F85)** (Oct 5, 05:39; F119's document sweep with its prompts,
 baseline vs relay, × 4, interleaved, one job): the conflict survives the fork fix.
 
-| arm | task passed | runs with a give-up final | 
+| arm | task passed | runs with a give-up final |
 |---|---|---|
 | baseline | 6/8 (pdf 2/4, docx 4/4) | 3/8, all PDF |
 | `relay` | **8/8** | **0/8** |
@@ -6210,117 +6207,26 @@ without them, so `Gpt_5_6_Reasoning` keeps `relay`. The passive form was invisib
 word, not "tamamlanamadıysa" or "oluşturulamadığında". Old vs new detector over the 245 distinct
 no-tool replies in the transcripts: 2 new hits, both give-ups; 0 lost; 0 false positives.
 
-**Review follow-up (Oct 14): relay_batch.** relay costs turns, and relay_batch is the default
-everywhere else relay won. `phase-sweep` on the bench (10 tasks; baseline, relay, relay_batch, two
+**Review follow-up (Oct 14): `relay_batch`.** `relay` costs turns, and `relay_batch` is the default
+everywhere else `relay` won. `phase-sweep` on the bench (10 tasks; baseline, `relay`, `relay_batch`, two
 rotated rounds each; with the agent; `M365_AVOID_THROTTLING=1`):
 
 | arm | solved | turns per task |
 |---|---|---|
 | baseline | 19/20 (one prose give-up) | 2.15 |
-| relay | 20/20 | 2.85 |
-| relay_batch | 20/20 | 2.30 |
+| `relay` | 20/20 | 2.85 |
+| `relay_batch` | 20/20 | 2.30 |
 
-relay_batch vs relay: −19% turns (task-stratified permutation p = 7·10⁻⁴); vs baseline +7% (p = 0.42);
-relay vs baseline +33% (p = 1·10⁻⁴). No sandbox, Disengaged or jailbreak turn in any arm. The bench has
-no document task, so the PDF + .docx real-pi runs above again, ×4 each, interleaved: relay 8/8 (5.6 tool
-calls a run), relay_batch 7/8 (3.4); the miss was a cut label read as a cut command (F120), and with that
-fixed relay_batch went 8/8 (3.4 calls a run). No other run gave up. **Shipped:** `Gpt_5_6_Reasoning` →
-`relay_batch`. The bench ran on Windows with a local adaptation of `phase-sweep.sh` (under Git Bash its
-port check doesn't parse and `$!` isn't the node process).
+`relay_batch` vs `relay`: −19% turns (task-stratified permutation p = 7·10⁻⁴); vs baseline +7%
+(p = 0.42); `relay` vs baseline +33% (p = 1·10⁻⁴). No sandbox, Disengaged or jailbreak turn in any arm.
+The bench has no document task, so the PDF + `.docx` real-pi runs above again, ×4 each, interleaved:
+`relay` 8/8 (5.6 tool calls a run), `relay_batch` 7/8 (3.4); the miss was a cut label read as a cut
+command (#115, now covered for detection by §43 F118), and with that fixed `relay_batch` went 8/8
+(3.4 calls a run). No other run gave up. **Shipped:** `Gpt_5_6_Reasoning` → `relay_batch`. The bench
+ran on Windows with a local adaptation of `phase-sweep.sh` (under Git Bash its port check doesn't
+parse and `$!` isn't the node process).
 
-### F120 — long sessions: follow-ups anchor to the first request, labels misdescribed calls, and a concurrency hazard 🟢 (the anchoring was F85's fork; the note is removed)
-**Long-session test** (Oct 4; real pi, `gpt-5.6-think-deeper`; one pi session per run with three
-consecutive requests — a 4-file feature, a follow-up feature, a PDF — each checked by a hidden
-verifier outside the project, validated beforehand on a reference solution, the untouched template
-and three negative controls; sessions in a private `--session-dir`; arms interleaved, 3 sessions each):
-
-| | baseline | relay |
-|---|---|---|
-| step 1 (`remove`, 4 files) | 2/3 | 3/3 |
-| step 2 (follow-up: priorities) | 0/3 | 2/3 |
-| step 3 (PDF) | 3/3 | 2/2 (+1 lost to the throttle) |
-| sessions with a give-up turn | 3/3 | 1/3 (hidden: "PDF dosyası oluşturma özelliğim şu anda etkin değil" + a "run this" fence that shell routing executed) |
-| tool calls / seconds per step | 1.4 / 28 | 8.4 / 58 |
-
-**Follow-ups anchor to the first request.** Final messages of follow-up steps summarised an earlier
-request in baseline 2/6 and relay 3/5 runs (their own request 2/6 and 2/5; the rest gave up). One
-relay run started the new request, then read its own fresh edits as "unexpected changes in
-priorities… concurrent changes", went back to finishing the first request and reported that; the
-step failed. Inferred mechanism: every framing says to report "when the task is complete", "the
-task" is the session's first request, and follow-ups arrive as bare `<user>` blocks. **Candidate:**
-`FOLLOW_UP_NOTE` on the newest request, opt-in (`M365_FOLLOWUP_NOTE=1`) — unmeasured, see below.
-**Resolved (Oct 5): the inferred mechanism was wrong.** The follow-up steps ran on forked
-conversations that held part of step 1 (F85), so step 1 looked unfinished. On the fixed build every
-follow-up summarised its own request with the note off (6/6) and on (6/6); the note is removed.
-
-**Labels misdescribed tool calls** (fixed, default). `formatToolResponse` labelled file tools
-`command="todo.mjs"` and swapped `"` for `'` (`"$f"` shown as `'$f'`, a different shell command).
-The model's chain of thought flagged it twice: "the tool is responding with an unexpected label",
-"the command tool response that indicates a mislabeling issue". Labels now say `command=`, `path=`,
-`query=` or `input=` (while still unwrapping Codex Code Mode scripts to `command=`) and escape quotes.
-Its effect on the anchoring is not separable in this data.
-
-**The note's A/B was lost to a concurrency hazard, which is itself a finding.** A sleeping measurement
-job was taken for dead (its log had stopped because it was sleeping) and a second one was started;
-both woke and ran against the same two proxies. Every session opened with the same first message,
-so `SessionPool` mapped both sweeps' sessions to one `ConversationState`, and under F84 each kept
-resetting the other's conversation — replies like "What would you like me to do with this CLI
-code?" and "this is just the same erroneous command's real output being passed again". All data
-from that hour is discarded. In real use the same collision happens whenever concurrent sessions
-open with the same message, e.g. parallel subagents given one prompt (#7 mentions agent-subagent
-workflows), and sequentially too: open a second pi session with "merhaba", go back to the first, and
-the first one's next turn went into the second one's thread. **Fixed** without client cooperation:
-under the fingerprint (which also scopes by `prompt_cache_key` / `user` when present), the pool keeps
-every conversation that shares a fingerprint, and a request continues the one whose last reply it
-echoes back at position `sentMessageCount` — the tool-call ids (the client must return them verbatim
-to pair results), else the text. A conversation with a turn in flight can't be joined, and F84's fresh
-conversation no longer replaces the earlier one. With no echo match it falls back to the most recent
-candidate, so a client that rewrites old replies still continues. Regression tests (two sessions
-continuing in their own threads by tool-call ids and by text, a same-opener request alongside an
-in-flight turn, and subagents sharing `prompt_cache_key` and opener) cover this on the handler.
-
-**Throttle observations (F13).** Throttled at 09:13 after ~1 h of testing (~30 threads, ~200
-messages); probes still throttled at +50 and +52 min, clear at +70 min; throttled again after ~8 min
-of double load. Relay's one-command-per-turn style takes 2–6× the messages per task, which matters
-if the budget is message-weighted. **Probe:** the long-session A/B (note on vs off) as ONE job on a
-fully rested account, with a pre-flight check that no other measurement process is running.
-**Ran** (22:33, rested 12 h, one job): throttled at 22:49 after 4 sessions (~110 messages in 16
-min). Follow-ups on their own topic: note on 1/3, off 1/4 — inconclusive, and confounded: these
-sessions ran on forked conversations (F85).
-
-**A cut label read as a cut command (Oct 14).** The label shortens a long value to 100 characters,
-silently. In one relay_batch PDF run the last label read `command="set -eu css=… printf '%s\n' \
-'@page { size: A4; margin: 22m"`, and the model answered "You're right. The recorded command was
-truncated at `margin: 22m` … I can't generate files in the current session"; the task failed. The command
-had run whole. A shortened summary now ends in "…", and the same eight runs then passed 8/8.
-The missed give-up phrase is now covered by §43 F118.
-
-### F121 — a "<" at the head of a message came out twice 🟢
-In the 5.5 sweep three baseline answers began `<<notlar.pdf>`, `<<notlar.docx>`,
-`<<document>notlar.docx</document>`. M365 sent the snapshot `"<"` with the message's cursor and then
-the delta `"<document"`: it holds a leading `<` back until it knows the tag, so the first delta
-restates the head. `TurnTextComposer` appended it, and the final snapshot, one character shorter than
-the doubled text, never replaced it (`foldStreamText` ignores a shorter snapshot). Across the Oct 2–5
-debug logs every cursor has `p: -1`; in 9 of 1,061 cursor frames the first delta restated the
-snapshot, each one a `"<"`. **Fixed:** the first delta after a cursor (or StreamHub `restart`)
-replaces the message text when it starts with it; otherwise it appends as before. The new test fails
-on the old composer.
-**Narrowed (review):** only a held-back `"<"` counts. Taken for any head, the rule ate a one-character
-head the delta continues: `"*"` + `"*Summary**"` came out as broken bold, and `` "`" `` + `` "``bash" `` as a
-two-backtick fence. All 9 restated heads in the logs were `"<"`. On top of StreamHub's `TurnTextComposer`,
-`run.base` also drops the restated `"<"` so `finalText` / `restoreStrippedBrackets` and StreamHub
-restating cursors stay aligned.
-
-### F122 — M365's file-chip markup reached the client 🟢
-The web client renders `<File>notlar.docx</File>` as a file chip, and the GPT models write it into
-their answers; pi showed the raw tags ("<File>notlar.docx</File> başarıyla oluşturuldu"). In the 245
-distinct final answers of the pi transcripts (Oct 2–5): `<File>` 58 times, plus `<document>`,
-`<Files>`, `<file>`, `<FILE>` and "< File>". **Fixed:** a prose answer in tool mode gets the bare
-file name (`plainFileNames`); code blocks are left alone, and a bare `<name.ext>` is not touched
-(`#include <stdio.h>`). Not applied to a tool-less streamed answer, which goes to the client delta by
-delta before the markup is complete.
-
-### F123 — a pile of global pi skills: cheap up to ~120, a few broad descriptions are the real risk 🟡
+### F120 — a pile of global pi skills: cheap up to ~120, a few broad descriptions are the real risk 🟡
 **Question.** What does installing many skills in `~/.pi/agent/skills` do through the proxy? pi puts every
 skill's name, description and path in the system prompt of every session (the instructions load only when
 the model reads `SKILL.md`), so the cost is the listing.
@@ -6344,10 +6250,11 @@ skill describes" (skill-use); two sweeps, the second after the fixes below; thro
 skill-use, 14/14 at up to 120 skills against 4/8 at 308: Fisher p ≈ 0.01. The four failures: one **instant
 rejection** of the ~200K first message (`InternalError`, 0.25 s, no bot message), after which the retry
 sent "Please continue." into a conversation that had never received the task ("What would you like me to
-continue with?"; the server's own count read 1 of 600). §38 F96 now covers it (a content-less `InternalError` re-sends the whole request in a fresh
-conversation); this branch's own resend was dropped for it. The other three began by reading `task-observer`, whose description says "Use during
-ANY multi-step task": two then answered "I need access to data.csv / upload it" (the Turkish form was not
-in the detector; **added**, and it did not turn the other), one ended on an unclosed `read` fence.
+continue with?"; the server's own count read 1 of 600). §38 F96 now covers it (a content-less
+`InternalError` re-sends the whole request in a fresh conversation); this branch's own resend was dropped
+for it. The other three began by reading `task-observer`, whose description says "Use during ANY
+multi-step task": two then answered "I need access to data.csv / upload it" (the Turkish form was not in
+the detector; **added**, and it did not turn the other), one ended on an unclosed `read` fence.
 **Caveat:** the 308 pile's bodies were stubs (a title line), so reading a distractor returned nothing; with
 real bodies (the 27 bundle, which includes the real `task-observer`) 8/8 passed, one run reading it.
 2 of the bundle's 4 skill-use runs needed the forcing retry (0 of 6 with no skills): the broad descriptions
@@ -6358,20 +6265,3 @@ listing (`task-observer` "ANY multi-step task", `modern-web-guidance` "MANDATORY
 skip" and it needs a search tool pi doesn't have, `graphify`, `ponytail`) with `disable-model-invocation:
 true` and call them with `/skill:name`. Don't copy `~/.agents/skills` into `~/.pi/agent/skills` (pi reads
 both; duplicate names keep the first and warn). **Not measured:** real bodies at 308; `gpt-5.5-think-deeper`.
-
-### F124 — the heredoc rewrite left every other long command cut; a script carries any of them 🟢 (model-free)
-F78's fix covers one shape: a lone quoted heredoc that writes a file. A long `py - <<'EOF'` analysis
-script, a long `py -c "…"`, or a heredoc bundled with other commands (`cd`, `find`, `wc`) still reached
-the shell cut at ~8.2k characters. The proxy holds the whole command, and the harness's write tool has
-no length cap, so an over-cap call to a POSIX shell on Windows now goes out in two steps: the write tool
-saves the command unchanged to `<temp>/m365-cmd-<id>.sh`, and when that result comes back the proxy
-answers `bash '<script>'; s=$?; rm -f '<script>'; exit $s` itself, with no M365 turn
-(`longCommandAsScript`). M365 never sees the write: the next delta is the run's output, after a note
-saying the command was saved and run unchanged. A lone heredoc write still goes straight to the write
-tool (one step); one bundled with other commands now runs whole instead of skipping them.
-**Measured** (real pi, the real handler with a scripted model, one 14,785-char `cd sub && py - <<'EOF'
-… EOF; echo …; pwd`): with the fix the script printed the right sum with Turkish text intact, the
-trailing `echo`/`pwd` ran in `sub`, the script was deleted, and M365's second message was the note plus
-that output; with it off (`M365_HOST_SHELL=powershell`) bash said "here-document … delimited by
-end-of-file" and Python a SyntaxError on the cut list. **Not covered:** WSL bash (it can't see the
-Windows temp path) and a PowerShell shell tool (left as it was).
