@@ -5999,7 +5999,7 @@ Nov 11, F109's setup.
 ## 41. Nov 16 2026 — the Codex app: account, catalog, context windows
 
 The Codex app (Desktop, its Codex engine 0.169) on §40's setup, with a second Codex provider for an Azure
-OpenAI router next to the gateway. Three things the CLI runs hadn't shown, and what the proxy's StreamHub
+OpenAI router next to the gateway. Four things the CLI runs hadn't shown, and what the proxy's StreamHub
 turns say about metering. Setup notes: claude-code-codex.md, step 5.
 
 ### F113 — the app shows your ChatGPT account only when the provider requires OpenAI auth 🟢
@@ -6050,6 +6050,20 @@ access), and GPT-6.1 Sol spends a budget of its own there. So either `officeweb`
 models or StreamHub doesn't report it. The web client's picker also marks some models as using Copilot
 credits, and their turns show nothing either. The proxy talks only to Copilot Chat (Chathub or
 StreamHub); Cowork and Code are F110's agent runtime, which it doesn't call.
+
+### F119 — the app adds context of its own as tool outputs without a call 🟢
+From Nov 16 the app put two `function_call_output` items at the start of some turns,
+`agent.codex_apps_open_page` and `agent.codex_apps_selected_page_part_1_of_1` ("Companion Page
+snapshot"), each with a `namespace` and a `name` but no `call_id`, and no tool call before them. Azure's
+Responses API took them: the turn that first carried them ran two hours on the router. copilot-api
+2.6.23's Messages translation requires a `call_id` on every tool output, so the two M365 turns that
+carried them failed in 1–4 s with 400 "function_call_output.call_id is required", in the original
+thread and in a fork of it. A request with just those two items failed the same way on 2.6.23 and was
+answered on 2.9.12, which sends such items as user text (`<namespace>.<name>:` and the output;
+copilot-api #500, in 2.9.7 and later). The public npm registry has had 2.9.12 since Nov 16, but the test
+PC's npm goes through a company mirror that still served 2.9.3 as `latest` and had no 2.9.7 or later, so
+the gateway now runs a source build of v2.9.12. On it Codex passed on `gpt-6.1-sol` and through
+`modelMappings` to the second provider, and Claude Code on `claude-sonnet-5`.
 
 ### Open (Nov 16)
 - **H41a** — StreamHub meters these turns as Chathub does but doesn't report it. **Falsify:** an Opus

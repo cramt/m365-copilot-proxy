@@ -12,11 +12,17 @@ same options and hasn't been run end to end. Background and results:
 
 ## Do you need the copilot-api repo?
 
-No. Run the published package, `@jeffreycao/copilot-api` (built from
-[caozhiyuan/copilot-api](https://github.com/caozhiyuan/copilot-api)), with `npx`. Clone the repo only
-to change copilot-api itself. You need copilot-api only for Codex and Claude Code, and it doesn't need
-GitHub Copilot: with a provider configured and no GitHub login it starts in provider-only mode. If you
-already run it for Copilot, add the provider in step 3 and your Copilot models stay. Tested with 2.6.23.
+Usually not: run the published package, `@jeffreycao/copilot-api`, with `npx`, and clone the repo only to
+change copilot-api, or when your npm registry has no recent enough version. The Codex app needs 2.9.7
+or later. An older copilot-api rejects any request from the app that carries the app's own context,
+such as its page snapshot, with "function_call_output.call_id is required" (fixed upstream in
+[#500](https://github.com/caozhiyuan/copilot-api/pull/500)). The public npm registry has 2.9.12 (since
+Nov 16), but a registry mirror can lag: a company mirror still served 2.9.3 as `latest` and had no 2.9.7
+or later. `npm view @jeffreycao/copilot-api version` shows what yours serves; if it's older, step 3
+builds a release tag instead. Claude Code and the Codex CLI worked on 2.6.23 too. You need copilot-api
+only for Codex and Claude Code, and it doesn't need GitHub Copilot: with a provider configured and no
+GitHub login it starts in provider-only mode. If you already run it for Copilot, add the provider in
+step 3 and your Copilot models stay. Tested with 2.6.23 and 2.9.12.
 
 ## 1. Prerequisites
 
@@ -36,13 +42,13 @@ pnpm install
 pnpm build
 ```
 
-Then start it on 127.0.0.1:4143 (copilot-api takes 4141). Unset, the host is every interface, and the
-proxy has no auth.
+Then start it on port 4143 (copilot-api takes 4141). It listens on 127.0.0.1 unless `HOST` says
+otherwise. To require a key too, set `M365_PROXY_KEY` (or `M365_PROXY_KEY_FILE`) and give copilot-api
+the same value in step 3.
 
 Windows (PowerShell):
 
 ```powershell
-$env:HOST = '127.0.0.1'; $env:NITRO_HOST = '127.0.0.1'
 $env:M365_ENABLE_INTERACTIVE_APPROVAL = '1'
 $env:CHROMIUM_PATH = "$env:ProgramFiles\Google\Chrome\Application\chrome.exe"
 $major = (Get-Item $env:CHROMIUM_PATH).VersionInfo.ProductMajorPart
@@ -56,7 +62,6 @@ node packages\proxy\bin\m365-proxy.mjs 4143
 macOS / Linux:
 
 ```sh
-export HOST=127.0.0.1 NITRO_HOST=127.0.0.1
 export M365_ENABLE_INTERACTIVE_APPROVAL=1
 export CHROMIUM_PATH="/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"   # Linux: your Chrome or Chromium
 major="$("$CHROMIUM_PATH" --version | sed -E 's/[^0-9]*([0-9]+).*/\1/')"
@@ -118,9 +123,23 @@ Create or edit `config.json` in copilot-api's home, `~/.local/share/copilot-api/
 npx @jeffreycao/copilot-api@latest start --port 4141
 ```
 
+If you use the Codex app and your registry serves a version older than 2.9.7
+(`npm view @jeffreycao/copilot-api version`), build a release tag of
+[caozhiyuan/copilot-api](https://github.com/caozhiyuan/copilot-api) instead. Its lockfile needs Bun
+1.4.4 or later, which `npx -y bun@latest` runs without installing it:
+
+```sh
+git clone --depth 1 --branch v2.9.12 https://github.com/caozhiyuan/copilot-api
+cd copilot-api
+npx -y bun@latest install --frozen-lockfile --ignore-scripts
+npx -y bun@latest run build
+node dist/main.js start --port 4141
+```
+
 It listens on 127.0.0.1 by default. Models appear as `m365/<model id>`, and any ID the proxy knows
-routes, listed here or not: `curl -s http://127.0.0.1:4141/v1/models` should show them. If the file has
-`auth.apiKeys`, use one of those keys wherever the steps below say `not-needed`.
+routes, listed here or not: `curl -s http://127.0.0.1:4141/v1/models` should show them. If you set
+`M365_PROXY_KEY` in step 2, put it in the provider's `apiKey` (copilot-api sends it as a bearer). If the
+file has `auth.apiKeys`, use one of those keys wherever the steps below say `not-needed`.
 
 ## 4. Codex
 
@@ -222,6 +241,7 @@ Each should create `hello.txt`. After a reboot, start the proxy, then copilot-ap
 |---|---|---|
 | Sign-in refused: the device or browser doesn't meet your organization's requirements | Conditional Access admits only compliant devices | Sign in on a device it admits (step 2, Conditional Access) |
 | Codex: "Reconnecting… waiting for network", then "error sending request" | Nothing answers on the thread's provider port: the proxy or copilot-api is down, or the thread started on a provider whose server isn't running | Start them; or open a new thread |
+| copilot-api 400 "function_call_output.call_id is required" | copilot-api before 2.9.7, with the Codex app adding its own context to the turn | Run 2.9.7 or later (step 3), then retry the turn |
 | copilot-api 400 "This model does not support the responses endpoint" | A model name without `m365/`, often one the app saved from another provider | Pick an `m365/…` model; keep only gateway models in the catalog |
 | copilot-api 400 "does not support tool 'web_search'" | Codex's hosted search | `web_search = "disabled"` |
 | The Codex app shows the provider's name instead of your ChatGPT account | `requires_openai_auth = false` | Step 4 |
