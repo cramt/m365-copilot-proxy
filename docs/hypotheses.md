@@ -103,6 +103,8 @@ than "we eyeballed one run." See §M (Methods) for the experimental rig.
   upload (F97, shipped in `file-upload.ts`)
 - §43 — a give-up no detector caught, "I can't generate files in the current session": two first-person
   English patterns catch it and nothing else in 334 replies with no tool call (F118)
+- §44 — over-cap shell commands on Windows: save any non-heredoc or bundled command to a temp script
+  and run it whole without an extra M365 turn (F119)
 
 ---
 
@@ -6111,3 +6113,26 @@ this repo's own docs, which a project summary resembles, there is one new hit: a
 quoted in §27 ("I can't create or run scripts in this session").
 **Not measured:** how often the forcing retry then turns this give-up. It is the mid-task prompt, sent after
 a real call.
+
+---
+
+## 44. Oct 8 2026 — Running over-cap shell commands whole on Windows (`longCommandAsScript`)
+
+Follow-up from the Oct 4–8 real-pi runs on Windows (#70 split into standalone PRs).
+
+### F119 — the heredoc rewrite left every other long command cut; a script carries any of them 🟢 (model-free)
+F78's fix covers one shape: a lone quoted heredoc that writes a file. A long `py - <<'EOF'` analysis
+script, a long `py -c "…"`, or a heredoc bundled with other commands (`cd`, `find`, `wc`) still reached
+the shell cut at ~8.2k characters. The proxy holds the whole command, and the harness's write tool has
+no length cap, so an over-cap call to a POSIX shell on Windows now goes out in two steps: the write tool
+saves the command unchanged to `<temp>/m365-cmd-<id>.sh`, and when that result comes back the proxy
+answers `bash '<script>'; s=$?; rm -f '<script>'; exit $s` itself, with no M365 turn
+(`longCommandAsScript`). M365 never sees the write: the next delta is the run's output, after a note
+saying the command was saved and run unchanged. A lone heredoc write still goes straight to the write
+tool (one step); one bundled with other commands now runs whole instead of skipping them.
+**Measured** (real pi, the real handler with a scripted model, one 14,785-char `cd sub && py - <<'EOF'
+… EOF; echo …; pwd`): with the fix the script printed the right sum with Turkish text intact, the
+trailing `echo`/`pwd` ran in `sub`, the script was deleted, and M365's second message was the note plus
+that output; with it off (`M365_HOST_SHELL=powershell`) bash said "here-document … delimited by
+end-of-file" and Python a SyntaxError on the cut list. **Not covered:** WSL bash (it can't see the
+Windows temp path) and a PowerShell shell tool (left as it was).

@@ -37,6 +37,7 @@ import {
   fabricatedToolResponseAt,
   textAfterFirstToolCall,
   longHeredocAsWrite,
+  longCommandAsScript,
   strippedTypeMember,
   formatToolResponse,
   isProseDocument,
@@ -49,6 +50,7 @@ import {
   fetchImageBytes,
   type CapturedImage,
   type ParseResult,
+  type ParsedToolCall,
 } from "@m365-copilot/core";
 import { ChatCompletionRequest } from "./schemas.js";
 import {
@@ -172,6 +174,9 @@ interface ConversationState {
    *  Opus fallback, #18) can't continue the M365 conversation — it may need
    *  another scenario — so it starts a fresh one with the full history. */
   servedModel?: string;
+  /** The second half of a long command (longCommandAsScript): sent, without a
+   *  turn on M365, when the result of the write call `writeId` comes back. */
+  chain: { writeId: string; run: ParsedToolCall } | null;
 }
 
 /**
@@ -245,6 +250,7 @@ export class SessionPool {
         existing.session.newConversation();
         existing.sentMessageCount = 0;
         existing.pendingNote = null;
+        existing.chain = null;
       }
       existing.lastAccessedAt = Date.now();
       return existing;
@@ -256,6 +262,7 @@ export class SessionPool {
       session: new ModelSession(this.sessionOptions),
       sentMessageCount: 0,
       pendingNote: null,
+      chain: null,
       lastAccessedAt: Date.now(),
     };
     this.conversations.set(fingerprint, state);
@@ -387,6 +394,11 @@ export async function handleChatCompletion(
   if (promptMode !== "off") log.debug(`Harness prompt: ${promptMode}`);
   const conv = pool.resolve(body.messages, body.tools, body.prompt_cache_key ?? body.user);
   const { session } = conv;
+  // The harness saved a long command to a script (longCommandAsScript); run it.
+  const last = body.messages[body.messages.length - 1];
+  const run = conv.chain && last?.role === "tool" && last.tool_call_id === conv.chain.writeId ? conv.chain.run : null;
+  if (conv.chain && !run) conv.pendingNote = null; // its note says the script ran
+  conv.chain = null;
   const hasTools = body.tools && body.tools.length > 0 && body.tool_choice !== "none";
   const requestedModel = body.model;
 
@@ -449,8 +461,11 @@ export async function handleChatCompletion(
   const convId = session.conversationId;
   let text: string;
   // Images and files ride on the message that carries their text (core image-input.ts, file-upload.ts).
-  let inputAttachments: string[];
-  if (isFirstTurn || conv.sentMessageCount === 0) {
+  let inputAttachments: string[] = [];
+  if (run) {
+    text = "";
+    log.info(`Running the saved long command: ${trunc(run.function.arguments, 200)} (no M365 turn), cid=${convId}`);
+  } else if (isFirstTurn || conv.sentMessageCount === 0) {
     text = formatMessages(body.messages, body.tools, body.tool_choice, convId, framingVariant);
     inputAttachments = attachmentUrls(body.messages);
     log.info(`Chat completion: model=${model}, stream=${body.stream}, messages=${body.messages.length}, turn=${session.turnCount}, mode=full, cid=${convId}`);
@@ -472,7 +487,7 @@ export async function handleChatCompletion(
       log.info(`Chat completion: model=${model}, stream=${body.stream}, messages=${body.messages.length}, turn=${session.turnCount}, mode=retry, cid=${convId}`);
     }
   }
-  conv.pendingNote = null; // one turn only: consumed above, or stale
+  if (!run) conv.pendingNote = null; // one turn only: consumed above, or stale (kept past the script run)
 
   log.debug("Formatted prompt:", trunc(text, 1000));
 
@@ -871,6 +886,11 @@ export async function handleChatCompletion(
   // caller). Tool mode ignores it: the raw text is parsed for tool-call fences and
   // can't be shown verbatim, so it stays fully buffered.
   async function produce(onDelta?: (delta: string) => void): Promise<Produced> {
+  if (run) {
+    // M365 never saw the write; the next delta starts at the run's result.
+    conv.sentMessageCount = body.messages.length;
+    return { kind: "tools", toolCalls: [run] };
+  }
   // When tools are present, buffer full response to detect tool calls
   if (hasTools) {
     // A <tool_response> the model wrote itself is a stop sequence: everything
@@ -1025,14 +1045,23 @@ export async function handleChatCompletion(
     }
 
     if (parsed.hasToolCalls && parsed.toolCalls.length > 0) {
-      // A heredoc file write past the Windows command-line cap would reach the
-      // shell cut short; run the same write through the harness's write tool.
-      const asWrite = longHeredocAsWrite(parsed.toolCalls[0], body.tools);
+      // A command past the Windows command-line cap would reach the shell cut
+      // short. A lone heredoc file write goes through the harness's write tool;
+      // anything else (other commands with it, `py - <<'EOF'`, `py -c`) is saved
+      // to a script by the write tool and run whole on the next request.
+      const heredoc = longHeredocAsWrite(parsed.toolCalls[0], body.tools);
+      const asWrite = heredoc && !heredoc.skipped ? heredoc : null;
+      const asScript = asWrite ? null : longCommandAsScript(parsed.toolCalls[0], body.tools);
       let rewriteNote: string | null = null;
       if (asWrite) {
         log.info(`Heredoc write to ${asWrite.path} is over the Windows command-line cap — sent as ${asWrite.call.function.name} instead`);
         parsed.toolCalls = [asWrite.call];
-        rewriteNote = `(Note: your heredoc to \`${asWrite.path}\` was longer than the ~8,000-character Windows command-line limit and would have been cut off, so it was written with the \`${asWrite.call.function.name}\` tool instead.${asWrite.skipped ? ` The commands after the heredoc did NOT run: \`${asWrite.skipped.slice(0, 200)}\`.` : ""})`;
+        rewriteNote = `(Note: your heredoc to \`${asWrite.path}\` was longer than the ~8,000-character Windows command-line limit and would have been cut off, so it was written with the \`${asWrite.call.function.name}\` tool instead.)`;
+      } else if (asScript) {
+        log.info(`Command of ${asScript.length} chars is over the Windows command-line cap — saving it to ${asScript.path}, run on the next request`);
+        parsed.toolCalls = [asScript.write];
+        conv.chain = { writeId: asScript.write.id, run: millisecondArgsFixed(asScript.run, body.tools) };
+        rewriteNote = `(Note: your command was ${asScript.length.toLocaleString("en-US")} characters, longer than the ~8,000 the Windows command line carries, so it would have been cut off. It was saved unchanged to \`${asScript.path}\` and run from there; this is its output:)`;
       }
       // The model's server-side history holds more than what runs; say so on
       // the turn that carries the real result (executedOnlyFirstNote).
