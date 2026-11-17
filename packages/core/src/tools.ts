@@ -9,6 +9,7 @@ import {
   parseFencedToolCalls,
   renderFencedCall,
   transcriptStyleForVariant,
+  unwrapCodeModeShellScript,
 } from "./fenced.js";
 
 const log = createLogger("tools");
@@ -38,7 +39,7 @@ export interface ToolDef {
 
 export interface Message {
   role: string;
-  content?: string | Array<{ type: string; text?: string; image_url?: { url: string } }> | null;
+  content?: string | Array<{ type: string; text?: string; image_url?: { url: string }; file?: { filename?: string; file_data?: string } }> | null;
   tool_calls?: Array<{
     id: string;
     function: { name: string; arguments: string };
@@ -122,7 +123,8 @@ function toolCallSummary(rawArgs: string): string {
     args.command ?? args.cmd ?? args.script ?? args.path ?? args.file ??
     args.filename ?? args.query ?? Object.values(args).find((v) => typeof v === "string");
   if (typeof primary !== "string") return "";
-  return primary.replace(/\s+/g, " ").replace(/"/g, "'").trim().slice(0, 100);
+  const command = unwrapCodeModeShellScript(primary) ?? primary;
+  return command.replace(/\s+/g, " ").replace(/"/g, "'").trim().slice(0, 100);
 }
 
 /** One tool result as the model is meant to read it: named for the call that
@@ -284,6 +286,12 @@ const CONFABULATION_PATTERNS: RegExp[] = [
   // it claims its own tools are gone, then delegates the edit back to the user.
   /(?:tool|editor|shell|command|file-?editing)s?[^.\n]{0,40}\b(?:not\s+available|unavailable|aren.?t\s+available|isn.?t\s+available|are\s+not\s+accessible)/i,
   /(?:can.?t|cannot|not\s+able\s+to|unable\s+to)\s+(?:directly\s+)?(?:edit|modify|write\s+to|change|save|create|open)\s+(?:the\s+|any\s+|to\s+)?files?/i,
+  // GPT-5.6 gave up on a PDF task with "I can't generate files in the current
+  // session" (Windows / pi), which nothing here caught. Both of these are first
+  // person, so that a finished answer saying what some program can't do ("the
+  // exporter can't generate PDFs without wkhtmltopdf") doesn't read as a give-up.
+  /\bI(?:\s+(?:can.?t|cannot)|(?:\s+am|.?m)\s+(?:unable|not\s+able)\s+to)\s+(?:directly\s+)?(?:generate|produce|export|create|make)\s+(?:the\s+|any\s+)?(?:files?|documents?|PDFs?)\b/i,
+  /\bI(?:\s+(?:can.?t|cannot)|(?:\s+am|.?m)\s+(?:unable|not\s+able)\s+to)\b[^.\n]{0,60}\b(?:in|during)\s+(?:the|this)\s+(?:current\s+)?(?:session|chat|conversation)\b/i,
   /paste\s+(?:the\s+)?(?:contents?|files?|code|them)/i,
   /provide\s+(?:the\s+)?(?:contents?|files?)/i,
   /(?:environment|shell|tool)\s+(?:isn.?t|is not|aren.?t|are not|appears? to be)\s+(?:return|provid|respond|work|access)/i,

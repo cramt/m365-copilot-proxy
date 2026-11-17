@@ -9,10 +9,11 @@
 # Run it inside the repo's Nix dev shell, which provides pi, python3 and curl:
 #   N=10 nix develop --command bash scripts/bench/pi-reliability.sh
 #
-# Throttle pacing, as in run.mjs, only with M365_AVOID_THROTTLING=1: before each
-# run it waits until the proxy's debug logs say the account can afford PACE_NEED
-# (12) turns plus a reserve (turn-budget.mjs; the proxy needs M365_DEBUG=1). A
-# proxy started with the same variable also waits before each turn inside a run.
+# Throttle avoidance, as in run.mjs, only with M365_AVOID_THROTTLING=1: before each
+# run it waits until the proxy's debug logs say the account can afford BUDGET_NEED
+# (12; PACE_NEED is its old name) turns plus a reserve (turn-budget.mjs; the proxy
+# needs M365_DEBUG=1). A proxy started with the same variable also waits before
+# each turn inside a run.
 # A run that comes back throttled is recorded as THROTTLED and ends the
 # loop ("[pi-rel] THROTTLED", exit 3): every later run would only keep it alive.
 set -u
@@ -23,7 +24,7 @@ PORT="${PORT:-4141}"
 MODEL="${MODEL:-m365-copilot}"
 COOLDOWN="${COOLDOWN:-60}"
 TIMEOUT="${TIMEOUT:-240}"
-PACE_NEED="${PACE_NEED:-12}"
+BUDGET_NEED="${BUDGET_NEED:-${PACE_NEED:-12}}"
 BASE="http://localhost:${PORT}/v1"
 CSV="${CSV:-/tmp/m365-pi-reliability.csv}"
 TASK="${TASK:-fix-bug}"   # fix-bug (find+fix) | multi (2-file bug) | edit-config (F17 "change X->Y" shape)
@@ -40,7 +41,7 @@ curl -s -m3 "http://localhost:${PORT}/health" >/dev/null || { echo "[pi-rel] pro
 echo "[pi-rel] N=$N model=$MODEL base=$BASE python3=$PYBIN cooldown=${COOLDOWN}s"
 
 for i in $(seq 1 "$N"); do
-  node scripts/bench/turn-budget.mjs wait --need "$PACE_NEED" --label pi-rel
+  node scripts/bench/turn-budget.mjs wait --need "$BUDGET_NEED" --label pi-rel
   D="$(mktemp -d /tmp/pi-task-XXXXXX)"
   if [ "$TASK" = edit-config ]; then
     printf '{\n  "name": "app",\n  "port": 3000,\n  "debug": false\n}\n' > "$D/config.json"

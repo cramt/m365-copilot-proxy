@@ -25,6 +25,7 @@ If you read nothing else:
 6. Auth uses **MSAL PKCE with the `nativeclient` redirect**, which a real browser bounces to `/common/wrongplace` — you must scrape the auth code from the *navigation request*, not wait for the redirect to land.
 7. **Tool calling is not native.** It only works reliably if you create a **Copilot Studio agent** and reference it per request; otherwise M365 ignores tool instructions and answers in prose / hallucinates.
 8. M365 has a **"Disengaged" safety filter**: large or jailbreak-looking prompts get a `messageType:"Disengaged"` message with **empty content** — which is easy to mistake for rate limiting.
+9. The **new web client (`copilot.cloud.microsoft`) uses StreamHub**, a second endpoint with the same SignalR protocol but item-based framing; `M365_TRANSPORT=streamhub` makes the proxy use it (§13).
 
 ---
 
@@ -86,6 +87,13 @@ The `nativeclient` redirect URI is designed to be **intercepted by an embedded n
 - Field selectors: email `input[name="loginfmt"]`, password `input[name="passwd"]`, TOTP `input[name="otc"]`.
 - On NixOS, Playwright's bundled `chrome-headless-shell` fails (`libglib-2.0.so.0`); point it at a system Chromium via `CHROMIUM_PATH` (`resolveChromiumPath()`).
 - TOTP codes are single-use per 30s window — space retries past the window.
+- **Managed Windows PCs (Entra-joined, Intune) can sign in silently with Chrome.** With the Chrome
+  policy `CloudAPAuthEnabled=1`, Chrome signs in with the Windows PRT. The interactive path
+  (`M365_ENABLE_INTERACTIVE_APPROVAL=1`, `CHROMIUM_PATH` set to chrome.exe, a Windows
+  `M365_LOGIN_UA`) got its code in about a second with no prompt. Edge under Playwright fails
+  (`Browser window not found`) when the policy `BrowserSignin=2` forces a profile sign-in first.
+  `resolveChromiumPath()` probes with `command -v`, which Windows lacks, so set `CHROMIUM_PATH`
+  there (hypotheses §39 F104).
 
 ---
 
@@ -165,6 +173,19 @@ The web client uploads a pasted image first, then points the chat message at it:
 Nothing else is needed: no GPT-V `optionsSets` on the turn, and it works with the tool agent attached
 (hypotheses §33 F86). `core/src/image-input.ts`; the handler sends the OpenAI `image_url` (data URL)
 parts of the messages a turn carries.
+
+### Documents in a turn
+
+A document doesn't go to `UploadFile`. The web client puts it in the user's OneDrive and points the
+message at it (hypotheses §42 F117):
+
+1. `POST https://graph.microsoft.com/v1.0/me/drive/special/copilotuploads:/<name>:/createUploadSession`
+   with a Graph token (`Prefer: ExtractTextOnCommit`), then `PUT` the bytes to the returned `uploadUrl`.
+2. The chat invocation's `message.messageAnnotations: [{ id: "SPO_<base64 siteId,webId,listId>_<itemId>",
+   text: <name>, url: <webUrl>, messageAnnotationType: "LocalFile" }]`; the ids come from the item's
+   `sharepointIds`.
+
+`core/src/file-upload.ts`; the handler sends the OpenAI `file` parts (`file_data` data URL, `filename`).
 
 ### The mandatory Metrics frame (`type: 1`, `target: "Metrics"`)
 ```json
@@ -560,18 +581,18 @@ Two behaviours of the chat-tuned model distort any naïve "is it tool-calling ye
 ### Creating the agent (`agent.ts`)
 1. **Discover the environment** via the BAP API:
    `GET https://api.bap.microsoft.com/providers/Microsoft.BusinessAppPlatform/environments/~default?api-version=2023-06-01`
-   → `name` like `Default-<tenantGuid>`.
-2. **Build the Power Platform host.** `envId` is the tenant GUID with dashes stripped. Power Platform splits it across **two DNS labels**: everything but the last two characters, then those two characters as a label of their own —
+   → `name` like `Default-<tenantGuid>` or a bare environment GUID.
+2. **Build the Power Platform host.** Strip dashes and lowercase the ID. Use the `default` host prefix only when the name starts with `Default-`; a bare GUID has no prefix. Power Platform splits the ID across **two DNS labels**: everything but the last two characters, then those two characters as a label of their own —
 
    ```
-   default<envId[..-2]>.<envId[-2..]>.environment.api.powerplatform.com
+   [default]<envId[..-2]>.<envId[-2..]>.environment.api.powerplatform.com
    ```
 
    e.g. `…9a0eeaa273df` → `default…9a0eeaa273.df.environment.api.powerplatform.com`.
 
    **This was previously documented (and implemented) as a hardcoded `.df.` plus a "trim the last 2 characters" DNS quirk.** That is wrong, and it was invisible here because this tenant's env ID *ends in* `df` — so the trimmed candidate landed on the correct host by coincidence. Any tenant whose env ID ends in something else got two names that don't resolve, and provisioning failed outright. Measured (@FreemindTrader, [#8](https://github.com/cramt/m365-copilot-proxy/issues/8)): for an ID ending `df` the old and new forms hit the same host (200, byte-identical bot list); the full-length label `ENOTFOUND` either way. Implemented in `getEnvironmentUrl()`.
 3. **Create a bot** via the Copilot Studio `minimalBots` API (`…/copilotstudio/minimalBots/api?api-version=2022-03-01-preview`), with the tool-calling instructions as the GPT component's `instructions` text.
-4. **Publish** it → returns a `TitleId`.
+4. **Publish** it → returns a `TitleId`. A `CopilotExtensibilityNotEnabled` denial during creation or publication is treated as a tenant-policy block for the process lifetime: subsequent resolution returns no agent, including forced refresh. A policy-denied publish is not deleted and recreated; ordinary publish failures retain the existing delete-and-recreate recovery. Restart after the policy changes.
 5. The usable **agent id** is `T_{titleId}.{botId}.gpt.default`, cached in `~/.config/opencode-m365/agent-id.json`.
 
 ### Referencing the agent in a chat turn
@@ -652,6 +673,7 @@ Evidence (`scripts/dataverse-bot-probe.mjs`, with a `<org>.crm4.dynamics.com/.de
 | 24 | **`optionsSets` was sent empty** — leaves code-interpreter/memory/custom-instructions/image off the table. Reference impls (PyRIT, kuchris) populate it | §5/hypotheses §8 |
 | 25 | **`scenario` gates the model list.** `Gpt_6_Reasoning` is a dead route on `OfficeWebIncludedCopilot` and a real model on `OfficeWebPaidCopilot`, and so was `Claude_Opus` agent-less until October 2026 (on a premium account it is now Opus 4.8 on the included one, Opus 5.5 on the paid one, §36). `licenseType: Premium` rides along but unlocks nothing by itself. Proxy derives it per-turn from the model ID. The scenario can also change which model a tone is: `Claude_Sonnet` is Sonnet 4.6 included and Sonnet 5.5 paid (Sonnet 5, now `Claude_Sonnet_5`, until 2026-10-06). The gate says nothing about metering — GPT-6 and Sonnet 5 are gated but not separately budgeted | §5 |
 | 26 | **Priority-access caps — Opus 5.5 (40 turns/day, 75/week) and Sonnet 5.5 (80/day, 150/week), one per turn** — end the turn with `result.value: "OutOfCredits"` and a refusal that is NOT streamed — it exists only in the final item — so a stream reader sees an empty turn and every generic guard misreads it. Read the result; the proxy 429s, remembers it per budget until the reset (midnight UTC; weekly: Monday — though Sonnet 5.5's weekly key has reset daily, hyp §30), and can fall back (`M365_OPUS_FALLBACK_MODEL`, `M365_SONNET_FALLBACK_MODEL`) | §5/§15, hyp §24 F59, §26 |
+| 27 | **The final text loses `[word]:`.** M365's post-processing deletes a bracketed word, the colon after it and the whitespace after that from a message's final snapshot — in code blocks too, and not every occurrence: `[regex]::Replace(` → `:Replace(`, `if row[col]:` + newline + indent → `if row` glued to the next line, `{[key]: 1}` → `{1}`. Dotted names (`[IO.File]::`), `[x] :` and brackets without a colon survive. Both transports, every model tried. The token deltas carry the model's own text; a short reply may have none. The proxy restores from the deltas (`restoreStrippedBrackets`), asks PowerShell for full dotted type names, and doesn't run a PowerShell call left with `:Member(` | hyp §40 F111 |
 
 ---
 
@@ -701,3 +723,85 @@ already in memory.
 *If a future reader finds any of this is now wrong: M365 Copilot is an undocumented,
 first-party-only surface and Microsoft changes it freely. Re-capture a real session
 from `m365.cloud.microsoft` (browser devtools → WS frames) and diff against the above.*
+
+---
+
+## 13. StreamHub — the new web client's transport (Nov 2026)
+
+The new web client (`copilot.cloud.microsoft`) doesn't use Chathub. It talks to
+
+```
+wss://substrate.svc.cloud.microsoft/m365Copilot/StreamHub/{oid}@{tid}?{query}
+```
+
+with the same SignalR JSON protocol, `0x1E` separators and Sydney token (`access_token=` in the
+query). The proxy sends a turn this way under `M365_TRANSPORT=streamhub` (`getTransport`,
+`session.ts`). Observed 2026-11-11 on a premium account; hypotheses §40.
+
+**Query string** (the client's order): `chatsessionid`, `XRoutingParameterSessionKey` (the user's `oid`:
+a browser can't set the Chathub header), `clientrequestid`, `X-SessionId`, `disableMemory=1` for a
+temporary chat (as on Chathub), `access_token`, `variants`, `source=officeweb`, `product=Office`,
+`agentHost=Bizchat.FullScreen`, `licenseType`, `isEdu=false`, `agent=work`, `scenario=officeweb`.
+Headers: `Origin: https://copilot.cloud.microsoft` and a browser `User-Agent`.
+
+- **`variants` must include `streamhub11`.** It turns on the items that bracket a turn
+  (`request_pending`, `request_start`, `answer_complete`, `request_end`). Without it the answer
+  streams but nothing ends the turn, and the socket idles on pings. The client sends 261 flags; the
+  proxy sends its Chathub list plus `streamhub11` and `feature.enablestreamhubstop`.
+- **`scenario=officeweb` for every model.** Under `OfficeWebIncludedCopilot`, StreamHub refuses
+  `Gpt_61_Sol_Reasoning` with `InputTokenLimitExceeded` exactly as Chathub does; under `officeweb` it
+  serves it. `licenseType` changed nothing (`Claude_Sonnet` is Sonnet 5.5 under `officeweb` with
+  `Starter` or `Premium`). The scenario-picked models collapse: under `officeweb` `Claude_Sonnet` is
+  Sonnet 5.5, not 4.6.
+
+**Client → server**, after the handshake:
+
+```jsonc
+{"type":6}
+{"arguments":[],"invocationId":"1","streamIds":["0"],"target":"stream","type":4}   // opens the server stream
+{"invocationId":"0","type":2,"item":{"type":"subscribe","topicId":"/conversations/<cid>","action":"create","noteId":"<uuid>"}}
+{"invocationId":"0","type":2,"item":{"type":"chat_request","topicId":"/conversations/<cid>","noteId":"<uuid>","chatStreamRequest":{…}}}
+```
+
+- `subscribe` carries `action: "create"` on **every** fresh socket, a resumed conversation included
+  (that's what the client does after a reload). Without it a follow-up turn got no reply at all.
+- `chatStreamRequest` is Chathub's chat argument, reshaped: `conversationId` and `requestId` move in,
+  `streamingMode: "ConciseV2"`, `clientInfo.clientPlatform: "ccmcopilot-web"` (also inside `message`),
+  `gpts: [{id: "bizchat-as-gpt-scenario", source: "BuiltInAgents"}]`, plus the usual `optionsSets`,
+  `allowedMessageTypes`, `plugins`, `tone`. An unknown tone is rejected as a note (below).
+- Stop: `{"type":"stop","topicId":"/conversations/<cid>","turnId":"<requestId>","requestId":"<requestId>","reason":"ClientRequested"}`
+  as an item on stream `"0"`.
+
+**Server → client:** type-2 items on invocation `"1"`.
+
+| item | carries |
+|---|---|
+| `network_info` | the client's IP prefix |
+| `request_pending`, `request_start` | the echoed user message; the turn started |
+| `message_part` | `argument` = what a Chathub `update` invocation carried (below) |
+| `answer_complete` | the answer is done |
+| `request_end` | `outcome.category`: `Success`, or e.g. `InvalidRequest` with `code: "InputTokenLimitExceeded"`, `message`, `error` (the server exception) |
+| `error` | a rejected note: `errorCategory: "InvalidRequest"`, `errorCode: "InvalidNote"` (an unknown tone). No `request_end` follows; the server holds the socket ~120 s, then a type-7 close |
+
+`message_part.argument` shapes:
+- `{messages}`: Progress messages, the user echo, the final snapshot of a short answer
+  (`isLastUpdate`), and an `EndOfRequest` message whose `author` is `null`.
+- `{throttling}`: the message cap. It carried no `metering` in any observed turn (the web client
+  also asks for `MeteringInfo` messages; not tried), so the proxy can't see priority-access
+  allowances on StreamHub.
+- `{cursor, messages}`: names the message the next deltas extend, and **restates it**, usually as `""`.
+- `{w: "…"}`: a delta — Chathub's `writeAtCursor`, renamed.
+- `{patches, isLastUpdate}`: JSON patches (suggestions, metadata).
+
+A long answer streams as deltas, then a second cursor frame restates the same message as `""` and one
+`w` delivers the **whole** text again. Folding that restatement in (Chathub's rule: keep the longest)
+duplicates the answer, so the cursor frame's snapshot replaces the message (`TurnTextComposer.restart`),
+and the composed text is authoritative when the turn ends.
+
+Subscribing to an existing conversation **replays its earlier turns' items**, `request_end` included.
+Every item carries the `requestId` it belongs to; keep to this turn's (the server echoes the request's
+id as sent).
+
+**Not StreamHub: Cowork and Code.** The web app's Cowork and Code tabs run an agent runtime (Copilot
+Studio): a message is queued over REST and the run streams back as server-sent events. Its agent runs
+tools in Microsoft's cloud, not on your machine, so the proxy doesn't use it.

@@ -305,11 +305,13 @@ pnpm test:live      # M365_LIVE=1; live tests that hit real M365 (uses quota)
 - **Two default-on retries spend an upstream turn when a tool turn ends without a call.** First, if the
   reply had a tool block the parser couldn't read (a fence never closed, an edit without its markers;
   `unreadableToolFence` in `fenced.ts`), the proxy asks once, in the same conversation, saying what was
-  wrong and that the model may reply without it (`M365_NO_FENCE_RETRY=1` off; hyp §40 F103). Otherwise
+  wrong and that the model may reply without it (`M365_NO_FENCE_RETRY=1` off; hyp §44 F119). Otherwise
   the give-up / confabulation forcing retry (`M365_NO_CONFAB_RETRY=1` off, `M365_CONFAB_RETRIES`). Each
-  costs a turn from the F58 bucket, and on Opus a priority-access unit. The forcing retry never follows a
-  re-ask: it would force the call the model was just told it could skip. The re-ask's evidence is a
-  scripted-model run and a 900-reply parser replay, not a live A/B.
+  costs a turn from the F58 bucket, and on Opus a priority-access unit. Transport/filter retries
+  (Bing-overflow and `Apology` / `Disengaged` in `runBuffered`) run before the re-ask; the forcing retry
+  never follows a re-ask (it would force the call the model was just told it could skip), while
+  `strippedTypeMember` runs after and still guards any PowerShell call the re-ask returns. The re-ask's
+  evidence is a scripted-model run and a 900-reply parser replay, not a live A/B.
 - **Array/object tool params come back in two shapes; the parser reads both.** The tools block shows
   `edits: <edits>`. Opus writes inline JSON (`edits: [{…}]`); Sonnet 4.6 writes a YAML block list under
   an empty `edits:`, which used to arrive as `edits: []` — 44 of its 47 pi `edit` calls, each a wasted
@@ -319,6 +321,19 @@ pnpm test:live      # M365_LIVE=1; live tests that hit real M365 (uses quota)
   body, no edit pair; opencode's `edit` with `oldString`/`newString`) the model writes `oldString: <first
   line>` and the rest of the text below it, so a string value runs on to the next `key:` line (#82). A
   tool with a body still ends its header at the first line that isn't `key:`; don't extend the run-on to it.
+- **Claude Code and Codex arrive through copilot-api, as `claude-cli/…` / `codex…` user-agents.**
+  Codex's Code Mode `exec` (`functions__exec` there) runs JavaScript, not a shell: `findShellTool`
+  keeps it as the last resort and every shell fence routed to it becomes a nested
+  `tools.exec_command` call (`codeModeShellScript`) — don't route fences to it raw or drop the
+  wrapper. For those user-agents a stream that fails after its 200 ends as assistant text
+  (`M365_STREAM_ERROR_MODE`): copilot-api can't parse the error chunk, and Claude Code retried
+  the turn ten times, each retry opening fresh conversations. Claude Code's `Bash` is Git Bash on
+  Windows, so it gets no PowerShell note (`shellDialect` reads it as POSIX). The client's
+  `prompt_cache_key` (its session id) scopes the conversation key, on top of the opener and the
+  tool names. Their identity lines ("You are a Claude agent, built on Anthropic's Claude Agent
+  SDK", "…running in the Codex CLI") and `<system-reminder>` blocks make M365's models refuse ("I'm
+  Microsoft Copilot") — not Disengage. `M365_HARNESS_PROMPT=clean|lean` strips them (`harness.ts`;
+  Sonnet 5 in Claude Code 0/3 → 6/6). See docs/claude-code-codex.md, docs/hypotheses.md §39.
 - **Account degradation is THREAD-rate, not message-count** (docs/hypotheses.md §9 F13).
   Microsoft throttles *conversations started*, not messages sent — the per-conversation
   counter resets each thread. A bench that opens one fresh conversation per task burns the

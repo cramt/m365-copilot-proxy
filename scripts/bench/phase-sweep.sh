@@ -43,22 +43,22 @@
 #   phase sets @MODEL=), TAG (sweep), PORT (4141), REPEAT (1,
 #   bench reps per task), TASKS (all bench tasks), PI_N (5), COOLDOWN (60 s
 #   between arms), PHASE_COOLDOWN (60 s), TASK_GAP (0 s between bench tasks, on
-#   top of the pacing below),
+#   top of the turn-budget wait below),
 #   ARCHIVE (~/.config/opencode-m365/
 #   sweeps/$TAG), PROXY_CMD (the built proxy; `node scripts/bench/_mock-proxy.mjs`
 #   exercises the driver without spending M365 threads), DRY_RUN=1 (validate and
 #   print the plan, spend nothing), and M365_AVOID_THROTTLING / M365_BUDGET_*
-#   (pacing, below).
+#   (throttle avoidance, below).
 #
-# Pacing, only with M365_AVOID_THROTTLING=1: the account throttles once a bucket
+# Throttle avoidance, only with M365_AVOID_THROTTLING=1: the account throttles once a bucket
 # of ~100 turns, refilled at ~1.6 a minute, runs dry (hypotheses §24 F58).
 # Before every bench task and every pi run the drivers then wait until the
 # proxies' debug logs (this archive included) say there's room for a whole task
 # plus a reserve — scripts/bench/turn-budget.mjs. The proxies inherit the
 # variable and also wait before each upstream turn (the same model, same
 # reserve), which only matters when a task runs past its allowance. The sweep
-# runs at the account's pace instead of tripping the throttle, which makes it
-# much slower: ~1.6 turns a minute once the bucket is down to the reserve. Off
+# runs at the bucket's refill rate instead of tripping the throttle, which makes
+# it much slower: ~1.6 turns a minute once the bucket is down to the reserve. Off
 # by default.
 # `node scripts/bench/turn-budget.mjs status` shows where the bucket stands.
 #
@@ -92,7 +92,7 @@ ARCHIVE="${ARCHIVE:-$CFG/sweeps/$TAG}"
 [[ "$ARCHIVE" == /* ]] || ARCHIVE="$REPO/$ARCHIVE"
 PROXY_CMD="${PROXY_CMD:-node packages/proxy/bin/m365-proxy.mjs}"
 BASE_ENV=(M365_DEBUG=1 M365_DUMP_FRAMES=1 M365_NO_CONFAB_RETRY=1 M365_NO_INTERACTIVE=1)
-# Pacing (M365_AVOID_THROTTLING=1) reads the debug logs under $CFG; an archive
+# Throttle avoidance (M365_AVOID_THROTTLING=1) reads the debug logs under $CFG; an archive
 # kept elsewhere has to be named.
 export M365_BUDGET_LOGS="$ARCHIVE${M365_BUDGET_LOGS:+:$M365_BUDGET_LOGS}"
 
