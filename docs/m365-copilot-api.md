@@ -77,6 +77,17 @@ We use `@azure/msal-node` `PublicClientApplication` with PKCE. The token cache i
 > **Observed token scopes** (the Sydney token already carries these): `CopilotPlatform{Content.Process,Files.ReadWrite(All),Mail.Read(.Shared),Presence.Read(.All),Sites.Read.All,Teams.ReadWrite.All,User.Read,License...,ProtectionScopes...,DataLossPrevention...}` + `M365Chat.Read` + `sydney.readwrite`. So the auth we hold already has the entitlements behind Files/Mail/Sites/Teams/Presence — the foundation for any Graph "Work" grounding (hypotheses §8 H8.11).
 
 ### The `nativeclient` redirect gotcha (this one cost hours)
+
+**Windows broker alternative:** `M365_AUTH_MODE=wam` uses MSAL Node's
+`NativeBrokerPlugin` instead of this browser flow. The native broker selects the
+registered `ms-appx-web://Microsoft.AAD.BrokerPlugin/<client-id>` redirect. The
+existing Microsoft client ID and Sydney scopes returned a broker token on Windows
+ARM64 where browser PKCE was blocked by token protection (`530084`); a subsequent
+silent acquisition also succeeded (hypotheses §44). This does not establish that
+every account or policy supports the path. Only account-selection metadata is
+persisted by the proxy; WAM owns refresh tokens. `M365_ENABLE_INTERACTIVE_APPROVAL`
+and `M365_NO_INTERACTIVE` govern native prompts too, with no browser fallback.
+
 The `nativeclient` redirect URI is designed to be **intercepted by an embedded native host** (WebView2 etc.) *before the page loads*. A real browser instead follows the redirect one hop further and lands on **`https://login.microsoftonline.com/common/wrongplace`** ("This is not the right page"). So:
 
 - `page.waitForURL("**/oauth2/nativeclient**")` **misses** the auth code — the `?code=` URL exists only transiently before the bounce.
