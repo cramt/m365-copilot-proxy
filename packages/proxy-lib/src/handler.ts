@@ -172,6 +172,12 @@ interface ConversationState {
    *  Opus fallback, #18) can't continue the M365 conversation — it may need
    *  another scenario — so it starts a fresh one with the full history. */
   servedModel?: string;
+  /** Characters in the prompt that opened the current M365 conversation (the
+   *  full history, when it was a replay). */
+  openingChars: number;
+  /** M365 lost this conversation's history after a reply had already streamed:
+   *  the next request replays the whole history in a fresh conversation. */
+  replayNext: boolean;
 }
 
 /**
@@ -205,11 +211,32 @@ export function executedOnlyFirstNote(fabricated: boolean, droppedCalls: number,
 
 // --- Session pool: maps conversation fingerprint → M365 session ---
 
-const MAX_IDLE_MS = 30 * 60 * 1000; // evict after 30 min idle
+/** How long an idle conversation stays in the pool, in hours
+ *  (M365_CONVERSATION_TTL_HOURS). M365 keeps a conversation much longer: one
+ *  idle for 21 h still recalled its earlier turns (docs/hypotheses.md §46 F126).
+ *  An evicted conversation's next request replays the whole history into a
+ *  fresh M365 conversation, and a long history can be too big for M365 to keep
+ *  (F125). It was 30 minutes. */
+const DEFAULT_CONVERSATION_TTL_HOURS = 24;
+export function conversationTtlMs(): number {
+  const hours = Number(process.env.M365_CONVERSATION_TTL_HOURS);
+  return (Number.isFinite(hours) && hours > 0 ? hours : DEFAULT_CONVERSATION_TTL_HOURS) * 3_600_000;
+}
+/** Most conversations the pool keeps; past it the least recently used go first. */
+const MAX_CONVERSATIONS = 1000;
+/** Openings at least this long that M365 turned out not to keep teach the pool
+ *  a size limit; a shorter one that went missing is treated as a one-off.
+ *  M365 kept a 420k-character opening and dropped a 540k one (§46 F125). */
+const UNKEPT_OPENING_MIN_CHARS = 200_000;
 
 export class SessionPool {
   private conversations = new Map<string, ConversationState>();
   private sessionOptions: ModelSessionOptions;
+  /** The shortest opening prompt (chars, at least UNKEPT_OPENING_MIN_CHARS) whose
+   *  history M365 was later found not to have kept. A conversation opened with a
+   *  prompt this long is replayed whole on every request instead of continued:
+   *  a delta would land in an empty conversation (§46 F125). */
+  unkeptOpeningChars = Infinity;
 
   constructor(sessionOptions: ModelSessionOptions = {}) {
     this.sessionOptions = sessionOptions;
@@ -245,6 +272,7 @@ export class SessionPool {
         existing.session.newConversation();
         existing.sentMessageCount = 0;
         existing.pendingNote = null;
+        existing.replayNext = false;
       }
       existing.lastAccessedAt = Date.now();
       return existing;
@@ -257,6 +285,8 @@ export class SessionPool {
       sentMessageCount: 0,
       pendingNote: null,
       lastAccessedAt: Date.now(),
+      openingChars: 0,
+      replayNext: false,
     };
     this.conversations.set(fingerprint, state);
     return state;
@@ -288,9 +318,17 @@ export class SessionPool {
 
   private evictStale() {
     const now = Date.now();
+    const ttl = conversationTtlMs();
     for (const [key, state] of this.conversations) {
-      if (now - state.lastAccessedAt > MAX_IDLE_MS) {
+      if (now - state.lastAccessedAt > ttl) {
         log.info(`Evicting idle conversation ${key}`);
+        this.conversations.delete(key);
+      }
+    }
+    if (this.conversations.size >= MAX_CONVERSATIONS) {
+      const byAge = [...this.conversations].sort((a, b) => a[1].lastAccessedAt - b[1].lastAccessedAt);
+      for (const [key] of byAge.slice(0, this.conversations.size - MAX_CONVERSATIONS + 1)) {
+        log.info(`Evicting conversation ${key} (pool full)`);
         this.conversations.delete(key);
       }
     }
@@ -307,6 +345,13 @@ function simpleHash(str: string): string {
     hash = ((hash << 5) - hash + str.charCodeAt(i)) | 0;
   }
   return String(hash);
+}
+
+/** M365 counts this turn's message as its conversation's first
+ *  (`numUserMessagesInConversation` 1). On a follow-up turn that means the
+ *  history the proxy sent before is gone (§46 F125). */
+function conversationLost(stream: { throttle: { current: number; max: number } | null }): boolean {
+  return stream.throttle?.current === 1;
 }
 
 /** Parse a tool-mode reply, with the document guard applied.
@@ -414,6 +459,20 @@ export async function handleChatCompletion(
     conv.sentMessageCount = 0;
   }
 
+  // A follow-up that M365 can't have context for: the reply to the last request
+  // streamed before the proxy saw M365 had lost the history (replayNext), or the
+  // conversation opened with a history at least as long as one M365 has already
+  // failed to keep (§46 F125). A delta would land in an empty conversation, so
+  // replay the whole history in a fresh one.
+  if (conv.sentMessageCount > 0 && (conv.replayNext || conv.openingChars >= pool.unkeptOpeningChars)) {
+    log.info(conv.replayNext
+      ? "M365 lost this conversation's history last turn: replaying the whole history in a fresh conversation"
+      : `This conversation opened with ${conv.openingChars} chars, too long for M365 to keep (${pool.unkeptOpeningChars} wasn't kept): replaying the whole history in a fresh conversation`);
+    session.newConversation();
+    conv.sentMessageCount = 0;
+    conv.replayNext = false;
+  }
+
   // Which requests carry the declarative tool agent. GPT-the-chat-model won't
   // tool-call agent-less (0/4), so it needs the agent. Claude tool-calls reliably
   // AGENT-LESS via shell-routing (F23), and on a non-premium account the agent
@@ -453,7 +512,7 @@ export async function handleChatCompletion(
   if (isFirstTurn || conv.sentMessageCount === 0) {
     text = formatMessages(body.messages, body.tools, body.tool_choice, convId, framingVariant);
     inputAttachments = attachmentUrls(body.messages);
-    log.info(`Chat completion: model=${model}, stream=${body.stream}, messages=${body.messages.length}, turn=${session.turnCount}, mode=full, cid=${convId}`);
+    log.info(`Chat completion: model=${model}, stream=${body.stream}, messages=${body.messages.length}, turn=${session.turnCount}, mode=full, chars=${text.length}, cid=${convId}`);
   } else {
     const newMessages = body.messages.slice(conv.sentMessageCount);
     inputAttachments = attachmentUrls(newMessages);
@@ -495,9 +554,10 @@ export async function handleChatCompletion(
 
   // `onDelta` (when provided) forwards each text delta to the caller AS IT ARRIVES,
   // for live incremental streaming. It's safe to forward without ever retracting:
-  // runBuffered only retries on an EMPTY attempt (Disengaged, dead-agent, throttle),
-  // and an empty attempt emits no deltas — so a forwarded delta always belongs to the
-  // one attempt that produced content and is never re-sent by a subsequent retry.
+  // runBuffered only retries on an EMPTY attempt (Disengaged, dead-agent, throttle)
+  // or one stopped before any of it was forwarded (a lost conversation), so a
+  // forwarded delta always belongs to the one attempt that produced the answer and
+  // is never re-sent by a subsequent retry.
   async function runBuffered(
     onDelta?: (delta: string) => void,
   ): Promise<{ fullText: string } | { error: Response }> {
@@ -507,6 +567,7 @@ export async function handleChatCompletion(
     let webSearchFallbackDone = false;
     let priorityFallbackDone = false;
     let internalErrorFreshRetried = false;
+    let historyResent = false;
     let originalText = text;
     // Self-imposed pacing while the account is degraded (thread-rate throttle). A
     // no-op when healthy; during backoff it sleeps a jittered delay so we stop
@@ -529,8 +590,14 @@ export async function handleChatCompletion(
       // M365_NO_EARLY_STOP=1 waits for the turn to end instead.
       const earlyStop = hasTools && !process.env.M365_NO_EARLY_STOP ? new AbortController() : null;
       const stopAfter = earlyStopAfter();
-      const signal = !earlyStop ? opts.signal
-        : opts.signal ? AbortSignal.any([opts.signal, earlyStop.signal]) : earlyStop.signal;
+      // A turn opens an M365 conversation when its session has sent nothing yet.
+      // Any other turn continues one, so M365 should already hold its history.
+      const opening = session.turnCount === 0;
+      if (opening) conv.openingChars = text.length;
+      // Stops a follow-up turn whose conversation M365 turns out to have lost (below).
+      const lostStop = opening ? null : new AbortController();
+      const signals = [opts.signal, earlyStop?.signal, lostStop?.signal].filter((s): s is AbortSignal => s !== undefined);
+      const signal = signals.length <= 1 ? signals[0] : AbortSignal.any(signals);
       let copilotStream;
       try {
         // M365_AVOID_THROTTLING=1: wait until the account's turn bucket can
@@ -553,10 +620,22 @@ export async function handleChatCompletion(
 
       let fullText = "";
       let tagAt = -1; // where the invented <tool_response> starts, once seen
+      let forwarded = false; // some of this attempt's text has reached the client
       try {
         for await (const delta of copilotStream) {
+          if (lostStop?.signal.aborted) continue;
+          // M365 has lost this conversation (see below). On StreamHub its message
+          // count arrives ahead of the reply, so the turn stops before any of a
+          // reply written without context reaches the client.
+          if (lostStop && !forwarded && conversationLost(copilotStream)) {
+            lostStop.abort();
+            continue;
+          }
           fullText += delta;
-          onDelta?.(delta);
+          if (onDelta) {
+            onDelta(delta);
+            forwarded = true;
+          }
           if (!earlyStop || earlyStop.signal.aborted) continue;
           // Measured on the stream's composed text, which has the heads that
           // arrive only as snapshots (#29) — a fence's opening line among them.
@@ -645,6 +724,34 @@ export async function handleChatCompletion(
         noteRequestOutcome(false, convId);
         log.info(`Upstream InvalidRequest (${copilotStream.result.errorCode ?? "no errorCode"}), prompt ${text.length} chars — 400, no retry`);
         return { error: invalidRequestResponse(copilotStream.result, model, text.length) };
+      }
+
+      // M365 has lost this conversation's history: on a follow-up turn it counts
+      // the message as the conversation's first. It does that after answering
+      // an opening prompt too long to keep: it kept a 420k-character opening and
+      // dropped a 540k one, and the turn after a dropped opening had no context
+      // (§46 F125). This reply was written without context, so re-send the WHOLE
+      // request in a fresh conversation, once per request. A long lost opening
+      // also teaches the pool to replay such a history every time instead of
+      // continuing it. If the reply has already streamed (plain text, the count
+      // arriving after it), the next request replays instead.
+      if (!opening && !historyResent && conversationLost(copilotStream)) {
+        historyResent = true;
+        if (conv.openingChars >= UNKEPT_OPENING_MIN_CHARS) {
+          pool.unkeptOpeningChars = Math.min(pool.unkeptOpeningChars, conv.openingChars);
+        }
+        if (forwarded) {
+          conv.replayNext = true;
+          log.info(`M365 has lost this conversation's history (it opened with ${conv.openingChars} chars); the reply has already streamed, so the next request replays the whole history`);
+        } else {
+          log.info(`M365 has lost this conversation's history (it opened with ${conv.openingChars} chars): re-sending the whole request in a fresh conversation`);
+          session.newConversation();
+          text = formatMessages(body.messages, body.tools, body.tool_choice, session.conversationId, framingVariant);
+          inputAttachments = attachmentUrls(body.messages);
+          originalText = text;
+          attempt--;
+          continue;
+        }
       }
 
       // A tone whose agent route serves only on a premium account came back as
