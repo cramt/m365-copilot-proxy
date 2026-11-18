@@ -6331,8 +6331,10 @@ same turn asked for them.
 |---|---|---|
 | `gpt-6.2-sol` | 540k (§46), 650k, 780k characters | 900k, 1M, 2M, 4M |
 | `gpt-6.1-sol` | 650k | 900k, 2M |
+| `gpt-6.2-astra`, `gpt-6-astra` | – | 900k |
 | `claude-sonnet-5` | 650k, 900k, 2M | 2.6M, 3.2M, 4M |
-| `claude-opus-4.8` | 650k, 900k, 2M | – |
+| `claude-opus-4.8` (on StreamHub the same tone and scenario as `claude-opus`) | 650k, 900k, 2M | – |
+| `claude-sonnet-5.5`, `claude-fable` | 2M | – |
 
 780k characters is ~252k tokens and 900k ~291k: GPT-6.x gets the standard ~272k-token window, not a
 long-context one. It says so badly. The turn ends `request_end` `InternalError` with
@@ -6340,8 +6342,9 @@ long-context one. It says so badly. The turn ends `request_end` `InternalError` 
 recorded session error` (5–27 s), and its message, `turnState: Failed`, carries "Sorry, I wasn't able to
 respond to that. Is there something else I can help with?", which the proxy returned as the answer.
 Claude's refusal is `InvalidRequest (InputTokenLimitExceeded)`, a 400 `context_length_exceeded`. An
-answered 780k turn took 7 s, a 2M one on Claude 30 s. `numLongDocSummaryUserMessagesInConversation` stayed
-0: no long-document path. The metered models weren't probed (H47a).
+answered 780k turn took 7 s, a 2M one on Claude 30–45 s. `numLongDocSummaryUserMessagesInConversation`
+stayed 0: no long-document path. The metered models (the Astras, Sonnet 5.5, Fable) got one turn each, at
+the point that separates the families, sent straight through `ModelSession` (no proxy handler).
 
 ### F129 — the limit on what M365 keeps is the same for Claude 🟢
 A 900k opening on `claude-sonnet-5`, then "list the codes": the follow-up's count was 1, so M365 hadn't
@@ -6388,6 +6391,4 @@ request replayed it; GPT-6.x refused, and the proxy returned the apology as the 
 **Codex:** the 1M windows stay. Claude models get them; GPT-6.x models get ~270k tokens verbatim and
 M365's summary of the rest.
 
-**Open — H47a:** do the metered models (GPT-6.2 Astra, GPT-6 Astra, Claude Fable, Sonnet 5.5, Opus 5.5)
-follow their families? **Probe:** F128's boundary points (780k/900k for GPT, 2M/2.6M for Claude), one turn
-each. **Open — H47b:** can a request get GPT-6.x a longer window? The web client offers no such choice.
+**Open — H47a:** can a request get GPT-6.x a longer window? The web client offers no such choice.

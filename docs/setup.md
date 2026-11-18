@@ -218,7 +218,7 @@ app's account menu; the CLI ran with this file and no ChatGPT login. Things to k
   behind copilot-api too: [claude-code-codex.md](claude-code-codex.md), step 5).
 - **Context windows** come only from the catalog, and Codex compacts at 90% of a window. M365 reports no
   token counts, so the proxy estimates them: Codex sees an `m365/*` thread fill and compacts it near its
-  window. A 1M window is real for Claude Sonnet 5 and Opus 4.8; GPT-6.x reads about 250k tokens a turn
+  window. A 1M window is real for the Claude models; GPT-6.x reads about 250k tokens a turn
   and M365 summarizes the older turns (hypotheses §47).
 - **Metered models.** On Chathub `claude-opus` (Opus 5.5) is limited to 40 turns a day and
   `claude-sonnet-5.5` to 80, every tool call a turn, while `gpt-6.1-sol` and `claude-sonnet-5` spend no

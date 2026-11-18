@@ -702,8 +702,8 @@ proxy's estimates: the whole request as the model reads it (history, system
 prompt, tool framing) and the reply, at 4 UTF-8 bytes a token (`M365_REPORT_USAGE=0`
 for zeros). They let a client see its context fill and compact before its window
 runs out; Codex never compacted without them. How much context M365 actually gives:
-GPT-6.x models read about 250k tokens a turn and summarize older turns; Claude
-Sonnet 5 and Opus 4.8 about 1M ([hypotheses §47](docs/hypotheses.md)).
+GPT-6.x models read about 250k tokens a turn and summarize older turns; the Claude
+models about 1M ([hypotheses §47](docs/hypotheses.md)).
 
 The block also carries M365 extension fields with the **per-conversation
 message quota**:
