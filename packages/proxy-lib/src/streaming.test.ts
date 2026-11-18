@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, afterEach } from "vitest";
+import { describe, it, expect, vi, afterEach, beforeEach } from "vitest";
 
 // Replace core's ModelSession with a scripted fake so we can exercise the handler's
 // streaming path with no auth/WebSocket. Everything else in core stays real.
@@ -11,7 +11,7 @@ const scripted: {
   /** Text of every run() call, in order. */
   texts: string[];
   /** Per-call overrides, consumed front-first (e.g. a Disengaged turn, then an answer). */
-  queue: Array<{ fullText: string; messageType?: string | null; contentOrigin?: string; apology?: boolean; result?: { value: string; errorCode?: string; message?: string }; metering?: Record<string, number>; throttle?: { current: number; max: number } | null }>;
+  queue: Array<{ fullText: string; messageType?: string | null; contentOrigin?: string; apology?: boolean; result?: { value: string; errorCode?: string; message?: string }; metering?: Record<string, number>; throttle?: { current: number; max: number } | null; turnState?: string }>;
   /** The model argument of every run() call, in order. */
   models: string[];
   /** The `useAgent` argument of every run() call, in order. */
@@ -34,7 +34,9 @@ const scripted: {
   awaitTurnBudgetCalls: Array<{ maxWaitMs?: number; signal?: AbortSignal }>;
   /** The `waitForBudget` argument of every run() call, in order (one function per call). */
   budgetWaits: Array<(() => Promise<unknown>) | undefined>;
-} = { deltas: [], runs: 0, texts: [], queue: [], agentFlags: [], newConversations: 0, models: [], images: [], gate: null, signals: [], stoppedAfter: null, budgetHold: null, awaitTurnBudgetCalls: [], budgetWaits: [] };
+  /** Replies to the parts of a long turn (replay.ts), consumed front-first; past them a part gets "OK". */
+  partQueue: Array<{ fullText: string; result?: { value: string; errorCode?: string; message?: string } }>;
+} = { deltas: [], runs: 0, texts: [], queue: [], agentFlags: [], newConversations: 0, models: [], images: [], gate: null, signals: [], stoppedAfter: null, budgetHold: null, awaitTurnBudgetCalls: [], budgetWaits: [], partQueue: [] };
 
 vi.mock("@m365-copilot/core", async (importActual) => {
   const actual = await importActual<typeof import("@m365-copilot/core")>();
@@ -58,7 +60,9 @@ vi.mock("@m365-copilot/core", async (importActual) => {
       scripted.texts.push(text);
       scripted.agentFlags.push(useAgent);
       servedBy.push(this.uid);
-      const next = scripted.queue.shift();
+      // A part of a long turn (replay.ts) is acknowledged, as the model does, without using up the queue.
+      const isPart = /^\[(?:Earlier conversation, part|This message is too long to send at once)/.test(text);
+      const next: (typeof scripted.queue)[number] | undefined = isPart ? (scripted.partQueue.shift() ?? { fullText: "OK" }) : scripted.queue.shift();
       const deltas = next ? (next.fullText ? [next.fullText] : []) : scripted.deltas;
       const full = next ? next.fullText : (scripted.fullText ?? deltas.join(""));
       const yielded: string[] = [];
@@ -76,7 +80,7 @@ vi.mock("@m365-copilot/core", async (importActual) => {
         messageId: "m1",
         scores: null,
         turnCount: 1,
-        turnState: "Completed",
+        turnState: next?.turnState ?? "Completed",
         async *[Symbol.asyncIterator]() {
           for (const d of deltas) {
             await Promise.resolve(); // yield to the event loop between deltas
@@ -1532,23 +1536,32 @@ describe("a conversation M365 has lost (§46)", () => {
     expect(await streamed(res)).toBe("For that example, the normal complex is ...");
   });
 
-  it("replays a history that long every time once M365 has lost one", async () => {
+  it("after losing a long opening, re-sends the history in parts shorter than it, then goes on with deltas (§47)", async () => {
     const pool = new SessionPool();
     const opener = `${"Background for the task. ".repeat(10_000)}${Math.random()}`; // 250k chars
     reset({ fullText: "Noted." });
     const history: Msg[] = [{ role: "user", content: opener }];
     await ask(pool, history);
+    // The follow-up finds the history gone. The pool learns the size at once, so
+    // the same request re-sends the whole history in a fresh conversation, in
+    // turns M365 keeps.
     scripted.queue = [LOST, { fullText: "Answer 2." }];
     history.push({ role: "assistant", content: "Noted." }, { role: "user", content: "Question 2" });
-    await ask(pool, history);
+    expect(await answerOf(await ask(pool, history))).toBe("Answer 2.");
+    expect(pool.unkeptOpeningChars("claude-sonnet")).toBeGreaterThanOrEqual(250_000);
+    expect(scripted.newConversations).toBe(1);
+    const replay = scripted.texts.slice(2);
+    expect(replay.length).toBeGreaterThan(1);
+    for (const t of replay) expect(t.length).toBeLessThanOrEqual(pool.unkeptOpeningChars("claude-sonnet") * 0.75);
+    expect(replay[0]).toContain("Background for the task.");
+    expect(replay.at(-2)).toContain(opener.slice(-20));
+    expect(replay.at(-1)).toContain("Question 2");
+    // The conversation opened with a part M365 keeps, so the next request continues it.
     scripted.queue = [{ fullText: "Answer 3." }];
     history.push({ role: "assistant", content: "Answer 2." }, { role: "user", content: "Question 3" });
     expect(await answerOf(await ask(pool, history))).toBe("Answer 3.");
-    // Straight to the whole history: no delta into a conversation M365 won't have kept.
-    expect(scripted.texts).toHaveLength(4);
-    expect(scripted.texts[3]).toContain(opener);
-    expect(scripted.newConversations).toBe(2);
-    expect(pool.unkeptOpeningChars("claude-sonnet")).toBeGreaterThanOrEqual(250_000);
+    expect(scripted.texts.at(-1)).not.toContain("Background for the task.");
+    expect(scripted.newConversations).toBe(1);
   });
 
   it("treats a short history's loss as a one-off: the next request continues it", async () => {
@@ -1674,5 +1687,176 @@ describe("a conversation M365 has lost (§46)", () => {
     expect(pool.size).toBe(1000);
     pool.resolve(messages("conversation 1000"));
     expect(pool.size).toBe(1000);
+  });
+});
+
+describe("a turn too long for M365 to keep goes up in parts (§47)", () => {
+  type Msg = { role: string; content: string };
+  const LIMIT = 2_000;
+  const ask = (pool: InstanceType<typeof SessionPool>, messages: Msg[]) =>
+    handleChatCompletion(ChatCompletionRequest.parse({ model: "claude-sonnet", messages }), pool);
+  const answerOf = async (res: Response) => (await res.json()).choices[0].message.content as string;
+  const bytes = (s: string) => Buffer.byteLength(s, "utf8");
+  /** A system prompt, six exchanges of ~700 characters, and the request: ~5k characters. */
+  const history = (): Msg[] => [
+    { role: "system", content: "You are a careful assistant." },
+    ...Array.from({ length: 6 }, (_, i) => [
+      { role: "user", content: `Question ${i}: ${"background ".repeat(60)}` },
+      { role: "assistant", content: `Answer ${i}.` },
+    ]).flat(),
+    { role: "user", content: `The last question ${Math.random()}` },
+  ];
+  function reset(...queue: typeof scripted.queue) {
+    scripted.result = null;
+    scripted.deltas = [];
+    scripted.texts = [];
+    scripted.newConversations = 0;
+    scripted.queue = queue;
+    scripted.partQueue = [];
+  }
+  beforeEach(() => { process.env.M365_TURN_CHUNK_BYTES = String(LIMIT); });
+  afterEach(() => {
+    delete process.env.M365_TURN_CHUNK_BYTES;
+    scripted.queue = [];
+    scripted.partQueue = [];
+  });
+
+  it("sends the earlier messages as acknowledged parts, then the request, and returns only the answer to it", async () => {
+    const msgs = history();
+    reset({ fullText: "The answer." });
+    expect(await answerOf(await ask(new SessionPool(), msgs))).toBe("The answer.");
+    const sent = scripted.texts;
+    expect(sent.length).toBeGreaterThan(2);
+    for (const t of sent) expect(bytes(t)).toBeLessThanOrEqual(LIMIT);
+    expect(sent[0]).toMatch(/^\[Earlier conversation, part 1 of \d+\./);
+    expect(sent[0]).toContain("Question 0:");
+    const final = sent.at(-1)!;
+    expect(final).toContain("You are a careful assistant."); // the system prompt rides with the request
+    expect(final).toContain(msgs.at(-1)!.content);
+    // Every message goes up once, in order.
+    const at = (s: string) => sent.findIndex((t) => t.includes(s));
+    for (let i = 0; i < 6; i++) expect(sent.filter((t) => t.includes(`Question ${i}:`))).toHaveLength(1);
+    for (let i = 1; i < 6; i++) expect(at(`Question ${i}:`)).toBeGreaterThanOrEqual(at(`Question ${i - 1}:`));
+    expect(scripted.newConversations).toBe(0);
+  });
+
+  it("splits a follow-up too long to keep, and has the model answer the whole of it", async () => {
+    const pool = new SessionPool();
+    const opener = `Short opener ${Math.random()}`;
+    reset({ fullText: "Noted." }, { fullText: "Read it all." });
+    await ask(pool, [{ role: "user", content: opener }]);
+    const long = Array.from({ length: 80 }, (_, i) => `line ${i} ${"x".repeat(60)}`).join("\n");
+    const res = await ask(pool, [{ role: "user", content: opener }, { role: "assistant", content: "Noted." }, { role: "user", content: long }]);
+    expect(await answerOf(res)).toBe("Read it all.");
+    const sent = scripted.texts.slice(1);
+    expect(sent.length).toBeGreaterThan(1);
+    for (const t of sent) expect(bytes(t)).toBeLessThanOrEqual(LIMIT);
+    expect(sent[0]).toMatch(/^\[This message is too long to send at once, so it comes in (\d+) parts\. This is part 1 of \1\./);
+    expect(sent.at(-1)).toMatch(/^\[This is part (\d+) of \1, the end of the message\./);
+    expect(sent[0]).toContain("line 0 ");
+    expect(sent.at(-1)).toContain("line 79 ");
+    expect(sent.some((t) => t.includes(opener))).toBe(false); // a delta, in the same conversation
+    expect(scripted.newConversations).toBe(0);
+  });
+
+  it("drops the conversation and fails the request when M365 refuses a part", async () => {
+    reset();
+    scripted.partQueue = [{ fullText: "", result: { value: "InternalError" } }];
+    const res = await ask(new SessionPool(), history());
+    expect(res.status).toBe(502);
+    expect((await res.json()).error.message).toMatch(/refused part 1 of \d+ of this long conversation \(InternalError\)/);
+    expect(scripted.texts).toHaveLength(1);
+    expect(scripted.newConversations).toBe(1);
+  });
+
+  it("sends a history that fits whole, and every history whole under M365_TURN_CHUNK_BYTES=0", async () => {
+    reset({ fullText: "A." });
+    await ask(new SessionPool(), [{ role: "user", content: `Short ${Math.random()}` }]);
+    expect(scripted.texts).toHaveLength(1);
+    process.env.M365_TURN_CHUNK_BYTES = "0";
+    reset({ fullText: "B." });
+    await ask(new SessionPool(), history());
+    expect(scripted.texts).toHaveLength(1);
+    expect(scripted.texts[0]).toContain("Question 0:");
+  });
+});
+
+describe("a turn M365 failed: InternalError with its canned apology (§47)", () => {
+  const SORRY = "Sorry, I wasn't able to respond to that. Is there something else I can help with?";
+  const FAILED = { fullText: SORRY, result: { value: "InternalError" }, turnState: "Failed" };
+  const request = (stream: boolean) =>
+    ChatCompletionRequest.parse({ model: "gpt-6.2-sol", stream, messages: [{ role: "user", content: `A question ${Math.random()}` }] });
+  function reset(...queue: typeof scripted.queue) {
+    scripted.result = null;
+    scripted.texts = [];
+    scripted.newConversations = 0;
+    scripted.queue = queue;
+  }
+  afterEach(() => { scripted.queue = []; });
+
+  it("isn't returned as the answer: the request goes again in a fresh conversation", async () => {
+    reset(FAILED, { fullText: "The real answer." });
+    const res = await respond(request(false));
+    expect((await res.json()).choices[0].message.content).toBe("The real answer.");
+    expect(scripted.newConversations).toBe(1);
+    expect(scripted.texts).toHaveLength(2);
+  });
+
+  it("never streams the apology to the client", async () => {
+    reset(FAILED, { fullText: "The real answer." });
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    try {
+      const res = await handleChatCompletion(request(true), new SessionPool());
+      const body = res.text();
+      await vi.runAllTimersAsync();
+      const text = await body;
+      expect(text).not.toContain("wasn't able to respond");
+      expect(text).toContain("The real answer.");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("still returns an ordinary answer that starts the same way", async () => {
+    reset({ fullText: "Sorry, I wasn't able to find that file, so here is a sketch instead." });
+    const res = await respond(request(false));
+    expect((await res.json()).choices[0].message.content).toMatch(/^Sorry, I wasn't able to find that file/);
+    expect(scripted.newConversations).toBe(0);
+  });
+});
+
+describe("estimated token usage (§47)", () => {
+  afterEach(() => {
+    delete process.env.M365_REPORT_USAGE;
+    scripted.queue = [];
+  });
+  const request = (content: string) => ChatCompletionRequest.parse({ model: "claude-sonnet", messages: [{ role: "user", content }] });
+
+  it("counts the whole prompt and the reply at a quarter of their UTF-8 bytes", async () => {
+    scripted.queue = [{ fullText: "Four score and seven" }]; // 20 bytes
+    const { usage } = await (await respond(request("x".repeat(4_000)))).json();
+    expect(usage.completion_tokens).toBe(5);
+    expect(usage.prompt_tokens).toBeGreaterThanOrEqual(1_000);
+    expect(usage.prompt_tokens).toBeLessThan(1_100);
+    expect(usage.total_tokens).toBe(usage.prompt_tokens + usage.completion_tokens);
+  });
+
+  it("counts the whole history on a follow-up, not just what went up", async () => {
+    const pool = new SessionPool();
+    const opener = `${"y".repeat(8_000)} ${Math.random()}`;
+    scripted.queue = [{ fullText: "Noted." }, { fullText: "Done." }];
+    await handleChatCompletion(request(opener), pool);
+    const res = await handleChatCompletion(ChatCompletionRequest.parse({
+      model: "claude-sonnet",
+      messages: [{ role: "user", content: opener }, { role: "assistant", content: "Noted." }, { role: "user", content: "Next" }],
+    }), pool);
+    expect((await res.json()).usage.prompt_tokens).toBeGreaterThanOrEqual(2_000);
+  });
+
+  it("reports zeros under M365_REPORT_USAGE=0", async () => {
+    process.env.M365_REPORT_USAGE = "0";
+    scripted.queue = [{ fullText: "Hi." }];
+    const { usage } = await (await respond(request("Hello"))).json();
+    expect(usage).toMatchObject({ prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 });
   });
 });

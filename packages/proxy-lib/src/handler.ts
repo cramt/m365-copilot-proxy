@@ -51,6 +51,8 @@ import {
   type ParseResult,
 } from "@m365-copilot/core";
 import { ChatCompletionRequest } from "./schemas.js";
+import { planFullPrompt, planText, turnChunkBytes } from "./replay.js";
+import { estimateTokens, reportsUsage } from "./usage.js";
 import {
   cleanHarnessMessages,
   harnessPromptMode,
@@ -172,8 +174,9 @@ interface ConversationState {
    *  Opus fallback, #18) can't continue the M365 conversation — it may need
    *  another scenario — so it starts a fresh one with the full history. */
   servedModel?: string;
-  /** Characters in the prompt that last sent this M365 conversation the whole
-   *  history (its opening, or a replay into it). */
+  /** Characters in the turn that last sent this M365 conversation the whole
+   *  history (its opening, or a replay into it; the first part, when the
+   *  history went in parts). */
   openingChars: number;
   /** That prompt was answered. Only an answered one can show that M365 didn't
    *  keep a history that long; one it never processed shows nothing. */
@@ -384,6 +387,31 @@ function conversationLost(stream: { throttle: { current: number; max: number } |
   return stream.throttle?.current === 1;
 }
 
+/** The longest turn sent whole (replay.ts): M365_TURN_CHUNK_BYTES, or less once
+ *  M365 has failed to keep a shorter opening of this model's (`unkeptOpeningChars`). */
+function turnLimit(pool: SessionPool, model: string): number {
+  const configured = turnChunkBytes();
+  const unkept = pool.unkeptOpeningChars(model);
+  if (configured <= 0 || !Number.isFinite(unkept)) return configured;
+  return Math.min(configured, Math.floor(unkept * 0.75));
+}
+
+/** M365 failed the turn: `result: InternalError` and the message's `turnState:
+ *  Failed`. Such a turn still carries M365's canned "Sorry, I wasn't able to
+ *  respond to that…" as its content, which is no answer: GPT-6.2 Sol answers a
+ *  prompt over its ~270k-token input limit so (docs/hypotheses.md §47 F128). */
+function turnFailed(stream: { result?: { value: string } | null; turnState?: string | null }): boolean {
+  return stream.result?.value === "InternalError" && stream.turnState === "Failed";
+}
+
+/** Could the head of a live stream still be that canned text? Like
+ *  couldBePriorityAccessPrefix: hold it back until it can't. */
+const FAILED_TURN_TEXT = "sorry, i wasn't able to respond to that";
+function couldBeFailedTurnText(text: string): boolean {
+  const t = text.replace(/[\u2018\u2019]/g, "'").trimStart().toLowerCase().slice(0, FAILED_TURN_TEXT.length);
+  return !t || FAILED_TURN_TEXT.startsWith(t) || t.startsWith(FAILED_TURN_TEXT);
+}
+
 /** Parse a tool-mode reply, with the document guard applied.
  *
  *  The shell-routing parser turns every ```bash block into a tool call, so a
@@ -532,19 +560,32 @@ export async function handleChatCompletion(
   let framingVariant = currentFramingVariant(defaultFramingForModel(model));
   let useToolAgent = requestUsesAgent(model, !!hasTools);
 
+  // A turn too long for M365 to keep goes up in parts (replay.ts): these are
+  // sent ahead of `text`, which carries the request.
+  let pendingParts: string[] = [];
+  // The parts carry the whole history (formatWhole), not a long delta.
+  let partsCarryHistory = false;
+  const partsNote = () => (pendingParts.length > 0 ? `, parts=${pendingParts.length + 1}` : "");
+
   // Format message: full prompt on first turn, delta on follow-ups.
   // M365 is stateful — it remembers everything from prior turns,
   // so we only need to send new messages after the first turn.
   const isFirstTurn = session.turnCount === 0;
   const convId = session.conversationId;
-  // Every prompt that carries the whole history (the opening, and each re-send
-  // of it). A turn that sends one needs nothing from M365's memory; any other
-  // turn continues the conversation and relies on M365 still holding it.
+  // Every prompt that carries the whole history in one turn (the opening, and
+  // each re-send of it). A turn that sends one needs nothing from M365's memory;
+  // any other turn, the last of a history sent in parts included, continues the
+  // conversation and relies on M365 still holding it.
   const wholePrompts = new Set<string>();
+  // The whole history for a fresh conversation, planned in parts when it's too
+  // long for one turn (cut shorter once M365 has failed to keep a long opening
+  // of this model's), with `then` after it.
   const formatWhole = (variant = framingVariant, then?: string | null): string => {
-    const whole = formatMessages(body.messages, body.tools, body.tool_choice, session.conversationId, variant);
-    const prompt = then ? `${whole}\n\n${then}` : whole;
-    wholePrompts.add(prompt);
+    const plan = planFullPrompt(body.messages, body.tools, body.tool_choice, session.conversationId, variant, turnLimit(pool, model));
+    pendingParts = plan.parts;
+    partsCarryHistory = plan.parts.length > 0;
+    const prompt = then ? `${plan.final}\n\n${then}` : plan.final;
+    if (plan.parts.length === 0) wholePrompts.add(prompt);
     return prompt;
   };
   let text: string;
@@ -553,7 +594,8 @@ export async function handleChatCompletion(
   if (isFirstTurn || conv.sentMessageCount === 0) {
     text = formatWhole();
     inputAttachments = attachmentUrls(body.messages);
-    log.info(`Chat completion: model=${model}, stream=${body.stream}, messages=${body.messages.length}, turn=${session.turnCount}, mode=full, chars=${text.length}, cid=${convId}`);
+    const chars = pendingParts.reduce((n, p) => n + p.length, text.length);
+    log.info(`Chat completion: model=${model}, stream=${body.stream}, messages=${body.messages.length}, turn=${session.turnCount}, mode=full, chars=${chars}${partsNote()}, cid=${convId}`);
   } else {
     const newMessages = body.messages.slice(conv.sentMessageCount);
     inputAttachments = attachmentUrls(newMessages);
@@ -565,7 +607,10 @@ export async function handleChatCompletion(
         text = `${conv.pendingNote}\n\n${delta}`;
         log.info("Prepended the only-the-first-call-ran note (last reply was partly executed)");
       }
-      log.info(`Chat completion: model=${model}, stream=${body.stream}, messages=${body.messages.length}, new=${newMessages.length}, turn=${session.turnCount}, mode=delta, cid=${convId}`);
+      const plan = planText(text, turnLimit(pool, model));
+      pendingParts = plan.parts;
+      text = plan.final;
+      log.info(`Chat completion: model=${model}, stream=${body.stream}, messages=${body.messages.length}, new=${newMessages.length}, turn=${session.turnCount}, mode=delta${partsNote()}, cid=${convId}`);
     } else {
       // No meaningful new content to send — nudge M365 to continue.
       text = "Please continue.";
@@ -595,6 +640,48 @@ export async function handleChatCompletion(
   // The lost-history re-send in runBuffered, at most once per request: produce()'s
   // forcing and repair turns run it again, into the same conversation.
   let historyResent = false;
+
+  /**
+   * Send the parts of a turn too long for M365 to keep (replay.ts), each a turn
+   * of its own that the model only acknowledges. Nothing of them reaches the
+   * client. If one fails, the conversation, which now holds part of a history,
+   * is dropped for a fresh one, and the request fails.
+   */
+  async function sendParts(parts: string[], waitForBudget: () => Promise<{ waitedMs: number }>): Promise<Response | null> {
+    for (let i = 0; i < parts.length; i++) {
+      const label = `part ${i + 1} of ${parts.length + 1}`;
+      log.info(`Sending ${label} of a long turn (${parts[i].length} chars), cid=${session.conversationId}`);
+      let result: { value: string; errorCode?: string; message?: string } | null | undefined;
+      try {
+        await waitForBudget();
+        // The final turn's agent-ness: a change of it would open another M365 session (ModelSession.run).
+        const stream = await session.run(parts[i], model, opts.signal, useToolAgent, [], waitForBudget);
+        for await (const _ack of stream) { /* acknowledged, not forwarded */ }
+        result = stream.result;
+      } catch (err: any) {
+        session.newConversation();
+        if (err instanceof TurnBudgetHold) return turnBudgetHoldResponse(err);
+        return jsonResponse(502, { error: { message: err.message, type: "upstream_error" } });
+      }
+      if (opts.signal?.aborted) {
+        session.newConversation();
+        return jsonResponse(499, { error: { message: "client closed the request", type: "client_closed" } });
+      }
+      if (result?.value === "Throttled") {
+        noteRequestOutcome(true, session.conversationId);
+        session.newConversation();
+        log.info(`Upstream Throttled on ${label} (${result.errorCode ?? "no errorCode"}) — 429, no retry`);
+        return throttledResponse(result);
+      }
+      if (result && result.value !== "Success") {
+        session.newConversation();
+        const why = `${result.value}${result.errorCode ? `, ${result.errorCode}` : ""}`;
+        log.info(`M365 refused ${label} of a long turn (${why})`);
+        return jsonResponse(502, { error: { message: `M365 Copilot refused ${label} of this long conversation (${why}).`, type: "upstream_error" } });
+      }
+    }
+    return null;
+  }
 
   // `onDelta` (when provided) forwards each text delta to the caller AS IT ARRIVES,
   // for live incremental streaming. It's safe to forward without ever retracting:
@@ -637,32 +724,45 @@ export async function handleChatCompletion(
       // M365_NO_EARLY_STOP=1 waits for the turn to end instead.
       const earlyStop = hasTools && !process.env.M365_NO_EARLY_STOP ? new AbortController() : null;
       const stopAfter = earlyStopAfter();
-      // A turn that sends the whole history opens the M365 conversation (or
-      // re-opens it) and needs nothing from M365's memory. Any other turn
-      // continues one, so M365 should already hold its history. Not
+      // M365_AVOID_THROTTLING=1: wait until the account's turn bucket can
+      // afford this turn (turn-budget.ts, hypotheses §37). A pi session is one
+      // long thread, but every turn in it draws on the same bucket as a bench
+      // sweep (F58), so a busy enough session runs it dry and then sits out a
+      // throttle of about an hour. Every upstream turn passes here, the
+      // forcing retries and a long turn's parts included; run() calls the same
+      // wait before its reconnect.
+      const waitForBudget = () => awaitTurnBudget({ signal: opts.signal, maxWaitMs: body.stream ? undefined : UNSTREAMED_BUDGET_WAIT_LIMIT_MS });
+      // An attempt that sends the whole history, in this one turn or in parts
+      // ahead of it, opens the M365 conversation (or re-opens it). Not
       // `session.turnCount === 0`: a request that failed after its turn leaves a
       // count with nothing recorded as sent, so the next one sends the whole
       // history into that conversation, and refreshAgent() zeroes the count of a
       // conversation that goes on.
-      const opening = wholePrompts.has(text);
+      const opening = wholePrompts.has(text) || (pendingParts.length > 0 && partsCarryHistory);
       if (opening) {
-        conv.openingChars = text.length;
+        conv.openingChars = (pendingParts[0] ?? text).length;
         conv.openingAnswered = false;
       }
-      // Stops a follow-up turn whose conversation M365 turns out to have lost
+      // A turn too long for M365 to keep: its parts go first, each a turn of its own.
+      if (pendingParts.length > 0) {
+        const parts = pendingParts;
+        pendingParts = [];
+        partsCarryHistory = false;
+        const failed = await sendParts(parts, waitForBudget);
+        if (failed) return { error: failed };
+        if (opening) conv.openingAnswered = true; // M365 took the opening part
+      }
+      // Only a turn that carries the whole history itself needs nothing from
+      // M365's memory. Any other turn, the last of a history sent in parts
+      // included, relies on M365 still holding the conversation.
+      const needsMemory = !wholePrompts.has(text);
+      // Stops such a turn if M365 turns out to have lost the conversation
       // (below). Once the request has re-sent the history, a later turn runs as is.
-      const lostStop = opening || historyResent ? null : new AbortController();
+      const lostStop = needsMemory && !historyResent ? new AbortController() : null;
       const signals = [opts.signal, earlyStop?.signal, lostStop?.signal].filter((s): s is AbortSignal => s !== undefined);
       const signal = signals.length <= 1 ? signals[0] : AbortSignal.any(signals);
       let copilotStream;
       try {
-        // M365_AVOID_THROTTLING=1: wait until the account's turn bucket can
-        // afford this turn (turn-budget.ts, hypotheses §37). A pi session is one
-        // long thread, but every turn in it draws on the same bucket as a bench
-        // sweep (F58), so a busy enough session runs it dry and then sits out a
-        // throttle of about an hour. Every upstream turn passes here, the
-        // forcing retries included; run() calls the same wait before its reconnect.
-        const waitForBudget = () => awaitTurnBudget({ signal: opts.signal, maxWaitMs: body.stream ? undefined : UNSTREAMED_BUDGET_WAIT_LIMIT_MS });
         await waitForBudget();
         // Only attach the tool-calling agent when the request actually has tools.
         // The agent overrides `tone` (forces GPT-5), so tool-less requests must
@@ -738,6 +838,16 @@ export async function handleChatCompletion(
         log.info(`Turn scores: ${Object.entries(lastScores).map(([k, v]) => `${k}=${v}`).join(" ")}${lastMessageType ? ` (${lastMessageType})` : ""}, cid=${session.conversationId}`);
       }
 
+      // A failed turn's canned apology is no answer: below it counts as an empty
+      // `InternalError`, which is re-sent in a fresh conversation, and isn't
+      // returned as the model's reply.
+      const failed = turnFailed(copilotStream);
+      if (failed) {
+        log.info(`Turn failed (InternalError, turnState Failed): ${JSON.stringify(trunc(fullText, 120))} is not an answer`);
+        fullText = "";
+      }
+      const answered = !failed && (copilotStream.hasContent || fullText.length > 0);
+
       // M365 SAYS when it throttles: the final item's result is `Throttled` /
       // `PerUserThrottled` (#35). Checked BEFORE the content check so
       // an apology that ever arrives as content can't pass for an answer. This
@@ -782,17 +892,19 @@ export async function handleChatCompletion(
         return { error: invalidRequestResponse(copilotStream.result, model, text.length) };
       }
 
-      // M365 has lost this conversation's history: on a follow-up turn it counts
-      // the message as the conversation's first. It does that after answering
-      // an opening prompt too long to keep: it kept a 420k-character opening and
+      // M365 has lost this conversation's history: on a turn that relies on it
+      // (a follow-up, or the last of a history sent in parts) it counts the
+      // message as the conversation's first. It does that after answering an
+      // opening turn too long to keep: it kept a 420k-character opening and
       // dropped a 540k one, and the turn after a dropped opening had no context
       // (§46 F125). This reply was written without context, so re-send the WHOLE
       // request in a fresh conversation, once per request, with a forcing turn's
       // instruction after it. A long answered opening that was lost also teaches
-      // the pool to replay such a history every time instead of continuing it.
+      // the pool a size limit for this model: histories are then sent in parts
+      // cut under it (turnLimit), and one that opened past it is replayed.
       // If the reply has already streamed (plain text, the count arriving after
       // it), the next request replays instead.
-      if (!opening && !historyResent && conversationLost(copilotStream)) {
+      if (needsMemory && !historyResent && conversationLost(copilotStream)) {
         historyResent = true;
         if (conv.openingAnswered) pool.noteUnkeptOpening(model, conv.openingChars);
         if (forwarded) {
@@ -826,7 +938,7 @@ export async function handleChatCompletion(
         !isAgentRouteAlive(tone) &&
         process.env.M365_FORCE_AGENT !== "1" &&
         copilotStream.result?.value === "InternalError" &&
-        !copilotStream.hasContent && fullText.length === 0
+        !answered
       ) {
         agentFallbackDone = true;
         noteAgentRouteDead(tone);
@@ -897,7 +1009,7 @@ export async function handleChatCompletion(
         continue;
       }
 
-      if (copilotStream.hasContent || fullText.length > 0) {
+      if (answered) {
         noteRequestOutcome(false, convId); // clean response → degradation has lifted
         if (useToolAgent) noteAgentRouteAlive(tone); // the agent route answered on this account
         if (opening) conv.openingAnswered = true;
@@ -956,7 +1068,7 @@ export async function handleChatCompletion(
       if (
         !internalErrorFreshRetried &&
         copilotStream.result?.value === "InternalError" &&
-        !copilotStream.hasContent && fullText.length === 0 &&
+        !answered &&
         !isPremiumOnlyModel(model) &&
         attempt < MAX_RETRIES
       ) {
@@ -1218,7 +1330,20 @@ export async function handleChatCompletion(
   // --- Render: JSON (non-stream) or an early-flushed SSE stream (stream) ---
   const includeUsage = !!body.stream_options?.include_usage;
   const errorsAsText = streamErrorsAsText(opts.userAgent);
-  const usage = () => buildUsage(lastThrottle, lastContentOrigin, lastMessageType, lastScores, lastTurnCount, lastMetering);
+  // Estimated token counts (usage.ts): the whole request as the model reads it,
+  // and the reply.
+  let promptTokens: number | undefined;
+  const usage = (reply: string) => {
+    const tokens = reportsUsage()
+      ? {
+        prompt: (promptTokens ??= estimateTokens(formatMessages(body.messages, body.tools, body.tool_choice, undefined, framingVariant))),
+        completion: estimateTokens(reply),
+      }
+      : undefined;
+    return buildUsage(lastThrottle, lastContentOrigin, lastMessageType, lastScores, lastTurnCount, lastMetering, tokens);
+  };
+  const callsText = (calls: { function: { name: string; arguments: string } }[]) =>
+    calls.map((c) => `${c.function.name} ${c.function.arguments}`).join("\n");
 
   if (!body.stream) {
     const p = await produce();
@@ -1227,13 +1352,13 @@ export async function handleChatCompletion(
       return jsonResponse(200, {
         id: completionId, object: "chat.completion", created, model,
         choices: [{ index: 0, message: { role: "assistant", content: null, tool_calls: p.toolCalls }, finish_reason: "tool_calls" }],
-        usage: usage(),
+        usage: usage(callsText(p.toolCalls)),
       });
     }
     return jsonResponse(200, {
       id: completionId, object: "chat.completion", created, model,
       choices: [{ index: 0, message: { role: "assistant", content: p.text }, finish_reason: outputFinishReason(p.text) }],
-      usage: usage(),
+      usage: usage(p.text),
     });
   }
 
@@ -1270,13 +1395,14 @@ export async function handleChatCompletion(
       // live would put the refusal in front of the client before the 429 that
       // replaces it — delivering exactly the confusion the 429 prevents. The
       // gate releases within ~45 chars, i.e. one short delta on a normal turn.
+      // A failed turn's canned apology (turnFailed) is held back the same way.
       let head = "";
       let gated = true;
       const liveDelta = hasTools ? undefined : (delta: string) => {
         if (!delta) return;
         if (gated) {
           head += delta;
-          if (couldBePriorityAccessPrefix(head)) return; // still undecided — keep buffering
+          if (couldBePriorityAccessPrefix(head) || couldBeFailedTurnText(head)) return; // still undecided — keep buffering
           gated = false;
           delta = head; // release everything held so far, in order
         }
@@ -1309,7 +1435,7 @@ export async function handleChatCompletion(
             // would retry into fresh conversations: end the turn with the reason.
             const reason = streamErrorText({ message, type, code, retryAfter: retryAfter ? Number(retryAfter) : undefined });
             send({ ...base, choices: [{ index: 0, delta: { content: (sent ? "\n\n" : "") + reason }, finish_reason: null }] });
-            send({ ...base, choices: [{ index: 0, delta: {}, finish_reason: "stop" }], ...(includeUsage ? { usage: usage() } : {}) });
+            send({ ...base, choices: [{ index: 0, delta: {}, finish_reason: "stop" }], ...(includeUsage ? { usage: usage(sent + reason) } : {}) });
           } else {
             // HTTP 200 is already committed, so surface the failure as an in-stream error chunk.
             send({ ...base, error: { message, type, ...(code ? { code } : {}), ...(retryAfter ? { retry_after: Number(retryAfter) } : {}) } });
@@ -1319,7 +1445,7 @@ export async function handleChatCompletion(
             log.debug(`Tool call: ${tc.function.name} ${trunc(tc.function.arguments, 200)}`);
             send({ ...base, choices: [{ index: 0, delta: { tool_calls: [{ index: i, id: tc.id, type: "function", function: { name: tc.function.name, arguments: tc.function.arguments } }] }, finish_reason: null }] });
           });
-          send({ ...base, choices: [{ index: 0, delta: {}, finish_reason: "tool_calls" }], ...(includeUsage ? { usage: usage() } : {}) });
+          send({ ...base, choices: [{ index: 0, delta: {}, finish_reason: "tool_calls" }], ...(includeUsage ? { usage: usage(callsText(p.toolCalls)) } : {}) });
         } else {
           // Emit only what wasn't already streamed live: the whole text if nothing was
           // (tool-mode prose fallback, or a fully-buffered turn), or just the tail when
@@ -1329,7 +1455,7 @@ export async function handleChatCompletion(
           const remainder = p.text.startsWith(sent) ? p.text.slice(sent.length) : "";
           if (!p.text.startsWith(sent)) log.info(`Streamed prefix diverged from final text (sent ${sent.length}, final ${p.text.length} chars) — not re-sending to avoid duplication`);
           if (remainder) send({ ...base, choices: [{ index: 0, delta: { content: remainder }, finish_reason: null }] });
-          send({ ...base, choices: [{ index: 0, delta: {}, finish_reason: outputFinishReason(p.text) }], ...(includeUsage ? { usage: usage() } : {}) });
+          send({ ...base, choices: [{ index: 0, delta: {}, finish_reason: outputFinishReason(p.text) }], ...(includeUsage ? { usage: usage(p.text) } : {}) });
         }
       } catch {
         // client likely disconnected mid-emit — nothing more to do
@@ -1342,15 +1468,15 @@ export async function handleChatCompletion(
 
 /**
  * Build the OpenAI-style `usage` block from whatever diagnostic info M365 gave
- * us. Token counts are NOT exposed by M365's WebSocket API (we'd need to count
- * locally with a tokenizer that matches the underlying model — see the doc on
- * token-usage hypotheses). What M365 does send is a **conversation quota**:
+ * us. Token counts are NOT exposed by M365's WebSocket API, so the counters
+ * carry the proxy's estimates (`tokens`, usage.ts; zeros under
+ * M365_REPORT_USAGE=0): without them a client never sees its context fill, and
+ * Codex never compacts. What M365 does send is a **conversation quota**:
  * how many user messages out of the 600-per-conversation cap have been spent.
  *
- * That's a different axis from token-window utilisation, but it's the closest
- * thing we have to "remaining budget", so we surface it as extension fields
- * (`x_m365_*`) alongside the zeroed standard counters. Real OpenAI clients
- * ignore unknown extension fields; curious users can read them.
+ * That's a different axis from token-window utilisation, so we surface it as
+ * extension fields (`x_m365_*`) alongside the standard counters. Real OpenAI
+ * clients ignore unknown extension fields; curious users can read them.
  */
 function buildUsage(
   throttle: { current: number; max: number } | null,
@@ -1359,11 +1485,12 @@ function buildUsage(
   scores?: Record<string, number> | null,
   turnCount?: number | null,
   metering?: Record<string, number> | null,
+  tokens?: { prompt: number; completion: number },
 ): Record<string, unknown> {
   const base: Record<string, unknown> = {
-    prompt_tokens: 0,
-    completion_tokens: 0,
-    total_tokens: 0,
+    prompt_tokens: tokens?.prompt ?? 0,
+    completion_tokens: tokens?.completion ?? 0,
+    total_tokens: (tokens?.prompt ?? 0) + (tokens?.completion ?? 0),
   };
   if (throttle) {
     base.x_m365_conversation_messages = throttle.current;
