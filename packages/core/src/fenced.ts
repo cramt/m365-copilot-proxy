@@ -641,7 +641,7 @@ export function currentFramingVariant(toneDefault?: string): string {
  *  `Gpt_62_Sol_Reasoning`, `Gpt_62_Astra_Reasoning`, `Gpt_6_Astra_Reasoning` and
  *  `Claude_Fable` default to `relay_batch` too, unbenched: every GPT-6.x sibling
  *  benched best on it, and the harness runs used it — Codex on GPT-6.2 Sol 3/3,
- *  Claude Code and Codex on Fable 3/3 each, over StreamHub (docs §44 F123).
+ *  Claude Code and Codex on Fable 3/3 each, over StreamHub (docs §45 F123).
  *
  *  Every other tone keeps the bench-tuned `baseline` byte-for-byte. */
 export function defaultFramingForTone(tone?: string): string | undefined {

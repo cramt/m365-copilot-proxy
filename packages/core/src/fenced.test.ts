@@ -602,7 +602,7 @@ describe("formatFencedToolDefinitions", () => {
 });
 
 describe("defaultFramingForTone", () => {
-  it("gives the §44 models relay_batch, like their GPT-6.x siblings (unbenched; F123's harness runs)", () => {
+  it("gives the §45 models relay_batch, like their GPT-6.x siblings (unbenched; F123's harness runs)", () => {
     for (const id of ["gpt-6.2-sol", "gpt-6.2-astra", "gpt-6-astra", "claude-fable", "claude-fable-5-1-20261101"]) {
       expect(defaultFramingForModel(id)).toBe("relay_batch");
     }

@@ -103,10 +103,10 @@ than "we eyeballed one run." See §M (Methods) for the experimental rig.
   upload (F97, shipped in `file-upload.ts`)
 - §43 — a give-up no detector caught, "I can't generate files in the current session": two first-person
   English patterns catch it and nothing else in 334 replies with no tool call (F118)
-- §44 — GPT-6.2 Sol, GPT-6.2 Astra, GPT-6 Astra and Claude Fable: the picker sends only the tone (F120);
+- §45 — GPT-6.2 Sol, GPT-6.2 Astra, GPT-6 Astra and Claude Fable: the picker sends only the tone (F120);
   all four serve on both transports, GPT-6 Astra gated like GPT-6 (F121); credits, and `Claude_Fable` is
   Fable now (F122); harness runs and what shipped (F123); whether included `gpt-6.2-*` turns spend the
-  `GPT62*` budgets (H44a, open)
+  `GPT62*` budgets (H45a, open)
 
 ---
 
@@ -229,7 +229,7 @@ lies about which model answers — worse than not offering it. It lives in `scri
 only, probed on both scenarios so the day it starts self-identifying as Fable is visible in a
 routine sweep. **Falsify by:** a probe where `Claude_Fable` self-IDs as Fable — then map it.
 
-**Resolved 2026-11-18 (§44 F122): mapped as `claude-fable`.** Over StreamHub on 2026-11-11 it self-IDed as
+**Resolved 2026-11-18 (§45 F122): mapped as `claude-fable`.** Over StreamHub on 2026-11-11 it self-IDed as
 "Claude Fable 5.1"; on 2026-11-18 it reported a June 2026 training cutoff on both transports (GPT-5.5: June
 2024), and its StreamHub turns were charged to Copilot credits.
 
@@ -6171,7 +6171,7 @@ exported credentials. Usage and ownership of the broker cache are documented in
 [the authentication reference](m365-copilot-api.md#the-nativeclient-redirect-gotcha-this-one-cost-hours)
 and [setup](setup.md#windows-token-protection-policies-native-broker).
 
-## 44. Nov 18 2026 — GPT-6.2 Sol, GPT-6.2 Astra, GPT-6 Astra and Claude Fable
+## 45. Nov 18 2026 — GPT-6.2 Sol, GPT-6.2 Astra, GPT-6 Astra and Claude Fable
 
 **Question.** Microsoft added GPT-6.2 Sol, GPT-6.2 Astra and Claude Fable 5.2 to Copilot in the week to Nov 17
 ("What's new in Copilot Cowork at Ignite 2026"), after announcing GPT-6 Astra and Claude Fable 5.1 as
@@ -6244,5 +6244,5 @@ on Chathub. `proxy-verify.mjs --tools --multiturn` (agent off) passed on each: a
 used on the next turn, over Chathub for `claude-fable`, `gpt-6.2-sol`, `gpt-6.2-astra` and `gpt-6-astra`
 (paid scenario), and over StreamHub for `gpt-6.2-astra`.
 
-**Open — H44a:** does an included-scenario `gpt-6.2-*` turn spend the `GPT62*Query*` budgets? **Probe:**
+**Open — H45a:** does an included-scenario `gpt-6.2-*` turn spend the `GPT62*Query*` budgets? **Probe:**
 read the paid scenario's `metering` before and after a few included turns, as §27 did for GPT-6.1 Sol.

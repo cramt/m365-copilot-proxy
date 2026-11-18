@@ -132,7 +132,7 @@ const MODEL_TONES: Record<string, string> = {
 
   // GPT-6.2 Sol and GPT-6.2 Astra ("GPT-6.2 Sol" / "GPT-6.2 Astra" in the web
   // client since 2026-11-17; the picker marks Astra "Uses credits"). Picking
-  // either sends its tone and no other model field (capture, docs §44 F120).
+  // either sends its tone and no other model field (capture, docs §45 F120).
   // Both serve on the included scenario, where the proxy keeps them, like
   // GPT-6.1 Sol: the paid scenario's metering carries `GPT62SolQuery*` and
   // `GPT62AstraQuery*` budgets (F121). Over StreamHub every Astra turn reports a
@@ -152,7 +152,7 @@ const MODEL_TONES: Record<string, string> = {
   // §10 kept it unmapped because the tone self-IDed as GPT-5. Over StreamHub it
   // self-IDed as "Claude Fable 5.1" on 2026-11-11; on 2026-11-18 it gave a June
   // 2026 training cutoff over both transports (`Gpt_5_5_Chat`: June 2024) and
-  // its StreamHub turns were charged to Copilot credits (docs §44 F122). Serves
+  // its StreamHub turns were charged to Copilot credits (docs §45 F122). Serves
   // on the included scenario. Unmapped Fable strings land here too.
   "claude-fable": "Claude_Fable",
   "claude-fable-5.1": "Claude_Fable",
@@ -248,7 +248,7 @@ const PAID_LICENSE_TYPE = "Premium";
  *
  * `Gpt_6_Astra_Reasoning` is here for `Gpt_6_Reasoning`'s reason: the included
  * scenario answers with the BotConnection apology, the paid one serves
- * (2026-11-18, docs §44 F121).
+ * (2026-11-18, docs §45 F121).
  */
 export const PAID_SCENARIO_TONES: ReadonlySet<string> = new Set([
   "Claude_Opus",

@@ -254,7 +254,7 @@ describe("GPT-6.1 Sol routing (§27)", () => {
   });
 });
 
-describe("GPT-6.2 Sol and Astra, GPT-6 Astra, Claude Fable (§44)", () => {
+describe("GPT-6.2 Sol and Astra, GPT-6 Astra, Claude Fable (§45)", () => {
   it("routes GPT-6.2 on the included scenario, unmetered, and gates GPT-6 Astra on the paid one", () => {
     // Included: both GPT-6.2 tones serve there; GPT-6 Astra gives the BotConnection apology (F121).
     for (const id of ["gpt-6.2-sol", "gpt-6.2-astra"]) {
