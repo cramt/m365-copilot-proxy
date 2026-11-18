@@ -5,7 +5,8 @@
 //
 // Usage:
 //   node scripts/codex-catalog.mjs [--gateway=http://127.0.0.1:4141] [--window=1000000]
-//                                  [--out=~/.codex/m365-models.json] MODEL[=WINDOW] ...
+//                                  [--out=~/.codex/m365-models.json] [--all | MODEL[=WINDOW] ...]
+//   node scripts/codex-catalog.mjs --all --out=~/.codex/m365-models.json
 //   node scripts/codex-catalog.mjs --out=~/.codex/m365-models.json \
 //     m365/gpt-6.1-sol m365/claude-sonnet-5 m365/claude-opus
 //
@@ -23,10 +24,11 @@ const option = (name, fallback) => {
 const gateway = option("gateway", "http://127.0.0.1:4141").replace(/\/+$/, "");
 const defaultWindow = Number(option("window", "1000000"));
 const out = option("out")?.replace(/^~(?=$|[\\/])/, homedir());
-const wanted = args.filter((a) => !a.startsWith("--"));
+const all = args.includes("--all");
+let wanted = args.filter((a) => !a.startsWith("--"));
 
-if (wanted.length === 0 || !Number.isFinite(defaultWindow)) {
-  console.error("usage: node scripts/codex-catalog.mjs [--gateway=URL] [--window=N] [--out=FILE] MODEL[=WINDOW] ...");
+if ((!all && wanted.length === 0) || (all && wanted.length > 0) || !Number.isFinite(defaultWindow) || defaultWindow <= 0) {
+  console.error("usage: node scripts/codex-catalog.mjs [--gateway=URL] [--window=N] [--out=FILE] (--all | MODEL[=WINDOW] ...)");
   process.exit(2);
 }
 
@@ -44,16 +46,58 @@ if (!Array.isArray(models)) {
   process.exit(1);
 }
 const bySlug = new Map(models.map((m) => [m.slug, m]));
+const discovered = new Map();
+if (all || wanted.some((arg) => !bySlug.has(arg.split("=")[0]))) {
+  // The size-limited Codex catalog can omit routable models; discovery is authoritative for --all.
+  const discovery = await fetch(`${gateway}/v1/models`);
+  if (!discovery.ok) {
+    console.error(`${gateway}/v1/models: HTTP ${discovery.status}`);
+    process.exit(1);
+  }
+  const { data } = await discovery.json();
+  if (!Array.isArray(data)) {
+    console.error(`${gateway}/v1/models didn't return a model list`);
+    process.exit(1);
+  }
+  for (const model of data) {
+    if (typeof model.id === "string" && model.id && !discovered.has(model.id)) discovered.set(model.id, model);
+  }
+  if (all) wanted = [...discovered.keys()];
+}
+if (wanted.length === 0) {
+  console.error("The gateway didn't advertise any models");
+  process.exit(1);
+}
 
 const picked = [];
 for (const [i, arg] of wanted.entries()) {
   const [slug, ownWindow] = arg.split("=");
-  const entry = bySlug.get(slug);
+  let entry = bySlug.get(slug);
+  if (!entry && discovered.has(slug)) {
+    const model = discovered.get(slug);
+    const provider = slug.includes("/") ? slug.slice(0, slug.indexOf("/") + 1) : "";
+    const template = models.find((m) => provider && m.slug.startsWith(provider)) ?? models[0];
+    if (template) {
+      entry = {
+        ...template,
+        slug,
+        display_name: model.display_name ?? model.name ?? slug,
+        description: model.description ?? model.display_name ?? model.name ?? slug,
+        prefer_websockets: false,
+        supported_in_api: true,
+        ...(Array.isArray(model.input_modalities) && { input_modalities: model.input_modalities }),
+      };
+    }
+  }
   if (!entry) {
-    console.error(`${slug} isn't in copilot-api's Codex catalog (provider models appear as provider/model)`);
+    console.error(`${slug} isn't in the gateway's Codex catalog or model discovery (provider models appear as provider/model)`);
     process.exit(1);
   }
   const window = ownWindow ? Number(ownWindow) : defaultWindow;
+  if (!Number.isFinite(window) || window <= 0) {
+    console.error(`${slug}: context window must be a positive number`);
+    process.exit(1);
+  }
   picked.push({ ...entry, context_window: window, max_context_window: window, priority: i + 1, visibility: "list" });
 }
 

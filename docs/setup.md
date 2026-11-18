@@ -135,8 +135,14 @@ Build a model catalog from copilot-api's, with each model's context window. The 
 own GPT models without one, so this is also what puts Claude in its picker:
 
 ```sh
-node scripts/codex-catalog.mjs --out=~/.codex/m365-models.json m365/gpt-6.1-sol m365/claude-sonnet-5 m365/claude-opus
+node scripts/codex-catalog.mjs --all --out=~/.codex/m365-models.json
 ```
+
+`--all` includes every model advertised by the gateway's `/v1/models`, including models omitted from
+its size-limited Codex catalog. For a smaller picker, replace `--all` with explicit model IDs, for
+example `m365/gpt-6.1-sol m365/claude-sonnet-5 m365/claude-opus`. Re-run after the proxy adds models.
+This discovers the proxy's **Chat** routes, not the separate **Cowork** or **Code** backend: a model
+shown only in those web-app pickers is not automatically supported here.
 
 Then `~/.codex/config.toml` (the top-level keys go above the first `[table]`):
 
