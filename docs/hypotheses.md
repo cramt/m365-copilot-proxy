@@ -6051,7 +6051,7 @@ models or StreamHub doesn't report it. The web client's picker also marks some m
 credits, and their turns show nothing either. The proxy talks only to Copilot Chat (Chathub or
 StreamHub); Cowork and Code are F110's agent runtime, which it doesn't call.
 
-### F119 — the app adds context of its own as tool outputs without a call 🟢
+### F124 — the app adds context of its own as tool outputs without a call 🟢
 From Nov 16 the app put two `function_call_output` items at the start of some turns,
 `agent.codex_apps_open_page` and `agent.codex_apps_selected_page_part_1_of_1` ("Companion Page
 snapshot"), each with a `namespace` and a `name` but no `call_id`, and no tool call before them. Azure's

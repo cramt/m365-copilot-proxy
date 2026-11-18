@@ -161,7 +161,7 @@ settings ([hypotheses §41](hypotheses.md)):
   (`agent.codex_apps_open_page`), as `function_call_output` items with a `namespace` and a `name` but no
   `call_id`. Earlier versions reject the whole request with "function_call_output.call_id is required";
   2.9.7 sends those items as user text (copilot-api #500). If your npm registry serves an older version,
-  build a release tag ([setup.md](setup.md), step 3) (F119).
+  build a release tag ([setup.md](setup.md), step 3) (F124).
 - **Your ChatGPT account.** With `requires_openai_auth = false` (the default, `env_key` included) the
   app's account menu shows the provider's name instead of your account and hides Remote. Set it to
   `true`, with a placeholder bearer, so Codex doesn't send your ChatGPT token to the gateway:
