@@ -216,8 +216,10 @@ app's account menu; the CLI ran with this file and no ChatGPT login. Things to k
 - **The app keeps each thread on the provider it started with,** and saves the model you last picked
   as the default without its provider. Keep only gateway models in the catalog (or put other backends
   behind copilot-api too: [claude-code-codex.md](claude-code-codex.md), step 5).
-- **Context windows** come only from the catalog. Codex compacts at 90% of a window, but the gateway
-  reports 0 tokens used, so for `m365/*` models Codex never compacts and M365 holds the context.
+- **Context windows** come only from the catalog, and Codex compacts at 90% of a window. M365 reports no
+  token counts, so the proxy estimates them: Codex sees an `m365/*` thread fill and compacts it near its
+  window. A 1M window is real for Claude Sonnet 5 and Opus 4.8; GPT-6.x reads about 250k tokens a turn
+  and M365 summarizes the older turns (hypotheses §47).
 - **Metered models.** On Chathub `claude-opus` (Opus 5.5) is limited to 40 turns a day and
   `claude-sonnet-5.5` to 80, every tool call a turn, while `gpt-6.1-sol` and `claude-sonnet-5` spend no
   allowance. StreamHub reports no meters at all (hypotheses §41), so prefer the unmetered models.

@@ -287,9 +287,11 @@ Disabling Codex's hosted `web_search` doesn't rule out search:
   run a PowerShell command that still lost one (it asks again, then answers 502 `damaged_tool_call`).
   A short reply without deltas can still carry a broken Python/JS line; the model usually sees the
   syntax error and fixes it.
-- **No token counts.** M365 reports none, so usage shows 0 tokens and the harness can't track its
-  context window. The proxy sends only new messages per turn, and M365 holds the conversation
-  (600 messages each).
+- **Estimated token counts.** M365 reports none, so the proxy estimates them (4 UTF-8 bytes a token;
+  `M365_REPORT_USAGE=0` for zeros), and the harness sees its context fill and compacts at the window it
+  assumes for the model. The proxy sends only new messages per turn, and M365 holds the conversation
+  (600 messages each); a history replayed into a fresh conversation goes up in parts M365 keeps
+  (`M365_TURN_CHUNK_BYTES`, hypotheses §47).
 
 ## Checking it without quota
 

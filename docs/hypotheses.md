@@ -6314,3 +6314,80 @@ and the code word was recalled again. A 2k opening went on with deltas (counts 1
 **Not done:** Codex never compacts on these models. The proxy reports no token usage and the Codex
 catalog gives them 1M-token windows, so a thread's history only grows, and past the limit every turn is
 a whole replay. Reporting estimated usage, with a window under the limit, would let Codex compact.
+(Done in §47 F131, with the windows kept: a replay now goes up in turns M365 keeps.)
+
+## 47. Nov 18 2026 — how much context each model gets, and a history longer than one turn
+
+**Question.** Codex gives every M365 model a 1M-token window (its catalog's `context_window`, Codex's
+"long context"). Does M365 serve that much, in one turn and over a conversation?
+
+Probes: filler log lines (3.1 characters a token, o200k) with marked codes, through the proxy over
+StreamHub, one conversation per size, n=1 each. In one turn the codes sat at 1%, 50% and 99% and the
+same turn asked for them.
+
+### F128 — one turn: GPT-6.x reads ~250k tokens, Claude ~1M 🟢
+
+| model | answered, all three codes | refused |
+|---|---|---|
+| `gpt-6.2-sol` | 540k (§46), 650k, 780k characters | 900k, 1M, 2M, 4M |
+| `gpt-6.1-sol` | 650k | 900k, 2M |
+| `claude-sonnet-5` | 650k, 900k, 2M | 2.6M, 3.2M, 4M |
+| `claude-opus-4.8` | 650k, 900k, 2M | – |
+
+780k characters is ~252k tokens and 900k ~291k: GPT-6.x gets the standard ~272k-token window, not a
+long-context one. It says so badly. The turn ends `request_end` `InternalError` with
+`Microsoft.Sydney.GhcpRuntime\CopilotSdkRuntimeBackend.cs:1889 - The GHCP runtime completed with a
+recorded session error` (5–27 s), and its message, `turnState: Failed`, carries "Sorry, I wasn't able to
+respond to that. Is there something else I can help with?", which the proxy returned as the answer.
+Claude's refusal is `InvalidRequest (InputTokenLimitExceeded)`, a 400 `context_length_exceeded`. An
+answered 780k turn took 7 s, a 2M one on Claude 30 s. `numLongDocSummaryUserMessagesInConversation` stayed
+0: no long-document path. The metered models weren't probed (H47a).
+
+### F129 — the limit on what M365 keeps is the same for Claude 🟢
+A 900k opening on `claude-sonnet-5`, then "list the codes": the follow-up's count was 1, so M365 hadn't
+kept the opening (the proxy re-sent the request, F127, and the codes came back). §46's 420k-kept,
+540k-lost boundary isn't GPT's alone.
+
+### F130 — a conversation of turns that fit: Claude keeps ~1M tokens verbatim, GPT-6.x summarizes past its window 🟢
+A log in parts, one turn each ("reply OK n"), a code in the middle of each; then a turn asking for every
+code and for one random record line per part, quoted, which a summary wouldn't keep:
+
+| model | turns | asked after | codes recalled | record lines quoted exactly |
+|---|---|---|---|---|
+| `gpt-6.2-sol` | 6 × 300k | part 3 (900k) | 2, 3 | none |
+| | | part 6 (1.8M) | 2–6 | 6 |
+| `claude-sonnet-5` | 5 × 400k | part 5 (2M) | 2–5 | 2, 3 (4 and 5 quoted, not checked) |
+
+M365 kept every turn (counts 1…8). Claude said "only Parts 2–5 were provided to me": past its window
+M365 drops the oldest turns whole. GPT-6.x keeps about its window verbatim and a summary of the rest:
+the codes, marked IMPORTANT, outlived the record lines, and part 1's code didn't.
+
+### F131 — what the proxy does now 🟢
+- A turn over `M365_TURN_CHUNK_BYTES` (400,000 UTF-8 bytes; 0 sends everything whole) goes up in parts
+  (`replay.ts`). A whole history, opening a conversation, keeps its leading system messages, the tool
+  framing and as many of the latest messages as fit in the last turn; the older messages go ahead of it
+  as transcript parts the model acknowledges ("reply with only: OK"). A long follow-up is cut as text.
+  Once M365 has dropped an opening of 200k characters or more (F127), parts are cut to 75% of it, so the
+  replayed history is kept and continued with deltas, instead of replayed whole on every request.
+- A failed turn (`InternalError` and `turnState: Failed`) has no answer: its apology counts as an empty
+  `InternalError`, re-sent once in a fresh conversation, and the streaming path holds it back.
+- `usage` carries estimates: the whole formatted request, and the reply, at 4 UTF-8 bytes a token
+  (`M365_REPORT_USAGE=0` for zeros). Codex sees its context fill, and compacts near its window.
+
+Live, through a fresh proxy: a history of 1.2M characters (8 log parts of 150k, a code in each, then a
+question about all of them), the way Codex replays a thread:
+
+| model | turns | codes | part 1's record line | follow-up |
+|---|---|---|---|---|
+| `claude-sonnet-5` | 3 parts + the request, 41 s | 8/8 | exact | a delta (count 5), right |
+| `gpt-6.2-sol` | 3 parts + the request, 46 s | 3–8 | "unavailable in the retained conversation context" | a delta (count 5), right |
+
+Before, it went up as one 1.2M-character turn: Claude answered and M365 didn't keep it, so every later
+request replayed it; GPT-6.x refused, and the proxy returned the apology as the answer.
+
+**Codex:** the 1M windows stay. Claude models get them; GPT-6.x models get ~270k tokens verbatim and
+M365's summary of the rest.
+
+**Open — H47a:** do the metered models (GPT-6.2 Astra, GPT-6 Astra, Claude Fable, Sonnet 5.5, Opus 5.5)
+follow their families? **Probe:** F128's boundary points (780k/900k for GPT, 2M/2.6M for Claude), one turn
+each. **Open — H47b:** can a request get GPT-6.x a longer window? The web client offers no such choice.
