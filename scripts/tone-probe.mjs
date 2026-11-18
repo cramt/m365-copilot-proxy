@@ -85,19 +85,25 @@ const TONES = [
   // budget (40/day, 75/week), so there's no paid cell here.
   { tone: "Gpt_61_Sol_Reasoning", note: "gpt-6.1-sol — included scenario: expect DeepLeo on every account", ...INCLUDED },
 
+  // GPT-6.2 Sol and GPT-6.2 Astra (web client, 2026-11-17, §44): LIVE on the
+  // included scenario, where they're routed; the paid scenario carries their
+  // GPT62SolQuery / GPT62AstraQuery budgets, so no paid cell. GPT-6 Astra is
+  // gated like GPT-6: the BotConnection apology on included, served on paid.
+  // GPT-6.2 Astra and Fable turns report a charge to the user's Copilot credits
+  // over StreamHub; GPT-6 Astra is a credits model too (MC1519122).
+  { tone: "Gpt_62_Sol_Reasoning", note: "gpt-6.2-sol — included scenario: expect DeepLeo", ...INCLUDED },
+  { tone: "Gpt_62_Astra_Reasoning", note: "gpt-6.2-astra — included scenario: expect DeepLeo (uses credits)", ...INCLUDED },
+  { tone: "Gpt_6_Astra_Reasoning", note: "included scenario: expect the BotConnection apology", ...INCLUDED },
+  { tone: "Gpt_6_Astra_Reasoning", note: "gpt-6-astra — PAID scenario: expect DeepLeo (uses credits)", ...PAID },
+
   // Claude_Fable: present in the real web client's tone list (§12.6 decompile)
-  // alongside Claude_Sonnet, so it is a registered route rather than a guess.
-  // It is accepted here and answers — but it self-identifies as GPT-5, not as
-  // Fable, which is the same "answers, therefore it works" trap §12.15 warns
-  // about one level up: the tone resolves to *a* model, just not the named one.
-  // Best current reading is that the real Fable route is gated on the Frontier
-  // program and an unentitled account is quietly served the house model. That
-  // is why Fable is deliberately NOT in MODEL_TONES — advertising it would ship
-  // a model ID that lies about what answers. Probed on both entitlements to see
-  // whether the paid scenario is the gate (as it is for Opus) or whether the
-  // gate is program membership, which no scenario string can fake.
-  { tone: "Claude_Fable", note: "self-IDs as GPT-5, not Fable — likely Frontier-gated", ...INCLUDED },
-  { tone: "Claude_Fable", note: "PAID scenario: does the entitlement move it?", ...PAID },
+  // alongside Claude_Sonnet. It self-identified as GPT-5 for months (§10), so it
+  // stayed out of MODEL_TONES; it serves Fable 5.1 now and is mapped as
+  // claude-fable (§44 F122). Self-ID no longer names the model on any route, so
+  // check the family by training cutoff instead: Fable says June 2026, GPT-5.5
+  // June 2024. Both scenarios serve it.
+  { tone: "Claude_Fable", note: "claude-fable — included scenario: expect DeepLeo (uses credits)", ...INCLUDED },
+  { tone: "Claude_Fable", note: "PAID scenario: serves too", ...PAID },
 
   { tone: "Definitely_Not_A_Real_Tone_XYZ", note: "CONTROL: invalid" },
 ];

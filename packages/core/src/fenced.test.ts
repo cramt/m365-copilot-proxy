@@ -602,6 +602,12 @@ describe("formatFencedToolDefinitions", () => {
 });
 
 describe("defaultFramingForTone", () => {
+  it("gives the §44 models relay_batch, like their GPT-6.x siblings (unbenched; F123's harness runs)", () => {
+    for (const id of ["gpt-6.2-sol", "gpt-6.2-astra", "gpt-6-astra", "claude-fable", "claude-fable-5-1-20261101"]) {
+      expect(defaultFramingForModel(id)).toBe("relay_batch");
+    }
+  });
+
   it("gives both Opus models relay_batch — no jailbreak trips, and fewest turns (§24 F56, F60)", () => {
     // minimal 12/30 and baseline 8/30 tasks Disengaged, the user-voice relays 0.
     // relay_batch: 2.30 turns per bench task vs relay's 3.65 — and Opus 5.5's

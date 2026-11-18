@@ -130,6 +130,33 @@ const MODEL_TONES: Record<string, string> = {
   // sibling (`Gpt_61_Sol`, `Gpt_61_Sol_Chat`, `Gpt_61_Reasoning`, …) is rejected.
   "gpt-6.1-sol": "Gpt_61_Sol_Reasoning",
 
+  // GPT-6.2 Sol and GPT-6.2 Astra ("GPT-6.2 Sol" / "GPT-6.2 Astra" in the web
+  // client since 2026-11-17; the picker marks Astra "Uses credits"). Picking
+  // either sends its tone and no other model field (capture, docs §44 F120).
+  // Both serve on the included scenario, where the proxy keeps them, like
+  // GPT-6.1 Sol: the paid scenario's metering carries `GPT62SolQuery*` and
+  // `GPT62AstraQuery*` budgets (F121). Over StreamHub every Astra turn reports a
+  // charge to the user's Copilot credits; Sol's don't (F122). Both self-ID as
+  // "the GPT-6 reasoning model", as they do in the web client itself.
+  "gpt-6.2-sol": "Gpt_62_Sol_Reasoning",
+  "gpt-6.2-astra": "Gpt_62_Astra_Reasoning",
+
+  // GPT-6 Astra, a usage-billed (Copilot credits) model. Gated like
+  // `Gpt_6_Reasoning`: the BotConnection apology on the included scenario,
+  // served on the paid one (PAID_SCENARIO_TONES) and over StreamHub (F121). The
+  // web client's picker replaced it with GPT-6.2 Astra on 2026-11-17; the tone
+  // still serves.
+  "gpt-6-astra": "Gpt_6_Astra_Reasoning",
+
+  // Claude Fable 5.1 ("Fable 5.1" in the web client, marked "Uses credits").
+  // §10 kept it unmapped because the tone self-IDed as GPT-5. Over StreamHub it
+  // self-IDed as "Claude Fable 5.1" on 2026-11-11; on 2026-11-18 it gave a June
+  // 2026 training cutoff over both transports (`Gpt_5_5_Chat`: June 2024) and
+  // its StreamHub turns were charged to Copilot credits (docs §44 F122). Serves
+  // on the included scenario. Unmapped Fable strings land here too.
+  "claude-fable": "Claude_Fable",
+  "claude-fable-5.1": "Claude_Fable",
+
   // GPT-5.4. Bare `gpt-5.4` has always been the reasoning tone (unlike its
   // siblings); only the `-quick` alias moved, from the retired `Gpt_5_4_Quick`.
   "gpt-5.4": "Gpt_5_4_Reasoning",
@@ -167,6 +194,9 @@ export function getToneForModel(model: string): string {
   // Likewise an unmapped Sonnet 5 string (`claude-sonnet-5[1m]`, a dated
   // `claude-sonnet-5-…`) goes to Sonnet 5's own tone; Sonnet 5.5 strings stay on
   // `Claude_Sonnet` and get the paid scenario from isSonnet55Model.
+  // And an unmapped Fable string (a dated `claude-fable-5-1-…`) goes to
+  // `Claude_Fable` rather than to Sonnet.
+  if (/fable/i.test(model)) return "Claude_Fable";
   if (/opus/i.test(model)) return "Claude_Opus";
   if (/^claude/i.test(model)) {
     return SONNET_5_PATTERN.test(model) && !SONNET_5_5_PATTERN.test(model) ? "Claude_Sonnet_5" : "Claude_Sonnet";
@@ -215,11 +245,16 @@ const PAID_LICENSE_TYPE = "Premium";
  * `Claude_Sonnet_5` is here because its own model, Sonnet 5, only serves on the
  * paid scenario; on the included one the tone is Sonnet 4.6, which
  * `claude-sonnet` already reaches (tone-probe 2026-10-06, docs §26).
+ *
+ * `Gpt_6_Astra_Reasoning` is here for `Gpt_6_Reasoning`'s reason: the included
+ * scenario answers with the BotConnection apology, the paid one serves
+ * (2026-11-18, docs §44 F121).
  */
 export const PAID_SCENARIO_TONES: ReadonlySet<string> = new Set([
   "Claude_Opus",
   "Claude_Sonnet_5",
   "Gpt_6_Reasoning",
+  "Gpt_6_Astra_Reasoning",
 ]);
 
 /**

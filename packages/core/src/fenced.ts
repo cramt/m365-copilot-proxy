@@ -638,6 +638,11 @@ export function currentFramingVariant(toneDefault?: string): string {
  *  its sandbox: under relay_batch it never went in (0 of 80 bench tasks and pi
  *  runs, GPT-6 Sol 25 of 100), under honest 3 of 40 (GPT-6 Sol 17 of 20; docs §29).
  *
+ *  `Gpt_62_Sol_Reasoning`, `Gpt_62_Astra_Reasoning`, `Gpt_6_Astra_Reasoning` and
+ *  `Claude_Fable` default to `relay_batch` too, unbenched: every GPT-6.x sibling
+ *  benched best on it, and the harness runs used it — Codex on GPT-6.2 Sol 3/3,
+ *  Claude Code and Codex on Fable 3/3 each, over StreamHub (docs §44 F123).
+ *
  *  Every other tone keeps the bench-tuned `baseline` byte-for-byte. */
 export function defaultFramingForTone(tone?: string): string | undefined {
   if (tone === "Claude_Opus") return "relay_batch";
@@ -646,6 +651,10 @@ export function defaultFramingForTone(tone?: string): string | undefined {
   if (tone === "Gpt_6_Reasoning") return "relay_batch";
   if (tone === "Gpt_6_Sol_Reasoning") return "relay_batch";
   if (tone === "Gpt_61_Sol_Reasoning") return "relay_batch";
+  if (tone === "Gpt_62_Sol_Reasoning") return "relay_batch";
+  if (tone === "Gpt_62_Astra_Reasoning") return "relay_batch";
+  if (tone === "Gpt_6_Astra_Reasoning") return "relay_batch";
+  if (tone === "Claude_Fable") return "relay_batch";
   return undefined;
 }
 

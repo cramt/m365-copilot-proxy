@@ -254,6 +254,25 @@ describe("GPT-6.1 Sol routing (§27)", () => {
   });
 });
 
+describe("GPT-6.2 Sol and Astra, GPT-6 Astra, Claude Fable (§44)", () => {
+  it("routes GPT-6.2 on the included scenario, unmetered, and gates GPT-6 Astra on the paid one", () => {
+    // Included: both GPT-6.2 tones serve there; GPT-6 Astra gives the BotConnection apology (F121).
+    for (const id of ["gpt-6.2-sol", "gpt-6.2-astra"]) {
+      expect(getScenarioForModel(id)).toEqual(INCLUDED);
+      expect(meteredBudgetOf(id)).toBeNull();
+    }
+    expect(getScenarioForModel("gpt-6-astra")).toEqual(PAID);
+  });
+
+  it("sends a Fable-labelled ID to Claude_Fable rather than to Sonnet, and keeps it agent-less", () => {
+    for (const id of ["claude-fable", "claude-fable-5.1", "claude-fable-5-1-20261101"]) {
+      expect(getToneForModel(id)).toBe("Claude_Fable");
+    }
+    expect(getScenarioForModel("claude-fable")).toEqual(INCLUDED);
+    expect(toneUsesToolAgent("Claude_Fable")).toBe(false);
+  });
+});
+
 describe("Opus routing", () => {
   afterEach(() => {
     delete process.env.M365_SCENARIO;
