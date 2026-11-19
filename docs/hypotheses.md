@@ -107,6 +107,10 @@ than "we eyeballed one run." See §M (Methods) for the experimental rig.
   all four serve on both transports, GPT-6 Astra gated like GPT-6 (F121); credits, and `Claude_Fable` is
   Fable now (F122); harness runs and what shipped (F123); whether included `gpt-6.2-*` turns spend the
   `GPT62*` budgets (H45a, open)
+- §46 — M365 answers an opening prompt of about 500k characters but doesn't keep it, so the turn after a
+  long replay has no context (F125); it keeps a conversation for at least 21 h, while the pool evicted
+  one after 30 min, forcing that replay (F126); the fix: a 24-h pool, a lost history caught and re-sent,
+  a history past the limit replayed whole (F127); the limit's unit (H46a, open)
 
 ---
 
@@ -6246,3 +6250,67 @@ used on the next turn, over Chathub for `claude-fable`, `gpt-6.2-sol`, `gpt-6.2-
 
 **Open — H45a:** does an included-scenario `gpt-6.2-*` turn spend the `GPT62*Query*` budgets? **Probe:**
 read the paid scenario's `metering` before and after a few included turns, as §27 did for GPT-6.1 Sol.
+
+## 46. Nov 18 2026 — M365 doesn't keep a very long opening prompt; the pool's 30-minute eviction made it bite
+
+**Question.** In Codex, the model forgot a long thread one turn after it was resumed: it answered the
+first message in context, then asked for "the example" it had just discussed ("I don't see the setup
+here"). Why?
+
+### F125 — M365 answers an opening prompt of about 500k characters but doesn't keep it 🟢
+The proxy log of that thread: the pool had evicted its conversation after 30 minutes idle, so the next
+request replayed the whole Codex history (124 messages) into a fresh M365 conversation (`mode=full`),
+and the answer used it. The request after that went to the same conversation as a delta, and its
+`throttling` read `numUserMessagesInConversation: 1`: M365 counted it as the conversation's first
+message, and the model answered with no context. The same happened on Nov 17 with the thread's
+98-message replay on `gpt-6-astra`, while its 89-message replay two hours earlier was kept. Of 116
+StreamHub follow-up turns in the log, these two (and one from §40's development) are the only ones
+whose count fell behind the proxy's.
+
+Sweep, two turns per size: an opening of filler lines with a code word at the top, then "what was the
+code word?"; `gpt-6.2-sol` over StreamHub, one conversation per size:
+
+| opening (chars) | turn 2 count | code word recalled |
+|---|---|---|
+| 40k, 70k, 100k, 140k, 200k, 260k, 330k, 420k | 2 | yes, each |
+| 540k | 1 | no: "No code word was provided." |
+
+250k characters of token-dense random words were kept too. The 540k loss repeated 3 more times: once
+through the fixed proxy (F127) and twice with a one-turn StreamHub probe, which also read the backend
+from each upgrade's `x-calculatedbetarget`. Every turn landed on the same backend, and sending
+`X-RoutingParameter-SessionKey: <ConversationId>` (§32 F85's fix for Chathub) changed nothing: it is not
+a fork. The opening turn itself looks normal: `request_end` `Success`, one topic, no search,
+`numLongDocSummaryUserMessagesInConversation` 0. The thread's replay, rebuilt from Codex's session files
+(its last compaction and everything after it) and formatted with `formatMessages`, came to ~567k
+characters; the rebuild has 172 messages to the proxy's 124, so that overcounts. The proxy now logs each
+full prompt's size (`chars=`).
+
+### F126 — M365 keeps a conversation for at least 21 hours 🟢
+A temporary-chat conversation idle for 21 h, continued with its `sessionId` and `ConversationId` from a
+new `CopilotSession`, recalled what an earlier turn said (count 6, n=1); one idle 18 minutes did too.
+The pool evicted after 30 minutes, so a thread resumed after a break was replayed whole, every time.
+
+### F127 — what the proxy does now 🟢
+- Idle conversations stay in the pool for 24 h (`M365_CONVERSATION_TTL_HOURS`), at most 1,000 at a
+  time, the least recently used going first.
+- A follow-up turn whose count is 1 has lost its history. The proxy stops it, before any of it reaches
+  the client on StreamHub, where the count arrives ahead of the reply. Then it re-sends the whole request
+  in a fresh conversation, once per request, with a forcing retry's instruction after the history. If a
+  streamed reply went out before the count arrived, the next request replays instead. A turn that
+  itself carries the whole history needs no memory, so its count is never read as a loss.
+- An answered opening of 200k characters or more that is then lost sets a limit for that model for 24 h
+  (the pool TTL): a conversation opened with a prompt at least that long is replayed whole on every
+  request rather than continued. Each of those requests starts a conversation, which the thread throttle
+  counts; compacting the client's history (`/compact` in Codex) brings the deltas back.
+
+Live, through the fixed proxy: a 540k opening then two follow-ups. The first came back with count 1; it
+was stopped and re-sent, and the code word was recalled. The second was replayed whole from the start,
+and the code word was recalled again. A 2k opening went on with deltas (counts 1, 2, 3), nothing re-sent.
+
+**Open — H46a:** what the limit counts (characters, UTF-8 bytes or tokens) and where between 420k and
+540k it falls. **Probe:** the F125 sweep with multi-byte and backslash-dense openings, and sizes between
+420k and 540k.
+
+**Not done:** Codex never compacts on these models. The proxy reports no token usage and the Codex
+catalog gives them 1M-token windows, so a thread's history only grows, and past the limit every turn is
+a whole replay. Reporting estimated usage, with a window under the limit, would let Codex compact.
