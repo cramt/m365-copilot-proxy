@@ -61,7 +61,7 @@ export const BotMessage = z.object({
   scores: z.array(ClassifierScore).optional(),
   // Authoritative server-side turn count for this conversation.
   turnCount: z.number().optional(),
-  // `Completed` / others (only observed `Completed` so far).
+  // `Completed`, or `Failed` on a turn M365 failed (docs/hypotheses.md §47 F128).
   turnState: z.string().optional(),
   suggestedResponses: z
     .array(
