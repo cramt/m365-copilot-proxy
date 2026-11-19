@@ -889,8 +889,9 @@ a model outside it was refused: `POST /v1/messages` → 400 `{"detail": {"type":
 call turned up: closing the stream leaves the run going, and the next message queues behind it.
 
 **What a turn holds** (needle probes, one turn each, hypotheses §48 F133): the GPT models answered 2.0M
-characters (~806k tokens), the most tried; Opus 5.5 and Sonnet 5.5 answered 1.6M (~645k), and Sonnet 5.5
-refused 2.0M with `engine.v2_refusal`. Chat's GPT-6.x reads about 272k (§47).
+characters (~806k tokens), and GPT-6.2 Sol (`gpt-6.2-sol-substrate`) refused 2.5M (~1.0M) and 3.0M (H48a);
+Opus 5.5 and Sonnet 5.5 answered 1.6M (~645k), and Sonnet 5.5 refused 2.0M with `engine.v2_refusal`.
+Chat's GPT-6.x reads about 272k (§47).
 
 **What a turn costs.** Every turn is charged to the user's Copilot credits, as `cq` events: the model's
 calls, plus a title and follow-up suggestions on a small model (`claude-haiku-5-5`, `gpt-6-luna`), about

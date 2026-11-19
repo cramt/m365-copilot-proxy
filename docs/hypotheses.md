@@ -119,7 +119,8 @@ than "we eyeballed one run." See §M (Methods) for the experimental rig.
   token (F132); one turn reads 2M characters on GPT, 1.6M on Claude (F133); every turn costs credits
   (F134); a conversation can be deleted, a run can't be stopped (F135); the Code tab's "Long context"
   switch belongs to its local sessions, on Office's LLM API, which the proxy can't use (F136); the catalog
-  changes and refuses what it doesn't list (F137); GPT's one-turn limit (H48a, open)
+  changes and refuses what it doesn't list (F137); GPT-6.2 Sol's one-turn limit, ~806k to ~1.0M tokens, and its
+  turns now almost free (H48a)
 
 ---
 
@@ -6518,13 +6519,22 @@ At 14:10 ET on Nov 19 `GET /v1/models` listed eight models; at 15:55 only `opus-
 Cowork and Code alike, and for every `x-cowork-host-type` tried (none, `officeweb:web`, `teams:web`,
 `copilotapp:desktop` and five more). From then `POST /v1/messages` refused every GPT model, with `:copilot` or without:
 400 `MODEL_NOT_IN_CATALOG`, "Model 'gpt-6.2-sol:copilot' is not a known catalog entry. Use a valid model
-id (e.g. 'opus-5.5')." Opus 5.5 was accepted. Whether GPT left for health or for good is open. The proxy
-now lists the runtime's models from the live catalog (kept 10 minutes; the built-in table when it can't
-be read) and answers a refused model with a 400 `model_not_found`.
+id (e.g. 'opus-5.5')." Opus 5.5 was accepted. At 17:40 the catalog had six: `gpt-6.2-sol-substrate`
+("GPT 6.2 Sol", the `llmapi` bucket, as `gpt-6.1-sol-substrate` was), `gpt-6.2-sol-fast`, `gpt-6.2-astra` and
+the three Claude models; no `gpt-6.2-sol`, `gpt-6.1-sol-substrate` or `gpt-5.5`. The proxy now lists the
+runtime's models from the live catalog (kept 10 minutes; the built-in table when it can't be read) and
+answers a refused model with a 400 `model_not_found`.
 
-**Open — H48a:** GPT's one-turn limit on the runtime is above 2.0M characters (F133 never found it).
-**Probe:** when the catalog lists GPT again, a needle turn of 3.0M characters (~1.2M tokens) on GPT-6.2
-Sol (Cowork), then 4.0M; about 340 and 450 credits. On Nov 19 the 3.0M turn met F137's refusal instead.
+**H48a — answered for GPT-6.2 Sol:** its one-turn limit is between ~806k and ~1.0M tokens. On
+`gpt-6.2-sol-substrate` (Cowork, 17:45), a needle turn of 2.0M characters answered (3/3, 10.3 s), and 2.5M
+(~1.0M tokens) and 3.0M (~1.2M) were refused as too long (`engine.v2_refusal`). The other GPT models'
+limits weren't probed past 2.0M.
+
+**Its turns cost almost nothing (n=1).** The answered 2.0M-character turn's task total was 0.061 credits
+(`costCredits`, `costFullyCounted: true`), and each refused one's 0.03–0.04: the title and suggestion calls
+alone. That morning the same turn cost 224 on `gpt-6.2-sol` and 232 on `gpt-6.1-sol-substrate`, also an
+`llmapi` model. Whether `llmapi` turns now go uncharged, as the Code tab's local sessions on Office's LLM
+API do (F136), is open: a second probe on another day would tell.
 
 **Shipped:** `M365_BACKENDS` (default all three; `chat` keeps a proxy off the runtime)
 lists the Cowork and Code models as `<model>(<backend>)[_<window>][_credit]`, Chat's as well
