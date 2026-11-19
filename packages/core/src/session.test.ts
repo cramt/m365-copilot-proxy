@@ -265,7 +265,7 @@ describe("restoreStrippedBrackets (M365 deletes `[word]:` from the final text, �
     expect(c.finalText).toBe(raw + "Set-Content f $u");
   });
 
-  it("handles leading '<' across StreamHub restart cursors and finalText bracket restore (§44 F119)", () => {
+  it("handles leading '<' across StreamHub restart cursors and finalText bracket restore (§49 F138)", () => {
     const sh = new TurnTextComposer();
     sh.restart("m1", "");
     sh.delta("<");

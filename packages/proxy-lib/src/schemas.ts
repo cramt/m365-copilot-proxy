@@ -74,4 +74,7 @@ export const ChatCompletionRequest = z.object({
   // message apart (see SessionPool).
   prompt_cache_key: z.string().optional(),
   user: z.string().optional(),
+  // OpenAI's reasoning effort. The agent runtime (Cowork, Code) takes it as the
+  // model's effort; Chat has no such setting.
+  reasoning_effort: z.string().optional(),
 });

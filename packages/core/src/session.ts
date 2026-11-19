@@ -298,7 +298,7 @@ export class TurnTextComposer {
    *  ("*" + "*Summary**" is bold, "`" + "``bash" a fence), and dropping it would
    *  break the markdown. Dropping the restated "<" from `run.base` as well keeps
    *  `finalText` / `restoreStrippedBrackets` aligned with the model's text
-   *  (docs/hypotheses.md §44 F119). */
+   *  (docs/hypotheses.md §49 F138). */
   delta(text: string): void {
     const key = this.target ?? "";
     const current = this.texts.get(key) ?? "";
