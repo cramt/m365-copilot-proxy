@@ -118,7 +118,8 @@ than "we eyeballed one run." See §M (Methods) for the experimental rig.
 - §48 — Cowork and Code, the agent runtime, as backends: a turn is three REST/SSE calls on the proxy's own
   token (F132); one turn reads 2M characters on GPT, 1.6M on Claude (F133); every turn costs credits
   (F134); a conversation can be deleted, a run can't be stopped (F135); the Code tab's "Long context"
-  switch isn't on this account's runtime (F136)
+  switch belongs to its local sessions, on Office's LLM API, which the proxy can't use (F136); the catalog
+  changes and refuses what it doesn't list (F137); GPT's one-turn limit (H48a, open)
 
 ---
 
@@ -6425,7 +6426,7 @@ in `options`, in `extraExtensionParameters` and in `message`. **Probe:** on an a
 offers the long tier, a Code session's state after `create_session` with it, then a turn over 272k tokens.
 
 **→ §48:** for GPT, yes, without a tier: on Cowork and Code every GPT model read 2.0M characters in one
-turn (F133). The long tier itself isn't on the test account's runtime (F136).
+turn (F133). The long tier itself belongs to the Code tab's local sessions, on another service (F136).
 
 ## 48. Nov 19 2026 — Cowork and Code as backends
 
@@ -6470,7 +6471,7 @@ and Code take the same numbers unmeasured.
 ### F134 — every turn costs credits 🟢
 Each turn's `cq` events charge Copilot credits. One line in a new Cowork conversation cost 0.9 to 1.3
 credits through the proxy (n=3) and 9.2 once directly; in a new Code conversation 2.6 (Sonnet 5.5, n=2) and
-9.5 (GPT-6.2 Sol). A follow-up costs about 0.4. A long turn costs 0.28 (GPT-6.2 Sol) to 1.15 (GPT-6.2 Astra)
+9.5 (GPT-6.2 Sol); on Sonnet 5.5 in Cowork it cost 0.04, reported as 0.038 against 0.042 in the task's `costCredits`: the difference is a follow-up suggestion charged after the turn ended. A follow-up costs about 0.4. A long turn costs 0.28 (GPT-6.2 Sol) to 1.15 (GPT-6.2 Astra)
 credits per 1,000 tokens (F133). The monthly entitlement (`GET /v1/entitlement`, `uq`: budget 1,000,000)
 doesn't count in these credits, or lags: about 500 credits of probes moved `consumed` by 24, and it rose by
 6,000 in a quiet 20 minutes before them.
@@ -6483,22 +6484,54 @@ subscribe, suggestions, tasks, …), so closing the stream leaves a run going an
 it. The proxy deletes the conversations it leaves, five minutes on so that a request still reading a run there finishes, unless `M365_SAVE_HISTORY=1`, so its tasks don't pile up
 in the user's Cowork and Code lists.
 
-### F136 — the "Long context" switch isn't on this account's runtime 🟡
-A screenshot of the Code picker with GPT-6 Astra at Max effort and a "Long context" switch on, which the
-user said costs no credits, prompted a look. The runtime's `GET /v1/models` (Cowork and Code alike, Nov 19)
-lists eight models, none of them GPT-6 Astra and none with `supported_context_tiers`, and the web Code tab's
-picker shows no switch for them. The Code app's script (`code.remote.js`) sends `context_tier` in
-`create_session` and `set_session_model`, and offers the tier for a model whose `supported_context_tiers`
-(`[{id: "default" | "long_context", maxContextWindowTokens}]`) gives `long_context` the bigger window. No
-script outside the Code app names a tier, so the host passes none to the runtime. The same picker belongs
-to the GitHub Copilot desktop app, installed on the test PC, whose models (GPT-6 Astra among them) are
-GitHub's and billed by GitHub: most likely where the screenshot came from. Unconfirmed: the screenshot's
-app.
+### F136 — the "Long context" switch is the Copilot app's local Code sessions, on another service 🟢
+A screenshot from the user (the Copilot app's Code tab, GPT-6 Astra at Max effort, "Long context" on, no
+credits charged) first looked like the GitHub Copilot desktop app: the agent runtime's catalog had no
+GPT-6 Astra and no `supported_context_tiers`, and the web Code tab showed no switch. A second screenshot
+showed the session under **Local** in the app's sidebar, not Cloud. Local sessions run on the user's
+folders through a runtime the Copilot app (`copilotapp.exe`) bundles and starts via `copilotapphost.exe`:
+`…\Copilot\User Data\CopilotCodeTabRuntime\0.1.548.0\copilot.exe --server --stdio`, a Copilot CLI build
+(1.0.108). Its log says "Running in offline mode. GitHub features are unavailable", and its environment
+(names and non-secret values read from the process) sets a bring-your-own-key provider:
 
-**Shipped:** `M365_BACKENDS` (default `chat`) lists the Cowork and Code models as
-`<model>(<backend>)[_<window>][_credit]`, Chat's as well (`gpt-6.2-sol(chat)_272k`); a request may name
-`cowork` or `code` only when listed. An ID without parentheses stays on Chat unless `M365_DEFAULT_BACKEND`
-names a backend that serves the model. On the runtime the proxy sends a history whole (no parts), passes
+| variable | value |
+|---|---|
+| `COPILOT_PROVIDER_BASE_URL` | `https://loki.delve.office.com/api/v1/llmapi` |
+| `COPILOT_PROVIDER_TYPE`, `…_WIRE_API` | `openai`, `responses` |
+| `COPILOT_MODEL`, `…_WIRE_MODEL` | `gpt-61-sol` |
+| `COPILOT_ENTRA_AUTH_AUD` | `12f6db80-0741-4a7e-b9c5-b85d737b3a31` |
+| `COPILOT_SESSION_SCOPED_HEADERS`, `…_TURN_SCOPED_HEADERS` | `{"X-ConversationId": "session_id"}`, `{"X-ClientCallId": "call_id"}` |
+
+Its `byok-routing.log` shows the picker's choices routed to provider `undocked-byok` (`model=gpt-6-astra
+… effort=max`), and its session events record `selectedModel: "undocked-byok/gpt-6-astra"` with
+`contextTier: "long_context"` or `"default"`, and `totalPremiumRequests: 0` at shutdown. So the switch is
+real, on Office's LLM API (`loki.delve.office.com`), not on the agent runtime. The proxy can't follow: its
+app registration (`M365ChatClient`, `c0ab8ce9-…`) gets `AADSTS65001` ("has not consented") for that
+audience, and using another app's sign-in or its tokens would sidestep that consent, which the proxy doesn't
+do. The Code app's script (`code.remote.js`) sends `context_tier` in `create_session` and
+`set_session_model`, and offers the tier for a model whose `supported_context_tiers`
+(`[{id: "default" | "long_context", maxContextWindowTokens}]`) gives `long_context` the bigger window.
+
+### F137 — the runtime's catalog changes, and now refuses what it doesn't list 🟢
+At 14:10 ET on Nov 19 `GET /v1/models` listed eight models; at 15:55 only `opus-5.5`, `opus-5.5-fast` and
+`sonnet-5.5` (the `anthropic` health bucket; `auto_health_buckets` was `["anthropic"]` both times), for
+Cowork and Code alike, and for every `x-cowork-host-type` tried (none, `officeweb:web`, `teams:web`,
+`copilotapp:desktop` and five more). From then `POST /v1/messages` refused every GPT model, with `:copilot` or without:
+400 `MODEL_NOT_IN_CATALOG`, "Model 'gpt-6.2-sol:copilot' is not a known catalog entry. Use a valid model
+id (e.g. 'opus-5.5')." Opus 5.5 was accepted. Whether GPT left for health or for good is open. The proxy
+now lists the runtime's models from the live catalog (kept 10 minutes; the built-in table when it can't
+be read) and answers a refused model with a 400 `model_not_found`.
+
+**Open — H48a:** GPT's one-turn limit on the runtime is above 2.0M characters (F133 never found it).
+**Probe:** when the catalog lists GPT again, a needle turn of 3.0M characters (~1.2M tokens) on GPT-6.2
+Sol (Cowork), then 4.0M; about 340 and 450 credits. On Nov 19 the 3.0M turn met F137's refusal instead.
+
+**Shipped:** `M365_BACKENDS` (default all three; `chat` keeps a proxy off the runtime)
+lists the Cowork and Code models as `<model>(<backend>)[_<window>][_credit]`, Chat's as well
+(`gpt-6.2-sol(chat)_272k`); a request may name `cowork` or `code` only when listed, and an ID without
+parentheses stays on Chat unless `M365_DEFAULT_BACKEND` names a backend that serves the model. Cowork and
+Code list what the catalog has (F137). On the runtime the proxy sends a history whole (no parts), passes
 `reasoning_effort`, skips Chat's throttle budget, tool agent and priority-access handling, reports the
-turn's credits as `usage.x_m365_credits`, and maps `engine.v2_refusal` on a prompt of 400k characters or
-more to a 400 `context_length_exceeded`. `core/src/backends.ts`, `core/src/aether.ts`.
+turn's credits as `usage.x_m365_credits`, maps `engine.v2_refusal` on a prompt of 400k characters or more
+to a 400 `context_length_exceeded`, and a model outside the catalog to a 400 `model_not_found`.
+`core/src/backends.ts`, `core/src/aether.ts`.
