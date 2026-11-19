@@ -6125,3 +6125,40 @@ this repo's own docs, which a project summary resembles, there is one new hit: a
 quoted in §27 ("I can't create or run scripts in this session").
 **Not measured:** how often the forcing retry then turns this give-up. It is the mid-task prompt, sent after
 a real call.
+
+## 44. Windows native broker and token protection (Nov 18 2026)
+
+**H44a (confirmed for the tested configuration):** Windows Web Account Manager (WAM) can authenticate this proxy's
+existing Microsoft client ID and Sydney scopes on a compliant Windows ARM64
+device where browser PKCE is refused with Entra error 530084. This tests a
+supported device-bound authentication flow, not a Conditional Access exception.
+
+**Prediction / falsification:** `PublicClientApplication.acquireTokenInteractive`
+with `NativeBrokerPlugin` returns a Sydney access token and
+`fromPlatformBroker: true`, followed by a successful silent acquisition. A broker
+redirect-registration error, policy refusal, or unsupported-client error falsifies
+this path for the tested configuration. A loaded native module alone is not success.
+
+**Probe:** isolated, git-ignored `local/wam-probe/probe.mjs`, with
+`@azure/msal-node@5.1.1` and `@azure/msal-node-extensions@5.6.2`. Use the existing
+client ID and scopes unchanged, pass a parent window handle to the Windows account
+picker, and never fall back to browser auth. The probe records only status/error
+metadata in `local/wam-probe/result.json`; it does not print or save access or
+refresh tokens. Native broker availability was confirmed on `win32 arm64`.
+
+**F119:** one native interactive sign-in followed by a confirmed silent
+acquisition returned a broker-managed Sydney bearer token with the existing
+client ID (`fromPlatformBroker: true`). WAM discovered two accounts, so the silent
+probe used a login hint rather than choosing an arbitrary account. The integrated
+Nitro proxy then authenticated without opening a browser and served one real
+`m365/gpt-6.1-sol` completion through copilot-api: the request asked for
+`wam-proxy-ready` and received that exact response. No tenant-policy settings were
+changed. This establishes token acquisition and a live chat turn on this
+configuration, not universal support for every Conditional Access policy.
+
+The optional native dependency needs `keytar`'s binary even on the packaged Windows
+path. Existing pnpm installs that skipped its build need `pnpm -r rebuild keytar`
+and a fresh Nitro build. The local native result and HTTP response contain no
+exported credentials. Usage and ownership of the broker cache are documented in
+[the authentication reference](m365-copilot-api.md#the-nativeclient-redirect-gotcha-this-one-cost-hours)
+and [setup](setup.md#windows-token-protection-policies-native-broker).

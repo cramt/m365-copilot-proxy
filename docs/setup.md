@@ -96,6 +96,30 @@ What the settings do:
 Check: `curl -s http://127.0.0.1:4143/v1/models` lists the models. Debug log:
 `~/.config/opencode-m365/debug.log`.
 
+### Windows token-protection policies: native broker
+
+A compliant device can still receive Entra error `530084` if browser authentication
+does not satisfy token protection. On Windows, try WAM instead, keeping the other
+proxy settings above:
+
+```powershell
+$env:M365_AUTH_MODE = 'wam'
+$env:M365_ENABLE_INTERACTIVE_APPROVAL = '1'
+node packages\proxy\bin\m365-proxy.mjs 4143
+```
+
+WAM uses the existing Microsoft client ID and Sydney scopes through the Windows
+account picker, without Playwright or a stored password. With multiple accounts,
+select the work account in the picker, or set `M365_LOGIN_HINT` to its sign-in
+name. The selection is saved in `~/.config/opencode-m365/wam-account.json`; tokens
+remain broker-managed. `M365_NO_INTERACTIVE=1` disables the picker as well as browser
+prompts. Browser authentication remains the default when `M365_AUTH_MODE` is unset.
+
+The optional `@azure/msal-node-extensions` dependency must be installed, including
+its native dependencies. If an existing installation skipped native builds, run
+`pnpm -r rebuild keytar` and rebuild the proxy. This mode does not change tenant
+policy; a native broker policy refusal still needs administrator review.
+
 ## 3. Start copilot-api with the proxy as a provider
 
 Create or edit `config.json` in copilot-api's home, `~/.local/share/copilot-api/` (on Windows
@@ -240,6 +264,7 @@ Each should create `hello.txt`. After a reboot, start the proxy, then copilot-ap
 | Symptom | Cause | Fix |
 |---|---|---|
 | Sign-in refused: the device or browser doesn't meet your organization's requirements | Conditional Access admits only compliant devices | Sign in on a device it admits (step 2, Conditional Access) |
+| Sign-in blocked with `530084` despite a compliant device | The authentication flow does not satisfy token protection | Try the native Windows broker (step 2); if it is also refused, ask IT to review the sign-in policy result |
 | Codex: "Reconnecting… waiting for network", then "error sending request" | Nothing answers on the thread's provider port: the proxy or copilot-api is down, or the thread started on a provider whose server isn't running | Start them; or open a new thread |
 | copilot-api 400 "function_call_output.call_id is required" | copilot-api before 2.9.7, with the Codex app adding its own context to the turn | Run 2.9.7 or later (step 3), then retry the turn |
 | copilot-api 400 "This model does not support the responses endpoint" | A model name without `m365/`, often one the app saved from another provider | Pick an `m365/…` model; keep only gateway models in the catalog |

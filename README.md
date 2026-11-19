@@ -614,7 +614,7 @@ next step — the core API it needs is already in place.
 
 ## Authentication
 
-The auth flow uses Azure MSAL with PKCE:
+The default auth flow uses Azure MSAL with PKCE:
 
 1. **Silent refresh** — cached tokens from `~/.config/opencode-m365/msal-cache.json`. The
    normal path; costs nothing and opens nothing.
@@ -635,6 +635,16 @@ Three token scopes are acquired:
 - `substrate.office.com/sydney/*` — For M365 Copilot chat
 - `api.powerplatform.com/.default` — For Copilot Studio agent management
 - `api.bap.microsoft.com/.default` — For environment discovery
+
+On Windows, `M365_AUTH_MODE=wam` opts into the native Windows authentication broker
+instead of browser PKCE. It uses the same client ID and scopes, with no browser or
+stored-password fallback. Set `M365_ENABLE_INTERACTIVE_APPROVAL=1` for the first
+Windows account-picker sign-in; subsequent acquisitions use the broker silently.
+With multiple accounts, `M365_LOGIN_HINT` selects one, or an interactive sign-in
+records the selection. Only the selected account ID is saved to
+`~/.config/opencode-m365/wam-account.json`; refresh tokens remain managed by WAM,
+not the proxy's JSON token cache. This is a supported authentication mechanism,
+not an exemption from your organization's Conditional Access policy.
 
 ## Environment variables
 
@@ -662,8 +672,11 @@ Three token scopes are acquired:
 | `M365_BUDGET_MAX_WAIT_MIN` | The longest `M365_AVOID_THROTTLING` holds a streamed request (default `15`, enough to refill an empty budget). A longer wait, usually a throttle hold, gets the 429 instead. A request that isn't streamed waits at most 2 minutes, since it sends nothing until the answer and clients give up on it after 5. Both limits count the time a request spends behind others waiting their turn. A larger value (e.g. `90`) lets a streamed request sit out a throttle hold instead of failing: pi has no time limit on a stream that keeps sending data. |
 | `M365_BUDGET_CAPACITY` / `M365_BUDGET_REFILL` / `M365_BUDGET_RESERVE` / `M365_BUDGET_HOLD_MIN` / `M365_BUDGET_LOGS` | Tune `M365_AVOID_THROTTLING`'s budget model: its size (default `100` turns), refill rate (`1.6` a minute), the reserve kept back (`20`), the hold after a throttled turn (`75` minutes), and more log files or directories to read (`:`-separated). |
 | `M365_BROWSER_PROFILE` / `M365_LOGIN_UA` | Override the persistent browser-profile dir and the login User-Agent used for the (rare) automated interactive login. The persistent profile keeps AAD SSO/device cookies so repeat logins are silent and look like a familiar device ([§11 H-R3](docs/hypotheses.md)). |
-| `M365_ENABLE_INTERACTIVE_APPROVAL` | Set to `1` to allow a **visible** browser window for sign-in when the automated login can't work or fails — the fallback for tenants with no TOTP option (push-only MFA, FIDO2, Okta/Ping/Duo). You complete SSO/MFA by hand once; tokens refresh silently afterwards. Off by default so headless hosts fail loudly rather than hang. See [If your tenant has no TOTP option](#if-your-tenant-has-no-totp-option). |
-| `M365_NO_INTERACTIVE` | Set to `1` to hard-disable any visible browser login, overriding the flag above. For systemd/CI hosts where a window must never open. |
+| `M365_AUTH_MODE` | Set to `wam` for native Windows broker authentication (optional `@azure/msal-node-extensions` dependency required). Unset, browser PKCE remains the default. WAM never falls back to browser auth. |
+| `M365_LOGIN_HINT` | In WAM mode, select a broker account by its sign-in name; otherwise the saved selection or a single available account is used. Multiple accounts without a selection require the interactive account picker. |
+| `M365_WAM_WINDOW_HANDLE` | Optional positive decimal native parent-window handle for the Windows account picker. Used only when WAM interaction is enabled. |
+| `M365_ENABLE_INTERACTIVE_APPROVAL` | Set to `1` to allow a **visible** browser window for sign-in when the automated login can't work or fails — the fallback for tenants with no TOTP option (push-only MFA, FIDO2, Okta/Ping/Duo). In WAM mode, allows the native Windows account picker instead. You complete SSO/MFA by hand once; tokens refresh silently afterwards. Off by default so headless hosts fail loudly rather than hang. See [If your tenant has no TOTP option](#if-your-tenant-has-no-totp-option). |
+| `M365_NO_INTERACTIVE` | Set to `1` to hard-disable any visible browser login or WAM account picker, overriding the flag above. For systemd/CI hosts where a window must never open. |
 | `M365_INTERACTIVE_TIMEOUT_MS` | How long to wait for you to finish the interactive sign-in (default `600000`, i.e. 10 minutes). |
 | `M365_LOGIN_LOCALE` / `M365_LOGIN_TIMEZONE` | Browser locale and timezone presented during login (defaults `en-GB` / `Europe/Copenhagen`). These are part of the anti-bot-scoring fingerprint ([§11 F25](docs/hypotheses.md)) — set them to match your own machine if AAD starts treating your automated login as a bot. |
 | `M365_FORCE_AGENT` | Override which tool requests carry the Copilot Studio tool agent. `1` attaches it to every tool request (and turns off the GPT-6 Sol fallback below); `0` never attaches it. Unset, the proxy decides per model: GPT-5.x, `m365-copilot` and both Opus models take it, the other Claude models and `gpt-6-think-deeper` don't, and `gpt-6-sol` / `gpt-6.1-sol` take it only on a premium account, which the proxy learns from the first request. On a non-premium account `0` saves the probe turn (~3 s) per GPT-6 Sol model per proxy start. |
