@@ -1004,6 +1004,12 @@ export async function handleChatCompletion(
       // Any retry re-sends the same prompt, so fail fast and say what to cut.
       if (copilotStream.result?.value === "InvalidRequest") {
         noteOutcome(false, convId);
+        // The agent runtime keeps a refused message in the conversation, where it
+        // would refuse the client's compacted retry too: start afresh.
+        if (!chat) {
+          session.newConversation();
+          conv.sentMessageCount = 0;
+        }
         log.info(`Upstream InvalidRequest (${copilotStream.result.errorCode ?? "no errorCode"}), prompt ${text.length} chars — 400, no retry`);
         return { error: invalidRequestResponse(copilotStream.result, model, text.length) };
       }

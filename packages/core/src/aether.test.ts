@@ -140,10 +140,17 @@ describe("AetherSession", () => {
     expect(stream.credits).toBe(2.51);
   });
 
-  it("deletes a conversation it leaves, unless M365_SAVE_HISTORY=1", async () => {
-    const { calls, fetchImpl } = fakeRuntime([answered(["a"]), answered(["b"])]);
+  it("deletes a conversation it leaves, after a while, unless M365_SAVE_HISTORY=1", async () => {
+    const { calls, fetchImpl } = fakeRuntime([answered(["a"]), answered(["b"]), answered(["c"])]);
     vi.stubGlobal("fetch", fetchImpl);
-    const session = new AetherSession({ mode: "code", getToken: async () => token });
+    // By default the delete waits: another request may still be reading a run there.
+    const patient = new AetherSession({ mode: "cowork", getToken: async () => token });
+    await drain(await patient.run("zero"));
+    patient.newConversation();
+    await new Promise((r) => setTimeout(r, 20));
+    expect(calls.filter((c) => c.method === "DELETE")).toHaveLength(0);
+
+    const session = new AetherSession({ mode: "code", getToken: async () => token, discardDelayMs: 0 });
     session.newConversation(); // never used: nothing to delete
     await drain(await session.run("one"));
     const first = session.conversationId;
@@ -159,6 +166,35 @@ describe("AetherSession", () => {
     } finally {
       delete process.env.M365_SAVE_HISTORY;
     }
+  });
+
+  it("keeps subscribing while each subscription brings something new", async () => {
+    let events: string[] = [];
+    // The stream closes after every second event: five subscriptions, more than a limit on all of them would allow.
+    const { calls, fetchImpl } = fakeRuntime(Array.from({ length: 5 }, (_, i) => (mid: string) => {
+      if (i === 0) events = answered(["a", "b", "c"])(mid).slice(3); // from `rl started` on: 9 events
+      return events.slice(0, 2 * (i + 1));
+    }));
+    vi.stubGlobal("fetch", fetchImpl);
+    const session = new AetherSession({ mode: "cowork", getToken: async () => token });
+    const stream = await session.run("hi");
+    expect(await drain(stream)).toEqual(["a", "b", "c"]);
+    expect(stream.result).toEqual({ value: "Success" });
+    expect(calls.filter((c) => c.url.endsWith("/v1/subscribe"))).toHaveLength(5);
+  }, 15_000);
+
+  it("stops when the request is aborted while it waits to subscribe again", async () => {
+    const ac = new AbortController();
+    const { calls, fetchImpl } = fakeRuntime([(mid) => {
+      setTimeout(() => ac.abort(), 100); // during the wait after this stream closes
+      return answered(["a"])(mid).slice(0, 5);
+    }]);
+    vi.stubGlobal("fetch", fetchImpl);
+    const session = new AetherSession({ mode: "cowork", getToken: async () => token });
+    const stream = await session.run("hi", "gpt-6.2-sol", ac.signal);
+    expect(await drain(stream)).toEqual(["a"]);
+    expect(stream.result).toBeNull();
+    expect(calls.filter((c) => c.url.endsWith("/v1/subscribe"))).toHaveLength(1);
   });
 
   it("subscribes again when the stream ends before the run, without repeating what it read", async () => {

@@ -37,8 +37,11 @@ const STOP_GRACE_MS = 5_000;
 const COST_GRACE_MS = 1_500;
 /** The longest a turn may run. */
 const TURN_MS = 30 * 60_000;
-/** Re-subscriptions to a stream that closed before its run ended. */
+/** Re-subscriptions in a row, each bringing nothing new, before a stream counts as gone. */
 const MAX_RESUBSCRIBES = 3;
+/** How long a conversation the proxy left is kept before it's deleted: a request still reading a run
+ *  in it (the pool moved on under it) finishes first. */
+const DISCARD_DELAY_MS = 5 * 60_000;
 /** Reasoning efforts the runtime's models take (`supported_effort_levels`). */
 const EFFORTS = new Set(["low", "medium", "high", "xhigh", "max"]);
 
@@ -48,6 +51,8 @@ export interface AetherSessionOptions {
   mode: RuntimeMode;
   /** A token for AETHER_SCOPE. Defaults to getTokenForScope. */
   getToken?: () => Promise<string>;
+  /** How long a conversation the proxy left waits before it's deleted (default 5 min). */
+  discardDelayMs?: number;
 }
 
 interface TokenIds {
@@ -248,14 +253,20 @@ class RuntimeTurn implements CopilotStream {
     let runCostSeen = false;
     let costDeadline = 0;
     let lastSeq = -1;
+    // Subscriptions in a row that brought nothing new; one that did resets it.
+    let fruitless = 0;
     const settled = () => this.done && (runCostSeen || Date.now() >= costDeadline);
     for (let attempt = 0; !settled() && !signal?.aborted; attempt++) {
       if (this.done) break; // the run ended; its charge is the only thing still awaited
-      if (attempt > MAX_RESUBSCRIBES || Date.now() > deadline) {
+      if (fruitless > MAX_RESUBSCRIBES || Date.now() > deadline) {
         this.finish({ st: "fail", code: "stream_closed", err: "The agent runtime's event stream ended before the run did." });
         break;
       }
-      if (attempt > 0) await new Promise((r) => setTimeout(r, 1_000));
+      if (attempt > 0) {
+        await new Promise((r) => setTimeout(r, 1_000));
+        if (signal?.aborted) break;
+      }
+      const seqBefore = lastSeq;
       const ac = new AbortController();
       const onAbort = () => ac.abort();
       signal?.addEventListener("abort", onAbort, { once: true });
@@ -334,6 +345,7 @@ class RuntimeTurn implements CopilotStream {
         if (stopSeen) this.finish({ st: this.hasContent ? "ok" : "fail", code: "no_run_end" });
         else this.finish({ st: "fail", code: "stream_idle", err: `No event from the agent runtime for ${IDLE_MS / 1000} s.` });
       }
+      fruitless = lastSeq > seqBefore ? 0 : fruitless + 1;
     }
     if (this.agentToolCalls > 0) log.info(`The runtime's agent made ${this.agentToolCalls} tool call(s) of its own this turn`);
   }
@@ -350,10 +362,12 @@ export class AetherSession implements TurnSession {
   private session: string;
   private turns = 0;
   private prewarmed = false;
+  private readonly discardDelayMs: number;
 
   constructor(options: AetherSessionOptions) {
     this.mode = options.mode;
     this.resolveToken = options.getToken ?? defaultToken;
+    this.discardDelayMs = options.discardDelayMs ?? DISCARD_DELAY_MS;
     this.session = this.freshSession();
   }
 
@@ -393,11 +407,13 @@ export class AetherSession implements TurnSession {
    * Delete a conversation the proxy is done with (the web app's `tasks.delete`),
    * so its tasks don't pile up in the user's Cowork / Code sidebar: the runtime
    * has no temporary mode, as Chat has. M365_SAVE_HISTORY=1 keeps them. Deleting
-   * also ends a run still going in it. Fire and forget.
+   * ends a run still going in it, so it waits a while (discardDelayMs): another
+   * request may still be reading one. Fire and forget; a process that exits
+   * first leaves the conversation.
    */
   private discard(session: string): void {
     if (process.env.M365_SAVE_HISTORY === "1") return;
-    void (async () => {
+    const remove = () => void (async () => {
       const token = await this.resolveToken();
       const ids = tokenIds(token);
       const base = await runtimeEndpoint(token, ids);
@@ -414,6 +430,8 @@ export class AetherSession implements TurnSession {
       });
       if (!res.ok && res.status !== 404) log.info(`Deleting agent runtime conversation ${session}: HTTP ${res.status}`);
     })().catch((err) => log.info(`Deleting agent runtime conversation ${session} failed: ${err?.message ?? err}`));
+    if (this.discardDelayMs <= 0) return remove();
+    setTimeout(remove, this.discardDelayMs).unref?.();
   }
 
   async refreshAgent(): Promise<boolean> {

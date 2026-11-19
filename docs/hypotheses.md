@@ -6480,7 +6480,7 @@ doesn't count in these credits, or lags: about 500 credits of probes moved `cons
 detail is `404 task_not_found` and it leaves the sidebar (13 probe tasks deleted so). The client's scripts
 have no stop or cancel call (`/v1/` paths: conversations, files, models, routing, settings, skills,
 subscribe, suggestions, tasks, …), so closing the stream leaves a run going and a queued message waits for
-it. The proxy deletes the conversations it leaves (unless `M365_SAVE_HISTORY=1`), so its tasks don't pile up
+it. The proxy deletes the conversations it leaves, five minutes on so that a request still reading a run there finishes, unless `M365_SAVE_HISTORY=1`, so its tasks don't pile up
 in the user's Cowork and Code lists.
 
 ### F136 — the "Long context" switch isn't on this account's runtime 🟡

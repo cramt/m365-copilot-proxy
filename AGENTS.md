@@ -321,7 +321,7 @@ pnpm test:live      # M365_LIVE=1; live tests that hit real M365 (uses quota)
   are charged to the user's Copilot credits, hundreds for a 2M-character turn, so don't sweep them. The
   handler skips Chat's machinery there: turn budget, degradation backoff, tool agent, priority access, the
   Bing fallback, parts (`turnLimit` 0) and the 12k output ceiling. The runtime keeps the history; a turn
-  ends at `rl ok`/`fail`, and the proxy deletes conversations it leaves. Windows in the IDs are one needle
+  ends at `rl ok`/`fail`, and the proxy deletes conversations it leaves (five minutes on). Windows in the IDs are one needle
   turn each (hypotheses §48).
 - **A tool turn is stopped once the model's own `<tool_response>` after a call runs past 2,000 chars**
   (#65, `runBuffered` in `handler.ts`): waiting for M365 to finish let invented continuations run for

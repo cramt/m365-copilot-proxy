@@ -261,7 +261,7 @@ the Copilot history sidebar while multi-turn context still works for the live
 conversation. Set `M365_SAVE_HISTORY=1` before starting the proxy only if you
 deliberately want proxy chats saved in Copilot history. The Cowork and Code
 backends have no temporary mode: their conversations show as tasks while in use,
-and the proxy deletes the ones it leaves unless `M365_SAVE_HISTORY=1`.
+and the proxy deletes the ones it leaves, five minutes on, unless `M365_SAVE_HISTORY=1`.
 
 ### 5a. Use with Claude Code or Codex
 
@@ -604,7 +604,7 @@ GPT-6.2 Sol (and Fast), GPT-6.2 Astra, Opus 5.5 (and Fast) and Sonnet 5.5.
 - On the runtime the proxy sends a long history whole, passes `reasoning_effort`, skips Chat's tool
   agent and throttle budget, and reports the turn's credits as `usage.x_m365_credits`.
 - The runtime lists each conversation as a task in your Cowork or Code sidebar while the proxy uses it;
-  the proxy deletes the ones it leaves (unless `M365_SAVE_HISTORY=1`).
+  the proxy deletes the ones it leaves five minutes later (unless `M365_SAVE_HISTORY=1`).
 - Closing a request doesn't stop a run there (the runtime has no stop call the proxy could find), and
   images and files aren't passed on yet.
 

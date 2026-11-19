@@ -2032,6 +2032,16 @@ describe("the agent runtime backends: Cowork and Code (§48)", () => {
     expect(runtimeRuns[0].text).not.toContain("<system>");
   });
 
+  it("starts afresh after the runtime refuses a prompt as too long: the conversation keeps the refused message", async () => {
+    process.env.M365_BACKENDS = "cowork";
+    scripted.queue = [{ fullText: "", result: { value: "InvalidRequest", errorCode: "InputTokenLimitExceeded" } }];
+    const fresh = scripted.newConversations;
+    const res = await ask("claude-sonnet-5.5(cowork)");
+    expect(res.status).toBe(400);
+    expect((await res.json()).error.code).toBe("context_length_exceeded");
+    expect(scripted.newConversations).toBe(fresh + 1);
+  });
+
   it("keeps Chat on Chat, suffixes and all", async () => {
     process.env.M365_BACKENDS = "chat,cowork";
     scripted.queue = [{ fullText: "pong" }];
