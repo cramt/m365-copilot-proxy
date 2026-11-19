@@ -185,7 +185,8 @@ settings ([hypotheses §41](hypotheses.md)):
   name, such as `m365/gpt-6.1-sol`, also carries that model's window (272,000), not the route's.
   `node scripts/codex-catalog.mjs --all --out=~/.codex/m365-models.json` asks for the full catalog,
   keeps the models `/v1/models` advertises, and windows each by the gateway's advertised window.
-  Alternatively, pass explicit model IDs for a smaller picker. The script sets `context_window` and
+  Use explicit `MODEL[=WINDOW]` arguments for a smaller picker or
+  [per-model context overrides](setup.md#long-context-catalog). The script sets `context_window` and
   `max_context_window`; point a top-level `model_catalog_json` at the output file. A top-level catalog
   applies to every provider and overrides both discovery and `model_catalog_url` (F114).
 - **One provider for every model.** The app saves the model you last picked as `model` in

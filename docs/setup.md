@@ -227,6 +227,40 @@ app's account menu; the CLI ran with this file and no ChatGPT login. Things to k
   included ("blocked by policy", even `echo`), so the tested runs used
   `--dangerously-bypass-approvals-and-sandbox`. On macOS and Linux use `-s workspace-write`.
 
+### Long-context catalog
+
+The default catalog configures a 1,000,000-token window. For the long-context setup, use 1,050,000
+tokens for [GPT-6 Astra](https://developers.openai.com/api/docs/models/gpt-6-astra),
+[GPT-6 Sol](https://developers.openai.com/api/docs/models/gpt-6-sol),
+[GPT-6.1 Sol](https://developers.openai.com/api/docs/models/gpt-6.1-sol),
+[GPT-6.2 Astra](https://developers.openai.com/api/docs/models/gpt-6.2-astra), and
+[GPT-6.2 Sol](https://developers.openai.com/api/docs/models/gpt-6.2-sol), based on their published
+OpenAI API context windows. Keep 1,000,000 as the catalog fallback for the other M365 models.
+
+From the repo root in PowerShell, with the gateway running, discover every M365 model and pass
+`MODEL=WINDOW` for the five overrides. Use this instead of `--all` when refreshing the catalog so
+the overrides are preserved:
+
+```powershell
+$longContext = @(
+  'm365/gpt-6-astra',
+  'm365/gpt-6-sol',
+  'm365/gpt-6.1-sol',
+  'm365/gpt-6.2-astra',
+  'm365/gpt-6.2-sol'
+)
+$ids = (Invoke-RestMethod -Uri 'http://127.0.0.1:4141/v1/models' -ErrorAction Stop).data.id
+$entries = foreach ($id in $ids) {
+  if ($id -notlike 'm365/*') { continue }
+  if ($id -in $longContext) { "${id}=1050000" } else { $id }
+}
+node scripts\codex-catalog.mjs --window=1000000 "--out=$HOME\.codex\m365-models.json" @entries
+```
+
+The script sets both `context_window` and `max_context_window`. Fully quit and reopen the Codex app
+to load the updated catalog. These values set Codex's context budget; they do not raise or measure
+the input limits enforced by M365 Copilot.
+
 ## 5. Claude Code
 
 `m365-claude.json`:
