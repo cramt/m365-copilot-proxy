@@ -34,7 +34,8 @@ async function run(args, { data = [], models = catalog, rawDiscovery } = {}) {
   }
 }
 
-describe("codex-catalog", () => {
+// Each case runs the script as a child process, several in a row: slow under a full parallel run.
+describe("codex-catalog", { timeout: 30_000 }, () => {
   it("--all lists the advertised models the uncapped Codex catalog offers, with the gateway's windows", async () => {
     const data = [
       { id: gpt.slug, context_window: 1000000 },
