@@ -103,9 +103,21 @@ than "we eyeballed one run." See §M (Methods) for the experimental rig.
   upload (F97, shipped in `file-upload.ts`)
 - §43 — a give-up no detector caught, "I can't generate files in the current session": two first-person
   English patterns catch it and nothing else in 334 replies with no tool call (F118)
-- §44 — dropped tool calls: eight fence shapes the scanner dropped or changed, and a ninth in real replies
+- §45 — GPT-6.2 Sol, GPT-6.2 Astra, GPT-6 Astra and Claude Fable: the picker sends only the tone (F120);
+  all four serve on both transports, GPT-6 Astra gated like GPT-6 (F121); credits, and `Claude_Fable` is
+  Fable now (F122); harness runs and what shipped (F123); whether included `gpt-6.2-*` turns spend the
+  `GPT62*` budgets (H45a, open)
+- §46 — M365 answers an opening prompt of about 500k characters but doesn't keep it, so the turn after a
+  long replay has no context (F125); it keeps a conversation for at least 21 h, while the pool evicted
+  one after 30 min, forcing that replay (F126); the fix: a 24-h pool, a lost history caught and re-sent,
+  a history past the limit replayed whole (F127); the limit's unit (H46a, open)
+- §47 — how much context each model gets: in one turn GPT-6.x about 270k tokens, Claude 2M characters or
+  more (F128); M365 doesn't keep a long turn on Claude either (F129); over a conversation Claude keeps
+  about 1.6M characters verbatim and GPT-6.x summarizes past its window (F130); long turns in parts,
+  failed turns, estimated usage (F131); a longer window for GPT-6.x (H47a, open)
+- §48 — dropped tool calls: eight fence shapes the scanner dropped or changed, and a ninth in real replies
   (a closer with the next sentence glued on: 3 dropped calls in 1,153); CommonMark fences, and asking
-  again for a call that still can't be read (F119)
+  again for a call that still can't be read (F132)
 
 ---
 
@@ -227,6 +239,10 @@ that opens it; program membership is not a string we can send.
 lies about which model answers — worse than not offering it. It lives in `scripts/tone-probe.mjs`
 only, probed on both scenarios so the day it starts self-identifying as Fable is visible in a
 routine sweep. **Falsify by:** a probe where `Claude_Fable` self-IDs as Fable — then map it.
+
+**Resolved 2026-11-18 (§45 F122): mapped as `claude-fable`.** Over StreamHub on 2026-11-11 it self-IDed as
+"Claude Fable 5.1"; on 2026-11-18 it reported a June 2026 training cutoff on both transports (GPT-5.5: June
+2024), and its StreamHub turns were charged to Copilot credits.
 
 ## 11. July 7 2026 — flying under Microsoft's radar (auto-reauth detection science run)
 
@@ -6002,7 +6018,7 @@ Nov 11, F109's setup.
 ## 41. Nov 16 2026 — the Codex app: account, catalog, context windows
 
 The Codex app (Desktop, its Codex engine 0.169) on §40's setup, with a second Codex provider for an Azure
-OpenAI router next to the gateway. Three things the CLI runs hadn't shown, and what the proxy's StreamHub
+OpenAI router next to the gateway. Four things the CLI runs hadn't shown, and what the proxy's StreamHub
 turns say about metering. Setup notes: claude-code-codex.md, step 5.
 
 ### F113 — the app shows your ChatGPT account only when the provider requires OpenAI auth 🟢
@@ -6053,6 +6069,20 @@ access), and GPT-6.1 Sol spends a budget of its own there. So either `officeweb`
 models or StreamHub doesn't report it. The web client's picker also marks some models as using Copilot
 credits, and their turns show nothing either. The proxy talks only to Copilot Chat (Chathub or
 StreamHub); Cowork and Code are F110's agent runtime, which it doesn't call.
+
+### F124 — the app adds context of its own as tool outputs without a call 🟢
+From Nov 16 the app put two `function_call_output` items at the start of some turns,
+`agent.codex_apps_open_page` and `agent.codex_apps_selected_page_part_1_of_1` ("Companion Page
+snapshot"), each with a `namespace` and a `name` but no `call_id`, and no tool call before them. Azure's
+Responses API took them: the turn that first carried them ran two hours on the router. copilot-api
+2.6.23's Messages translation requires a `call_id` on every tool output, so the two M365 turns that
+carried them failed in 1–4 s with 400 "function_call_output.call_id is required", in the original
+thread and in a fork of it. A request with just those two items failed the same way on 2.6.23 and was
+answered on 2.9.12, which sends such items as user text (`<namespace>.<name>:` and the output;
+copilot-api #500, in 2.9.7 and later). The public npm registry has had 2.9.12 since Nov 16, but the test
+PC's npm goes through a company mirror that still served 2.9.3 as `latest` and had no 2.9.7 or later, so
+the gateway now runs a source build of v2.9.12. On it Codex passed on `gpt-6.1-sol` and through
+`modelMappings` to the second provider, and Claude Code on `claude-sonnet-5`.
 
 ### Open (Nov 16)
 - **H41a** — StreamHub meters these turns as Chathub does but doesn't report it. **Falsify:** an Opus
@@ -6115,16 +6145,294 @@ quoted in §27 ("I can't create or run scripts in this session").
 **Not measured:** how often the forcing retry then turns this give-up. It is the mid-task prompt, sent after
 a real call.
 
+## 44. Windows native broker and token protection (Nov 18 2026)
+
+**H44a (confirmed for the tested configuration):** Windows Web Account Manager (WAM) can authenticate this proxy's
+existing Microsoft client ID and Sydney scopes on a compliant Windows ARM64
+device where browser PKCE is refused with Entra error 530084. This tests a
+supported device-bound authentication flow, not a Conditional Access exception.
+
+**Prediction / falsification:** `PublicClientApplication.acquireTokenInteractive`
+with `NativeBrokerPlugin` returns a Sydney access token and
+`fromPlatformBroker: true`, followed by a successful silent acquisition. A broker
+redirect-registration error, policy refusal, or unsupported-client error falsifies
+this path for the tested configuration. A loaded native module alone is not success.
+
+**Probe:** isolated, git-ignored `local/wam-probe/probe.mjs`, with
+`@azure/msal-node@5.1.1` and `@azure/msal-node-extensions@5.6.2`. Use the existing
+client ID and scopes unchanged, pass a parent window handle to the Windows account
+picker, and never fall back to browser auth. The probe records only status/error
+metadata in `local/wam-probe/result.json`; it does not print or save access or
+refresh tokens. Native broker availability was confirmed on `win32 arm64`.
+
+**F119:** one native interactive sign-in followed by a confirmed silent
+acquisition returned a broker-managed Sydney bearer token with the existing
+client ID (`fromPlatformBroker: true`). WAM discovered two accounts, so the silent
+probe used a login hint rather than choosing an arbitrary account. The integrated
+Nitro proxy then authenticated without opening a browser and served one real
+`m365/gpt-6.1-sol` completion through copilot-api: the request asked for
+`wam-proxy-ready` and received that exact response. No tenant-policy settings were
+changed. This establishes token acquisition and a live chat turn on this
+configuration, not universal support for every Conditional Access policy.
+
+The optional native dependency needs `keytar`'s binary even on the packaged Windows
+path. Existing pnpm installs that skipped its build need `pnpm -r rebuild keytar`
+and a fresh Nitro build. The local native result and HTTP response contain no
+exported credentials. Usage and ownership of the broker cache are documented in
+[the authentication reference](m365-copilot-api.md#the-nativeclient-redirect-gotcha-this-one-cost-hours)
+and [setup](setup.md#windows-token-protection-policies-native-broker).
+
+## 45. Nov 18 2026 — GPT-6.2 Sol, GPT-6.2 Astra, GPT-6 Astra and Claude Fable
+
+**Question.** Microsoft added GPT-6.2 Sol, GPT-6.2 Astra and Claude Fable 5.2 to Copilot in the week to Nov 17
+("What's new in Copilot Cowork at Ignite 2026"), after announcing GPT-6 Astra and Claude Fable 5.1 as
+credit-billed models for Chat (MC1519122). Which tones are they, where do they serve, and can the proxy offer
+them? One premium account, as in §39–§41; one probe per cell (n=1) unless noted.
+
+### F120 — the picker sends the tone and nothing else; Fable sends nothing 🟢
+The Chat picker, Nov 17–18: GPT-5.6 Sol (Quick response, Think deeper), GPT-6, GPT-6.1 Sol, GPT-6.2 Sol and
+GPT-6.2 Astra ("Uses credits") under GPT; Sonnet 5.5, Opus 5.5 and Fable 5.1 ("Uses credits") under Claude.
+GPT-6 Astra is gone. With the send blocked (Playwright), picking GPT-6.2 Sol sent `tone:
+Gpt_62_Sol_Reasoning` and GPT-6.2 Astra `Gpt_62_Astra_Reasoning`; no other field named a model. Picking
+Fable 5.1 sent no `tone` at all (twice): the request was the GPT ones minus the tone, and the JS loaded on
+the page has no `Claude_Fable`, so the client's Fable route couldn't be captured. The client no longer
+opens StreamHub itself: after a `warmup` frame, a turn goes up a same-origin socket,
+`wss://copilot.cloud.microsoft/conversation/session/ws`, as `{type: "chatRequest", transportHint:
+"streamhub", body: {type: "chat_request", chatStreamRequest}}`, and the reply comes back on it. The
+proxy's direct StreamHub connection still works.
+
+### F121 — all four serve on both transports; GPT-6 Astra is gated 🟢
+Chathub cells with `_probe-chat.mjs` (agent-less, no Bing, "Reply with the single word: pong"); StreamHub
+cells with a one-turn StreamHub probe on the proxy's token, and through the proxy (§40):
+
+| tone | Chathub, included | Chathub, paid | Chathub, `officeweb` | StreamHub, `officeweb` |
+|---|---|---|---|---|
+| `Gpt_62_Sol_Reasoning` | answers | – | answers | answers |
+| `Gpt_62_Astra_Reasoning` | answers | – | answers | answers |
+| `Gpt_6_Astra_Reasoning` | BotConnection apology | answers | answers | answers |
+| `Claude_Fable` | answers | answers | answers | answers |
+
+Controls: `Gpt_61_Sol_Reasoning` answered on Chathub `officeweb`; `Gpt_99_Bogus_Reasoning` failed with
+"Failed to invoke 'Chat'" on Chathub and an `InvalidNote` error item on StreamHub, as did
+`Gpt_61_Astra_Reasoning`, `Gpt_62_Luna_Reasoning` and `Gpt_63_Astra_Reasoning` on StreamHub, so the
+validator knows these tones by name. The paid scenario's `metering` now carries `GPT62SolQuery*` and
+`GPT62AstraQuery*` (daily, weekly, and `…Word` variants), the same kind of budget as `GPT61SolQuery*` (§27
+F67). So the two GPT-6.2 tones route on the included scenario, like GPT-6.1 Sol, and
+`Gpt_6_Astra_Reasoning` joins `PAID_SCENARIO_TONES`, like `Gpt_6_Reasoning`.
+
+### F122 — credits, and how to tell the models apart 🟡
+StreamHub reports a `billing_info` item (`serviceMeterName: "PremiumModelsInM365Chat"`, `status:
+"creditInUse"`) on each `Gpt_62_Astra_Reasoning` and `Claude_Fable` turn (2 and 1) and none on the
+`Gpt_62_Sol_Reasoning` one: the picker's "Uses credits" split. Chathub sends no billing frames.
+Self-ID no longer separates them. Asked which model it is, the web client itself, with GPT-6.2 Astra
+picked, consulted a built-in `copilot-backstory` skill and answered "I'm Microsoft Copilot, powered by
+the GPT-6 reasoning model", the answer the proxy got on `Gpt_6_Astra_Reasoning` and
+`Gpt_62_Astra_Reasoning`. `Claude_Fable`, which answered "Claude Fable 5.1" over StreamHub on Nov 11 (the
+probe behind §40 F106), now declines to name a model on every route. The training cutoff still separates
+families: asked for it without naming itself, `Claude_Fable` said June 2026 on Chathub and on StreamHub,
+`Gpt_5_5_Chat` June 2024. That retires §10's reading (`Claude_Fable` answering as GPT-5). Opus 5.5 also
+reports 2026-06, which the cutoff can't rule out, but the picker doesn't mark Opus as using credits.
+
+### F123 — harness runs 🟢 (n=3 per arm, Nov 11)
+The setup of §40 F109 (`harness-check.mjs`, `M365_HARNESS_PROMPT=lean`, `M365_TRANSPORT=streamhub`,
+agent-less, `relay_batch`, no code interpreter or image generation), on the models F109 couldn't name then:
+
+| harness | model | solved | M365 turns per run |
+|---|---|---|---|
+| Codex | `gpt-6.2-sol` | 3/3 | 2.3 |
+| Claude Code | `claude-fable` | 3/3 | 2.3 |
+| Codex | `claude-fable` | 3/3 | 3.3 |
+
+On Nov 17, Codex (`codex exec`) on `gpt-6.2-astra` over StreamHub wrote a file and checked it in 22 s (1/1).
+
+**Shipped:** `gpt-6.2-sol`, `gpt-6.2-astra`, `gpt-6-astra` (paid scenario) and `claude-fable` /
+`claude-fable-5.1` in `MODEL_TONES`, any other `fable` string routed to `Claude_Fable` rather than to Sonnet,
+and `relay_batch` as the four tones' default framing: unbenched, chosen because every GPT-6.x sibling
+benched best on it and F123 ran on it. The agent route is unprobed (`agent-tone-probe.mjs` wants both kinds
+of account), so the GPT tones keep the default, the agent first with the dead-route fallback, and
+`Claude_Fable` goes agent-less like every Claude tone but Opus. No transport default changes: all four serve
+on Chathub. `proxy-verify.mjs --tools --multiturn` (agent off) passed on each: a tool call, then the result
+used on the next turn, over Chathub for `claude-fable`, `gpt-6.2-sol`, `gpt-6.2-astra` and `gpt-6-astra`
+(paid scenario), and over StreamHub for `gpt-6.2-astra`.
+
+**Open — H45a:** does an included-scenario `gpt-6.2-*` turn spend the `GPT62*Query*` budgets? **Probe:**
+read the paid scenario's `metering` before and after a few included turns, as §27 did for GPT-6.1 Sol.
+
+## 46. Nov 18 2026 — M365 doesn't keep a very long opening prompt; the pool's 30-minute eviction made it bite
+
+**Question.** In Codex, the model forgot a long thread one turn after it was resumed: it answered the
+first message in context, then asked for "the example" it had just discussed ("I don't see the setup
+here"). Why?
+
+### F125 — M365 answers an opening prompt of about 500k characters but doesn't keep it 🟢
+The proxy log of that thread: the pool had evicted its conversation after 30 minutes idle, so the next
+request replayed the whole Codex history (124 messages) into a fresh M365 conversation (`mode=full`),
+and the answer used it. The request after that went to the same conversation as a delta, and its
+`throttling` read `numUserMessagesInConversation: 1`: M365 counted it as the conversation's first
+message, and the model answered with no context. The same happened on Nov 17 with the thread's
+98-message replay on `gpt-6-astra`, while its 89-message replay two hours earlier was kept. Of 116
+StreamHub follow-up turns in the log, these two (and one from §40's development) are the only ones
+whose count fell behind the proxy's.
+
+Sweep, two turns per size: an opening of filler lines with a code word at the top, then "what was the
+code word?"; `gpt-6.2-sol` over StreamHub, one conversation per size:
+
+| opening (chars) | turn 2 count | code word recalled |
+|---|---|---|
+| 40k, 70k, 100k, 140k, 200k, 260k, 330k, 420k | 2 | yes, each |
+| 540k | 1 | no: "No code word was provided." |
+
+250k characters of token-dense random words were kept too. The 540k loss repeated 3 more times: once
+through the fixed proxy (F127) and twice with a one-turn StreamHub probe, which also read the backend
+from each upgrade's `x-calculatedbetarget`. Every turn landed on the same backend, and sending
+`X-RoutingParameter-SessionKey: <ConversationId>` (§32 F85's fix for Chathub) changed nothing: it is not
+a fork. The opening turn itself looks normal: `request_end` `Success`, one topic, no search,
+`numLongDocSummaryUserMessagesInConversation` 0. The thread's replay, rebuilt from Codex's session files
+(its last compaction and everything after it) and formatted with `formatMessages`, came to ~567k
+characters; the rebuild has 172 messages to the proxy's 124, so that overcounts. The proxy now logs each
+full prompt's size (`chars=`).
+
+### F126 — M365 keeps a conversation for at least 21 hours 🟢
+A temporary-chat conversation idle for 21 h, continued with its `sessionId` and `ConversationId` from a
+new `CopilotSession`, recalled what an earlier turn said (count 6, n=1); one idle 18 minutes did too.
+The pool evicted after 30 minutes, so a thread resumed after a break was replayed whole, every time.
+
+### F127 — what the proxy does now 🟢
+- Idle conversations stay in the pool for 24 h (`M365_CONVERSATION_TTL_HOURS`), at most 1,000 at a
+  time, the least recently used going first.
+- A follow-up turn whose count is 1 has lost its history. The proxy stops it, before any of it reaches
+  the client on StreamHub, where the count arrives ahead of the reply. Then it re-sends the whole request
+  in a fresh conversation, once per request, with a forcing retry's instruction after the history. If a
+  streamed reply went out before the count arrived, the next request replays instead. A turn that
+  itself carries the whole history needs no memory, so its count is never read as a loss.
+- An answered opening of 200k characters or more that is then lost sets a limit for that model for 24 h
+  (the pool TTL): a conversation opened with a prompt at least that long is replayed whole on every
+  request rather than continued. Each of those requests starts a conversation, which the thread throttle
+  counts; compacting the client's history (`/compact` in Codex) brings the deltas back.
+
+Live, through the fixed proxy: a 540k opening then two follow-ups. The first came back with count 1; it
+was stopped and re-sent, and the code word was recalled. The second was replayed whole from the start,
+and the code word was recalled again. A 2k opening went on with deltas (counts 1, 2, 3), nothing re-sent.
+
+**Open — H46a:** what the limit counts (characters, UTF-8 bytes or tokens) and where between 420k and
+540k it falls. **Probe:** the F125 sweep with multi-byte and backslash-dense openings, and sizes between
+420k and 540k.
+
+**Not done:** Codex never compacts on these models. The proxy reports no token usage and the Codex
+catalog gives them 1M-token windows, so a thread's history only grows, and past the limit every turn is
+a whole replay. Reporting estimated usage, with a window under the limit, would let Codex compact.
+(Done in §47 F131, with the windows kept: a replay now goes up in turns M365 keeps.)
+
+## 47. Nov 18 2026 — how much context each model gets, and a history longer than one turn
+
+**Question.** Codex gives every M365 model a 1M-token window (its catalog's `context_window`, Codex's
+"long context"). Does M365 serve that much, in one turn and over a conversation?
+
+Probes: filler log lines (3.1 characters a token, o200k) with marked codes, through the proxy over
+StreamHub, one conversation per size, n=1 each. In one turn the codes sat at 1%, 50% and 99% and the
+same turn asked for them.
+
+### F128 — one turn: GPT-6.x reads about 270k tokens, Claude 2M characters or more 🟢
+
+| model | answered, all three codes | refused |
+|---|---|---|
+| `gpt-6.2-sol` | 540k (§46), 650k, 780k characters | 900k, 1M, 2M, 4M |
+| `gpt-6.1-sol` | 650k | 900k, 2M |
+| `gpt-6.2-astra`, `gpt-6-astra` | – | 900k |
+| `claude-sonnet-5` | 650k, 900k, 2M | 2.6M, 3.2M, 4M |
+| `claude-opus-4.8` (on StreamHub the same tone and scenario as `claude-opus`) | 650k, 900k, 2M | – |
+| `claude-sonnet-5.5`, `claude-fable` | 2M | – |
+
+780k characters is ~252k tokens and 900k ~291k: GPT-6.x gets the standard ~272k-token window, not a
+long-context one. Claude's 2M answered and 2.6M refused are ~650k and ~840k tokens in this count (it may
+be about 1M in Claude's own tokenizer, which wasn't measured). GPT-6.x says so badly. On StreamHub (the
+only transport tested) the turn ends `request_end` `InternalError` with
+`Microsoft.Sydney.GhcpRuntime\CopilotSdkRuntimeBackend.cs:1889 - The GHCP runtime completed with a
+recorded session error` (5–27 s), and its message, `turnState: Failed`, carries "Sorry, I wasn't able to
+respond to that. Is there something else I can help with?", which the proxy returned as the answer.
+Claude's refusal is `InvalidRequest (InputTokenLimitExceeded)`, a 400 `context_length_exceeded`. An
+answered 780k turn took 7 s, a 2M one on Claude 30–45 s. `numLongDocSummaryUserMessagesInConversation`
+stayed 0: no long-document path. The metered models (the Astras, Sonnet 5.5, Fable) got one turn each, at
+the point that separates the families, sent straight through `ModelSession` (no proxy handler).
+
+### F129 — the limit on what M365 keeps is the same for Claude 🟢
+A 900k opening on `claude-sonnet-5`, then "list the codes": the follow-up's count was 1, so M365 hadn't
+kept the opening (the proxy re-sent the request, F127, and the codes came back). §46's 420k-kept,
+540k-lost boundary isn't GPT's alone.
+
+### F130 — a conversation of turns that fit: Claude keeps about 1.6M characters verbatim, GPT-6.x summarizes past its window 🟢
+A log in parts, one turn each ("reply OK n"), a code in the middle of each; then a turn asking for every
+code and for one random record line per part, quoted, which a summary wouldn't keep:
+
+| model | turns | asked after | codes recalled | record lines quoted exactly |
+|---|---|---|---|---|
+| `gpt-6.2-sol` | 6 × 300k | part 3 (900k) | 2, 3 | none |
+| | | part 6 (1.8M) | 2–6 | 6 |
+| `claude-sonnet-5` | 5 × 400k | part 5 (2M) | 2–5 | 2, 3 (4 and 5 quoted, not checked) |
+
+M365 kept every turn (counts 1…8). Claude said "only Parts 2–5 were provided to me": by 2M characters
+(~650k tokens in this count) M365 had dropped the oldest turn whole. Past its window GPT-6.x works from
+a summary: the codes, marked IMPORTANT, outlived the record lines (none exact at 900k, only the last
+part's at 1.8M), and part 1's code didn't.
+
+### F131 — what the proxy does now 🟢
+- A turn over `M365_TURN_CHUNK_BYTES` (400,000 UTF-8 bytes; 0 sends everything whole) goes up in parts
+  (`replay.ts`). A whole history, opening a conversation, keeps its leading system messages, the tool
+  framing and as many of the latest messages as fit in the last turn; the older messages go ahead of it
+  as transcript parts the model acknowledges ("reply with only: OK"). A long follow-up is cut as text.
+  Once M365 has dropped an answered opening of 200k characters or more (F127), that model's parts are cut
+  to 75% of it for 24 h, starting with the same request's re-send, so the replayed history is kept and
+  continued with deltas, instead of replayed whole on every request.
+- A failed turn (`InternalError` and `turnState: Failed`) has no answer: its apology counts as an empty
+  `InternalError`, re-sent once in a fresh conversation (a second failure ends the request), and the
+  streaming path holds it back. It is not the dead agent route, which carries no text.
+- A part M365 doesn't acknowledge is judged like any turn (the agent-less, Bing-less and fallback-model
+  re-sends, the 400 and 429), a count of 1 on a part means the history is gone (F127's re-send), and a
+  long turn may take at most `M365_MAX_TURN_PARTS` (12) M365 turns, sent at most twice per request.
+- `usage` carries estimates: the whole formatted request, and the reply, at 4 UTF-8 bytes a token
+  (`M365_REPORT_USAGE=0` for zeros). Codex sees its context fill, and compacts near its window.
+
+Live, through a fresh proxy: a history of 1.2M characters (8 log parts of 150k, a code in each, then a
+question about all of them), the way Codex replays a thread:
+
+| model | turns | codes | part 1's record line | follow-up |
+|---|---|---|---|---|
+| `claude-sonnet-5` | 3 parts + the request, 41 s | 8/8 | exact | a delta (count 5), right |
+| `gpt-6.2-sol` | 3 parts + the request, 46 s | 3–8 | "unavailable in the retained conversation context" | a delta (count 5), right |
+
+Before, it went up as one 1.2M-character turn: Claude answered and M365 didn't keep it, so every later
+request replayed it; GPT-6.x refused, and the proxy returned the apology as the answer.
+
+**Codex:** a window is counted in the proxy's estimate (4 UTF-8 bytes a token, 4 characters for ASCII
+text), and Codex compacts at 90% of it. Windows that compact before M365 starts summarizing (GPT-6.x) or
+dropping turns (Claude), by these tests: 225,000 for GPT-6.x (compaction at ~810k bytes) and 450,000 for
+the Claude models (~1.6M). For GPT-6.x this is extrapolated from the one-turn limit (780k answered);
+conversations between 780k and 900k weren't tested. The tests used dense log text, 3.1 characters a
+token; ordinary code and prose has fewer tokens a character, so this errs early. Live, Codex 0.169 then
+showed usable windows of 213,750 and 427,500.
+
+**Open — H47a:** can a request get GPT-6.x a longer window? Half an answer (n=1 each): the web app's Code
+tab has a tier, Chat doesn't. Code is GitHub's Copilot app embedded in M365 (its script cites
+`apps/ghcopilot/vendor/github-app`), on F110's agent runtime. Its `create_session` and `set_session_model`
+carry `context_tier` (`default` or `long_context`), and the model picker offers the long tier for a model
+whose runtime entry (`GET …aetherruntime…/v1/models`) lists `supported_context_tiers` with a bigger
+window. On the test account no entry lists any (GPT-5.5, GPT 6.1 Sol, 6.2 Sol, 6.2 Sol Fast, 6.2 Astra,
+Opus 5.5, Opus 5.5 Fast, Sonnet 5.5), so its picker shows only the effort slider (Low … Max). The Chat
+client has no such field, and StreamHub ignores one: a 900k-character `Gpt_62_Sol_Reasoning` turn was
+refused the same with `contextTier` or `context_tier: "long_context"` at the top of `chatStreamRequest`,
+in `options`, in `extraExtensionParameters` and in `message`. **Probe:** on an account whose Code picker
+offers the long tier, a Code session's state after `create_session` with it, then a turn over 272k tokens.
+
 ---
 
-## 44. Oct 11 2026 — dropped tool calls: the fence shapes the scanner missed, and asking again for the rest
+## 48. Oct 11 2026 — dropped tool calls: the fence shapes the scanner missed, and asking again for the rest
 
 A call the parser can't read is the worst failure the proxy has: the reply goes to the harness as prose,
 the harness ends its turn, and the model reads the silence as having no tools. 91bf23b brought back two
 shapes #44's scanner had dropped (a glued closer, a mid-line opener) as insurance; this asks which others
 exist, and whether any reach real replies.
 
-### F119 — eight fence shapes dropped or changed a call; a ninth was in the logs, 3 dropped calls in 1,153 replies 🟢
+### F132 — eight fence shapes dropped or changed a call; a ninth was in the logs, 3 dropped calls in 1,153 replies 🟢
 **Probe** (model-free: `parseToolCalls` with pi's tools on `main` after 91bf23b). Read: a plain fence, a
 glued closer, a mid-line opener, CRLF. Dropped: ```` ```Bash ````, ```` ``` bash ````, `~~~bash`, ```` ```bash
 title="x" ````, a one-line ```` ```bash ls -la``` ````, a closer with text after it, a fence never closed.

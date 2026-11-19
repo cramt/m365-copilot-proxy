@@ -295,6 +295,26 @@ pnpm test:live      # M365_LIVE=1; live tests that hit real M365 (uses quota)
   opencode's title request shares the task's opener but has no tools; keyed on the opener alone it ran in
   the task's M365 conversation, concurrently (#83). Don't add the system prompt or tool descriptions to
   the key: those are where a harness puts per-turn text, and every change starts a new thread.
+- **M365 can lose a conversation's history, and says so.** It answers an opening prompt of about 500k
+  characters but doesn't keep it, on Claude too: the next turn's `numUserMessagesInConversation` reads 1 and
+  the model answers without context (§46 F125, §47 F129). `runBuffered` treats count 1 on a turn that
+  doesn't carry the whole history itself (`wholePrompts`) as a lost history: it stops the turn and re-sends
+  the whole request in a fresh conversation, once per request. So no turn goes up over 400,000 UTF-8 bytes
+  (`M365_TURN_CHUNK_BYTES`, `replay.ts`): a longer history goes as parts the model acknowledges, then the
+  request with the system prompt and tool framing; don't send a long history as one turn. After an answered
+  opening of 200k+ characters is lost, that model's parts are cut to 75% of it for 24 h
+  (`unkeptOpeningChars(model)`). Idle
+  conversations stay pooled 24 h (`M365_CONVERSATION_TTL_HOURS`): the old 30-minute eviction forced
+  those replays, and M365 keeps a conversation for at least 21 h (F126). A part M365 doesn't acknowledge
+  is judged like any turn (`sendParts` hands it to `runBuffered`), a part's count of 1 means the history is
+  gone, and a long turn takes at most `M365_MAX_TURN_PARTS` (12) turns. GPT-6.x reads about 270k tokens a
+  turn and summarizes older turns; Claude reads 2M characters or more and keeps about 1.6M (§47).
+- **A failed turn has text, and it isn't an answer.** `InternalError` with the message's `turnState: Failed`
+  carries M365's canned "Sorry, I wasn't able to respond to that…" (GPT-6.x over its input limit on
+  StreamHub, §47 F128). `turnFailed` handles it as an empty `InternalError`, re-sent once; it isn't the dead
+  agent route, which has no text. The live stream holds the text back. `usage`
+  carries estimated tokens (4 UTF-8 bytes a token; `M365_REPORT_USAGE=0` for zeros), so a client sees its
+  context fill and compacts.
 - **A tool turn is stopped once the model's own `<tool_response>` after a call runs past 2,000 chars**
   (#65, `runBuffered` in `handler.ts`): waiting for M365 to finish let invented continuations run for
   minutes, past pi's timeout. Not at the tag itself: M365 keeps the whole message, Sonnet 4.6 seems to
@@ -305,7 +325,7 @@ pnpm test:live      # M365_LIVE=1; live tests that hit real M365 (uses quota)
 - **Two default-on retries spend an upstream turn when a tool turn ends without a call.** First, if the
   reply had a tool block the parser couldn't read (a fence never closed, an edit without its markers;
   `unreadableToolFence` in `fenced.ts`), the proxy asks once, in the same conversation, saying what was
-  wrong and that the model may reply without it (`M365_NO_FENCE_RETRY=1` off; hyp §44 F119). Otherwise
+  wrong and that the model may reply without it (`M365_NO_FENCE_RETRY=1` off; hyp §48 F132). Otherwise
   the give-up / confabulation forcing retry (`M365_NO_CONFAB_RETRY=1` off, `M365_CONFAB_RETRIES`). Each
   costs a turn from the F58 bucket, and on Opus a priority-access unit. Transport/filter retries
   (Bing-overflow and `Apology` / `Disengaged` in `runBuffered`) run before the re-ask; the forcing retry
