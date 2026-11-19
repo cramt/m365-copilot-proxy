@@ -115,6 +115,10 @@ than "we eyeballed one run." See §M (Methods) for the experimental rig.
   more (F128); M365 doesn't keep a long turn on Claude either (F129); over a conversation Claude keeps
   about 1.6M characters verbatim and GPT-6.x summarizes past its window (F130); long turns in parts,
   failed turns, estimated usage (F131); a longer window for GPT-6.x (H47a, open)
+- §48 — Cowork and Code, the agent runtime, as backends: a turn is three REST/SSE calls on the proxy's own
+  token (F132); one turn reads 2M characters on GPT, 1.6M on Claude (F133); every turn costs credits
+  (F134); a conversation can be deleted, a run can't be stopped (F135); the Code tab's "Long context"
+  switch isn't on this account's runtime (F136)
 
 ---
 
@@ -6419,3 +6423,82 @@ client has no such field, and StreamHub ignores one: a 900k-character `Gpt_62_So
 refused the same with `contextTier` or `context_tier: "long_context"` at the top of `chatStreamRequest`,
 in `options`, in `extraExtensionParameters` and in `message`. **Probe:** on an account whose Code picker
 offers the long tier, a Code session's state after `create_session` with it, then a turn over 272k tokens.
+
+**→ §48:** for GPT, yes, without a tier: on Cowork and Code every GPT model read 2.0M characters in one
+turn (F133). The long tier itself isn't on the test account's runtime (F136).
+
+## 48. Nov 19 2026 — Cowork and Code as backends
+
+**Question.** The web app's Cowork and Code tabs run on F110's agent runtime, not on Chat. Can the proxy
+send its turns there, and what does that buy: a longer window than Chat's (H47a), no Chat throttle, at what
+price? One premium account; one probe per cell (n=1) unless noted. Wire details: [API doc §14](m365-copilot-api.md).
+
+### F132 — a turn is three calls, on the proxy's own token 🟢
+The proxy's MSAL client gets the runtime's scope (`6ab48b67-…/access_as_user`) silently. A turn is
+`POST /v1/prewarm`, `POST /v1/messages` (202, with the message's place in the event stream as `id`) and
+`GET /v1/subscribe`. Subscribing with `last-event-id` set to that `id` replayed only that turn's events in
+a two-turn probe; from `0-0` it replays every turn. `rl {st: "started", mid}` and `rl {st: "ok"}` bracket
+the run, and its deltas (`dx`) carry no message ID. The model's charge (`cq`) landed 2 ms before `rl ok` in
+one Code turn and after it in another, which first under-reported a turn's credits as 0.02. The server keeps
+the history: a follow-up sent alone was answered in context ("PONG 7").
+
+Through the proxy (`M365_BACKENDS=chat,cowork,code`, StreamHub and `relay_batch` as the live setup):
+`gpt-6.2-sol(cowork)` answered and continued over the delta path, `claude-sonnet-5.5(code)` streamed, and
+`claude-opus-5.5(cowork)` answered a bash-tool request with a fenced call the proxy turned into a tool call
+(`tc` 0: the runtime's agent ran none of its own tools).
+
+### F133 — one turn reads 2M characters on GPT, 1.6M on Claude 🟢
+Needle turns (§47's log filler, three codes at 1%, 50% and 99%; o200k, 2.48 characters a token), each in a
+new Cowork conversation:
+
+| model | characters | ~tokens | codes | time | credits |
+|---|---|---|---|---|---|
+| `gpt-6.2-sol` | 900k | 363k | 3/3 | 3.8 s | 101 |
+| `gpt-6.2-sol` | 2.0M | 806k | 3/3 | 6.8 s | 224 |
+| `gpt-6.2-astra` | 2.0M | 806k | 3/3 | 29.8 s | 927 |
+| `gpt-6.1-sol` (`gpt-6.1-sol-substrate`) | 2.0M | 806k | 3/3 | 14.4 s | 232 |
+| `gpt-5.5` | 2.0M | 806k | 3/3 | 25.8 s | 506 |
+| `claude-opus-5.5` | 1.6M | 645k | 3/3 | 6.5 s | 481 |
+| `claude-sonnet-5.5` | 1.6M | 645k | 3/3 | 4.3 s | 236 |
+| `claude-sonnet-5.5` | 2.0M | 806k | refused: `engine.v2_refusal`, `retry: true` | 0.8 s | 0.01 |
+
+Code's GPT-6.2 Sol read 900k (3/3). 2.0M was the most tried, so the GPT models' limit is unknown; it is at
+least three times Chat's ~272k (F128). The runtime's 1M-character cap on a text item didn't matter: 2.0M
+went as three items. The proxy names these windows in its model IDs (`_800k`, `_640k`); the Fast variants
+and Code take the same numbers unmeasured.
+
+### F134 — every turn costs credits 🟢
+Each turn's `cq` events charge Copilot credits. One line in a new Cowork conversation cost 0.9 to 1.3
+credits through the proxy (n=3) and 9.2 once directly; in a new Code conversation 2.6 (Sonnet 5.5, n=2) and
+9.5 (GPT-6.2 Sol). A follow-up costs about 0.4. A long turn costs 0.28 (GPT-6.2 Sol) to 1.15 (GPT-6.2 Astra)
+credits per 1,000 tokens (F133). The monthly entitlement (`GET /v1/entitlement`, `uq`: budget 1,000,000)
+doesn't count in these credits, or lags: about 500 credits of probes moved `consumed` by 24, and it rose by
+6,000 in a quiet 20 minutes before them.
+
+### F135 — a conversation can be deleted; a run can't be stopped 🟢
+`DELETE /v1/conversations/<session key>` (the web app's `tasks.delete`) answered 204, after which the task's
+detail is `404 task_not_found` and it leaves the sidebar (13 probe tasks deleted so). The client's scripts
+have no stop or cancel call (`/v1/` paths: conversations, files, models, routing, settings, skills,
+subscribe, suggestions, tasks, …), so closing the stream leaves a run going and a queued message waits for
+it. The proxy deletes the conversations it leaves, five minutes on so that a request still reading a run there finishes, unless `M365_SAVE_HISTORY=1`, so its tasks don't pile up
+in the user's Cowork and Code lists.
+
+### F136 — the "Long context" switch isn't on this account's runtime 🟡
+A screenshot of the Code picker with GPT-6 Astra at Max effort and a "Long context" switch on, which the
+user said costs no credits, prompted a look. The runtime's `GET /v1/models` (Cowork and Code alike, Nov 19)
+lists eight models, none of them GPT-6 Astra and none with `supported_context_tiers`, and the web Code tab's
+picker shows no switch for them. The Code app's script (`code.remote.js`) sends `context_tier` in
+`create_session` and `set_session_model`, and offers the tier for a model whose `supported_context_tiers`
+(`[{id: "default" | "long_context", maxContextWindowTokens}]`) gives `long_context` the bigger window. No
+script outside the Code app names a tier, so the host passes none to the runtime. The same picker belongs
+to the GitHub Copilot desktop app, installed on the test PC, whose models (GPT-6 Astra among them) are
+GitHub's and billed by GitHub: most likely where the screenshot came from. Unconfirmed: the screenshot's
+app.
+
+**Shipped:** `M365_BACKENDS` (default `chat`) lists the Cowork and Code models as
+`<model>(<backend>)[_<window>][_credit]`, Chat's as well (`gpt-6.2-sol(chat)_272k`); a request may name
+`cowork` or `code` only when listed. An ID without parentheses stays on Chat unless `M365_DEFAULT_BACKEND`
+names a backend that serves the model. On the runtime the proxy sends a history whole (no parts), passes
+`reasoning_effort`, skips Chat's throttle budget, tool agent and priority-access handling, reports the
+turn's credits as `usage.x_m365_credits`, and maps `engine.v2_refusal` on a prompt of 400k characters or
+more to a 400 `context_length_exceeded`. `core/src/backends.ts`, `core/src/aether.ts`.

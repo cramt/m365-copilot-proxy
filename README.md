@@ -259,7 +259,9 @@ Proxy conversations use M365 **temporary-chat mode by default**
 (`disableMemory=1` on the authenticated Chathub URL), so they are not added to
 the Copilot history sidebar while multi-turn context still works for the live
 conversation. Set `M365_SAVE_HISTORY=1` before starting the proxy only if you
-deliberately want proxy chats saved in Copilot history.
+deliberately want proxy chats saved in Copilot history. The Cowork and Code
+backends have no temporary mode: their conversations show as tasks while in use,
+and the proxy deletes the ones it leaves, five minutes on, unless `M365_SAVE_HISTORY=1`.
 
 ### 5a. Use with Claude Code or Codex
 
@@ -571,6 +573,44 @@ managed 5/8. Under
 StreamHub turns carry no priority-access `metering`, so the proxy can't log or pre-empt those budgets.
 Wire details: [API doc §13](docs/m365-copilot-api.md).
 
+### Backends: Chat, Cowork and Code
+
+Every model above runs on M365 Copilot **Chat**. The web app's **Cowork** and **Code** tabs run on a
+different service, Copilot's agent runtime, and the proxy can send turns there too. What it gives:
+a longer turn (every GPT model read 2.0M characters, about 806k tokens, in one turn; Chat's GPT-6.x
+reads about 272k), and none of Chat's per-user throttle. What it costs: **every turn is charged to your
+Copilot credits**, from about 0.4 for a follow-up line to several hundred for a turn of a million
+characters ([hypotheses §48](docs/hypotheses.md)).
+
+Model IDs name their backend in parentheses, then the tokens one turn has been seen to hold and
+whether turns cost credits:
+
+| ID | backend | model |
+|---|---|---|
+| `gpt-6.2-sol(chat)_272k` | Chat | the same as `gpt-6.2-sol` |
+| `gpt-6.2-astra(chat)_272k_credit` | Chat | GPT-6.2 Astra, a credit-billed Chat model |
+| `gpt-6.2-sol(cowork)_800k_credit` | Cowork | GPT-6.2 Sol on the agent runtime |
+| `claude-opus-5.5(code)_640k_credit` | Code | Opus 5.5 on the agent runtime |
+
+Only the parentheses route: a request may send `gpt-6.2-sol(cowork)`, or an ID with stale suffixes.
+`GET /v1/models` lists one such ID per model and backend, with `context_window` set to the window it
+names, after the plain Chat IDs, which are unchanged. The agent runtime serves GPT-5.5, GPT-6.1 Sol,
+GPT-6.2 Sol (and Fast), GPT-6.2 Astra, Opus 5.5 (and Fast) and Sonnet 5.5.
+
+- `M365_BACKENDS=chat,cowork,code` lists and allows the runtime's backends (default `chat`). Because
+  they spend credits, a request naming `cowork` or `code` gets a 400 unless it's listed.
+- `M365_DEFAULT_BACKEND=cowork` sends an ID without parentheses (`gpt-6.2-sol`, `claude-sonnet-5.5`)
+  to that backend when it serves the model; other IDs stay on Chat.
+- On the runtime the proxy sends a long history whole, passes `reasoning_effort`, skips Chat's tool
+  agent and throttle budget, and reports the turn's credits as `usage.x_m365_credits`.
+- The runtime lists each conversation as a task in your Cowork or Code sidebar while the proxy uses it;
+  the proxy deletes the ones it leaves five minutes later (unless `M365_SAVE_HISTORY=1`).
+- Closing a request doesn't stop a run there (the runtime has no stop call the proxy could find), and
+  images and files aren't passed on yet.
+
+In shells, quote IDs with parentheses: `codex -m "m365/gpt-6.2-sol(cowork)_800k_credit"`. Wire
+details: [API doc §14](docs/m365-copilot-api.md).
+
 ## Image generation
 
 M365 Copilot generates images through a built-in server-side tool, and the core
@@ -688,6 +728,9 @@ not an exemption from your organization's Conditional Access policy.
 | `M365_SONNET_FALLBACK_MODEL` | The same for `claude-sonnet-5.5` (Sonnet 5.5) once its priority-access budget is used up — e.g. `claude-sonnet-5` (unmetered) or `claude-sonnet` (Sonnet 4.6, any account). A fallback naming a metered model is ignored. Unset by default. |
 | `M365_SCENARIO` / `M365_LICENSE_TYPE` | Override the entitlement the WebSocket is opened under (defaults: `OfficeWebIncludedCopilot` / `Starter`, switching to `OfficeWebPaidCopilot` / `Premium` for the entitlement-gated models — `claude-opus`, `gpt-6-think-deeper`, `claude-sonnet-5` and `claude-sonnet-5.5`; `claude-opus-4.8` and `gpt-6.1-sol` stay on the included one). `scenario` is what gates the model list (and picks Sonnet 4.6 vs 5.5 for the `Claude_Sonnet` tone, Sonnet 4.6 vs 5 for `Claude_Sonnet_5`, Opus 4.8 vs 5.5 for `Claude_Opus`); `licenseType` rides along and unlocks nothing by itself. Forcing the paid scenario on `gpt-6.1-sol` spends its separate GPT-6.1 Sol allowance (40 turns a day, 75 a week), which the proxy doesn't track. |
 | `M365_TRANSPORT` | `streamhub` sends every model over StreamHub, the new web client's WebSocket (`copilot.cloud.microsoft`), under its `officeweb` scenario and without the tool agent; unset, every model uses Chathub. For accounts whose Chathub refuses GPT-6 (`InputTokenLimitExceeded` on any prompt). Under it the scenario no longer picks between models: `claude-sonnet` is Sonnet 5.5 there. See [StreamHub](#streamhub-the-new-web-clients-transport). |
+| `M365_BACKENDS` | Comma list of the backends whose models `/v1/models` lists and requests may name: `chat`, `cowork`, `code` (default `chat`). Cowork and Code run on Copilot's agent runtime and **charge every turn to your Copilot credits**, so a request naming one that isn't listed gets a 400. Chat requests are always served. See [Backends](#backends-chat-cowork-and-code). |
+| `M365_DEFAULT_BACKEND` | Where a model ID without a `(backend)` goes when that backend is in `M365_BACKENDS` and serves the model (default `chat`). `cowork` moves `gpt-6.2-sol` and the other runtime models there; every other ID stays on Chat. |
+| `M365_AETHER_ENDPOINT` | The agent runtime's endpoint for `cowork` and `code`. Unset, the proxy asks the runtime's routing service once per process. |
 | `M365_CONVERSATION_TTL_HOURS` | How long the proxy keeps an idle conversation and continues it with only the new messages (default `24`). After that, the next request replays the whole history into a fresh M365 conversation. M365 keeps a conversation for at least 21 h ([hypotheses §46](docs/hypotheses.md)). |
 | `M365_TURN_CHUNK_BYTES` | The longest turn the proxy sends M365 whole, in UTF-8 bytes (default `400000`, at least `1024`; `0` sends every turn whole). M365 answers a turn of about 500k characters but doesn't keep it in the conversation, so a longer one goes up in parts: a replayed history as earlier-conversation parts the model acknowledges, then the request with the system prompt and tool framing; a long follow-up as numbered parts ([hypotheses §46, §47](docs/hypotheses.md)). |
 | `M365_MAX_TURN_PARTS` | The most M365 turns a long turn may take, its parts and the answered one (default `12`, at least `2`). Each part is a turn on the account's turn budget and, on a metered model, a unit of its allowance. A request that needs more gets a 400 `context_length_exceeded`, so the client compacts. |
@@ -737,6 +780,9 @@ clean tool calls sit at ~1 × 10⁻⁸, prose at ~1 × 10⁻⁶, jailbreak-shape
 prompts at ~1 × 10⁻³. Disengaged itself fires at some threshold > 2 × 10⁻³
 that we haven't yet pinpointed. Clients can monitor this to back off before
 tripping the filter.
+
+On the Cowork and Code backends, `x_m365_credits` is what the request's turns
+were charged in Copilot credits.
 
 Clients that ignore unknown extension fields keep working; curious users can
 read them. See [docs/hypotheses.md §0](docs/hypotheses.md) for the full
