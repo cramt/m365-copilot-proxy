@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it } from "vitest";
 import { formatMessages, type Message, type ToolDef } from "@m365-copilot/core";
-import { DEFAULT_TURN_CHUNK_BYTES, planFullPrompt, planText, splitText, turnChunkBytes, utf8Bytes } from "./replay.js";
+import { DEFAULT_MAX_TURN_PARTS, DEFAULT_TURN_CHUNK_BYTES, MIN_TURN_CHUNK_BYTES, maxTurnParts, planFullPrompt, planText, splitText, turnChunkBytes, utf8Bytes } from "./replay.js";
 
 /** A part or final turn without its note: what it carries of the conversation. */
 const body = (turn: string) => turn.slice(turn.indexOf("]\n\n") + 3);
@@ -139,5 +139,17 @@ describe("turnChunkBytes", () => {
     expect(turnChunkBytes()).toBe(0);
     process.env.M365_TURN_CHUNK_BYTES = "lots";
     expect(turnChunkBytes()).toBe(DEFAULT_TURN_CHUNK_BYTES);
+    // A limit under a part's note would cut a history a character a part.
+    process.env.M365_TURN_CHUNK_BYTES = "250";
+    expect(turnChunkBytes()).toBe(MIN_TURN_CHUNK_BYTES);
+  });
+
+  it("reads M365_MAX_TURN_PARTS, at least 2", () => {
+    expect(maxTurnParts()).toBe(DEFAULT_MAX_TURN_PARTS);
+    process.env.M365_MAX_TURN_PARTS = "4";
+    expect(maxTurnParts()).toBe(4);
+    process.env.M365_MAX_TURN_PARTS = "1";
+    expect(maxTurnParts()).toBe(DEFAULT_MAX_TURN_PARTS);
+    delete process.env.M365_MAX_TURN_PARTS;
   });
 });

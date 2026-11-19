@@ -35,7 +35,7 @@ const scripted: {
   /** The `waitForBudget` argument of every run() call, in order (one function per call). */
   budgetWaits: Array<(() => Promise<unknown>) | undefined>;
   /** Replies to the parts of a long turn (replay.ts), consumed front-first; past them a part gets "OK". */
-  partQueue: Array<{ fullText: string; result?: { value: string; errorCode?: string; message?: string } }>;
+  partQueue: Array<{ fullText: string; messageType?: string | null; contentOrigin?: string; apology?: boolean; result?: { value: string; errorCode?: string; message?: string }; throttle?: { current: number; max: number } | null; turnState?: string }>;
 } = { deltas: [], runs: 0, texts: [], queue: [], agentFlags: [], newConversations: 0, models: [], images: [], gate: null, signals: [], stoppedAfter: null, budgetHold: null, awaitTurnBudgetCalls: [], budgetWaits: [], partQueue: [] };
 
 vi.mock("@m365-copilot/core", async (importActual) => {
@@ -1759,14 +1759,101 @@ describe("a turn too long for M365 to keep goes up in parts (§47)", () => {
     expect(scripted.newConversations).toBe(0);
   });
 
-  it("drops the conversation and fails the request when M365 refuses a part", async () => {
-    reset();
+  const tools = [{ type: "function", function: { name: "bash", parameters: { type: "object", properties: { command: { type: "string" } } } } }];
+  const request = (model: string, messages: Msg[], withTools = false) =>
+    ChatCompletionRequest.parse({ model, messages, ...(withTools ? { tools } : {}) });
+  const firstParts = () => scripted.texts.filter((t) => /^\[(?:Earlier conversation, part 1 of|This message is too long to send at once, so it comes in \d+ parts\. This is part 1 of)/.test(t));
+
+  it("judges a part M365 doesn't acknowledge like any turn: an InternalError is re-sent once, fresh", async () => {
+    reset({ fullText: "The answer." });
     scripted.partQueue = [{ fullText: "", result: { value: "InternalError" } }];
+    const res = await respond(request("claude-sonnet", history()));
+    expect(await answerOf(res)).toBe("The answer.");
+    expect(scripted.newConversations).toBe(1);
+    expect(firstParts()).toHaveLength(2);
+  });
+
+  it("learns a dead agent route from a part, and re-sends the parts agent-less", async () => {
+    reset({ fullText: "```bash\nls\n```" });
+    scripted.agentFlags = [];
+    scripted.partQueue = [{ fullText: "", result: { value: "InternalError" } }];
+    try {
+      const res = await respond(request("gpt-6-sol", history(), true));
+      expect((await res.json()).choices[0].message.tool_calls).toHaveLength(1);
+      expect(scripted.agentFlags[0]).toBe(true);
+      expect(scripted.agentFlags.slice(1)).not.toContain(true);
+      expect(firstParts()).toHaveLength(2);
+    } finally {
+      resetAgentRoutes();
+    }
+  });
+
+  it("429s a part refused for priority access, as for any turn", async () => {
+    reset();
+    scripted.partQueue = [{ fullText: "Out of credits.", result: { value: "OutOfCredits", message: "Out of credits." } }];
+    const res = await handleChatCompletion(request("claude-opus", history()), new SessionPool());
+    expect(res.status).toBe(429);
+    expect((await res.json()).error.code).toBe("priority_access_exhausted");
+    expect(scripted.texts).toHaveLength(1);
+  });
+
+  it("fails a part it can't recover, and drops the conversation that holds the rest", async () => {
+    reset();
+    scripted.partQueue = [{ fullText: "Sorry, it looks like I can't chat about this.", contentOrigin: "Apology", apology: true }];
     const res = await ask(new SessionPool(), history());
     expect(res.status).toBe(502);
-    expect((await res.json()).error.message).toMatch(/refused part 1 of \d+ of this long conversation \(InternalError\)/);
-    expect(scripted.texts).toHaveLength(1);
+    expect((await res.json()).error.message).toMatch(/didn't acknowledge part 1 of \d+ of this long conversation/);
     expect(scripted.newConversations).toBe(1);
+  });
+
+  it("re-sends the whole history when a long delta's first part finds the conversation gone", async () => {
+    const pool = new SessionPool();
+    const messages: Msg[] = [{ role: "user", content: `Opening ${Math.random()}` }];
+    reset({ fullText: "Noted." });
+    await ask(pool, messages);
+    messages.push({ role: "assistant", content: "Noted." }, { role: "user", content: `Look at this:\n${"a log line\n".repeat(500)}` });
+    scripted.partQueue = [{ fullText: "OK", throttle: { current: 1, max: 600 } }];
+    scripted.queue = [{ fullText: "Answered with the history." }];
+    expect(await answerOf(await ask(pool, messages))).toBe("Answered with the history.");
+    expect(scripted.newConversations).toBe(1);
+    expect(scripted.texts.slice(2).some((t) => t.includes(messages[0].content))).toBe(true);
+  });
+
+  it("drops the conversation when the request fails after its history's parts went up", async () => {
+    const pool = new SessionPool();
+    const messages = history();
+    reset({ fullText: "", result: { value: "Throttled" } });
+    expect((await ask(pool, messages)).status).toBe(429);
+    // The retry would otherwise put a second copy of the history into the same conversation.
+    expect(scripted.newConversations).toBe(1);
+  });
+
+  it("keeps the conversation when a long delta is held before any of it went up", async () => {
+    const pool = new SessionPool();
+    const messages: Msg[] = [{ role: "user", content: `Opening ${Math.random()}` }];
+    reset({ fullText: "Noted." });
+    await ask(pool, messages);
+    messages.push({ role: "assistant", content: "Noted." }, { role: "user", content: `Look at this:\n${"a log line\n".repeat(500)}` });
+    scripted.budgetHold = new TurnBudgetHold("refill", 20 * 60_000, null);
+    try {
+      expect((await ask(pool, messages)).status).toBe(429);
+    } finally {
+      scripted.budgetHold = null;
+    }
+    expect(scripted.newConversations).toBe(0);
+  });
+
+  it("refuses a long turn that would take more turns than M365_MAX_TURN_PARTS", async () => {
+    process.env.M365_MAX_TURN_PARTS = "2";
+    try {
+      reset({ fullText: "A." });
+      const res = await ask(new SessionPool(), history());
+      expect(res.status).toBe(400);
+      expect((await res.json()).error.code).toBe("context_length_exceeded");
+      expect(scripted.texts).toHaveLength(0);
+    } finally {
+      delete process.env.M365_MAX_TURN_PARTS;
+    }
   });
 
   it("sends a history that fits whole, and every history whole under M365_TURN_CHUNK_BYTES=0", async () => {
@@ -1822,6 +1909,27 @@ describe("a turn M365 failed: InternalError with its canned apology (§47)", () 
     const res = await respond(request(false));
     expect((await res.json()).choices[0].message.content).toMatch(/^Sorry, I wasn't able to find that file/);
     expect(scripted.newConversations).toBe(0);
+  });
+
+  it("isn't taken for the dead agent route, which carries no text", async () => {
+    const tools = [{ type: "function", function: { name: "bash", parameters: { type: "object", properties: { command: { type: "string" } } } } }];
+    reset(FAILED, { fullText: "```bash\nls\n```" });
+    scripted.agentFlags = [];
+    try {
+      const res = await respond(ChatCompletionRequest.parse({ model: "gpt-6-sol", tools, messages: [{ role: "user", content: `list files ${Math.random()}` }] }));
+      expect((await res.json()).choices[0].message.tool_calls).toHaveLength(1);
+      expect(scripted.agentFlags).toEqual([true, true]);
+    } finally {
+      resetAgentRoutes();
+    }
+  });
+
+  it("stops once the fresh re-send fails too", async () => {
+    reset(FAILED, FAILED, FAILED);
+    const res = await respond(request(false));
+    expect(res.status).toBe(502);
+    expect((await res.json()).error.message).toMatch(/failed this turn twice/);
+    expect(scripted.texts).toHaveLength(2);
   });
 });
 

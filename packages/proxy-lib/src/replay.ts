@@ -6,20 +6,32 @@ import { formatMessages, type Message, type ToolChoice, type ToolDef } from "@m3
 // it in the conversation, and the next turn has no context: it kept a
 // 420k-character opening and dropped a 540k one on GPT-6.2 Sol (docs/
 // hypotheses.md §46 F125), and dropped a 900k one on Claude Sonnet 5 (§47 F129).
-// A conversation of turns that fit holds as much as the model can take: Claude
-// read back 1.6M characters sent as 400k-character turns, while GPT-6.x keeps
-// about 270k tokens and summarizes what came before (F130). So a turn over the
-// limit goes up as several: what comes first is acknowledged, the last one is
-// answered.
+// A conversation of turns that fit holds more: Claude read back 1.6M characters
+// sent as 400k-character turns, while GPT-6.x works from a summary of what came
+// before past about 270k tokens (F130). So a turn over the limit goes up as
+// several: what comes first is acknowledged, the last one is answered.
 
 /** The longest turn sent whole, in UTF-8 bytes. */
 export const DEFAULT_TURN_CHUNK_BYTES = 400_000;
+/** The least M365_TURN_CHUNK_BYTES can be, so a part always has room for some
+ *  of the history: a limit under a part's note would cut it a character a part. */
+export const MIN_TURN_CHUNK_BYTES = 1_024;
 
 /** M365_TURN_CHUNK_BYTES, or the default. 0 sends every turn whole. */
 export function turnChunkBytes(): number {
   const raw = process.env.M365_TURN_CHUNK_BYTES?.trim();
   const v = Number(raw);
-  return raw && Number.isFinite(v) && v >= 0 ? Math.floor(v) : DEFAULT_TURN_CHUNK_BYTES;
+  if (!raw || !Number.isFinite(v) || v < 0) return DEFAULT_TURN_CHUNK_BYTES;
+  return v === 0 ? 0 : Math.max(MIN_TURN_CHUNK_BYTES, Math.floor(v));
+}
+
+/** The most M365 turns a long turn may take, its parts and the one answered
+ *  (M365_MAX_TURN_PARTS). Each is a turn on the account's turn bucket and, on a
+ *  metered model, a unit of its daily allowance. */
+export const DEFAULT_MAX_TURN_PARTS = 12;
+export function maxTurnParts(): number {
+  const v = Number(process.env.M365_MAX_TURN_PARTS?.trim());
+  return Number.isInteger(v) && v >= 2 ? v : DEFAULT_MAX_TURN_PARTS;
 }
 
 /** A turn as sent: `parts` go up first, in order, and the model only acknowledges
