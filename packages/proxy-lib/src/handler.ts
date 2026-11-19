@@ -1,6 +1,11 @@
 import {
   ModelSession,
+  AetherSession,
   type ModelSessionOptions,
+  type TurnSession,
+  type CopilotStream,
+  type Backend,
+  resolveModelRoute,
   createLogger,
   trunc,
   getToneForModel,
@@ -141,9 +146,10 @@ const OUTPUT_CHAR_CEILING = process.env.M365_OUTPUT_CHAR_CEILING !== undefined
   ? Number(process.env.M365_OUTPUT_CHAR_CEILING)
   : 12_000;
 
-/** "length" when the answer is at/over the empirical output ceiling, else "stop". */
-function outputFinishReason(text: string): "stop" | "length" {
-  if (OUTPUT_CHAR_CEILING > 0 && text.length >= OUTPUT_CHAR_CEILING) {
+/** "length" when the answer is at/over the empirical output ceiling, else "stop".
+ *  Chat's ceiling: the agent runtime's answers run longer. */
+function outputFinishReason(text: string, chat = true): "stop" | "length" {
+  if (chat && OUTPUT_CHAR_CEILING > 0 && text.length >= OUTPUT_CHAR_CEILING) {
     log.info(`Output at ceiling (${text.length} ≥ ${OUTPUT_CHAR_CEILING} chars) — finish_reason=length (likely truncated; harness should continue)`);
     return "length";
   }
@@ -173,7 +179,7 @@ type ParsedMessage = ChatBody["messages"][number];
 // --- Per-conversation state ---
 
 interface ConversationState {
-  session: ModelSession;
+  session: TurnSession;
   sentMessageCount: number;
   lastAccessedAt: number;
   /** Sent ahead of the next tool result when the proxy executed less than the
@@ -285,12 +291,13 @@ export class SessionPool {
    * Resolve the conversation state for an incoming request.
    * Fingerprint is the hash of the first user message and the request's tool
    * names — same opener and same tool set = same conversation — scoped to the
-   * client's session key when it sends one (prompt_cache_key / user).
+   * client's session key when it sends one (prompt_cache_key / user), and to
+   * the backend: a conversation on Chat can't continue on the agent runtime.
    */
-  resolve(messages: ParsedMessage[], tools?: ChatBody["tools"], sessionKey?: string): ConversationState {
+  resolve(messages: ParsedMessage[], tools?: ChatBody["tools"], sessionKey?: string, backend: Backend = "chat"): ConversationState {
     this.evictStale();
 
-    const fingerprint = this.fingerprint(messages, tools, sessionKey);
+    const fingerprint = this.fingerprint(messages, tools, sessionKey, backend);
     const existing = this.conversations.get(fingerprint);
 
     if (existing) {
@@ -321,7 +328,7 @@ export class SessionPool {
     this.evictOverflow();
     log.info(`New conversation ${fingerprint}, ${this.conversations.size} active`);
     const state: ConversationState = {
-      session: new ModelSession(this.sessionOptions),
+      session: backend === "chat" ? new ModelSession(this.sessionOptions) : new AetherSession({ mode: backend }),
       sentMessageCount: 0,
       pendingNote: null,
       lastAccessedAt: Date.now(),
@@ -349,12 +356,13 @@ export class SessionPool {
   // without it they'd share one M365 conversation. Subagents share the parent's
   // session key, so the first message and the tool names still have to be part
   // of the key.
-  private fingerprint(messages: ParsedMessage[], tools?: ChatBody["tools"], sessionKey?: string): string {
+  private fingerprint(messages: ParsedMessage[], tools?: ChatBody["tools"], sessionKey?: string, backend: Backend = "chat"): string {
     const firstUser = messages.find(m => m.role === "user");
     const text = firstUser ? getMessageContent(firstUser) : "";
     const toolNames = [...new Set((tools ?? []).map(t => t.function.name))].sort().join(",");
     const key = `${toolNames}\n${text}`;
-    return simpleHash(sessionKey ? `${sessionKey}\u0000${key}` : key);
+    const scoped = sessionKey ? `${sessionKey}\u0000${key}` : key;
+    return simpleHash(backend === "chat" ? scoped : `${backend}\u0001${scoped}`);
   }
 
   private evictStale() {
@@ -364,6 +372,7 @@ export class SessionPool {
       if (now - state.lastAccessedAt > ttl) {
         log.info(`Evicting idle conversation ${key}`);
         this.conversations.delete(key);
+        state.session.close?.();
       }
     }
   }
@@ -372,9 +381,10 @@ export class SessionPool {
   private evictOverflow() {
     if (this.conversations.size < MAX_CONVERSATIONS) return;
     const byAge = [...this.conversations].sort((a, b) => a[1].lastAccessedAt - b[1].lastAccessedAt);
-    for (const [key] of byAge.slice(0, this.conversations.size - MAX_CONVERSATIONS + 1)) {
+    for (const [key, state] of byAge.slice(0, this.conversations.size - MAX_CONVERSATIONS + 1)) {
       log.info(`Evicting conversation ${key} (pool full)`);
       this.conversations.delete(key);
+      state.session.close?.();
     }
   }
 
@@ -399,8 +409,10 @@ function conversationLost(stream: { throttle: { current: number; max: number } |
 }
 
 /** The longest turn sent whole (replay.ts): M365_TURN_CHUNK_BYTES, or less once
- *  M365 has failed to keep a shorter opening of this model's (`unkeptOpeningChars`). */
-function turnLimit(pool: SessionPool, model: string): number {
+ *  M365 has failed to keep a shorter opening of this model's (`unkeptOpeningChars`).
+ *  The agent runtime takes a turn whole: it read 2M characters in one (§48). */
+function turnLimit(pool: SessionPool, model: string, chat = true): number {
+  if (!chat) return 0;
   const configured = turnChunkBytes();
   const unkept = pool.unkeptOpeningChars(model);
   if (configured <= 0 || !Number.isFinite(unkept)) return configured;
@@ -424,8 +436,8 @@ function couldBeFailedTurnText(text: string): boolean {
   return !t || FAILED_TURN_TEXT.startsWith(t) || t.startsWith(FAILED_TURN_TEXT);
 }
 
-/** What ModelSession.run streams for one turn. */
-type TurnStream = Awaited<ReturnType<ModelSession["run"]>>;
+/** What a session's run() streams for one turn. */
+type TurnStream = CopilotStream;
 /** How sending a long turn's parts went (sendParts in handleChatCompletion). */
 type PartsOutcome = null | "lost" | { refused: TurnStream; label: string } | { error: Response };
 
@@ -508,10 +520,20 @@ export async function handleChatCompletion(
     tools: promptMode === "lean" ? leanHarnessTools(request.tools) : request.tools,
   };
   if (promptMode !== "off") log.debug(`Harness prompt: ${promptMode}`);
-  const conv = pool.resolve(body.messages, body.tools, body.prompt_cache_key ?? body.user);
+  // The model ID names a backend: Chat, or the agent runtime's Cowork / Code (core backends.ts).
+  const route = resolveModelRoute(request.model);
+  if (route.error) {
+    log.info(`Model ${request.model}: ${route.error}`);
+    return jsonResponse(400, { error: { message: route.error, type: "invalid_request_error", code: "model_backend_not_enabled", param: "model" } });
+  }
+  // Chat's throttle, priority-access budgets, tool agent and Bing plugin don't apply to the agent runtime.
+  const chat = route.backend === "chat";
+  const noteOutcome = (throttled: boolean, cid: string) => { if (chat) noteRequestOutcome(throttled, cid); };
+  const conv = pool.resolve(body.messages, body.tools, body.prompt_cache_key ?? body.user, route.backend);
   const { session } = conv;
   const hasTools = body.tools && body.tools.length > 0 && body.tool_choice !== "none";
-  const requestedModel = body.model;
+  const requestedModel = route.model;
+  const turnOptions = { reasoningEffort: body.reasoning_effort };
 
   // Priority access (§15, §24 F55, §26, issue #18). Once a budget is used up
   // every turn on it is refused until the reset, so don't start one: serve the
@@ -520,8 +542,8 @@ export async function handleChatCompletion(
   // 429 here. A refused turn costs no allowance, but it does cost an M365 turn
   // and often a fresh conversation — what the account's thread-rate throttle
   // counts.
-  const requestedBudget = meteredBudgetOf(requestedModel);
-  const knownExhaustion = activePriorityAccessExhaustion(requestedBudget ?? requestedModel);
+  const requestedBudget = chat ? meteredBudgetOf(requestedModel) : null;
+  const knownExhaustion = chat ? activePriorityAccessExhaustion(requestedBudget ?? requestedModel) : null;
   const fallbackModel = knownExhaustion && requestedBudget ? priorityAccessFallbackModel(requestedBudget) : null;
   if (knownExhaustion && !fallbackModel) {
     log.info(`Priority access exhausted (${knownExhaustion.window}) until ${knownExhaustion.resetsAt.toISOString()} — 429 without contacting M365`);
@@ -576,9 +598,11 @@ export async function handleChatCompletion(
   // turn-saving `relay_batch` (§24 F60, §25, §27, §28); Sonnet 5 and Sonnet 5.5 plain `relay`. The
   // rest keep the bench-tuned `baseline`.
   // Keyed on the model, not the tone, because one tone can serve two models.
-  // M365_FRAMING_* still wins.
-  let framingVariant = currentFramingVariant(defaultFramingForModel(model));
-  let useToolAgent = requestUsesAgent(model, !!hasTools);
+  // M365_FRAMING_* still wins. Every agent-runtime turn is agent-less, so a model
+  // with no default of its own there gets relay_batch, the user-voice framing
+  // agent-less GPT models need (not the `<system>`-tagged baseline).
+  let framingVariant = currentFramingVariant(defaultFramingForModel(model) ?? (chat ? undefined : "relay_batch"));
+  let useToolAgent = chat && requestUsesAgent(model, !!hasTools);
 
   // A turn too long for M365 to keep goes up in parts (replay.ts): these are
   // sent ahead of `text`, which carries the request.
@@ -601,7 +625,7 @@ export async function handleChatCompletion(
   // long for one turn (cut shorter once M365 has failed to keep a long opening
   // of this model's), with `then` after it.
   const formatWhole = (variant = framingVariant, then?: string | null): string => {
-    const plan = planFullPrompt(body.messages, body.tools, body.tool_choice, session.conversationId, variant, turnLimit(pool, model));
+    const plan = planFullPrompt(body.messages, body.tools, body.tool_choice, session.conversationId, variant, turnLimit(pool, model, chat));
     pendingParts = plan.parts;
     partsCarryHistory = plan.parts.length > 0;
     const prompt = then ? `${plan.final}\n\n${then}` : plan.final;
@@ -615,7 +639,7 @@ export async function handleChatCompletion(
     text = formatWhole();
     inputAttachments = attachmentUrls(body.messages);
     const chars = pendingParts.reduce((n, p) => n + p.length, text.length);
-    log.info(`Chat completion: model=${model}, stream=${body.stream}, messages=${body.messages.length}, turn=${session.turnCount}, mode=full, chars=${chars}${partsNote()}, cid=${convId}`);
+    log.info(`Chat completion: model=${model}${chat ? "" : ` (${route.backend})`}, stream=${body.stream}, messages=${body.messages.length}, turn=${session.turnCount}, mode=full, chars=${chars}${partsNote()}, cid=${convId}`);
   } else {
     const newMessages = body.messages.slice(conv.sentMessageCount);
     inputAttachments = attachmentUrls(newMessages);
@@ -627,14 +651,14 @@ export async function handleChatCompletion(
         text = `${conv.pendingNote}\n\n${delta}`;
         log.info("Prepended the only-the-first-call-ran note (last reply was partly executed)");
       }
-      const plan = planText(text, turnLimit(pool, model));
+      const plan = planText(text, turnLimit(pool, model, chat));
       pendingParts = plan.parts;
       text = plan.final;
-      log.info(`Chat completion: model=${model}, stream=${body.stream}, messages=${body.messages.length}, new=${newMessages.length}, turn=${session.turnCount}, mode=delta${partsNote()}, cid=${convId}`);
+      log.info(`Chat completion: model=${model}${chat ? "" : ` (${route.backend})`}, stream=${body.stream}, messages=${body.messages.length}, new=${newMessages.length}, turn=${session.turnCount}, mode=delta${partsNote()}, cid=${convId}`);
     } else {
       // No meaningful new content to send — nudge M365 to continue.
       text = "Please continue.";
-      log.info(`Chat completion: model=${model}, stream=${body.stream}, messages=${body.messages.length}, turn=${session.turnCount}, mode=retry, cid=${convId}`);
+      log.info(`Chat completion: model=${model}${chat ? "" : ` (${route.backend})`}, stream=${body.stream}, messages=${body.messages.length}, turn=${session.turnCount}, mode=retry, cid=${convId}`);
     }
   }
   conv.pendingNote = null; // one turn only: consumed above, or stale
@@ -657,6 +681,8 @@ export async function handleChatCompletion(
   let lastScores: Record<string, number> | null | undefined;
   let lastTurnCount: number | null | undefined;
   let lastMetering: Record<string, number> | null | undefined;
+  // What the agent runtime charged for this request's turns, in Copilot credits.
+  let requestCredits: number | null = null;
   // The lost-history re-send in runBuffered, at most once per request: produce()'s
   // forcing and repair turns run it again, into the same conversation.
   let historyResent = false;
@@ -678,6 +704,7 @@ export async function handleChatCompletion(
   // after 5 minutes.
   let budgetWaitedMs = 0;
   const waitForBudget = async (): Promise<{ waitedMs: number }> => {
+    if (!chat) return { waitedMs: 0 }; // the agent runtime isn't under Chat's throttle
     const maxWaitMs = body.stream ? undefined : Math.max(0, UNSTREAMED_BUDGET_WAIT_LIMIT_MS - budgetWaitedMs);
     const waited = await awaitTurnBudget({ signal: opts.signal, maxWaitMs });
     budgetWaitedMs += waited?.waitedMs ?? 0;
@@ -712,7 +739,7 @@ export async function handleChatCompletion(
       let stream: TurnStream;
       try {
         // The final turn's agent-ness: a change of it would open another M365 session (ModelSession.run).
-        stream = await session.run(parts[i], model, opts.signal, useToolAgent, [], waitForBudget);
+        stream = await session.run(parts[i], model, opts.signal, useToolAgent, [], waitForBudget, turnOptions);
         for await (const _ack of stream) { /* acknowledged, not forwarded */ }
       } catch (err: any) {
         session.newConversation();
@@ -725,7 +752,7 @@ export async function handleChatCompletion(
       }
       log.info(`Reply to ${label}: ${JSON.stringify(trunc(stream.fullText ?? "", 120))}`);
       if (stream.result?.value === "Throttled") {
-        noteRequestOutcome(true, session.conversationId);
+        noteOutcome(true, session.conversationId);
         drop(); // a throttled turn processed nothing
         log.info(`Upstream Throttled on ${label} (${stream.result.errorCode ?? "no errorCode"}) — 429, no retry`);
         return { error: throttledResponse(stream.result) };
@@ -770,7 +797,7 @@ export async function handleChatCompletion(
     // starting fresh turns into the throttle and let it self-heal (H-R1). This
     // replaced the old auto-reauth, which didn't clear the throttle and raised our
     // detection profile. A single long pi thread never trips the trigger.
-    await awaitDegradationBackoff();
+    if (chat) await awaitDegradationBackoff();
     for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
       // A <tool_response> the model writes after a real call is a stop sequence
       // (truncateAtFabricatedToolResponse), but the cut in produce() only runs
@@ -852,7 +879,7 @@ export async function handleChatCompletion(
           // The agent overrides `tone` (forces GPT-5), so tool-less requests must
           // skip it to reach the model the tone selects (e.g. Claude). See
           // ModelSession.run / docs H8.6.
-          copilotStream = await session.run(text, model, signal, useToolAgent, inputAttachments, waitForBudget);
+          copilotStream = await session.run(text, model, signal, useToolAgent, inputAttachments, waitForBudget, turnOptions);
         } catch (err: any) {
           if (err instanceof TurnBudgetHold) return { error: turnBudgetHoldResponse(err) };
           return { error: jsonResponse(502, { error: { message: err.message, type: "upstream_error" } }) };
@@ -918,6 +945,9 @@ export async function handleChatCompletion(
       lastScores = copilotStream.scores;
       lastTurnCount = copilotStream.turnCount;
       lastMetering = copilotStream.metering;
+      if (!refused && typeof copilotStream.credits === "number") {
+        requestCredits = Math.round(((requestCredits ?? 0) + copilotStream.credits) * 1e6) / 1e6;
+      }
       // The classifier scores reach clients only as `usage` extension fields,
       // which a gateway drops; experiments read them from the debug log instead.
       if (lastScores && Object.keys(lastScores).length > 0) {
@@ -950,7 +980,7 @@ export async function handleChatCompletion(
       // straight back into the throttle, then a 502 blaming a content filter.
       // Fail fast with a 429 instead, and count it toward the degradation backoff.
       if (copilotStream.result?.value === "Throttled") {
-        noteRequestOutcome(true, convId);
+        noteOutcome(true, convId);
         log.info(`Upstream Throttled (${copilotStream.result.errorCode ?? "no errorCode"}) — 429, no retry`);
         return { error: throttledResponse(copilotStream.result) };
       }
@@ -962,7 +992,7 @@ export async function handleChatCompletion(
       // in a fresh conversation. At most once per request: a prompt that's
       // really too long then fails fast below.
       if (
-        !webSearchFallbackDone && !useToolAgent && toneUsesWebSearch(tone) &&
+        chat && !webSearchFallbackDone && !useToolAgent && toneUsesWebSearch(tone) &&
         copilotStream.result?.value === "InvalidRequest" &&
         copilotStream.result.errorCode === "InputTokenLimitExceeded"
       ) {
@@ -982,7 +1012,13 @@ export async function handleChatCompletion(
       // Codex first turn, whose ~40k-character instructions Sonnet takes (§39).
       // Any retry re-sends the same prompt, so fail fast and say what to cut.
       if (copilotStream.result?.value === "InvalidRequest") {
-        noteRequestOutcome(false, convId);
+        noteOutcome(false, convId);
+        // The agent runtime keeps a refused message in the conversation, where it
+        // would refuse the client's compacted retry too: start afresh.
+        if (!chat) {
+          session.newConversation();
+          conv.sentMessageCount = 0;
+        }
         log.info(`Upstream InvalidRequest (${copilotStream.result.errorCode ?? "no errorCode"}), prompt ${text.length} chars — 400, no retry`);
         return { error: invalidRequestResponse(copilotStream.result, model, text.length) };
       }
@@ -1058,7 +1094,7 @@ export async function handleChatCompletion(
       // way remember it, so the next requests don't spend M365 turns on
       // refusals until the reset.
       // A part M365 refused carries its refusal text on the part's own stream.
-      const exhausted = priorityAccessExhaustionOf(copilotStream.result, refused ? copilotStream.fullText : fullText);
+      const exhausted = chat && priorityAccessExhaustionOf(copilotStream.result, refused ? copilotStream.fullText : fullText);
       if (exhausted) {
         const budget = meteredBudgetOf(model);
         if (budget || copilotStream.result?.value === "OutOfCredits") notePriorityAccessExhausted(budget ?? model, exhausted);
@@ -1077,7 +1113,7 @@ export async function handleChatCompletion(
           attempt--;
           continue;
         }
-        noteRequestOutcome(false, convId); // an answer, not a throttle
+        noteOutcome(false, convId); // an answer, not a throttle
         log.info(`Priority access exhausted (${exhausted.window}) — resets ${exhausted.resetsAt.toISOString()}`);
         return { error: priorityAccessResponse(exhausted, model) };
       }
@@ -1106,7 +1142,7 @@ export async function handleChatCompletion(
       }
 
       if (answered) {
-        noteRequestOutcome(false, convId); // clean response → degradation has lifted
+        noteOutcome(false, convId); // clean response → degradation has lifted
         if (useToolAgent) noteAgentRouteAlive(tone); // the agent route answered on this account
         if (opening) conv.openingAnswered = true;
         conv.servedModel = model;
@@ -1165,7 +1201,7 @@ export async function handleChatCompletion(
         !internalErrorFreshRetried &&
         copilotStream.result?.value === "InternalError" &&
         !answered &&
-        !isPremiumOnlyModel(model) &&
+        !(chat && isPremiumOnlyModel(model)) &&
         attempt < MAX_RETRIES
       ) {
         internalErrorFreshRetried = true;
@@ -1182,9 +1218,12 @@ export async function handleChatCompletion(
       // prompt over its input limit (§47 F128), which no "continue" fixes. Not a
       // throttle, so it doesn't feed the degradation backoff.
       if (failed && internalErrorFreshRetried) {
-        noteRequestOutcome(false, convId);
+        noteOutcome(false, convId);
         log.info("Turn failed again after a fresh re-send — 502, no more retries");
-        return { error: jsonResponse(502, { error: { message: "M365 Copilot failed this turn twice (InternalError, turnState Failed). For GPT-6.x that is usually a prompt over its input limit (about 272k tokens): compact the conversation.", type: "upstream_error" } }) };
+        const failure = chat
+          ? "M365 Copilot failed this turn twice (InternalError, turnState Failed). For GPT-6.x that is usually a prompt over its input limit (about 272k tokens): compact the conversation."
+          : `M365 Copilot's agent runtime (${route.backend}) failed this turn twice (${copilotStream.result?.errorCode ?? "no error code"}${copilotStream.result?.message ? `: ${copilotStream.result.message}` : ""}).`;
+        return { error: jsonResponse(502, { error: { message: failure, type: "upstream_error" } }) };
       }
 
       // A part M365 didn't acknowledge, and none of the above recovers it. It
@@ -1230,7 +1269,7 @@ export async function handleChatCompletion(
         // 4.8: BotConnection, `InternalError`, every time, with the agent and
         // without — §24, §36). Not a throttle, so it doesn't feed the degradation
         // backoff; say what it is instead of "empty response".
-        if (isPremiumOnlyModel(model) && copilotStream.result?.value === "InternalError") {
+        if (chat && isPremiumOnlyModel(model) && copilotStream.result?.value === "InternalError") {
           log.info(`${model}: InternalError on every attempt — premium-only model on a non-premium account?`);
           return { error: premiumOnlyModelResponse(model) };
         }
@@ -1238,11 +1277,11 @@ export async function handleChatCompletion(
         // this is the thread-rate throttle signature (F13). Feed the degradation-
         // backoff policy — once empties span enough distinct conversations it paces
         // subsequent turns so the account can self-heal (H-R1). Never blocks this request.
-        noteRequestOutcome(true, convId);
+        noteOutcome(true, convId);
         return { error: emptyResponseResponse(t) };
       }
     }
-    noteRequestOutcome(true, convId);
+    noteOutcome(true, convId);
     return { error: emptyResponseResponse(null) };
   }
 
@@ -1293,7 +1332,7 @@ export async function handleChatCompletion(
     log.info(`Parse result: hasToolCalls=${parsed.hasToolCalls}, count=${parsed.toolCalls.length}`);
 
     // The reply tried to call a tool, but the call couldn't be read: ask for it
-    // once more, saying what was wrong, before any give-up handling (§48 F132).
+    // once more, saying what was wrong, before any give-up handling (§49 F138).
     // Transport/filter retries (Bing overflow, Apology, Disengaged) already ran
     // inside runBuffered above; the forcing retry below is skipped after this
     // re-ask, while strippedTypeMember still guards any PowerShell call it
@@ -1484,8 +1523,10 @@ export async function handleChatCompletion(
         completion: estimateTokens(reply),
       }
       : undefined;
-    return buildUsage(lastThrottle, lastContentOrigin, lastMessageType, lastScores, lastTurnCount, lastMetering, tokens);
+    return buildUsage(lastThrottle, lastContentOrigin, lastMessageType, lastScores, lastTurnCount, lastMetering, tokens, requestCredits);
   };
+  // The ID the client asked for (suffixes and all), unless a fallback model answered.
+  const responseModel = () => (model === route.model ? request.model : model);
   const callsText = (calls: { function: { name: string; arguments: string } }[]) =>
     calls.map((c) => `${c.function.name} ${c.function.arguments}`).join("\n");
 
@@ -1494,14 +1535,14 @@ export async function handleChatCompletion(
     if (p.kind === "error") return p.resp;
     if (p.kind === "tools") {
       return jsonResponse(200, {
-        id: completionId, object: "chat.completion", created, model,
+        id: completionId, object: "chat.completion", created, model: responseModel(),
         choices: [{ index: 0, message: { role: "assistant", content: null, tool_calls: p.toolCalls }, finish_reason: "tool_calls" }],
         usage: usage(callsText(p.toolCalls)),
       });
     }
     return jsonResponse(200, {
-      id: completionId, object: "chat.completion", created, model,
-      choices: [{ index: 0, message: { role: "assistant", content: p.text }, finish_reason: outputFinishReason(p.text) }],
+      id: completionId, object: "chat.completion", created, model: responseModel(),
+      choices: [{ index: 0, message: { role: "assistant", content: p.text }, finish_reason: outputFinishReason(p.text, chat) }],
       usage: usage(p.text),
     });
   }
@@ -1518,7 +1559,7 @@ export async function handleChatCompletion(
     async start(controller) {
       const enc = new TextEncoder();
       const send = (obj: unknown) => controller.enqueue(enc.encode(`data: ${JSON.stringify(obj)}\n\n`));
-      const base = { id: completionId, object: "chat.completion.chunk", created, model };
+      const base = { id: completionId, object: "chat.completion.chunk", created, model: responseModel() };
       send({ ...base, choices: [{ index: 0, delta: { role: "assistant" }, finish_reason: null }] });
       // Keepalive: a REAL empty-delta chunk, not an SSE comment. Agents that track
       // stream liveness by data chunks (e.g. Hermes: comments don't reset its
@@ -1601,7 +1642,7 @@ export async function handleChatCompletion(
           const remainder = p.text.startsWith(sent) ? p.text.slice(sent.length) : "";
           if (!p.text.startsWith(sent)) log.info(`Streamed prefix diverged from final text (sent ${sent.length}, final ${p.text.length} chars) — not re-sending to avoid duplication`);
           if (remainder) send({ ...base, choices: [{ index: 0, delta: { content: remainder }, finish_reason: null }] });
-          send({ ...base, choices: [{ index: 0, delta: {}, finish_reason: outputFinishReason(p.text) }], ...(includeUsage ? { usage: usage(p.text) } : {}) });
+          send({ ...base, choices: [{ index: 0, delta: {}, finish_reason: outputFinishReason(p.text, chat) }], ...(includeUsage ? { usage: usage(p.text) } : {}) });
         }
       } catch {
         // client likely disconnected mid-emit — nothing more to do
@@ -1632,6 +1673,7 @@ function buildUsage(
   turnCount?: number | null,
   metering?: Record<string, number> | null,
   tokens?: { prompt: number; completion: number },
+  credits?: number | null,
 ): Record<string, unknown> {
   const base: Record<string, unknown> = {
     prompt_tokens: tokens?.prompt ?? 0,
@@ -1665,6 +1707,8 @@ function buildUsage(
     if (left?.daily !== undefined) base[`x_m365_${usageKey}_daily_remaining`] = left.daily;
     if (left?.weekly !== undefined) base[`x_m365_${usageKey}_weekly_remaining`] = left.weekly;
   }
+  // The agent runtime (Cowork, Code) charges Copilot credits for every turn.
+  if (typeof credits === "number") base.x_m365_credits = credits;
   return base;
 }
 
@@ -1759,15 +1803,19 @@ function turnBudgetHoldResponse(hold: TurnBudgetHold): Response {
  *  the prompt is too big for this model. A 400: re-sending it can't succeed. */
 function invalidRequestResponse(result: { errorCode?: string; message?: string }, model: string, promptChars: number): Response {
   const tooLong = result.errorCode === "InputTokenLimitExceeded";
+  // The agent runtime refuses a model its catalog doesn't have now (it dropped every GPT model on Nov 19 2026).
+  const notInCatalog = result.errorCode === "ModelNotInCatalog";
   const message = tooLong
     ? `M365 Copilot refused the prompt as too long for ${model} (InputTokenLimitExceeded; ${promptChars} characters sent). ` +
       `Shorten the system prompt or the tool definitions (for Codex: model_instructions_file), or use another model.`
+    : notInCatalog
+    ? `${model} isn't in the agent runtime's model catalog now${result.message ? ` (${result.message})` : ""}. GET /v1/models lists the models it serves.`
     : `M365 Copilot rejected the request (InvalidRequest${result.errorCode ? `: ${result.errorCode}` : ""})${result.message ? `: ${result.message}` : "."}`;
   return jsonResponse(400, {
     error: {
       message,
       type: "invalid_request_error",
-      code: tooLong ? "context_length_exceeded" : "m365_invalid_request",
+      code: tooLong ? "context_length_exceeded" : notInCatalog ? "model_not_found" : "m365_invalid_request",
       ...(result.errorCode ? { param: result.errorCode } : {}),
     },
   });

@@ -1093,7 +1093,7 @@ const FENCE_OPEN_MIDLINE = /(`{3,})([A-Za-z0-9_.-]+)[ \t]*$/;
 const FENCE_CLOSE_GLUED = /[^`\s](`{3,})[ \t]*$/;
 // And a closer with the next sentence glued on: "```Raporu hazırlayabilmem için
 // önce…" (3 of 1,153 whole logged replies, every one a call that was dropped;
-// docs §48 F132).
+// docs §49 F138).
 // It reads as an opener, so it is taken only when what follows the backticks
 // reads as prose — three or more words, no attribute syntax — never as
 // "```python title=x".

@@ -26,6 +26,7 @@ If you read nothing else:
 7. **Tool calling is not native.** It only works reliably if you create a **Copilot Studio agent** and reference it per request; otherwise M365 ignores tool instructions and answers in prose / hallucinates.
 8. M365 has a **"Disengaged" safety filter**: large or jailbreak-looking prompts get a `messageType:"Disengaged"` message with **empty content** — which is easy to mistake for rate limiting.
 9. The **new web client (`copilot.cloud.microsoft`) uses StreamHub**, a second endpoint with the same SignalR protocol but item-based framing; `M365_TRANSPORT=streamhub` makes the proxy use it (§13).
+10. The web app's **Cowork and Code tabs are a different service**: an agent runtime with a REST + SSE API, its own token scope, longer turns (2M characters on GPT) and a charge in Copilot credits on every turn. The proxy's `cowork` and `code` backends use it (§14).
 
 ---
 
@@ -703,7 +704,9 @@ Evidence (`scripts/dataverse-bot-probe.mjs`, with a `<org>.crm4.dynamics.com/.de
 | `packages/core/src/auth.ts` | MSAL PKCE, silent refresh, automated Playwright login, token-for-scope |
 | `packages/core/src/copilot.ts` | One-shot WS chat, `decodeJwt`, `MODEL_TONES`, `VARIANTS` |
 | `packages/core/src/session.ts` | Stateful `CopilotSession` (reconnect per turn, reuse ids), SignalR frame handling |
-| `packages/core/src/model.ts` | `ModelSession` — auth + agent + conversation continuity, string-in/stream-out |
+| `packages/core/src/model.ts` | `ModelSession` — auth + agent + conversation continuity, string-in/stream-out; `TurnSession`, what the handler drives |
+| `packages/core/src/backends.ts` | Backends (`chat`, `cowork`, `code`), `M365_BACKENDS`, model IDs with suffixes, measured windows |
+| `packages/core/src/aether.ts` | `AetherSession` — a Cowork or Code conversation on the agent runtime (§14) |
 | `packages/core/src/agent.ts` | Copilot Studio agent create/publish, BAP env discovery |
 | `packages/core/src/schemas.ts` | Zod schemas for SignalR frames & JWT claims |
 | `packages/proxy-lib/src/handler.ts` | OpenAI ↔ M365 translation, `SessionPool`, delta mode, tool-call parsing, one-call-per-turn, empty-response fail-fast |
@@ -822,5 +825,88 @@ Every item carries the `requestId` it belongs to; keep to this turn's (the serve
 id as sent).
 
 **Not StreamHub: Cowork and Code.** The web app's Cowork and Code tabs run an agent runtime (Copilot
-Studio): a message is queued over REST and the run streams back as server-sent events. Its agent runs
-tools in Microsoft's cloud, not on your machine, so the proxy doesn't use it.
+Studio): a message is queued over REST and the run streams back as server-sent events. See §14.
+
+---
+
+## 14. The agent runtime — Cowork and Code (Nov 2026)
+
+The web app's Cowork and Code tabs run on an agent runtime (a Copilot Studio "island", `Aether` in its
+scripts). The proxy uses it as two more backends, `cowork` and `code` (`M365_BACKENDS`,
+`packages/core/src/aether.ts`). Observed 2026-11-18/19 on a premium account; hypotheses §48.
+
+**Token.** Scope `6ab48b67-cd74-4ad4-81af-5932984589be/access_as_user`, which the proxy's MSAL client gets
+silently (`getTokenForScope`). Every call sends it as a Bearer with `x-tenant-id` (`tid`) and `x-user-id`
+(`oid`).
+
+**Endpoint.** `GET https://cowork.us-ia888.gateway.prod.island.powerapps.com/v1/routing` returns the
+user's cluster, `{"endpoint": "https://mcsaetherruntime-eus2.us-ia302.gateway.prod.island.powerapps.com",
+"geo": "unitedstates"}`. `M365_AETHER_ENDPOINT` overrides it.
+
+**Headers** on a conversation's calls: `x-cowork-host-type: officeweb:web`, `x-copilot-timezone`,
+`x-request-id`, `x-conversation-id`, `x-container-config`, and for Code `x-container-type: copilot`.
+
+| | Cowork | Code |
+|---|---|---|
+| session key | `<uuid>` | `code-<uuid>` |
+| `conversationId` (header and body) | `<tid>:<oid>:<uuid>` | `code-<uuid>` |
+| `x-container-config` | `renderUi=true;durableArtifactsEnabled=true;acceptLanguage=en-us;model=<id>:copilot`, plus `;reasoningEffort=<level>` when set | `appGenerationEnabled=true;appGenerationConnectorsEnabled=true;model=<id>;reasoningEffort=<level>` (`medium` by default) |
+
+**A turn** is three calls:
+1. `POST /v1/prewarm` with `{}`: 200 `{"status":"accepted"}`. Once per conversation, as the web app does.
+2. `POST /v1/messages` with `{content: [{type: "text", text}, …], conversationId, messageId, queue: true,
+   role: "user"}`: 202 `{id, messageId, conversationId, streamId, status: "accepted"}`. A text item holds
+   at most 1,000,000 characters; longer text goes as several. `id` (`1795113760540-38`) is the message's
+   place in the conversation's event stream.
+3. `GET /v1/subscribe` with `accept: text/event-stream` and `last-event-id` set to that `id`: the events
+   from the message on (from `0-0`, every turn's). CRLF lines; most events carry `id: seq:<n>`; an empty
+   keep-alive comes every 30 s.
+
+The server keeps the conversation: a follow-up sends only its new message, and is cheaper (cached).
+
+| event | `data` |
+|---|---|
+| `session` | the session (no `id:`) |
+| `u`, `q` | the user message; it was queued (`mid`, `eid`) |
+| `rl` | the run: `{st: "started", mid}`, then `{st: "ok"` or `"fail", mid, tc, code, err}`. `tc` counts the runtime agent's own tool calls |
+| `dx` | `{t}`: a text delta, with no `mid` (an earlier run still going streams into the same subscription, so count them only after this message's `rl started`) |
+| `fr` | `{stop, mid: "<messageId>:<n>:<hex>", content}`: an assistant message's final text |
+| `uv` | `{type: "session_stop", id: "<messageId>:…", reason}` |
+| `cq` | `{d, m, t, r}`: a charge, `d` Copilot credits for model `m` on message `r`. `t` is the message ID for the title call and the run's own ID for the model's calls; the run's charge lands within milliseconds of `rl ok`, before or after it |
+| `error` | `{code, err, retry, sev}`, e.g. `engine.v2_refusal` "This request couldn't be completed. Please send your message again." |
+| `uq` | `{b, r, k, rs}`: the monthly entitlement, after `rl` |
+| `ti`, `tk`, `ic`, `tst`, `co`, `ck`, `rh`, `rpc`, `cs`, `up` | title, task progress and the rest; the proxy ignores them |
+
+**Other calls.** `GET /v1/models`: the catalog, the same for both tabs (`supported_effort_levels`,
+`usage_multiplier`, `llm_health_bucket`). It changes: on Nov 19 2026 it listed eight models in the
+morning and only `opus-5.5`, `opus-5.5-fast` and `sonnet-5.5` by 15:55 ET, and from then a message naming
+a model outside it was refused: `POST /v1/messages` → 400 `{"detail": {"type": "error", "code":
+"MODEL_NOT_IN_CATALOG", "message": "Model 'gpt-6.2-sol:copilot' is not a known catalog entry. …",
+"model": …}}` (hypotheses §48 F137). `GET /v1/entitlement`: `{budget, consumed, remaining}`. `GET
+/v1/tasks`: the sidebar's tasks, both tabs. `GET /v1/tasks/live/detail?sessionId=<key>`: a task's
+`snapshot.costCredits` (all its charges, `costFullyCounted`) and `activeModel`. `DELETE
+/v1/conversations/<key>`: 204, and the task leaves the sidebar (the web app's `tasks.delete`). No stop
+call turned up: closing the stream leaves the run going, and the next message queues behind it.
+
+**What a turn holds** (needle probes, one turn each, hypotheses §48 F133): the GPT models answered 2.0M
+characters (~806k tokens), and GPT-6.2 Sol (`gpt-6.2-sol-substrate`) refused 2.5M (~1.0M) and 3.0M (H48a);
+Opus 5.5 and Sonnet 5.5 answered 1.6M (~645k), and Sonnet 5.5 refused 2.0M with `engine.v2_refusal`.
+Chat's GPT-6.x reads about 272k (§47).
+
+**What a turn costs.** Every turn is charged to the user's Copilot credits, as `cq` events: the model's
+calls, plus a title and follow-up suggestions on a small model (`claude-haiku-5-5`, `gpt-6-luna`), about
+0.005–0.01 each. One line in a new conversation cost 0.04 (Cowork, Sonnet 5.5) to 9.5 (Code, GPT-6.2 Sol),
+a follow-up about 0.4, and a long turn 0.28 (GPT-6.2 Sol) to 1.15 (GPT-6.2 Astra) credits per 1,000
+tokens. The full table is in the README's [Credit usage](../README.md#credit-usage).
+
+**The Code tab's local sessions are a third service.** The Copilot app (`copilotapp.exe`) runs Code
+sessions on the user's own folders ("Local" in its sidebar) through a bundled runtime,
+`…\Copilot\User Data\CopilotCodeTabRuntime\<version>\copilot.exe --server --stdio`: a Copilot CLI build
+started with `COPILOT_OFFLINE=true` and a bring-your-own-key provider, `undocked-byok`
+(`COPILOT_PROVIDER_BASE_URL=https://loki.delve.office.com/api/v1/llmapi`, the OpenAI Responses API, models
+such as `gpt-61-sol` and `gpt-6-astra`), signed in with Entra for audience
+`12f6db80-0741-4a7e-b9c5-b85d737b3a31`. Those sessions are the ones whose picker has a "Long context" switch:
+the runtime records `contextTier: "long_context"` in the session. The proxy's app registration
+(`M365ChatClient`) gets `AADSTS65001` (not consented) for that audience, so the proxy doesn't use them.
+The Code app's own script sends `context_tier` in its session commands; the agent runtime's models list no
+tiers (hypotheses §48 F136).

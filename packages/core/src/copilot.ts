@@ -684,4 +684,6 @@ export interface CopilotStream {
   metering?: Record<string, number> | null;
   /** True if the model triggered a native custom action this turn (H-NATIVE-6). */
   sawAction?: boolean;
+  /** Copilot credits charged for the turn (the agent runtime's `cq` events). */
+  credits?: number | null;
 }

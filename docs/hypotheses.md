@@ -115,9 +115,15 @@ than "we eyeballed one run." See §M (Methods) for the experimental rig.
   more (F128); M365 doesn't keep a long turn on Claude either (F129); over a conversation Claude keeps
   about 1.6M characters verbatim and GPT-6.x summarizes past its window (F130); long turns in parts,
   failed turns, estimated usage (F131); a longer window for GPT-6.x (H47a, open)
-- §48 — dropped tool calls: eight fence shapes the scanner dropped or changed, and a ninth in real replies
+- §48 — Cowork and Code, the agent runtime, as backends: a turn is three REST/SSE calls on the proxy's own
+  token (F132); one turn reads 2M characters on GPT, 1.6M on Claude (F133); every turn costs credits
+  (F134); a conversation can be deleted, a run can't be stopped (F135); the Code tab's "Long context"
+  switch belongs to its local sessions, on Office's LLM API, which the proxy can't use (F136); the catalog
+  changes and refuses what it doesn't list (F137); GPT-6.2 Sol's one-turn limit, ~806k to ~1.0M tokens, and its
+  turns now almost free (H48a)
+- §49 — dropped tool calls: eight fence shapes the scanner dropped or changed, and a ninth in real replies
   (a closer with the next sentence glued on: 3 dropped calls in 1,153); CommonMark fences, and asking
-  again for a call that still can't be read (F132)
+  again for a call that still can't be read (F138)
 
 ---
 
@@ -6423,16 +6429,136 @@ refused the same with `contextTier` or `context_tier: "long_context"` at the top
 in `options`, in `extraExtensionParameters` and in `message`. **Probe:** on an account whose Code picker
 offers the long tier, a Code session's state after `create_session` with it, then a turn over 272k tokens.
 
+**→ §48:** for GPT, yes, without a tier: on Cowork and Code every GPT model read 2.0M characters in one
+turn (F133). The long tier itself belongs to the Code tab's local sessions, on another service (F136).
+
+## 48. Nov 19 2026 — Cowork and Code as backends
+
+**Question.** The web app's Cowork and Code tabs run on F110's agent runtime, not on Chat. Can the proxy
+send its turns there, and what does that buy: a longer window than Chat's (H47a), no Chat throttle, at what
+price? One premium account; one probe per cell (n=1) unless noted. Wire details: [API doc §14](m365-copilot-api.md).
+
+### F132 — a turn is three calls, on the proxy's own token 🟢
+The proxy's MSAL client gets the runtime's scope (`6ab48b67-…/access_as_user`) silently. A turn is
+`POST /v1/prewarm`, `POST /v1/messages` (202, with the message's place in the event stream as `id`) and
+`GET /v1/subscribe`. Subscribing with `last-event-id` set to that `id` replayed only that turn's events in
+a two-turn probe; from `0-0` it replays every turn. `rl {st: "started", mid}` and `rl {st: "ok"}` bracket
+the run, and its deltas (`dx`) carry no message ID. The model's charge (`cq`) landed 2 ms before `rl ok` in
+one Code turn and after it in another, which first under-reported a turn's credits as 0.02. The server keeps
+the history: a follow-up sent alone was answered in context ("PONG 7").
+
+Through the proxy (`M365_BACKENDS=chat,cowork,code`, StreamHub and `relay_batch` as the live setup):
+`gpt-6.2-sol(cowork)` answered and continued over the delta path, `claude-sonnet-5.5(code)` streamed, and
+`claude-opus-5.5(cowork)` answered a bash-tool request with a fenced call the proxy turned into a tool call
+(`tc` 0: the runtime's agent ran none of its own tools).
+
+### F133 — one turn reads 2M characters on GPT, 1.6M on Claude 🟢
+Needle turns (§47's log filler, three codes at 1%, 50% and 99%; o200k, 2.48 characters a token), each in a
+new Cowork conversation:
+
+| model | characters | ~tokens | codes | time | credits |
+|---|---|---|---|---|---|
+| `gpt-6.2-sol` | 900k | 363k | 3/3 | 3.8 s | 101 |
+| `gpt-6.2-sol` | 2.0M | 806k | 3/3 | 6.8 s | 224 |
+| `gpt-6.2-astra` | 2.0M | 806k | 3/3 | 29.8 s | 927 |
+| `gpt-6.1-sol` (`gpt-6.1-sol-substrate`) | 2.0M | 806k | 3/3 | 14.4 s | 232 |
+| `gpt-5.5` | 2.0M | 806k | 3/3 | 25.8 s | 506 |
+| `claude-opus-5.5` | 1.6M | 645k | 3/3 | 6.5 s | 481 |
+| `claude-sonnet-5.5` | 1.6M | 645k | 3/3 | 4.3 s | 236 |
+| `claude-sonnet-5.5` | 2.0M | 806k | refused: `engine.v2_refusal`, `retry: true` | 0.8 s | 0.01 |
+
+Code's GPT-6.2 Sol read 900k (3/3). 2.0M was the most tried, so the GPT models' limit is unknown; it is at
+least three times Chat's ~272k (F128). The runtime's 1M-character cap on a text item didn't matter: 2.0M
+went as three items. The proxy names these windows in its model IDs (`_800k`, `_640k`); the Fast variants
+and Code take the same numbers unmeasured.
+
+### F134 — every turn costs credits 🟢
+Each turn's `cq` events charge Copilot credits. One line in a new Cowork conversation cost 0.9 to 1.3
+credits through the proxy (n=3) and 9.2 once directly; in a new Code conversation 2.6 (Sonnet 5.5, n=2) and
+9.5 (GPT-6.2 Sol); on Sonnet 5.5 in Cowork it cost 0.04, reported as 0.038 against 0.042 in the task's `costCredits`: the difference is a follow-up suggestion charged after the turn ended. A follow-up costs about 0.4. A long turn costs 0.28 (GPT-6.2 Sol) to 1.15 (GPT-6.2 Astra)
+credits per 1,000 tokens (F133). The monthly entitlement (`GET /v1/entitlement`, `uq`: budget 1,000,000)
+doesn't count in these credits, or lags: about 500 credits of probes moved `consumed` by 24, and it rose by
+6,000 in a quiet 20 minutes before them.
+
+### F135 — a conversation can be deleted; a run can't be stopped 🟢
+`DELETE /v1/conversations/<session key>` (the web app's `tasks.delete`) answered 204, after which the task's
+detail is `404 task_not_found` and it leaves the sidebar (13 probe tasks deleted so). The client's scripts
+have no stop or cancel call (`/v1/` paths: conversations, files, models, routing, settings, skills,
+subscribe, suggestions, tasks, …), so closing the stream leaves a run going and a queued message waits for
+it. The proxy deletes the conversations it leaves, five minutes on so that a request still reading a run there finishes, unless `M365_SAVE_HISTORY=1`, so its tasks don't pile up
+in the user's Cowork and Code lists.
+
+### F136 — the "Long context" switch is the Copilot app's local Code sessions, on another service 🟢
+A screenshot from the user (the Copilot app's Code tab, GPT-6 Astra at Max effort, "Long context" on, no
+credits charged) first looked like the GitHub Copilot desktop app: the agent runtime's catalog had no
+GPT-6 Astra and no `supported_context_tiers`, and the web Code tab showed no switch. A second screenshot
+showed the session under **Local** in the app's sidebar, not Cloud. Local sessions run on the user's
+folders through a runtime the Copilot app (`copilotapp.exe`) bundles and starts via `copilotapphost.exe`:
+`…\Copilot\User Data\CopilotCodeTabRuntime\0.1.548.0\copilot.exe --server --stdio`, a Copilot CLI build
+(1.0.108). Its log says "Running in offline mode. GitHub features are unavailable", and its environment
+(names and non-secret values read from the process) sets a bring-your-own-key provider:
+
+| variable | value |
+|---|---|
+| `COPILOT_PROVIDER_BASE_URL` | `https://loki.delve.office.com/api/v1/llmapi` |
+| `COPILOT_PROVIDER_TYPE`, `…_WIRE_API` | `openai`, `responses` |
+| `COPILOT_MODEL`, `…_WIRE_MODEL` | `gpt-61-sol` |
+| `COPILOT_ENTRA_AUTH_AUD` | `12f6db80-0741-4a7e-b9c5-b85d737b3a31` |
+| `COPILOT_SESSION_SCOPED_HEADERS`, `…_TURN_SCOPED_HEADERS` | `{"X-ConversationId": "session_id"}`, `{"X-ClientCallId": "call_id"}` |
+
+Its `byok-routing.log` shows the picker's choices routed to provider `undocked-byok` (`model=gpt-6-astra
+… effort=max`), and its session events record `selectedModel: "undocked-byok/gpt-6-astra"` with
+`contextTier: "long_context"` or `"default"`, and `totalPremiumRequests: 0` at shutdown. So the switch is
+real, on Office's LLM API (`loki.delve.office.com`), not on the agent runtime. The proxy can't follow: its
+app registration (`M365ChatClient`, `c0ab8ce9-…`) gets `AADSTS65001` ("has not consented") for that
+audience, and using another app's sign-in or its tokens would sidestep that consent, which the proxy doesn't
+do. The Code app's script (`code.remote.js`) sends `context_tier` in `create_session` and
+`set_session_model`, and offers the tier for a model whose `supported_context_tiers`
+(`[{id: "default" | "long_context", maxContextWindowTokens}]`) gives `long_context` the bigger window.
+
+### F137 — the runtime's catalog changes, and now refuses what it doesn't list 🟢
+At 14:10 ET on Nov 19 `GET /v1/models` listed eight models; at 15:55 only `opus-5.5`, `opus-5.5-fast` and
+`sonnet-5.5` (the `anthropic` health bucket; `auto_health_buckets` was `["anthropic"]` both times), for
+Cowork and Code alike, and for every `x-cowork-host-type` tried (none, `officeweb:web`, `teams:web`,
+`copilotapp:desktop` and five more). From then `POST /v1/messages` refused every GPT model, with `:copilot` or without:
+400 `MODEL_NOT_IN_CATALOG`, "Model 'gpt-6.2-sol:copilot' is not a known catalog entry. Use a valid model
+id (e.g. 'opus-5.5')." Opus 5.5 was accepted. At 17:40 the catalog had six: `gpt-6.2-sol-substrate`
+("GPT 6.2 Sol", the `llmapi` bucket, as `gpt-6.1-sol-substrate` was), `gpt-6.2-sol-fast`, `gpt-6.2-astra` and
+the three Claude models; no `gpt-6.2-sol`, `gpt-6.1-sol-substrate` or `gpt-5.5`. The proxy now lists the
+runtime's models from the live catalog (kept 10 minutes; the built-in table when it can't be read) and
+answers a refused model with a 400 `model_not_found`.
+
+**H48a — answered for GPT-6.2 Sol:** its one-turn limit is between ~806k and ~1.0M tokens. On
+`gpt-6.2-sol-substrate` (Cowork, 17:45), a needle turn of 2.0M characters answered (3/3, 10.3 s), and 2.5M
+(~1.0M tokens) and 3.0M (~1.2M) were refused as too long (`engine.v2_refusal`). The other GPT models'
+limits weren't probed past 2.0M.
+
+**Its turns cost almost nothing (n=1).** The answered 2.0M-character turn's task total was 0.061 credits
+(`costCredits`, `costFullyCounted: true`), and each refused one's 0.03–0.04: the title and suggestion calls
+alone. That morning the same turn cost 224 on `gpt-6.2-sol` and 232 on `gpt-6.1-sol-substrate`, also an
+`llmapi` model. Whether `llmapi` turns now go uncharged, as the Code tab's local sessions on Office's LLM
+API do (F136), is open: a second probe on another day would tell.
+
+**Shipped:** `M365_BACKENDS` (default all three; `chat` keeps a proxy off the runtime)
+lists the Cowork and Code models as `<model>(<backend>)[_<window>][_credit]`, Chat's as well
+(`gpt-6.2-sol(chat)_272k`); a request may name `cowork` or `code` only when listed, and an ID without
+parentheses stays on Chat unless `M365_DEFAULT_BACKEND` names a backend that serves the model. Cowork and
+Code list what the catalog has (F137). On the runtime the proxy sends a history whole (no parts), passes
+`reasoning_effort`, skips Chat's throttle budget, tool agent and priority-access handling, reports the
+turn's credits as `usage.x_m365_credits`, maps `engine.v2_refusal` on a prompt of 400k characters or more
+to a 400 `context_length_exceeded`, and a model outside the catalog to a 400 `model_not_found`.
+`core/src/backends.ts`, `core/src/aether.ts`.
+
 ---
 
-## 48. Oct 11 2026 — dropped tool calls: the fence shapes the scanner missed, and asking again for the rest
+## 49. Oct 11 2026 — dropped tool calls: the fence shapes the scanner missed, and asking again for the rest
 
 A call the parser can't read is the worst failure the proxy has: the reply goes to the harness as prose,
 the harness ends its turn, and the model reads the silence as having no tools. 91bf23b brought back two
 shapes #44's scanner had dropped (a glued closer, a mid-line opener) as insurance; this asks which others
 exist, and whether any reach real replies.
 
-### F132 — eight fence shapes dropped or changed a call; a ninth was in the logs, 3 dropped calls in 1,153 replies 🟢
+### F138 — eight fence shapes dropped or changed a call; a ninth was in the logs, 3 dropped calls in 1,153 replies 🟢
 **Probe** (model-free: `parseToolCalls` with pi's tools on `main` after 91bf23b). Read: a plain fence, a
 glued closer, a mid-line opener, CRLF. Dropped: ```` ```Bash ````, ```` ``` bash ````, `~~~bash`, ```` ```bash
 title="x" ````, a one-line ```` ```bash ls -la``` ````, a closer with text after it, a fence never closed.
