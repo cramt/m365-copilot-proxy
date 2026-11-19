@@ -6370,8 +6370,9 @@ the codes, marked IMPORTANT, outlived the record lines, and part 1's code didn't
   (`replay.ts`). A whole history, opening a conversation, keeps its leading system messages, the tool
   framing and as many of the latest messages as fit in the last turn; the older messages go ahead of it
   as transcript parts the model acknowledges ("reply with only: OK"). A long follow-up is cut as text.
-  Once M365 has dropped an opening of 200k characters or more (F127), parts are cut to 75% of it, so the
-  replayed history is kept and continued with deltas, instead of replayed whole on every request.
+  Once M365 has dropped an answered opening of 200k characters or more (F127), that model's parts are cut
+  to 75% of it for 24 h, starting with the same request's re-send, so the replayed history is kept and
+  continued with deltas, instead of replayed whole on every request.
 - A failed turn (`InternalError` and `turnState: Failed`) has no answer: its apology counts as an empty
   `InternalError`, re-sent once in a fresh conversation, and the streaming path holds it back.
 - `usage` carries estimates: the whole formatted request, and the reply, at 4 UTF-8 bytes a token

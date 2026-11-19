@@ -245,8 +245,8 @@ summarized or dropped earlier turns. To have Codex compact first, use the same `
 with 225,000 for GPT-6.x and 450,000 for the Claude models, counted in the proxy's estimate.
 
 From the repo root in PowerShell, with the gateway running, discover every M365 model and pass
-`MODEL=WINDOW` for the five overrides. Use this instead of `--all` when refreshing the catalog so
-the overrides are preserved:
+`MODEL=WINDOW` for the five overrides. `--all` takes the same overrides, but lists every gateway
+model, not only `m365/*`:
 
 ```powershell
 $longContext = @(
