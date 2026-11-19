@@ -28,12 +28,14 @@ function isBackend(name: string): name is Backend {
 
 /**
  * The backends whose models `/v1/models` lists (M365_BACKENDS, a comma list;
- * default `chat`). A request may name `cowork` or `code` only when it's listed
- * here: their turns spend credits. Chat requests are always served.
+ * default all three). A request may name `cowork` or `code` only when it's
+ * listed: `M365_BACKENDS=chat` keeps a proxy off the credit-charged runtime.
+ * Chat requests are always served, and an ID without a backend stays on Chat,
+ * so a client spends credits only by naming a `(cowork)` or `(code)` model.
  */
 export function enabledBackends(): Backend[] {
   const raw = process.env.M365_BACKENDS?.trim();
-  if (!raw) return ["chat"];
+  if (!raw) return [...BACKENDS];
   const out: Backend[] = [];
   for (const name of raw.split(",").map((s) => s.trim().toLowerCase()).filter(Boolean)) {
     if (!isBackend(name)) {
@@ -144,14 +146,25 @@ export function formatModelId(entry: ModelEntry): string {
   return `${entry.base}(${entry.backend})${window}${entry.credits ? "_credit" : ""}`;
 }
 
-/** Every model on the given backends (default: the enabled ones), in listing order. */
-export function listModelEntries(backends: readonly Backend[] = enabledBackends()): ModelEntry[] {
+/**
+ * Every model on the given backends (default: the enabled ones), in listing
+ * order. With the runtime's live catalog (aether.ts `runtimeCatalog`), Cowork
+ * and Code list only what it has now, and a model the table doesn't know under
+ * its runtime ID, without a window; without one, the whole table.
+ */
+export function listModelEntries(backends: readonly Backend[] = enabledBackends(), catalog?: readonly string[] | null): ModelEntry[] {
+  const runtime = catalog
+    ? [
+        ...RUNTIME_MODELS.filter((m) => catalog.includes(m.runtimeModel)),
+        ...catalog.filter((id) => !RUNTIME_MODELS.some((m) => m.runtimeModel === id)).map((id) => ({ base: id, runtimeModel: id, window: undefined })),
+      ]
+    : RUNTIME_MODELS;
   const out: ModelEntry[] = [];
   for (const backend of backends) {
     if (backend === "chat") {
       for (const m of CHAT_MODELS) out.push({ base: m.base, backend, window: m.window, credits: !!m.credits });
     } else {
-      for (const m of RUNTIME_MODELS) out.push({ base: m.base, backend, window: m.window, credits: true, runtimeModel: m.runtimeModel });
+      for (const m of runtime) out.push({ base: m.base, backend, window: m.window, credits: true, runtimeModel: m.runtimeModel });
     }
   }
   return out;

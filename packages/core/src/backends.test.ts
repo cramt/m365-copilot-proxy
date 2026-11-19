@@ -53,10 +53,18 @@ describe("model IDs with a backend", () => {
     expect(resolveModelRoute("claude-sonnet-5.5").backend).toBe("chat");
   });
 
-  it("reads M365_BACKENDS leniently", () => {
-    expect(enabledBackends()).toEqual(["chat"]);
+  it("reads M365_BACKENDS leniently, and lists all three backends by default", () => {
+    expect(enabledBackends()).toEqual(["chat", "cowork", "code"]);
     process.env.M365_BACKENDS = " Cowork, chat,cowork,bogus ";
     expect(enabledBackends()).toEqual(["cowork", "chat"]);
+    process.env.M365_BACKENDS = "bogus";
+    expect(enabledBackends()).toEqual(["chat"]);
+  });
+
+  it("lists only what the runtime's catalog has, when it's given", () => {
+    const ids = listModelEntries(["cowork"], ["opus-5.5", "sonnet-5.5", "gpt-7"]).map(formatModelId);
+    expect(ids).toEqual(["claude-opus-5.5(cowork)_640k_credit", "claude-sonnet-5.5(cowork)_640k_credit", "gpt-7(cowork)_credit"]);
+    expect(listModelEntries(["cowork"], null).length).toBeGreaterThan(3); // no catalog: the whole table
   });
 
   it("lists only real Chat models, and every listed ID routes back to its entry", () => {

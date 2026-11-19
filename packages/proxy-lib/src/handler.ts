@@ -1774,15 +1774,19 @@ function turnBudgetHoldResponse(hold: TurnBudgetHold): Response {
  *  the prompt is too big for this model. A 400: re-sending it can't succeed. */
 function invalidRequestResponse(result: { errorCode?: string; message?: string }, model: string, promptChars: number): Response {
   const tooLong = result.errorCode === "InputTokenLimitExceeded";
+  // The agent runtime refuses a model its catalog doesn't have now (it dropped every GPT model on Nov 19 2026).
+  const notInCatalog = result.errorCode === "ModelNotInCatalog";
   const message = tooLong
     ? `M365 Copilot refused the prompt as too long for ${model} (InputTokenLimitExceeded; ${promptChars} characters sent). ` +
       `Shorten the system prompt or the tool definitions (for Codex: model_instructions_file), or use another model.`
+    : notInCatalog
+    ? `${model} isn't in the agent runtime's model catalog now${result.message ? ` (${result.message})` : ""}. GET /v1/models lists the models it serves.`
     : `M365 Copilot rejected the request (InvalidRequest${result.errorCode ? `: ${result.errorCode}` : ""})${result.message ? `: ${result.message}` : "."}`;
   return jsonResponse(400, {
     error: {
       message,
       type: "invalid_request_error",
-      code: tooLong ? "context_length_exceeded" : "m365_invalid_request",
+      code: tooLong ? "context_length_exceeded" : notInCatalog ? "model_not_found" : "m365_invalid_request",
       ...(result.errorCode ? { param: result.errorCode } : {}),
     },
   });

@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { AetherSession, containerConfig, resetRuntimeEndpoint, runtimeFailure, sseEvents, textItems } from "./aether.js";
+import { AetherSession, containerConfig, resetRuntimeEndpoint, runtimeCatalog, runtimeFailure, sseEvents, textItems } from "./aether.js";
 
 const RUNTIME = "https://runtime.test";
 const token = `h.${Buffer.from(JSON.stringify({ tid: "t1", oid: "o1" })).toString("base64url")}.s`;
@@ -12,7 +12,7 @@ interface Call {
 }
 
 /** A scripted runtime: each subscribe answers with the next stream, built from the posted message's ID. */
-function fakeRuntime(streams: Array<(mid: string) => string[]>) {
+function fakeRuntime(streams: Array<(mid: string) => string[]>, modelsResponse: () => Response = () => Response.json({ models: [{ id: "opus-5.5" }, { id: "sonnet-5.5" }], auto_health_buckets: ["anthropic"] })) {
   const calls: Call[] = [];
   let mid = "";
   const fetchImpl = vi.fn(async (input: string | URL, init: RequestInit = {}) => {
@@ -23,6 +23,10 @@ function fakeRuntime(streams: Array<(mid: string) => string[]>) {
     if (url.endsWith("/v1/routing")) return Response.json({ endpoint: RUNTIME, geo: "unitedstates" });
     if (url === `${RUNTIME}/v1/prewarm`) return Response.json({ status: "accepted" });
     if (call.method === "DELETE" && url.startsWith(`${RUNTIME}/v1/conversations/`)) return new Response(null, { status: 204 });
+    if (url === `${RUNTIME}/v1/models`) return modelsResponse();
+    if (url === `${RUNTIME}/v1/messages` && /model=gpt-gone/.test(headers["x-container-config"] ?? "")) {
+      return Response.json({ detail: { type: "error", code: "MODEL_NOT_IN_CATALOG", message: "Model 'gpt-gone:copilot' is not a known catalog entry.", model: "gpt-gone:copilot" } }, { status: 400 });
+    }
     if (url === `${RUNTIME}/v1/messages`) {
       mid = call.body.messageId;
       return Response.json({ id: "100-2", messageId: mid, streamId: "s1", status: "accepted" }, { status: 202 });
@@ -195,6 +199,28 @@ describe("AetherSession", () => {
     expect(await drain(stream)).toEqual(["a"]);
     expect(stream.result).toBeNull();
     expect(calls.filter((c) => c.url.endsWith("/v1/subscribe"))).toHaveLength(1);
+  });
+
+  it("answers a model the catalog doesn't have with a refusal the handler turns into a 400", async () => {
+    const { calls, fetchImpl } = fakeRuntime([]);
+    vi.stubGlobal("fetch", fetchImpl);
+    const session = new AetherSession({ mode: "cowork", getToken: async () => token });
+    const stream = await session.run("hi", "gpt-gone");
+    expect(await drain(stream)).toEqual([]);
+    expect(stream.result).toMatchObject({ value: "InvalidRequest", errorCode: "ModelNotInCatalog" });
+    expect(session.turnCount).toBe(0);
+    expect(calls.some((c) => c.url.endsWith("/v1/subscribe"))).toBe(false);
+  });
+
+  it("reads the runtime's catalog once per ten minutes, and gives null when it can't", async () => {
+    const { calls, fetchImpl } = fakeRuntime([]);
+    vi.stubGlobal("fetch", fetchImpl);
+    expect(await runtimeCatalog(async () => token)).toEqual(["opus-5.5", "sonnet-5.5"]);
+    expect(await runtimeCatalog(async () => token)).toEqual(["opus-5.5", "sonnet-5.5"]);
+    expect(calls.filter((c) => c.url.endsWith("/v1/models"))).toHaveLength(1);
+    resetRuntimeEndpoint();
+    vi.stubGlobal("fetch", fakeRuntime([], () => new Response("down", { status: 503 })).fetchImpl);
+    expect(await runtimeCatalog(async () => token)).toBeNull();
   });
 
   it("subscribes again when the stream ends before the run, without repeating what it read", async () => {
