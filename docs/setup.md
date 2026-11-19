@@ -165,6 +165,21 @@ routes, listed here or not: `curl -s http://127.0.0.1:4141/v1/models` should sho
 `M365_PROXY_KEY` in step 2, put it in the provider's `apiKey` (copilot-api sends it as a bearer). If the
 file has `auth.apiKeys`, use one of those keys wherever the steps below say `not-needed`.
 
+To run a model on Cowork or Code (Copilot's agent runtime: longer turns, charged to your Copilot
+credits; [Backends](../README.md#backends-chat-cowork-and-code)), pick its ID: the proxy offers all three
+backends by default (`M365_BACKENDS=chat` turns the runtime off). copilot-api lists the runtime's IDs as
+`m365/<id>`, such as `m365/claude-sonnet-5.5(cowork)_640k_credit`; the parentheses route as they are
+(Codex's Responses API and Claude Code's Messages API both answered through them). The runtime's models
+follow its live catalog, which dropped every GPT model on Nov 19 2026. Add an ID to `models` to give it
+its window:
+
+```json
+"claude-sonnet-5.5(cowork)_640k_credit": { "contextWindow": 640000, "maxOutputTokens": 32000 },
+"claude-opus-5.5(cowork)_640k_credit": { "contextWindow": 640000, "maxOutputTokens": 32000 }
+```
+
+In a shell, quote such an ID: `claude --model "m365/claude-sonnet-5.5(cowork)_640k_credit"`.
+
 ## 4. Codex
 
 Save the brief below to a file, say `~/.codex/m365-brief.txt`. It replaces Codex's ~40k-character

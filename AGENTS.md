@@ -176,7 +176,7 @@ pnpm test:live      # M365_LIVE=1; live tests that hit real M365 (uses quota)
   prompt, and this note used to say they don't work with the agent at all. They do: GPT-5.5 Think Deeper
   tool-calls with the agent under baseline, and GPT-5.6 Think Deeper under the user-voice framings
   (`relay_batch` by default). Under baseline 5.6 gave up on file-producing turns (runs with a give-up turn
-  12/14, relay 0/14, relay_batch 0/8, §48 F132): on the agent path
+  12/14, relay 0/14, relay_batch 0/8, §49 F138): on the agent path
   M365's own instructions say file generation is disabled, and baseline's `<system>`-tagged block says
   create the file. When a reasoning tone refuses, read its chain-of-thought frames before blaming the
   tone. What still holds: the model can't be bound to our (declarative `minimalBots`) agent type as its
@@ -320,6 +320,18 @@ pnpm test:live      # M365_LIVE=1; live tests that hit real M365 (uses quota)
   agent route, which has no text. The live stream holds the text back. `usage`
   carries estimated tokens (4 UTF-8 bytes a token; `M365_REPORT_USAGE=0` for zeros), so a client sees its
   context fill and compacts.
+- **Cowork and Code are another service, and every turn there costs credits.** A model ID with `(cowork)` or
+  `(code)` (`<model>(<backend>)[_<window>][_credit]`, `core/src/backends.ts`) runs on Copilot's agent
+  runtime (`aether.ts`, API doc §14), not Chat, when `M365_BACKENDS` lists the backend (all three by
+  default; an ID without parentheses always stays on Chat). Its turns are charged to the user's Copilot
+  credits, hundreds for a 2M-character turn (README *Credit usage*), so don't sweep them. Its models
+  follow the runtime's live catalog (`runtimeCatalog`), which dropped every GPT model on Nov 19 2026 and
+  refuses what it doesn't list (§48 F137). The handler skips Chat's machinery there: turn budget,
+  degradation backoff, tool agent, priority access, the Bing fallback, parts (`turnLimit` 0) and the 12k
+  output ceiling. The runtime keeps the history; a turn ends at `rl ok`/`fail`, and the proxy deletes
+  conversations it leaves (five minutes on). Windows in the IDs are one needle turn each (§48). The Code
+  tab's local sessions ("Long context") run on Office's LLM API, which the proxy's app isn't consented
+  for (§48 F136); don't work around that.
 - **A tool turn is stopped once the model's own `<tool_response>` after a call runs past 2,000 chars**
   (#65, `runBuffered` in `handler.ts`): waiting for M365 to finish let invented continuations run for
   minutes, past pi's timeout. Not at the tag itself: M365 keeps the whole message, Sonnet 4.6 seems to
