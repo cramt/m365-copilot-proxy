@@ -22,6 +22,21 @@ pnpm build && pnpm run proxy 4141          # one shell; add env flags per experi
 
 Bench scorecards land in `scripts/bench/out/<label>-<ts>.json` — diff them.
 
+### E-AUTH-WAM — Native Windows broker (hypotheses §44)
+
+- **Hypothesis:** WAM can satisfy token protection for the existing client and
+  Sydney scopes when browser PKCE receives `530084`.
+- **Run:** build, set `M365_AUTH_MODE=wam` and
+  `M365_ENABLE_INTERACTIVE_APPROVAL=1`, then start the proxy as in
+  [setup.md](setup.md#windows-token-protection-policies-native-broker). Select the
+  work account in the Windows picker. Restart with `M365_NO_INTERACTIVE=1` to
+  verify the broker can acquire silently.
+- **Read:** authentication must return through the native broker, and an actual
+  chat completion must work; `/health` or `/v1/models` alone is not evidence.
+  `wam-account.json` stores only the selected account ID. Never print or copy tokens.
+- **Cost:** token acquisition uses no chat turns; use one sequential completion
+  to verify the service. No tenant-policy or browser-security changes.
+
 ---
 
 ## A. Tool-call compliance — the headline problem (baseline: 0/5, §8.12)

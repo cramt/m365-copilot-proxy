@@ -154,9 +154,14 @@ Codex 0.160+ can load copilot-api's catalog (`model_catalog_url =
 "http://localhost:4141/models"`), which puts gateway models in Codex **Code Mode**. The
 proxy handles both modes; see below.
 
-**5. The Codex app** (Desktop, on Codex 0.169) needs three more settings
-([hypotheses §41](hypotheses.md)):
+**5. The Codex app** (Desktop, on Codex 0.169) needs copilot-api 2.9.7 or later and three more
+settings ([hypotheses §41](hypotheses.md)):
 
+- **copilot-api 2.9.7 or later.** The app adds context of its own to a turn, such as its page snapshot
+  (`agent.codex_apps_open_page`), as `function_call_output` items with a `namespace` and a `name` but no
+  `call_id`. Earlier versions reject the whole request with "function_call_output.call_id is required";
+  2.9.7 sends those items as user text (copilot-api #500). If your npm registry serves an older version,
+  build a release tag ([setup.md](setup.md), step 3) (F124).
 - **Your ChatGPT account.** With `requires_openai_auth = false` (the default, `env_key` included) the
   app's account menu shows the provider's name instead of your account and hides Remote. Set it to
   `true`, with a placeholder bearer, so Codex doesn't send your ChatGPT token to the gateway:
@@ -174,10 +179,18 @@ proxy handles both modes; see below.
 - **Models and context windows.** 0.169 has no `model_context_window`: a model's window is its catalog
   entry's `context_window`, and Codex compacts at 90% of it. With no catalog the app lists the GPT
   models it ships with, not `m365/*`, so no Claude. copilot-api's `/models` serves a Codex catalog
-  (to a `codex…` User-Agent) with every `m365/<id>`, Claude included, as Code Mode entries windowed
-  by each model's `contextWindow`. Save the entries you want to a file, set `context_window` and
-  `max_context_window`, and point a top-level `model_catalog_json` at it. A top-level catalog applies
-  to every provider and overrides both discovery and `model_catalog_url` (F114).
+  (to a `codex…` User-Agent) with `m365/<id>` Code Mode entries, Claude included. By default it caps
+  that catalog at 1 MiB and drops some models by name (2.9.12 served 18 of 53 entries here);
+  `x-full-model-catalog: true` returns all of it. An entry copied from an upstream model of the same
+  name, such as `m365/gpt-6.1-sol`, also carries that model's window (272,000), not the route's.
+  `node scripts/codex-catalog.mjs --all --out=~/.codex/m365-models.json` asks for the full catalog,
+  keeps the models `/v1/models` advertises, and windows each by the gateway's advertised window.
+  Use explicit `MODEL[=WINDOW]` arguments for a smaller picker or
+  [per-model context overrides](setup.md#long-context-catalog). The script sets `context_window` and
+  `max_context_window`; point a top-level `model_catalog_json` at the output file. A top-level catalog
+  applies to every provider and overrides both discovery and `model_catalog_url` (F114).
+  For `m365/*` models, 225,000 for GPT-6.x and 450,000 for Claude make Codex compact before M365
+  summarizes or drops turns (hypotheses §47).
 - **One provider for every model.** The app saves the model you last picked as `model` in
   `config.toml`, without its provider. With a second provider, picking one of its models breaks new
   threads: copilot-api answers "This model does not support the responses endpoint". Put the other
@@ -277,9 +290,11 @@ Disabling Codex's hosted `web_search` doesn't rule out search:
   run a PowerShell command that still lost one (it asks again, then answers 502 `damaged_tool_call`).
   A short reply without deltas can still carry a broken Python/JS line; the model usually sees the
   syntax error and fixes it.
-- **No token counts.** M365 reports none, so usage shows 0 tokens and the harness can't track its
-  context window. The proxy sends only new messages per turn, and M365 holds the conversation
-  (600 messages each).
+- **Estimated token counts.** M365 reports none, so the proxy estimates them (4 UTF-8 bytes a token;
+  `M365_REPORT_USAGE=0` for zeros), and the harness sees its context fill and compacts at the window it
+  assumes for the model. The proxy sends only new messages per turn, and M365 holds the conversation
+  (600 messages each); a history replayed into a fresh conversation goes up in parts M365 keeps
+  (`M365_TURN_CHUNK_BYTES`, hypotheses §47).
 
 ## Checking it without quota
 

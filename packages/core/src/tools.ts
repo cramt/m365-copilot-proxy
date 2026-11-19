@@ -184,12 +184,18 @@ function maybeInjectReplyTool(tools: ToolDef[]): ToolDef[] {
   return [replyTool, ...tools];
 }
 
+/**
+ * Render a request as one prompt. `history` is the whole conversation when
+ * `messages` is a slice of it (a history sent in parts): a tool result is named
+ * for the call that produced it, which can sit outside the slice.
+ */
 export function formatMessages(
   messages: Message[],
   tools?: ToolDef[],
   toolChoice?: ToolChoice,
   conversationId?: string,
   framingVariant?: string,
+  history: Message[] = messages,
 ): string {
   const parts: string[] = [];
 
@@ -237,7 +243,7 @@ export function formatMessages(
       const content = getMessageContent(m);
       parts.push(`<assistant>${content ? "\n" + content : ""}\n${calls}\n</assistant>`);
     } else if (m.role === "tool") {
-      parts.push(formatToolResponse(m, messages));
+      parts.push(formatToolResponse(m, history));
     } else if (m.role === "system") {
       parts.push(`<${style.systemTag}>\n${getMessageContent(m)}\n</${style.systemTag}>`);
     } else {
