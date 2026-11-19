@@ -113,16 +113,19 @@ describe("WAM authentication", () => {
     await expect(auth.getToken(["chat"], false)).resolves.toBeNull();
     expect(mocks.acquireTokenInteractive).not.toHaveBeenCalled();
     await expect(auth.getToken(["chat"], true)).resolves.toBe(token.accessToken);
-    expect(mocks.acquireTokenInteractive).toHaveBeenCalledWith(expect.objectContaining({
-      scopes: ["chat"], prompt: "select_account",
-    }));
+    expect(mocks.acquireTokenInteractive).toHaveBeenCalledWith({
+      scopes: ["chat"], prompt: "select_account", openBrowser: expect.any(Function),
+    });
   });
 
-  it("never lets MSAL open a browser for the sign-in", async () => {
+  it("fails without saving an account if MSAL ever takes its browser branch", async () => {
     mocks.getAllAccounts.mockResolvedValue([]);
-    await createWamAuth(options).getToken(["chat"], true);
-    const request = mocks.acquireTokenInteractive.mock.calls[0][0];
-    await expect(request.openBrowser("https://login.microsoftonline.com/")).rejects.toThrow("never opens a browser");
+    mocks.acquireTokenInteractive.mockImplementation(async (request: { openBrowser: (url: string) => Promise<void> }) => {
+      await request.openBrowser("https://login.microsoftonline.com/");
+      return token;
+    });
+    await expect(createWamAuth(options).getToken(["chat"], true)).rejects.toThrow("never opens a browser");
+    expect(mocks.writeFileSync).not.toHaveBeenCalled();
   });
 
   it("propagates a native policy refusal without returning a token", async () => {
