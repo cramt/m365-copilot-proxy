@@ -21,6 +21,40 @@ export interface ModelSessionOptions {
   temporaryChat?: boolean;
 }
 
+/** Per-turn settings a backend may use; Chat ignores them. */
+export interface TurnOptions {
+  /** The request's `reasoning_effort` (the agent runtime's `reasoningEffort`). */
+  reasoningEffort?: string;
+}
+
+/**
+ * One conversation, driven a turn at a time: ModelSession on Chat, AetherSession
+ * on the agent runtime (Cowork, Code). The proxy's handler works through this.
+ */
+export interface TurnSession {
+  readonly sessionId: string;
+  /** The current upstream conversation. */
+  readonly conversationId: string;
+  /** Turns sent in it; 0 means the next turn opens it. */
+  readonly turnCount: number;
+  run(
+    text: string,
+    model?: string,
+    signal?: AbortSignal,
+    useAgent?: boolean,
+    images?: string[],
+    waitForBudget?: () => Promise<{ waitedMs: number }>,
+    turn?: TurnOptions,
+  ): Promise<CopilotStream>;
+  /** Continue in a fresh upstream conversation. */
+  newConversation(): void;
+  /** Re-resolve the tool agent; true when it changed (Chat only). */
+  refreshAgent(): Promise<boolean>;
+  reset(): void;
+  /** The pool drops this conversation for good. */
+  close?(): void;
+}
+
 /**
  * A stateful session for running M365 Copilot.
  * Manages auth, agent resolution, and conversation continuity.
@@ -30,7 +64,7 @@ export interface ModelSessionOptions {
  * reconnections so M365 finds the existing server-side conversation
  * instead of creating a new one.
  */
-export class ModelSession {
+export class ModelSession implements TurnSession {
   private resolveToken: () => Promise<string>;
   private useAgent: boolean;
   private temporaryChat: boolean;

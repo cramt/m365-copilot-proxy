@@ -100,8 +100,24 @@ vi.mock("@m365-copilot/core", async (importActual) => {
     if (scripted.budgetHold) throw scripted.budgetHold;
     return { waitedMs: 0 };
   }
-  return { ...actual, ModelSession: FakeModelSession, awaitTurnBudget };
+  // The agent runtime's session: the same scripted turns, recorded per backend,
+  // with what the runtime's stream differs in (no Chat message count; credits).
+  class FakeAetherSession extends FakeModelSession {
+    readonly mode: string;
+    constructor(options: { mode: string }) {
+      super();
+      this.mode = options.mode;
+    }
+    override async run(text: string, model?: string, signal?: AbortSignal, useAgent?: boolean, images: string[] = [], waitForBudget?: () => Promise<unknown>, turn?: unknown) {
+      runtimeRuns.push({ mode: this.mode, model: model ?? "", useAgent, turn, text });
+      return Object.assign(await super.run(text, model, signal, useAgent, images, waitForBudget), { throttle: null, credits: 0.5 });
+    }
+  }
+  return { ...actual, ModelSession: FakeModelSession, AetherSession: FakeAetherSession, awaitTurnBudget };
 });
+
+/** Every run() on a fake agent-runtime session, in order. */
+const runtimeRuns: Array<{ mode: string; model: string; useAgent?: boolean; turn: unknown; text: string }> = [];
 
 /** Which fake ModelSession (by creation order) served every run() call, in order. */
 const servedBy: number[] = [];
@@ -1966,5 +1982,76 @@ describe("estimated token usage (§47)", () => {
     scripted.queue = [{ fullText: "Hi." }];
     const { usage } = await (await respond(request("Hello"))).json();
     expect(usage).toMatchObject({ prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 });
+  });
+});
+describe("the agent runtime backends: Cowork and Code (§48)", () => {
+  const tools = [{ type: "function", function: { name: "bash", parameters: { type: "object", properties: { command: { type: "string" } } } } }];
+  const ask = (model: string, extra: Record<string, unknown> = {}) =>
+    handleChatCompletion(ChatCompletionRequest.parse({ model, messages: [{ role: "user", content: `list files ${Math.random()}` }], ...extra }), new SessionPool());
+  beforeEach(() => {
+    scripted.result = null;
+    scripted.queue = [];
+    runtimeRuns.length = 0;
+  });
+  afterEach(() => {
+    delete process.env.M365_BACKENDS;
+    delete process.env.M365_TURN_CHUNK_BYTES;
+    scripted.queue = [];
+  });
+
+  it("refuses a backend M365_BACKENDS doesn't enable, without sending a turn", async () => {
+    const runs = scripted.runs;
+    const res = await ask("gpt-6.2-sol(cowork)_800k_credit");
+    expect(res.status).toBe(400);
+    expect((await res.json()).error).toMatchObject({ code: "model_backend_not_enabled", param: "model" });
+    expect(scripted.runs).toBe(runs);
+  });
+
+  it("runs a (cowork) ID there: its model, no tool agent or Chat budget wait, the request's effort, credits in usage, the ID echoed", async () => {
+    process.env.M365_BACKENDS = "chat,cowork";
+    scripted.queue = [{ fullText: "```bash\nls\n```" }];
+    const budgetCalls = scripted.awaitTurnBudgetCalls.length;
+    const res = await ask("claude-opus-5.5(cowork)_640k_credit", { tools, reasoning_effort: "high" });
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.model).toBe("claude-opus-5.5(cowork)_640k_credit");
+    expect(body.choices[0].message.tool_calls[0].function.name).toBe("bash");
+    expect(body.usage.x_m365_credits).toBe(0.5);
+    // On Chat, Opus tool requests carry the agent; the runtime has none.
+    expect(runtimeRuns).toEqual([expect.objectContaining({ mode: "cowork", model: "claude-opus-5.5", useAgent: false, turn: { reasoningEffort: "high" } })]);
+    expect(scripted.awaitTurnBudgetCalls.length).toBe(budgetCalls);
+  });
+
+  it("frames a runtime model with no default of its own in the user voice: every turn there is agent-less", async () => {
+    process.env.M365_BACKENDS = "chat,cowork";
+    scripted.queue = [{ fullText: "```bash\nls\n```" }, { fullText: "```bash\nls\n```" }];
+    await ask("gpt-5.5", { tools });
+    expect(scripted.texts.at(-1)).toContain("<system>"); // Chat's GPT-5.5 keeps the baseline, with the agent
+    await ask("gpt-5.5(cowork)", { tools });
+    expect(runtimeRuns).toHaveLength(1);
+    expect(runtimeRuns[0].text).not.toContain("<system>");
+  });
+
+  it("keeps Chat on Chat, suffixes and all", async () => {
+    process.env.M365_BACKENDS = "chat,cowork";
+    scripted.queue = [{ fullText: "pong" }];
+    const res = await ask("gpt-6.2-sol(chat)_272k");
+    expect((await res.json()).model).toBe("gpt-6.2-sol(chat)_272k");
+    expect(scripted.models.at(-1)).toBe("gpt-6.2-sol");
+    expect(runtimeRuns).toHaveLength(0);
+  });
+
+  it("sends a long history whole: the runtime keeps a turn Chat would need in parts", async () => {
+    process.env.M365_BACKENDS = "code";
+    process.env.M365_TURN_CHUNK_BYTES = "2000";
+    scripted.queue = [{ fullText: "Read it." }];
+    const res = await handleChatCompletion(ChatCompletionRequest.parse({
+      model: "gpt-6.2-sol(code)",
+      messages: [{ role: "user", content: "log ".repeat(5_000) }, { role: "assistant", content: "OK" }, { role: "user", content: "Summarize it." }],
+    }), new SessionPool());
+    expect((await res.json()).choices[0].message.content).toBe("Read it.");
+    expect(runtimeRuns).toHaveLength(1);
+    expect(runtimeRuns[0].mode).toBe("code");
+    expect(runtimeRuns[0].text.length).toBeGreaterThan(20_000);
   });
 });
