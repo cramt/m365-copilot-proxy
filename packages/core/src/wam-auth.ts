@@ -77,6 +77,11 @@ export function createWamAuth(options: {
       result = await app.acquireTokenInteractive({
         scopes,
         prompt: "select_account",
+        // The broker shows its own picker. A request MSAL would hand to a
+        // browser instead fails here: this mode never falls back to one.
+        openBrowser: async () => {
+          throw new Error("WAM mode never opens a browser; the native broker didn't take the sign-in.");
+        },
         ...(hint && { loginHint: hint }),
         ...(windowHandle && { windowHandle }),
       });

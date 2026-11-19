@@ -114,8 +114,18 @@ describe("WAM authentication", () => {
     expect(mocks.acquireTokenInteractive).not.toHaveBeenCalled();
     await expect(auth.getToken(["chat"], true)).resolves.toBe(token.accessToken);
     expect(mocks.acquireTokenInteractive).toHaveBeenCalledWith({
-      scopes: ["chat"], prompt: "select_account",
+      scopes: ["chat"], prompt: "select_account", openBrowser: expect.any(Function),
     });
+  });
+
+  it("fails without saving an account if MSAL ever takes its browser branch", async () => {
+    mocks.getAllAccounts.mockResolvedValue([]);
+    mocks.acquireTokenInteractive.mockImplementation(async (request: { openBrowser: (url: string) => Promise<void> }) => {
+      await request.openBrowser("https://login.microsoftonline.com/");
+      return token;
+    });
+    await expect(createWamAuth(options).getToken(["chat"], true)).rejects.toThrow("never opens a browser");
+    expect(mocks.writeFileSync).not.toHaveBeenCalled();
   });
 
   it("propagates a native policy refusal without returning a token", async () => {
