@@ -600,8 +600,8 @@ The runtime's models come from its live catalog (read every 10 minutes), which c
 it listed GPT-5.5, GPT-6.1 Sol, GPT-6.2 Sol (and Fast), GPT-6.2 Astra, Opus 5.5 (and Fast) and Sonnet 5.5,
 by that afternoon only the three Claude models, and by evening GPT-6.2 Sol again as
 `gpt-6.2-sol-substrate`, with GPT-6.2 Sol Fast and GPT-6.2 Astra. A model it doesn't have gets a 400
-`model_not_found`. GPT-6.2 Sol there reads between ~806k and ~1.0M tokens in one turn: 2.0M characters
-answered, 2.5M refused ([hypotheses §48 H48a](docs/hypotheses.md)).
+`model_not_found`. GPT-6.2 Sol there takes up to about 885k tokens in one message, on Cowork and Code alike:
+885,233 o200k tokens answered, 891,591 refused ([hypotheses §48 H48a](docs/hypotheses.md)).
 
 - `M365_BACKENDS` lists the backends `/v1/models` shows and requests may name; by default all three
   (`chat,cowork,code`). `M365_BACKENDS=chat` keeps a proxy off the runtime: a request naming `cowork`
@@ -615,6 +615,11 @@ answered, 2.5M refused ([hypotheses §48 H48a](docs/hypotheses.md)).
   the proxy deletes the ones it leaves five minutes later (unless `M365_SAVE_HISTORY=1`).
 - Closing a request doesn't stop a run there (the runtime has no stop call the proxy could find), and
   images and files aren't passed on yet.
+- **Code's agent works in its own cloud workspace**: with a long Codex history at max effort it ran its own
+  tools and answered with no text on three turns of five. The proxy ends such a turn at once with a 502
+  `runtime_no_reply`; Cowork and Chat models answer in text. A runtime turn at high effort can take
+  minutes, so give Codex `stream_idle_timeout_ms = 900000` (at 300000 it re-sent the whole request every
+  5 minutes) ([hypotheses §48 F139](docs/hypotheses.md)).
 - The Code tab's **local** sessions, with their "Long context" switch, are a third service the proxy
   can't use: the Copilot app runs them through a bundled runtime on Office's LLM API, whose sign-in the
   proxy's app registration isn't consented for ([hypotheses §48 F136](docs/hypotheses.md)).
@@ -625,7 +630,8 @@ Wire details: [API doc §14](docs/m365-copilot-api.md).
 #### Credit usage
 
 Measured Nov 19 2026 on one premium account, one turn each unless noted
-([hypotheses §48 F134](docs/hypotheses.md)). The charge is the sum of the turn's `cq` events; a title
+([hypotheses §48 F134, F138](docs/hypotheses.md)). **Code is charged like Cowork**, and the monthly budget
+counts both. The charge is the sum of the turn's `cq` events; a title
 and a follow-up suggestion on a small model add about 0.005–0.01 each.
 
 | backend | model | turn | credits |
@@ -637,6 +643,9 @@ and a follow-up suggestion on a small model add about 0.005–0.01 each.
 | Cowork | GPT-5.5 | the same | 20.6 |
 | Code | Sonnet 5.5 | one line, new conversation | 2.6 (n=2) |
 | Code | GPT-6.2 Sol | one line, new conversation | 9.5 |
+| Code | GPT-6.2 Astra / Sol Fast / Opus 5.5 | one line, new conversation, evening | 38.4 / 9.6 / 4.2 |
+| Cowork | GPT-6.2 Astra / Sonnet 5.5 | the same | 37.0 / 5.2 |
+| Code | GPT-6.2 Astra, max effort | Codex, 537k-character history, 4 sessions with retries | about 3,200 |
 | Cowork | GPT-6.2 Sol | 900k characters (~363k tokens) | 101 |
 | Cowork | GPT-6.2 Sol | 2.0M characters (~806k tokens) | 224 |
 | Cowork | GPT-6.1 Sol | 2.0M characters | 232 |
@@ -645,17 +654,17 @@ and a follow-up suggestion on a small model add about 0.005–0.01 each.
 | Cowork | Sonnet 5.5 | 1.6M characters (~645k tokens) | 236 |
 | Cowork | Opus 5.5 | 1.6M characters | 481 |
 | Cowork | Sonnet 5.5 | 2.0M characters, refused as too long | 0.01 |
-| Cowork | GPT-6.2 Sol (`gpt-6.2-sol-substrate`, evening) | 2.0M characters | 0.06 |
+| Cowork or Code | GPT-6.2 Sol (`gpt-6.2-sol-substrate`, evening) | one line to 2.19M characters | 0.02–0.06 (n=6) |
 | Cowork | the same | 2.5M or 3.0M characters, refused as too long | 0.03–0.04 |
 
 Per 1,000 tokens of a long turn: GPT-6.2 Sol 0.28, GPT-6.1 Sol 0.29, Sonnet 5.5 0.37, GPT-5.5 0.63,
 Opus 5.5 0.75, GPT-6.2 Astra 1.15, measured in the morning. That evening `gpt-6.2-sol-substrate` charged
-0.06 for a 2.0M-character turn (the task's full total), so prices change too; check a task's cost
-before relying on one (n=1). A new conversation pays for the runtime's own system prompt (Code's
+only its title and suggestion calls, up to 2.19M characters, so prices change too; check a task's cost
+before relying on one. A new conversation pays for the runtime's own system prompt (Code's
 is larger than Cowork's); a follow-up is cached. `usage.x_m365_credits` counts the charges that arrive
 by the end of the turn, so it can miss a late suggestion's (Sonnet 5.5: 0.038 reported, 0.042 in the
-task's total). The monthly entitlement the runtime reports (`/v1/entitlement`, a budget of 1,000,000)
-isn't counted in these credits. On Chat, GPT-6.2 Astra, GPT-6 Astra and Fable mark their turns as
+task's total). The monthly budget the runtime reports (`/v1/entitlement`, 1,000,000) takes these
+charges, Cowork's and Code's, in batches about five minutes apart. On Chat, GPT-6.2 Astra, GPT-6 Astra and Fable mark their turns as
 using credits without saying how many ([hypotheses §45 F122](docs/hypotheses.md)); the other Chat
 models don't charge credits.
 
