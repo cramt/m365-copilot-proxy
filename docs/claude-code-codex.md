@@ -154,9 +154,14 @@ Codex 0.160+ can load copilot-api's catalog (`model_catalog_url =
 "http://localhost:4141/models"`), which puts gateway models in Codex **Code Mode**. The
 proxy handles both modes; see below.
 
-**5. The Codex app** (Desktop, on Codex 0.169) needs three more settings
-([hypotheses §41](hypotheses.md)):
+**5. The Codex app** (Desktop, on Codex 0.169) needs copilot-api 2.9.7 or later and three more
+settings ([hypotheses §41](hypotheses.md)):
 
+- **copilot-api 2.9.7 or later.** The app adds context of its own to a turn, such as its page snapshot
+  (`agent.codex_apps_open_page`), as `function_call_output` items with a `namespace` and a `name` but no
+  `call_id`. Earlier versions reject the whole request with "function_call_output.call_id is required";
+  2.9.7 sends those items as user text (copilot-api #500). If your npm registry serves an older version,
+  build a release tag ([setup.md](setup.md), step 3) (F124).
 - **Your ChatGPT account.** With `requires_openai_auth = false` (the default, `env_key` included) the
   app's account menu shows the provider's name instead of your account and hides Remote. Set it to
   `true`, with a placeholder bearer, so Codex doesn't send your ChatGPT token to the gateway:
