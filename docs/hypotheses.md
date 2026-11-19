@@ -111,6 +111,10 @@ than "we eyeballed one run." See §M (Methods) for the experimental rig.
   long replay has no context (F125); it keeps a conversation for at least 21 h, while the pool evicted
   one after 30 min, forcing that replay (F126); the fix: a 24-h pool, a lost history caught and re-sent,
   a history past the limit replayed whole (F127); the limit's unit (H46a, open)
+- §47 — how much context each model gets: in one turn GPT-6.x about 270k tokens, Claude 2M characters or
+  more (F128); M365 doesn't keep a long turn on Claude either (F129); over a conversation Claude keeps
+  about 1.6M characters verbatim and GPT-6.x summarizes past its window (F130); long turns in parts,
+  failed turns, estimated usage (F131); a longer window for GPT-6.x (H47a, open)
 
 ---
 
@@ -6314,3 +6318,104 @@ and the code word was recalled again. A 2k opening went on with deltas (counts 1
 **Not done:** Codex never compacts on these models. The proxy reports no token usage and the Codex
 catalog gives them 1M-token windows, so a thread's history only grows, and past the limit every turn is
 a whole replay. Reporting estimated usage, with a window under the limit, would let Codex compact.
+(Done in §47 F131, with the windows kept: a replay now goes up in turns M365 keeps.)
+
+## 47. Nov 18 2026 — how much context each model gets, and a history longer than one turn
+
+**Question.** Codex gives every M365 model a 1M-token window (its catalog's `context_window`, Codex's
+"long context"). Does M365 serve that much, in one turn and over a conversation?
+
+Probes: filler log lines (3.1 characters a token, o200k) with marked codes, through the proxy over
+StreamHub, one conversation per size, n=1 each. In one turn the codes sat at 1%, 50% and 99% and the
+same turn asked for them.
+
+### F128 — one turn: GPT-6.x reads about 270k tokens, Claude 2M characters or more 🟢
+
+| model | answered, all three codes | refused |
+|---|---|---|
+| `gpt-6.2-sol` | 540k (§46), 650k, 780k characters | 900k, 1M, 2M, 4M |
+| `gpt-6.1-sol` | 650k | 900k, 2M |
+| `gpt-6.2-astra`, `gpt-6-astra` | – | 900k |
+| `claude-sonnet-5` | 650k, 900k, 2M | 2.6M, 3.2M, 4M |
+| `claude-opus-4.8` (on StreamHub the same tone and scenario as `claude-opus`) | 650k, 900k, 2M | – |
+| `claude-sonnet-5.5`, `claude-fable` | 2M | – |
+
+780k characters is ~252k tokens and 900k ~291k: GPT-6.x gets the standard ~272k-token window, not a
+long-context one. Claude's 2M answered and 2.6M refused are ~650k and ~840k tokens in this count (it may
+be about 1M in Claude's own tokenizer, which wasn't measured). GPT-6.x says so badly. On StreamHub (the
+only transport tested) the turn ends `request_end` `InternalError` with
+`Microsoft.Sydney.GhcpRuntime\CopilotSdkRuntimeBackend.cs:1889 - The GHCP runtime completed with a
+recorded session error` (5–27 s), and its message, `turnState: Failed`, carries "Sorry, I wasn't able to
+respond to that. Is there something else I can help with?", which the proxy returned as the answer.
+Claude's refusal is `InvalidRequest (InputTokenLimitExceeded)`, a 400 `context_length_exceeded`. An
+answered 780k turn took 7 s, a 2M one on Claude 30–45 s. `numLongDocSummaryUserMessagesInConversation`
+stayed 0: no long-document path. The metered models (the Astras, Sonnet 5.5, Fable) got one turn each, at
+the point that separates the families, sent straight through `ModelSession` (no proxy handler).
+
+### F129 — the limit on what M365 keeps is the same for Claude 🟢
+A 900k opening on `claude-sonnet-5`, then "list the codes": the follow-up's count was 1, so M365 hadn't
+kept the opening (the proxy re-sent the request, F127, and the codes came back). §46's 420k-kept,
+540k-lost boundary isn't GPT's alone.
+
+### F130 — a conversation of turns that fit: Claude keeps about 1.6M characters verbatim, GPT-6.x summarizes past its window 🟢
+A log in parts, one turn each ("reply OK n"), a code in the middle of each; then a turn asking for every
+code and for one random record line per part, quoted, which a summary wouldn't keep:
+
+| model | turns | asked after | codes recalled | record lines quoted exactly |
+|---|---|---|---|---|
+| `gpt-6.2-sol` | 6 × 300k | part 3 (900k) | 2, 3 | none |
+| | | part 6 (1.8M) | 2–6 | 6 |
+| `claude-sonnet-5` | 5 × 400k | part 5 (2M) | 2–5 | 2, 3 (4 and 5 quoted, not checked) |
+
+M365 kept every turn (counts 1…8). Claude said "only Parts 2–5 were provided to me": by 2M characters
+(~650k tokens in this count) M365 had dropped the oldest turn whole. Past its window GPT-6.x works from
+a summary: the codes, marked IMPORTANT, outlived the record lines (none exact at 900k, only the last
+part's at 1.8M), and part 1's code didn't.
+
+### F131 — what the proxy does now 🟢
+- A turn over `M365_TURN_CHUNK_BYTES` (400,000 UTF-8 bytes; 0 sends everything whole) goes up in parts
+  (`replay.ts`). A whole history, opening a conversation, keeps its leading system messages, the tool
+  framing and as many of the latest messages as fit in the last turn; the older messages go ahead of it
+  as transcript parts the model acknowledges ("reply with only: OK"). A long follow-up is cut as text.
+  Once M365 has dropped an answered opening of 200k characters or more (F127), that model's parts are cut
+  to 75% of it for 24 h, starting with the same request's re-send, so the replayed history is kept and
+  continued with deltas, instead of replayed whole on every request.
+- A failed turn (`InternalError` and `turnState: Failed`) has no answer: its apology counts as an empty
+  `InternalError`, re-sent once in a fresh conversation (a second failure ends the request), and the
+  streaming path holds it back. It is not the dead agent route, which carries no text.
+- A part M365 doesn't acknowledge is judged like any turn (the agent-less, Bing-less and fallback-model
+  re-sends, the 400 and 429), a count of 1 on a part means the history is gone (F127's re-send), and a
+  long turn may take at most `M365_MAX_TURN_PARTS` (12) M365 turns, sent at most twice per request.
+- `usage` carries estimates: the whole formatted request, and the reply, at 4 UTF-8 bytes a token
+  (`M365_REPORT_USAGE=0` for zeros). Codex sees its context fill, and compacts near its window.
+
+Live, through a fresh proxy: a history of 1.2M characters (8 log parts of 150k, a code in each, then a
+question about all of them), the way Codex replays a thread:
+
+| model | turns | codes | part 1's record line | follow-up |
+|---|---|---|---|---|
+| `claude-sonnet-5` | 3 parts + the request, 41 s | 8/8 | exact | a delta (count 5), right |
+| `gpt-6.2-sol` | 3 parts + the request, 46 s | 3–8 | "unavailable in the retained conversation context" | a delta (count 5), right |
+
+Before, it went up as one 1.2M-character turn: Claude answered and M365 didn't keep it, so every later
+request replayed it; GPT-6.x refused, and the proxy returned the apology as the answer.
+
+**Codex:** a window is counted in the proxy's estimate (4 UTF-8 bytes a token, 4 characters for ASCII
+text), and Codex compacts at 90% of it. Windows that compact before M365 starts summarizing (GPT-6.x) or
+dropping turns (Claude), by these tests: 225,000 for GPT-6.x (compaction at ~810k bytes) and 450,000 for
+the Claude models (~1.6M). For GPT-6.x this is extrapolated from the one-turn limit (780k answered);
+conversations between 780k and 900k weren't tested. The tests used dense log text, 3.1 characters a
+token; ordinary code and prose has fewer tokens a character, so this errs early. Live, Codex 0.169 then
+showed usable windows of 213,750 and 427,500.
+
+**Open — H47a:** can a request get GPT-6.x a longer window? Half an answer (n=1 each): the web app's Code
+tab has a tier, Chat doesn't. Code is GitHub's Copilot app embedded in M365 (its script cites
+`apps/ghcopilot/vendor/github-app`), on F110's agent runtime. Its `create_session` and `set_session_model`
+carry `context_tier` (`default` or `long_context`), and the model picker offers the long tier for a model
+whose runtime entry (`GET …aetherruntime…/v1/models`) lists `supported_context_tiers` with a bigger
+window. On the test account no entry lists any (GPT-5.5, GPT 6.1 Sol, 6.2 Sol, 6.2 Sol Fast, 6.2 Astra,
+Opus 5.5, Opus 5.5 Fast, Sonnet 5.5), so its picker shows only the effort slider (Low … Max). The Chat
+client has no such field, and StreamHub ignores one: a 900k-character `Gpt_62_Sol_Reasoning` turn was
+refused the same with `contextTier` or `context_tier: "long_context"` at the top of `chatStreamRequest`,
+in `options`, in `extraExtensionParameters` and in `message`. **Probe:** on an account whose Code picker
+offers the long tier, a Code session's state after `create_session` with it, then a turn over 272k tokens.

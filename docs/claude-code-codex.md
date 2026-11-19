@@ -185,9 +185,12 @@ settings ([hypotheses §41](hypotheses.md)):
   name, such as `m365/gpt-6.1-sol`, also carries that model's window (272,000), not the route's.
   `node scripts/codex-catalog.mjs --all --out=~/.codex/m365-models.json` asks for the full catalog,
   keeps the models `/v1/models` advertises, and windows each by the gateway's advertised window.
-  Alternatively, pass explicit model IDs for a smaller picker. The script sets `context_window` and
+  Use explicit `MODEL[=WINDOW]` arguments for a smaller picker or
+  [per-model context overrides](setup.md#long-context-catalog). The script sets `context_window` and
   `max_context_window`; point a top-level `model_catalog_json` at the output file. A top-level catalog
   applies to every provider and overrides both discovery and `model_catalog_url` (F114).
+  For `m365/*` models, 225,000 for GPT-6.x and 450,000 for Claude make Codex compact before M365
+  summarizes or drops turns (hypotheses §47).
 - **One provider for every model.** The app saves the model you last picked as `model` in
   `config.toml`, without its provider. With a second provider, picking one of its models breaks new
   threads: copilot-api answers "This model does not support the responses endpoint". Put the other
@@ -287,9 +290,11 @@ Disabling Codex's hosted `web_search` doesn't rule out search:
   run a PowerShell command that still lost one (it asks again, then answers 502 `damaged_tool_call`).
   A short reply without deltas can still carry a broken Python/JS line; the model usually sees the
   syntax error and fixes it.
-- **No token counts.** M365 reports none, so usage shows 0 tokens and the harness can't track its
-  context window. The proxy sends only new messages per turn, and M365 holds the conversation
-  (600 messages each).
+- **Estimated token counts.** M365 reports none, so the proxy estimates them (4 UTF-8 bytes a token;
+  `M365_REPORT_USAGE=0` for zeros), and the harness sees its context fill and compacts at the window it
+  assumes for the model. The proxy sends only new messages per turn, and M365 holds the conversation
+  (600 messages each); a history replayed into a fresh conversation goes up in parts M365 keeps
+  (`M365_TURN_CHUNK_BYTES`, hypotheses §47).
 
 ## Checking it without quota
 
