@@ -598,8 +598,10 @@ IDs, which are unchanged and stay on Chat.
 
 The runtime's models come from its live catalog (read every 10 minutes), which changes: on Nov 19 2026
 it listed GPT-5.5, GPT-6.1 Sol, GPT-6.2 Sol (and Fast), GPT-6.2 Astra, Opus 5.5 (and Fast) and Sonnet 5.5,
-and by that afternoon only the three Claude models. A model it doesn't have gets a 400
-`model_not_found`.
+by that afternoon only the three Claude models, and by evening GPT-6.2 Sol again as
+`gpt-6.2-sol-substrate`, with GPT-6.2 Sol Fast and GPT-6.2 Astra. A model it doesn't have gets a 400
+`model_not_found`. GPT-6.2 Sol there reads between ~806k and ~1.0M tokens in one turn: 2.0M characters
+answered, 2.5M refused ([hypotheses §48 H48a](docs/hypotheses.md)).
 
 - `M365_BACKENDS` lists the backends `/v1/models` shows and requests may name; by default all three
   (`chat,cowork,code`). `M365_BACKENDS=chat` keeps a proxy off the runtime: a request naming `cowork`
@@ -643,9 +645,13 @@ and a follow-up suggestion on a small model add about 0.005–0.01 each.
 | Cowork | Sonnet 5.5 | 1.6M characters (~645k tokens) | 236 |
 | Cowork | Opus 5.5 | 1.6M characters | 481 |
 | Cowork | Sonnet 5.5 | 2.0M characters, refused as too long | 0.01 |
+| Cowork | GPT-6.2 Sol (`gpt-6.2-sol-substrate`, evening) | 2.0M characters | 0.06 |
+| Cowork | the same | 2.5M or 3.0M characters, refused as too long | 0.03–0.04 |
 
 Per 1,000 tokens of a long turn: GPT-6.2 Sol 0.28, GPT-6.1 Sol 0.29, Sonnet 5.5 0.37, GPT-5.5 0.63,
-Opus 5.5 0.75, GPT-6.2 Astra 1.15. A new conversation pays for the runtime's own system prompt (Code's
+Opus 5.5 0.75, GPT-6.2 Astra 1.15, measured in the morning. That evening `gpt-6.2-sol-substrate` charged
+0.06 for a 2.0M-character turn (the task's full total), so prices change too; check a task's cost
+before relying on one (n=1). A new conversation pays for the runtime's own system prompt (Code's
 is larger than Cowork's); a follow-up is cached. `usage.x_m365_credits` counts the charges that arrive
 by the end of the turn, so it can miss a late suggestion's (Sonnet 5.5: 0.038 reported, 0.042 in the
 task's total). The monthly entitlement the runtime reports (`/v1/entitlement`, a budget of 1,000,000)

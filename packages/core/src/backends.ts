@@ -109,12 +109,15 @@ const CHAT_MODELS: ReadonlyArray<{ base: string; window?: number; credits?: bool
 // The agent runtime's models (`GET /v1/models`, the same list for Cowork and
 // Code), under the Chat names of the same models. Windows measured on Cowork,
 // one needle turn each (§48): every GPT model answered 2.0M characters (~806k
-// tokens), the most tried; Opus 5.5 and Sonnet 5.5 answered 1.6M (~645k), and
-// Sonnet 5.5 refused 2.0M. The Fast variants serve the same models faster and
-// take their numbers, unmeasured. Code is taken to be the same: it's the same
-// runtime, and its GPT-6.2 Sol answered ~363k tokens.
+// tokens); GPT-6.2 Sol on the `llmapi` bucket (`gpt-6.2-sol-substrate`, which
+// replaced `gpt-6.2-sol` in the catalog on Nov 19) refused 2.5M (~1.0M) and
+// 3.0M. Opus 5.5 and Sonnet 5.5 answered 1.6M (~645k), and Sonnet 5.5 refused
+// 2.0M. The Fast variants serve the same models faster and take their numbers,
+// unmeasured. Code is taken to be the same: it's the same runtime, and its
+// GPT-6.2 Sol answered ~363k tokens.
 const RUNTIME_MODELS: ReadonlyArray<{ base: string; runtimeModel: string; window?: number }> = [
   { base: "gpt-6.2-sol", runtimeModel: "gpt-6.2-sol", window: 800_000 },
+  { base: "gpt-6.2-sol-substrate", runtimeModel: "gpt-6.2-sol-substrate", window: 800_000 },
   { base: "gpt-6.2-sol-fast", runtimeModel: "gpt-6.2-sol-fast", window: 800_000 },
   { base: "gpt-6.2-astra", runtimeModel: "gpt-6.2-astra", window: 800_000 },
   { base: "gpt-6.1-sol", runtimeModel: "gpt-6.1-sol-substrate", window: 800_000 },
