@@ -317,12 +317,16 @@ pnpm test:live      # M365_LIVE=1; live tests that hit real M365 (uses quota)
   context fill and compacts.
 - **Cowork and Code are another service, and every turn there costs credits.** A model ID with `(cowork)` or
   `(code)` (`<model>(<backend>)[_<window>][_credit]`, `core/src/backends.ts`) runs on Copilot's agent
-  runtime (`aether.ts`, API doc §14), not Chat, and only when `M365_BACKENDS` lists the backend. Its turns
-  are charged to the user's Copilot credits, hundreds for a 2M-character turn, so don't sweep them. The
-  handler skips Chat's machinery there: turn budget, degradation backoff, tool agent, priority access, the
-  Bing fallback, parts (`turnLimit` 0) and the 12k output ceiling. The runtime keeps the history; a turn
-  ends at `rl ok`/`fail`, and the proxy deletes conversations it leaves (five minutes on). Windows in the IDs are one needle
-  turn each (hypotheses §48).
+  runtime (`aether.ts`, API doc §14), not Chat, when `M365_BACKENDS` lists the backend (all three by
+  default; an ID without parentheses always stays on Chat). Its turns are charged to the user's Copilot
+  credits, hundreds for a 2M-character turn (README *Credit usage*), so don't sweep them. Its models
+  follow the runtime's live catalog (`runtimeCatalog`), which dropped every GPT model on Nov 19 2026 and
+  refuses what it doesn't list (§48 F137). The handler skips Chat's machinery there: turn budget,
+  degradation backoff, tool agent, priority access, the Bing fallback, parts (`turnLimit` 0) and the 12k
+  output ceiling. The runtime keeps the history; a turn ends at `rl ok`/`fail`, and the proxy deletes
+  conversations it leaves (five minutes on). Windows in the IDs are one needle turn each (§48). The Code
+  tab's local sessions ("Long context") run on Office's LLM API, which the proxy's app isn't consented
+  for (§48 F136); don't work around that.
 - **A tool turn is stopped once the model's own `<tool_response>` after a call runs past 2,000 chars**
   (#65, `runBuffered` in `handler.ts`): waiting for M365 to finish let invented continuations run for
   minutes, past pi's timeout. Not at the tag itself: M365 keeps the whole message, Sonnet 4.6 seems to

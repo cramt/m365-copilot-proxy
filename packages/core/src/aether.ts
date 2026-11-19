@@ -100,6 +100,49 @@ function runtimeEndpoint(token: string, ids: TokenIds): Promise<string> {
 /** Forget the cached endpoint (tests). */
 export function resetRuntimeEndpoint(): void {
   endpoint = null;
+  catalog = null;
+}
+
+/** How long a fetched catalog is used, and how long a failed fetch waits to be retried. */
+const CATALOG_TTL_MS = 10 * 60_000;
+const CATALOG_RETRY_MS = 60_000;
+let catalog: { at: number; ttl: number; models: Promise<string[] | null> } | null = null;
+
+/**
+ * The runtime's model IDs right now (`GET /v1/models`, the same for Cowork and
+ * Code), or null when they can't be fetched. The list changes: on Nov 19 2026
+ * every GPT model left it within an afternoon, and a message naming a model
+ * that isn't in it is refused (`MODEL_NOT_IN_CATALOG`). Kept 10 minutes.
+ */
+export function runtimeCatalog(getToken: () => Promise<string> = defaultToken): Promise<string[] | null> {
+  if (catalog && Date.now() - catalog.at < catalog.ttl) return catalog.models;
+  const entry: { at: number; ttl: number; models: Promise<string[] | null> } = { at: Date.now(), ttl: CATALOG_TTL_MS, models: Promise.resolve(null) };
+  entry.models = (async () => {
+    try {
+      const token = await getToken();
+      const ids = tokenIds(token);
+      const base = await runtimeEndpoint(token, ids);
+      const res = await fetch(`${base}/v1/models`, {
+        headers: { authorization: `Bearer ${token}`, "x-tenant-id": ids.tid, "x-user-id": ids.oid, "x-cowork-host-type": "officeweb:web", "x-request-id": randomUUID(), accept: "application/json" },
+      });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const body = (await res.json()) as { models?: { id?: unknown }[] };
+      const models = (body.models ?? []).map((m) => m.id).filter((id): id is string => typeof id === "string" && id.length > 0);
+      log.info(`Agent runtime catalog: ${models.join(", ") || "(empty)"}`);
+      return models;
+    } catch (err: any) {
+      log.info(`Agent runtime catalog unavailable: ${err?.message ?? err}`);
+      entry.ttl = CATALOG_RETRY_MS;
+      return null;
+    }
+  })();
+  catalog = entry;
+  return entry.models;
+}
+
+/** Drop the cached catalog, so the next listing asks again. */
+function forgetCatalog(): void {
+  catalog = null;
 }
 
 /** OpenAI's effort names onto the runtime's; null for one it doesn't take. */
@@ -184,6 +227,27 @@ export function runtimeFailure(code: string | undefined, message: string | undef
     return { value: "InvalidRequest", errorCode: "InputTokenLimitExceeded", message };
   }
   return { value: "InternalError", errorCode: code || "agent_runtime_failure", message };
+}
+
+/** A turn the runtime refused before it ran: no text, only its result. */
+function refusedTurn(result: TurnResult): CopilotStream {
+  return {
+    fullText: "",
+    images: [],
+    hasContent: false,
+    throttle: null,
+    contentOrigin: "AgentRuntime",
+    apology: false,
+    messageType: null,
+    messageId: null,
+    scores: null,
+    turnCount: null,
+    turnState: "Failed",
+    result,
+    metering: null,
+    credits: null,
+    async *[Symbol.asyncIterator]() {},
+  };
 }
 
 interface TurnContext {
@@ -491,7 +555,16 @@ export class AetherSession implements TurnSession {
       signal,
     });
     const body = await res.text();
-    if (!res.ok) throw new Error(`The agent runtime refused the message: HTTP ${res.status} ${trunc(body, 300)}`);
+    if (!res.ok) {
+      // A model the catalog doesn't have (any more) is the client's to change: a 400, not a 502.
+      const detail = parseJson(body)?.detail;
+      if (res.status === 400 && detail?.code === "MODEL_NOT_IN_CATALOG") {
+        forgetCatalog();
+        log.info(`Agent runtime: ${runtimeModel} isn't in its catalog`);
+        return refusedTurn({ value: "InvalidRequest", errorCode: "ModelNotInCatalog", message: typeof detail.message === "string" ? detail.message : undefined });
+      }
+      throw new Error(`The agent runtime refused the message: HTTP ${res.status} ${trunc(body, 300)}`);
+    }
     const accepted = parseJson(body);
     if (typeof accepted?.id !== "string") throw new Error(`The agent runtime accepted the message without a stream position: ${trunc(body, 300)}`);
     this.turns++;

@@ -877,10 +877,14 @@ The server keeps the conversation: a follow-up sends only its new message, and i
 | `uq` | `{b, r, k, rs}`: the monthly entitlement, after `rl` |
 | `ti`, `tk`, `ic`, `tst`, `co`, `ck`, `rh`, `rpc`, `cs`, `up` | title, task progress and the rest; the proxy ignores them |
 
-**Other calls.** `GET /v1/models`: the model list, the same for both tabs (`supported_effort_levels`,
-`usage_multiplier`; `supported_context_tiers` on accounts that have a long tier). `GET /v1/entitlement`:
-`{budget, consumed, remaining}`. `GET /v1/tasks`: the sidebar's tasks, both tabs. `GET
-/v1/tasks/live/detail?sessionId=<key>`: a task's `snapshot.costCredits` and `activeModel`. `DELETE
+**Other calls.** `GET /v1/models`: the catalog, the same for both tabs (`supported_effort_levels`,
+`usage_multiplier`, `llm_health_bucket`). It changes: on Nov 19 2026 it listed eight models in the
+morning and only `opus-5.5`, `opus-5.5-fast` and `sonnet-5.5` by 15:55 ET, and from then a message naming
+a model outside it was refused: `POST /v1/messages` → 400 `{"detail": {"type": "error", "code":
+"MODEL_NOT_IN_CATALOG", "message": "Model 'gpt-6.2-sol:copilot' is not a known catalog entry. …",
+"model": …}}` (hypotheses §48 F137). `GET /v1/entitlement`: `{budget, consumed, remaining}`. `GET
+/v1/tasks`: the sidebar's tasks, both tabs. `GET /v1/tasks/live/detail?sessionId=<key>`: a task's
+`snapshot.costCredits` (all its charges, `costFullyCounted`) and `activeModel`. `DELETE
 /v1/conversations/<key>`: 204, and the task leaves the sidebar (the web app's `tasks.delete`). No stop
 call turned up: closing the stream leaves the run going, and the next message queues behind it.
 
@@ -888,10 +892,20 @@ call turned up: closing the stream leaves the run going, and the next message qu
 characters (~806k tokens), the most tried; Opus 5.5 and Sonnet 5.5 answered 1.6M (~645k), and Sonnet 5.5
 refused 2.0M with `engine.v2_refusal`. Chat's GPT-6.x reads about 272k (§47).
 
-**What a turn costs.** Every turn is charged to the user's Copilot credits (`cq`): a new Cowork conversation
-about 1–9 credits for one line, a follow-up about 0.4; a 2.0M-character turn 224 (GPT-6.2 Sol) to 927
-(GPT-6.2 Astra).
+**What a turn costs.** Every turn is charged to the user's Copilot credits, as `cq` events: the model's
+calls, plus a title and follow-up suggestions on a small model (`claude-haiku-5-5`, `gpt-6-luna`), about
+0.005–0.01 each. One line in a new conversation cost 0.04 (Cowork, Sonnet 5.5) to 9.5 (Code, GPT-6.2 Sol),
+a follow-up about 0.4, and a long turn 0.28 (GPT-6.2 Sol) to 1.15 (GPT-6.2 Astra) credits per 1,000
+tokens. The full table is in the README's [Credit usage](../README.md#credit-usage).
 
-**Context tiers.** The Code app sends `context_tier` (`default` or `long_context`) in its session commands
-when a model lists `supported_context_tiers` (`[{id, maxContextWindowTokens}]`). No model does on the test
-account, and the host maps no tier into the runtime's request (hypotheses §48 F136).
+**The Code tab's local sessions are a third service.** The Copilot app (`copilotapp.exe`) runs Code
+sessions on the user's own folders ("Local" in its sidebar) through a bundled runtime,
+`…\Copilot\User Data\CopilotCodeTabRuntime\<version>\copilot.exe --server --stdio`: a Copilot CLI build
+started with `COPILOT_OFFLINE=true` and a bring-your-own-key provider, `undocked-byok`
+(`COPILOT_PROVIDER_BASE_URL=https://loki.delve.office.com/api/v1/llmapi`, the OpenAI Responses API, models
+such as `gpt-61-sol` and `gpt-6-astra`), signed in with Entra for audience
+`12f6db80-0741-4a7e-b9c5-b85d737b3a31`. Those sessions are the ones whose picker has a "Long context" switch:
+the runtime records `contextTier: "long_context"` in the session. The proxy's app registration
+(`M365ChatClient`) gets `AADSTS65001` (not consented) for that audience, so the proxy doesn't use them.
+The Code app's own script sends `context_tier` in its session commands; the agent runtime's models list no
+tiers (hypotheses §48 F136).

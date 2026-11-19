@@ -129,6 +129,7 @@ export {
   AETHER_SCOPE,
   containerConfig,
   resetRuntimeEndpoint,
+  runtimeCatalog,
   runtimeEffort,
   runtimeFailure,
   sseEvents,

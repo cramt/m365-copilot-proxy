@@ -1,4 +1,4 @@
-import { type ModelSessionOptions, formatModelId, getAvailableModels, listModelEntries } from "@m365-copilot/core";
+import { type ModelSessionOptions, enabledBackends, formatModelId, getAvailableModels, listModelEntries, runtimeCatalog } from "@m365-copilot/core";
 import { ChatCompletionRequest } from "./schemas.js";
 import { SessionPool, handleChatCompletion } from "./handler.js";
 import { checkAccess, corsHeaders, corsPolicy } from "./access.js";
@@ -46,9 +46,13 @@ const MAX_OUTPUT_TOKENS = Number(process.env.M365_MAX_OUTPUT_TOKENS) || 1_000_00
 /** Build the OpenAI-compatible `GET /v1/models` payload: every Chat model ID, as
  *  before, then one ID per model on each enabled backend (M365_BACKENDS), named
  *  `<model>(<backend>)[_<window>][_credit]` (core backends.ts). A suffixed ID
- *  advertises the window it names, when measured. */
-export function buildModelsPayload() {
+ *  advertises the window it names, when measured. Cowork and Code list what the
+ *  agent runtime's catalog has now (kept 10 min; the built-in table when it
+ *  can't be read). */
+export async function buildModelsPayload() {
   const created = Math.floor(Date.now() / 1000);
+  const backends = enabledBackends();
+  const catalog = backends.some((b) => b !== "chat") ? await runtimeCatalog() : null;
   const entry = (id: string, window: number, extra: Record<string, unknown> = {}) => ({
     id,
     object: "model",
@@ -67,7 +71,7 @@ export function buildModelsPayload() {
     object: "list",
     data: [
       ...getAvailableModels().map((id) => entry(id, CONTEXT_WINDOW_TOKENS)),
-      ...listModelEntries().map((m) =>
+      ...listModelEntries(backends, catalog).map((m) =>
         entry(formatModelId(m), m.window ?? CONTEXT_WINDOW_TOKENS, {
           x_m365_backend: m.backend,
           x_m365_model: m.base,
@@ -133,7 +137,7 @@ export function createApp(sessionOptions: ModelSessionOptions = {}): FetchApp {
     }
 
     if (method === "GET" && pathname === "/v1/models") {
-      return withCors(json(200, buildModelsPayload()));
+      return withCors(json(200, await buildModelsPayload()));
     }
 
     if (method === "POST" && pathname === "/v1/chat/completions") {

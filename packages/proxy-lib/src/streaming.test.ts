@@ -2000,6 +2000,7 @@ describe("the agent runtime backends: Cowork and Code (§48)", () => {
   });
 
   it("refuses a backend M365_BACKENDS doesn't enable, without sending a turn", async () => {
+    process.env.M365_BACKENDS = "chat";
     const runs = scripted.runs;
     const res = await ask("gpt-6.2-sol(cowork)_800k_credit");
     expect(res.status).toBe(400);
@@ -2030,6 +2031,14 @@ describe("the agent runtime backends: Cowork and Code (§48)", () => {
     await ask("gpt-5.5(cowork)", { tools });
     expect(runtimeRuns).toHaveLength(1);
     expect(runtimeRuns[0].text).not.toContain("<system>");
+  });
+
+  it("answers a model the runtime's catalog doesn't have with a 400 model_not_found", async () => {
+    process.env.M365_BACKENDS = "cowork";
+    scripted.queue = [{ fullText: "", result: { value: "InvalidRequest", errorCode: "ModelNotInCatalog", message: "Model 'gpt-6.2-sol:copilot' is not a known catalog entry." } }];
+    const res = await ask("gpt-6.2-sol(cowork)_800k_credit");
+    expect(res.status).toBe(400);
+    expect((await res.json()).error).toMatchObject({ code: "model_not_found", type: "invalid_request_error" });
   });
 
   it("starts afresh after the runtime refuses a prompt as too long: the conversation keeps the refused message", async () => {
