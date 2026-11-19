@@ -6540,7 +6540,7 @@ title and suggestion calls (`gpt-5-chat-mini`): 0.055–0.065 credits for 2.0M�
 one line, on Cowork and Code (n=6). That morning the same 2.0M-character turn cost 224 on `gpt-6.2-sol` and
 232 on `gpt-6.1-sol-substrate`, also an `llmapi` model. So prices change; whether this one lasts is open.
 
-### F138 — Code turns are charged, and the monthly budget counts them 🟡
+### F138 — Code turns are charged, and the monthly budget counts them 🟢
 One line in a new conversation, the turn's charges (task `costCredits`, Nov 19 evening):
 
 | model | Code | Cowork |
@@ -6557,8 +6557,10 @@ not a free mode: the same turn on Cowork cost 0.04 that afternoon. The monthly b
 +331, +580 and +1,154 between 22:58 and 23:15, 2,405 in all, while about 2,150 credits of charges finished,
 some 1,800 of them on Code (a Codex session on GPT-6.2 Astra, F139). The +1,154 batch covered a window
 with no Cowork turn at all. So the budget counts Code's charges as well, about one for one; a single
-Code-only control (130 credits) didn't show within five minutes, which fits the batching. 🟡 because the
-user's own usage ran alongside. The Code tab's local sessions (F136) don't touch this runtime: their
+Code-only control (130 credits) didn't show within five minutes, which fits the batching. Two more
+batches settled it: +744 at 23:20 and +854 at 23:25, while the only Cowork charge was a 34-credit
+control and the user's Codex kept running Code turns. From 22:58 to 23:25 the budget took 4,003, of
+which about 380 were the probes'. The Code tab's local sessions (F136) don't touch this runtime: their
 session records show no premium requests, which fits the app showing no credits for them.
 
 ### F139 — Code's agent works in its own workspace, and slow turns meet Codex's timeout 🟢
