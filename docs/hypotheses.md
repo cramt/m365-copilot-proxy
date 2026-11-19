@@ -6388,8 +6388,11 @@ question about all of them), the way Codex replays a thread:
 Before, it went up as one 1.2M-character turn: Claude answered and M365 didn't keep it, so every later
 request replayed it; GPT-6.x refused, and the proxy returned the apology as the answer.
 
-**Codex:** the 1M windows stay. Claude models get them; GPT-6.x models get ~270k tokens verbatim and
-M365's summary of the rest.
+**Codex:** a window is counted in the proxy's estimate (4 characters a token), and Codex compacts at 90%
+of it. Windows that compact before M365 starts summarizing (GPT-6.x) or dropping turns (Claude), by
+these tests: 225,000 for GPT-6.x (compaction at ~810k characters) and 450,000 for the Claude models
+(~1.6M). The tests used dense log text, 3.1 characters a token; ordinary code and prose has fewer tokens
+a character, so this errs early. Live, Codex 0.169 then showed usable windows of 213,750 and 427,500.
 
 **Open — H47a:** can a request get GPT-6.x a longer window? Half an answer (n=1 each): the web app's Code
 tab has a tier, Chat doesn't. Code is GitHub's Copilot app embedded in M365 (its script cites

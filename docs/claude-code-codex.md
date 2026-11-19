@@ -189,6 +189,8 @@ settings ([hypotheses §41](hypotheses.md)):
   [per-model context overrides](setup.md#long-context-catalog). The script sets `context_window` and
   `max_context_window`; point a top-level `model_catalog_json` at the output file. A top-level catalog
   applies to every provider and overrides both discovery and `model_catalog_url` (F114).
+  For `m365/*` models, 225,000 for GPT-6.x and 450,000 for Claude make Codex compact before M365
+  summarizes or drops turns (hypotheses §47).
 - **One provider for every model.** The app saves the model you last picked as `model` in
   `config.toml`, without its provider. With a second provider, picking one of its models breaks new
   threads: copilot-api answers "This model does not support the responses endpoint". Put the other

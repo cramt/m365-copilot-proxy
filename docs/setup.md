@@ -216,10 +216,12 @@ app's account menu; the CLI ran with this file and no ChatGPT login. Things to k
 - **The app keeps each thread on the provider it started with,** and saves the model you last picked
   as the default without its provider. Keep only gateway models in the catalog (or put other backends
   behind copilot-api too: [claude-code-codex.md](claude-code-codex.md), step 5).
-- **Context windows** come only from the catalog, and Codex compacts at 90% of a window. M365 reports no
-  token counts, so the proxy estimates them: Codex sees an `m365/*` thread fill and compacts it near its
-  window. A 1M window is real for the Claude models; GPT-6.x reads about 250k tokens a turn
-  and M365 summarizes the older turns (hypotheses §47).
+- **Context windows** come from the catalog. M365 reports no token counts, so the proxy estimates
+  them by default; Codex uses those estimates to decide when to compact. In the proxy's tests,
+  Claude models read roughly 1M tokens in a turn, while GPT-6.x read about 250k and summarized
+  older turns (hypotheses §47). Codex compacts at 90% of a window, counted in the proxy's estimate
+  (4 characters a token): 225,000 for GPT-6.x and 450,000 for Claude compact before M365 summarizes or
+  drops turns.
 - **Metered models.** On Chathub `claude-opus` (Opus 5.5) is limited to 40 turns a day and
   `claude-sonnet-5.5` to 80, every tool call a turn, while `gpt-6.1-sol` and `claude-sonnet-5` spend no
   allowance. StreamHub reports no meters at all (hypotheses §41), so prefer the unmetered models.
@@ -236,6 +238,11 @@ tokens for [GPT-6 Astra](https://developers.openai.com/api/docs/models/gpt-6-ast
 [GPT-6.2 Astra](https://developers.openai.com/api/docs/models/gpt-6.2-astra), and
 [GPT-6.2 Sol](https://developers.openai.com/api/docs/models/gpt-6.2-sol), based on their published
 OpenAI API context windows. Keep 1,000,000 as the catalog fallback for the other M365 models.
+
+M365 serves less than those windows: GPT-6.x reads about 250k tokens a turn and summarizes older
+turns, Claude about 1M (hypotheses §47). With these windows Codex compacts after M365 has already
+summarized or dropped earlier turns. To have Codex compact first, use the same `MODEL=WINDOW` form
+with 225,000 for GPT-6.x and 450,000 for the Claude models, counted in the proxy's estimate.
 
 From the repo root in PowerShell, with the gateway running, discover every M365 model and pass
 `MODEL=WINDOW` for the five overrides. Use this instead of `--all` when refreshing the catalog so
