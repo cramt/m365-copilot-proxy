@@ -6391,4 +6391,14 @@ request replayed it; GPT-6.x refused, and the proxy returned the apology as the 
 **Codex:** the 1M windows stay. Claude models get them; GPT-6.x models get ~270k tokens verbatim and
 M365's summary of the rest.
 
-**Open — H47a:** can a request get GPT-6.x a longer window? The web client offers no such choice.
+**Open — H47a:** can a request get GPT-6.x a longer window? Half an answer (n=1 each): the web app's Code
+tab has a tier, Chat doesn't. Code is GitHub's Copilot app embedded in M365 (its script cites
+`apps/ghcopilot/vendor/github-app`), on F110's agent runtime. Its `create_session` and `set_session_model`
+carry `context_tier` (`default` or `long_context`), and the model picker offers the long tier for a model
+whose runtime entry (`GET …aetherruntime…/v1/models`) lists `supported_context_tiers` with a bigger
+window. On the test account no entry lists any (GPT-5.5, GPT 6.1 Sol, 6.2 Sol, 6.2 Sol Fast, 6.2 Astra,
+Opus 5.5, Opus 5.5 Fast, Sonnet 5.5), so its picker shows only the effort slider (Low … Max). The Chat
+client has no such field, and StreamHub ignores one: a 900k-character `Gpt_62_Sol_Reasoning` turn was
+refused the same with `contextTier` or `context_tier: "long_context"` at the top of `chatStreamRequest`,
+in `options`, in `extraExtensionParameters` and in `message`. **Probe:** on an account whose Code picker
+offers the long tier, a Code session's state after `create_session` with it, then a turn over 272k tokens.
