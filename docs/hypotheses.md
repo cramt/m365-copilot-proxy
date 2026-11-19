@@ -103,6 +103,10 @@ than "we eyeballed one run." See §M (Methods) for the experimental rig.
   upload (F97, shipped in `file-upload.ts`)
 - §43 — a give-up no detector caught, "I can't generate files in the current session": two first-person
   English patterns catch it and nothing else in 334 replies with no tool call (F118)
+- §45 — GPT-6.2 Sol, GPT-6.2 Astra, GPT-6 Astra and Claude Fable: the picker sends only the tone (F120);
+  all four serve on both transports, GPT-6 Astra gated like GPT-6 (F121); credits, and `Claude_Fable` is
+  Fable now (F122); harness runs and what shipped (F123); whether included `gpt-6.2-*` turns spend the
+  `GPT62*` budgets (H45a, open)
 
 ---
 
@@ -224,6 +228,10 @@ that opens it; program membership is not a string we can send.
 lies about which model answers — worse than not offering it. It lives in `scripts/tone-probe.mjs`
 only, probed on both scenarios so the day it starts self-identifying as Fable is visible in a
 routine sweep. **Falsify by:** a probe where `Claude_Fable` self-IDs as Fable — then map it.
+
+**Resolved 2026-11-18 (§45 F122): mapped as `claude-fable`.** Over StreamHub on 2026-11-11 it self-IDed as
+"Claude Fable 5.1"; on 2026-11-18 it reported a June 2026 training cutoff on both transports (GPT-5.5: June
+2024), and its StreamHub turns were charged to Copilot credits.
 
 ## 11. July 7 2026 — flying under Microsoft's radar (auto-reauth detection science run)
 
@@ -6162,3 +6170,79 @@ and a fresh Nitro build. The local native result and HTTP response contain no
 exported credentials. Usage and ownership of the broker cache are documented in
 [the authentication reference](m365-copilot-api.md#the-nativeclient-redirect-gotcha-this-one-cost-hours)
 and [setup](setup.md#windows-token-protection-policies-native-broker).
+
+## 45. Nov 18 2026 — GPT-6.2 Sol, GPT-6.2 Astra, GPT-6 Astra and Claude Fable
+
+**Question.** Microsoft added GPT-6.2 Sol, GPT-6.2 Astra and Claude Fable 5.2 to Copilot in the week to Nov 17
+("What's new in Copilot Cowork at Ignite 2026"), after announcing GPT-6 Astra and Claude Fable 5.1 as
+credit-billed models for Chat (MC1519122). Which tones are they, where do they serve, and can the proxy offer
+them? One premium account, as in §39–§41; one probe per cell (n=1) unless noted.
+
+### F120 — the picker sends the tone and nothing else; Fable sends nothing 🟢
+The Chat picker, Nov 17–18: GPT-5.6 Sol (Quick response, Think deeper), GPT-6, GPT-6.1 Sol, GPT-6.2 Sol and
+GPT-6.2 Astra ("Uses credits") under GPT; Sonnet 5.5, Opus 5.5 and Fable 5.1 ("Uses credits") under Claude.
+GPT-6 Astra is gone. With the send blocked (Playwright), picking GPT-6.2 Sol sent `tone:
+Gpt_62_Sol_Reasoning` and GPT-6.2 Astra `Gpt_62_Astra_Reasoning`; no other field named a model. Picking
+Fable 5.1 sent no `tone` at all (twice): the request was the GPT ones minus the tone, and the JS loaded on
+the page has no `Claude_Fable`, so the client's Fable route couldn't be captured. The client no longer
+opens StreamHub itself: after a `warmup` frame, a turn goes up a same-origin socket,
+`wss://copilot.cloud.microsoft/conversation/session/ws`, as `{type: "chatRequest", transportHint:
+"streamhub", body: {type: "chat_request", chatStreamRequest}}`, and the reply comes back on it. The
+proxy's direct StreamHub connection still works.
+
+### F121 — all four serve on both transports; GPT-6 Astra is gated 🟢
+Chathub cells with `_probe-chat.mjs` (agent-less, no Bing, "Reply with the single word: pong"); StreamHub
+cells with a one-turn StreamHub probe on the proxy's token, and through the proxy (§40):
+
+| tone | Chathub, included | Chathub, paid | Chathub, `officeweb` | StreamHub, `officeweb` |
+|---|---|---|---|---|
+| `Gpt_62_Sol_Reasoning` | answers | – | answers | answers |
+| `Gpt_62_Astra_Reasoning` | answers | – | answers | answers |
+| `Gpt_6_Astra_Reasoning` | BotConnection apology | answers | answers | answers |
+| `Claude_Fable` | answers | answers | answers | answers |
+
+Controls: `Gpt_61_Sol_Reasoning` answered on Chathub `officeweb`; `Gpt_99_Bogus_Reasoning` failed with
+"Failed to invoke 'Chat'" on Chathub and an `InvalidNote` error item on StreamHub, as did
+`Gpt_61_Astra_Reasoning`, `Gpt_62_Luna_Reasoning` and `Gpt_63_Astra_Reasoning` on StreamHub, so the
+validator knows these tones by name. The paid scenario's `metering` now carries `GPT62SolQuery*` and
+`GPT62AstraQuery*` (daily, weekly, and `…Word` variants), the same kind of budget as `GPT61SolQuery*` (§27
+F67). So the two GPT-6.2 tones route on the included scenario, like GPT-6.1 Sol, and
+`Gpt_6_Astra_Reasoning` joins `PAID_SCENARIO_TONES`, like `Gpt_6_Reasoning`.
+
+### F122 — credits, and how to tell the models apart 🟡
+StreamHub reports a `billing_info` item (`serviceMeterName: "PremiumModelsInM365Chat"`, `status:
+"creditInUse"`) on each `Gpt_62_Astra_Reasoning` and `Claude_Fable` turn (2 and 1) and none on the
+`Gpt_62_Sol_Reasoning` one: the picker's "Uses credits" split. Chathub sends no billing frames.
+Self-ID no longer separates them. Asked which model it is, the web client itself, with GPT-6.2 Astra
+picked, consulted a built-in `copilot-backstory` skill and answered "I'm Microsoft Copilot, powered by
+the GPT-6 reasoning model", the answer the proxy got on `Gpt_6_Astra_Reasoning` and
+`Gpt_62_Astra_Reasoning`. `Claude_Fable`, which answered "Claude Fable 5.1" over StreamHub on Nov 11 (the
+probe behind §40 F106), now declines to name a model on every route. The training cutoff still separates
+families: asked for it without naming itself, `Claude_Fable` said June 2026 on Chathub and on StreamHub,
+`Gpt_5_5_Chat` June 2024. That retires §10's reading (`Claude_Fable` answering as GPT-5). Opus 5.5 also
+reports 2026-06, which the cutoff can't rule out, but the picker doesn't mark Opus as using credits.
+
+### F123 — harness runs 🟢 (n=3 per arm, Nov 11)
+The setup of §40 F109 (`harness-check.mjs`, `M365_HARNESS_PROMPT=lean`, `M365_TRANSPORT=streamhub`,
+agent-less, `relay_batch`, no code interpreter or image generation), on the models F109 couldn't name then:
+
+| harness | model | solved | M365 turns per run |
+|---|---|---|---|
+| Codex | `gpt-6.2-sol` | 3/3 | 2.3 |
+| Claude Code | `claude-fable` | 3/3 | 2.3 |
+| Codex | `claude-fable` | 3/3 | 3.3 |
+
+On Nov 17, Codex (`codex exec`) on `gpt-6.2-astra` over StreamHub wrote a file and checked it in 22 s (1/1).
+
+**Shipped:** `gpt-6.2-sol`, `gpt-6.2-astra`, `gpt-6-astra` (paid scenario) and `claude-fable` /
+`claude-fable-5.1` in `MODEL_TONES`, any other `fable` string routed to `Claude_Fable` rather than to Sonnet,
+and `relay_batch` as the four tones' default framing: unbenched, chosen because every GPT-6.x sibling
+benched best on it and F123 ran on it. The agent route is unprobed (`agent-tone-probe.mjs` wants both kinds
+of account), so the GPT tones keep the default, the agent first with the dead-route fallback, and
+`Claude_Fable` goes agent-less like every Claude tone but Opus. No transport default changes: all four serve
+on Chathub. `proxy-verify.mjs --tools --multiturn` (agent off) passed on each: a tool call, then the result
+used on the next turn, over Chathub for `claude-fable`, `gpt-6.2-sol`, `gpt-6.2-astra` and `gpt-6-astra`
+(paid scenario), and over StreamHub for `gpt-6.2-astra`.
+
+**Open — H45a:** does an included-scenario `gpt-6.2-*` turn spend the `GPT62*Query*` budgets? **Probe:**
+read the paid scenario's `metering` before and after a few included turns, as §27 did for GPT-6.1 Sol.
