@@ -6295,12 +6295,13 @@ The pool evicted after 30 minutes, so a thread resumed after a break was replaye
   time, the least recently used going first.
 - A follow-up turn whose count is 1 has lost its history. The proxy stops it, before any of it reaches
   the client on StreamHub, where the count arrives ahead of the reply. Then it re-sends the whole request
-  in a fresh conversation, once per request. If a streamed reply went out before the count arrived, the
-  next request replays instead.
-- A lost opening of 200k characters or more sets a limit for the process: a conversation opened with a
-  prompt at least that long is replayed whole on every request rather than continued. Each of those
-  requests starts a conversation, which the thread throttle counts; compacting the client's history
-  (`/compact` in Codex) brings the deltas back.
+  in a fresh conversation, once per request, with a forcing retry's instruction after the history. If a
+  streamed reply went out before the count arrived, the next request replays instead. A turn that
+  itself carries the whole history needs no memory, so its count is never read as a loss.
+- An answered opening of 200k characters or more that is then lost sets a limit for that model for 24 h
+  (the pool TTL): a conversation opened with a prompt at least that long is replayed whole on every
+  request rather than continued. Each of those requests starts a conversation, which the thread throttle
+  counts; compacting the client's history (`/compact` in Codex) brings the deltas back.
 
 Live, through the fixed proxy: a 540k opening then two follow-ups. The first came back with count 1; it
 was stopped and re-sent, and the code word was recalled. The second was replayed whole from the start,

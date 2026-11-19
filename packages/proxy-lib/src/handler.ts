@@ -172,9 +172,12 @@ interface ConversationState {
    *  Opus fallback, #18) can't continue the M365 conversation — it may need
    *  another scenario — so it starts a fresh one with the full history. */
   servedModel?: string;
-  /** Characters in the prompt that opened the current M365 conversation (the
-   *  full history, when it was a replay). */
+  /** Characters in the prompt that last sent this M365 conversation the whole
+   *  history (its opening, or a replay into it). */
   openingChars: number;
+  /** That prompt was answered. Only an answered one can show that M365 didn't
+   *  keep a history that long; one it never processed shows nothing. */
+  openingAnswered: boolean;
   /** M365 lost this conversation's history after a reply had already streamed:
    *  the next request replays the whole history in a fresh conversation. */
   replayNext: boolean;
@@ -232,14 +235,36 @@ const UNKEPT_OPENING_MIN_CHARS = 200_000;
 export class SessionPool {
   private conversations = new Map<string, ConversationState>();
   private sessionOptions: ModelSessionOptions;
-  /** The shortest opening prompt (chars, at least UNKEPT_OPENING_MIN_CHARS) whose
-   *  history M365 was later found not to have kept. A conversation opened with a
-   *  prompt this long is replayed whole on every request instead of continued:
-   *  a delta would land in an empty conversation (§46 F125). */
-  unkeptOpeningChars = Infinity;
+  /** Per model: the shortest answered opening (chars, at least
+   *  UNKEPT_OPENING_MIN_CHARS) whose history M365 was later found not to have
+   *  kept, and when that was last seen. */
+  private unkeptOpenings = new Map<string, { chars: number; at: number }>();
 
   constructor(sessionOptions: ModelSessionOptions = {}) {
     this.sessionOptions = sessionOptions;
+  }
+
+  /** A conversation with `model` opened with a prompt this long is replayed
+   *  whole on every request instead of continued: a delta would land in an
+   *  empty conversation (§46 F125). The lesson lasts as long as an idle
+   *  conversation does (conversationTtlMs), so one loss can't pin every long
+   *  conversation to whole replays for the life of the process. */
+  unkeptOpeningChars(model: string): number {
+    const lesson = this.unkeptOpenings.get(model);
+    if (!lesson) return Infinity;
+    if (Date.now() - lesson.at > conversationTtlMs()) {
+      this.unkeptOpenings.delete(model);
+      return Infinity;
+    }
+    return lesson.chars;
+  }
+
+  /** M365 lost the history of a conversation with `model` that an answered
+   *  `chars`-long prompt had opened. A shorter one than UNKEPT_OPENING_MIN_CHARS
+   *  is treated as a one-off. */
+  noteUnkeptOpening(model: string, chars: number): void {
+    if (chars < UNKEPT_OPENING_MIN_CHARS) return;
+    this.unkeptOpenings.set(model, { chars: Math.min(chars, this.unkeptOpeningChars(model)), at: Date.now() });
   }
 
   /**
@@ -279,6 +304,7 @@ export class SessionPool {
     }
 
     // New conversation
+    this.evictOverflow();
     log.info(`New conversation ${fingerprint}, ${this.conversations.size} active`);
     const state: ConversationState = {
       session: new ModelSession(this.sessionOptions),
@@ -286,6 +312,7 @@ export class SessionPool {
       pendingNote: null,
       lastAccessedAt: Date.now(),
       openingChars: 0,
+      openingAnswered: false,
       replayNext: false,
     };
     this.conversations.set(fingerprint, state);
@@ -325,12 +352,15 @@ export class SessionPool {
         this.conversations.delete(key);
       }
     }
-    if (this.conversations.size >= MAX_CONVERSATIONS) {
-      const byAge = [...this.conversations].sort((a, b) => a[1].lastAccessedAt - b[1].lastAccessedAt);
-      for (const [key] of byAge.slice(0, this.conversations.size - MAX_CONVERSATIONS + 1)) {
-        log.info(`Evicting conversation ${key} (pool full)`);
-        this.conversations.delete(key);
-      }
+  }
+
+  /** Makes room for a new conversation; a request for a pooled one never evicts. */
+  private evictOverflow() {
+    if (this.conversations.size < MAX_CONVERSATIONS) return;
+    const byAge = [...this.conversations].sort((a, b) => a[1].lastAccessedAt - b[1].lastAccessedAt);
+    for (const [key] of byAge.slice(0, this.conversations.size - MAX_CONVERSATIONS + 1)) {
+      log.info(`Evicting conversation ${key} (pool full)`);
+      this.conversations.delete(key);
     }
   }
 
@@ -464,10 +494,11 @@ export async function handleChatCompletion(
   // conversation opened with a history at least as long as one M365 has already
   // failed to keep (§46 F125). A delta would land in an empty conversation, so
   // replay the whole history in a fresh one.
-  if (conv.sentMessageCount > 0 && (conv.replayNext || conv.openingChars >= pool.unkeptOpeningChars)) {
+  const unkeptOpeningChars = pool.unkeptOpeningChars(model);
+  if (conv.sentMessageCount > 0 && (conv.replayNext || conv.openingChars >= unkeptOpeningChars)) {
     log.info(conv.replayNext
       ? "M365 lost this conversation's history last turn: replaying the whole history in a fresh conversation"
-      : `This conversation opened with ${conv.openingChars} chars, too long for M365 to keep (${pool.unkeptOpeningChars} wasn't kept): replaying the whole history in a fresh conversation`);
+      : `This conversation opened with ${conv.openingChars} chars, too long for M365 to keep (${unkeptOpeningChars} wasn't kept): replaying the whole history in a fresh conversation`);
     session.newConversation();
     conv.sentMessageCount = 0;
     conv.replayNext = false;
@@ -506,11 +537,21 @@ export async function handleChatCompletion(
   // so we only need to send new messages after the first turn.
   const isFirstTurn = session.turnCount === 0;
   const convId = session.conversationId;
+  // Every prompt that carries the whole history (the opening, and each re-send
+  // of it). A turn that sends one needs nothing from M365's memory; any other
+  // turn continues the conversation and relies on M365 still holding it.
+  const wholePrompts = new Set<string>();
+  const formatWhole = (variant = framingVariant, then?: string | null): string => {
+    const whole = formatMessages(body.messages, body.tools, body.tool_choice, session.conversationId, variant);
+    const prompt = then ? `${whole}\n\n${then}` : whole;
+    wholePrompts.add(prompt);
+    return prompt;
+  };
   let text: string;
   // Images and files ride on the message that carries their text (core image-input.ts, file-upload.ts).
   let inputAttachments: string[];
   if (isFirstTurn || conv.sentMessageCount === 0) {
-    text = formatMessages(body.messages, body.tools, body.tool_choice, convId, framingVariant);
+    text = formatWhole();
     inputAttachments = attachmentUrls(body.messages);
     log.info(`Chat completion: model=${model}, stream=${body.stream}, messages=${body.messages.length}, turn=${session.turnCount}, mode=full, chars=${text.length}, cid=${convId}`);
   } else {
@@ -551,6 +592,9 @@ export async function handleChatCompletion(
   let lastScores: Record<string, number> | null | undefined;
   let lastTurnCount: number | null | undefined;
   let lastMetering: Record<string, number> | null | undefined;
+  // The lost-history re-send in runBuffered, at most once per request: produce()'s
+  // forcing and repair turns run it again, into the same conversation.
+  let historyResent = false;
 
   // `onDelta` (when provided) forwards each text delta to the caller AS IT ARRIVES,
   // for live incremental streaming. It's safe to forward without ever retracting:
@@ -558,8 +602,11 @@ export async function handleChatCompletion(
   // or one stopped before any of it was forwarded (a lost conversation), so a
   // forwarded delta always belongs to the one attempt that produced the answer and
   // is never re-sent by a subsequent retry.
+  // `forcing` marks produce()'s forcing and repair turns: if M365 turns out to have
+  // lost the conversation, their instruction follows the whole history re-sent.
   async function runBuffered(
     onDelta?: (delta: string) => void,
+    { forcing = false }: { forcing?: boolean } = {},
   ): Promise<{ fullText: string } | { error: Response }> {
     let agentRefreshed = false;
     let disengageRetried = false;
@@ -567,8 +614,8 @@ export async function handleChatCompletion(
     let webSearchFallbackDone = false;
     let priorityFallbackDone = false;
     let internalErrorFreshRetried = false;
-    let historyResent = false;
     let originalText = text;
+    const forcingPrompt = forcing ? text : null;
     // Self-imposed pacing while the account is degraded (thread-rate throttle). A
     // no-op when healthy; during backoff it sleeps a jittered delay so we stop
     // starting fresh turns into the throttle and let it self-heal (H-R1). This
@@ -590,12 +637,21 @@ export async function handleChatCompletion(
       // M365_NO_EARLY_STOP=1 waits for the turn to end instead.
       const earlyStop = hasTools && !process.env.M365_NO_EARLY_STOP ? new AbortController() : null;
       const stopAfter = earlyStopAfter();
-      // A turn opens an M365 conversation when its session has sent nothing yet.
-      // Any other turn continues one, so M365 should already hold its history.
-      const opening = session.turnCount === 0;
-      if (opening) conv.openingChars = text.length;
-      // Stops a follow-up turn whose conversation M365 turns out to have lost (below).
-      const lostStop = opening ? null : new AbortController();
+      // A turn that sends the whole history opens the M365 conversation (or
+      // re-opens it) and needs nothing from M365's memory. Any other turn
+      // continues one, so M365 should already hold its history. Not
+      // `session.turnCount === 0`: a request that failed after its turn leaves a
+      // count with nothing recorded as sent, so the next one sends the whole
+      // history into that conversation, and refreshAgent() zeroes the count of a
+      // conversation that goes on.
+      const opening = wholePrompts.has(text);
+      if (opening) {
+        conv.openingChars = text.length;
+        conv.openingAnswered = false;
+      }
+      // Stops a follow-up turn whose conversation M365 turns out to have lost
+      // (below). Once the request has re-sent the history, a later turn runs as is.
+      const lostStop = opening || historyResent ? null : new AbortController();
       const signals = [opts.signal, earlyStop?.signal, lostStop?.signal].filter((s): s is AbortSignal => s !== undefined);
       const signal = signals.length <= 1 ? signals[0] : AbortSignal.any(signals);
       let copilotStream;
@@ -708,7 +764,7 @@ export async function handleChatCompletion(
         webSearchFallbackDone = true;
         noteWebSearchOverflow(tone);
         session.newConversation();
-        text = formatMessages(body.messages, body.tools, body.tool_choice, session.conversationId, framingVariant);
+        text = formatWhole();
         inputAttachments = attachmentUrls(body.messages);
         originalText = text;
         log.info(`${tone} refused the prompt with the Bing plugin attached (InputTokenLimitExceeded) — re-sending without it in a fresh conversation`);
@@ -731,22 +787,21 @@ export async function handleChatCompletion(
       // an opening prompt too long to keep: it kept a 420k-character opening and
       // dropped a 540k one, and the turn after a dropped opening had no context
       // (§46 F125). This reply was written without context, so re-send the WHOLE
-      // request in a fresh conversation, once per request. A long lost opening
-      // also teaches the pool to replay such a history every time instead of
-      // continuing it. If the reply has already streamed (plain text, the count
-      // arriving after it), the next request replays instead.
+      // request in a fresh conversation, once per request, with a forcing turn's
+      // instruction after it. A long answered opening that was lost also teaches
+      // the pool to replay such a history every time instead of continuing it.
+      // If the reply has already streamed (plain text, the count arriving after
+      // it), the next request replays instead.
       if (!opening && !historyResent && conversationLost(copilotStream)) {
         historyResent = true;
-        if (conv.openingChars >= UNKEPT_OPENING_MIN_CHARS) {
-          pool.unkeptOpeningChars = Math.min(pool.unkeptOpeningChars, conv.openingChars);
-        }
+        if (conv.openingAnswered) pool.noteUnkeptOpening(model, conv.openingChars);
         if (forwarded) {
           conv.replayNext = true;
           log.info(`M365 has lost this conversation's history (it opened with ${conv.openingChars} chars); the reply has already streamed, so the next request replays the whole history`);
         } else {
           log.info(`M365 has lost this conversation's history (it opened with ${conv.openingChars} chars): re-sending the whole request in a fresh conversation`);
           session.newConversation();
-          text = formatMessages(body.messages, body.tools, body.tool_choice, session.conversationId, framingVariant);
+          text = formatWhole(framingVariant, forcingPrompt);
           inputAttachments = attachmentUrls(body.messages);
           originalText = text;
           attempt--;
@@ -777,7 +832,7 @@ export async function handleChatCompletion(
         noteAgentRouteDead(tone);
         useToolAgent = false;
         session.newConversation();
-        text = formatMessages(body.messages, body.tools, body.tool_choice, session.conversationId, framingVariant);
+        text = formatWhole();
         inputAttachments = attachmentUrls(body.messages);
         originalText = text;
         log.info(`Agent route dead for ${tone} (InternalError) — this account isn't premium; re-sending agent-less with '${framingVariant}' framing in a fresh conversation`);
@@ -808,7 +863,7 @@ export async function handleChatCompletion(
           framingVariant = currentFramingVariant(defaultFramingForModel(model));
           useToolAgent = requestUsesAgent(model, !!hasTools);
           session.newConversation();
-          text = formatMessages(body.messages, body.tools, body.tool_choice, session.conversationId, framingVariant);
+          text = formatWhole();
           inputAttachments = attachmentUrls(body.messages);
           originalText = text;
           attempt--;
@@ -835,7 +890,7 @@ export async function handleChatCompletion(
         disengageRetried = true;
         session.newConversation();
         const retryVariant = transcriptStyleForVariant(framingVariant).framingTag === "system" ? "softened" : framingVariant;
-        text = formatMessages(body.messages, body.tools, body.tool_choice, session.conversationId, retryVariant);
+        text = formatWhole(retryVariant);
         inputAttachments = attachmentUrls(body.messages);
         log.info(`Upstream Apology (prompt filter) — retrying once with '${retryVariant}' framing in a fresh conversation (F22)`);
         attempt--; // free retry; bounded — disengageRetried flips once
@@ -845,6 +900,7 @@ export async function handleChatCompletion(
       if (copilotStream.hasContent || fullText.length > 0) {
         noteRequestOutcome(false, convId); // clean response → degradation has lifted
         if (useToolAgent) noteAgentRouteAlive(tone); // the agent route answered on this account
+        if (opening) conv.openingAnswered = true;
         conv.servedModel = model;
         inputAttachments = []; // on the server now: a forcing retry in this conversation needn't resend them
         return { fullText };
@@ -870,7 +926,7 @@ export async function handleChatCompletion(
           // `relay`) keeps itself: swapping to `softened` would reintroduce
           // exactly the tag that model reads as a forged system prompt.
           const retryVariant = transcriptStyleForVariant(framingVariant).framingTag === "system" ? "softened" : framingVariant;
-          text = formatMessages(body.messages, body.tools, body.tool_choice, session.conversationId, retryVariant);
+          text = formatWhole(retryVariant);
           inputAttachments = attachmentUrls(body.messages);
           log.info(`Upstream Disengaged — retrying once with '${retryVariant}' framing in a fresh conversation (F22)`);
           attempt--; // free retry; bounded — disengageRetried flips once
@@ -906,7 +962,7 @@ export async function handleChatCompletion(
       ) {
         internalErrorFreshRetried = true;
         session.newConversation();
-        text = formatMessages(body.messages, body.tools, body.tool_choice, session.conversationId, framingVariant);
+        text = formatWhole();
         inputAttachments = attachmentUrls(body.messages);
         originalText = text;
         log.info(`Upstream InternalError — re-sending the whole request in a fresh conversation (attempt ${attempt + 1}/${MAX_RETRIES})`);
@@ -1024,7 +1080,7 @@ export async function handleChatCompletion(
       text = remoteArtifact ? REMOTE_ARTIFACT_FORCE_PROMPT
         : confab ? (everActed ? MIDTASK_FORCE_PROMPT : CONFAB_FORCE_PROMPT)
         : HALLUCINATION_FORCE_PROMPT;
-      const retry = await runBuffered();
+      const retry = await runBuffered(undefined, { forcing: true });
       if ("error" in retry) return { kind: "error", resp: retry.error };
       conv.sentMessageCount = body.messages.length;
       fullText = stopAtFabricatedResult(retry.fullText);
@@ -1064,7 +1120,7 @@ export async function handleChatCompletion(
     if (damaged) {
       log.info(`PowerShell command lost a [Type]: before ${damaged} to M365's post-processing — not running it, asking for it again`);
       text = strippedTypeMemberPrompt(damaged);
-      const retry = await runBuffered();
+      const retry = await runBuffered(undefined, { forcing: true });
       if ("error" in retry) return { kind: "error", resp: retry.error };
       conv.sentMessageCount = body.messages.length;
       fullText = stopAtFabricatedResult(retry.fullText);

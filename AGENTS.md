@@ -297,9 +297,10 @@ pnpm test:live      # M365_LIVE=1; live tests that hit real M365 (uses quota)
   the key: those are where a harness puts per-turn text, and every change starts a new thread.
 - **M365 can lose a conversation's history, and says so.** It answers an opening prompt of about 500k
   characters but doesn't keep it: the next turn's `numUserMessagesInConversation` reads 1 and the model
-  answers without context (§46 F125). `runBuffered` treats count 1 on a follow-up as a lost history: it
-  stops the turn and re-sends the whole request in a fresh conversation. After a lost opening of 200k+
-  characters, the pool replays such histories whole on every request (`unkeptOpeningChars`). Idle
+  answers without context (§46 F125). `runBuffered` treats count 1 on a turn that doesn't carry the whole
+  history (`wholePrompts`) as a lost history: it stops the turn and re-sends the whole request in a fresh
+  conversation, once per request. After an answered opening of 200k+ characters is lost, the pool
+  replays such histories whole for that model for 24 h (`unkeptOpeningChars(model)`). Idle
   conversations stay pooled 24 h (`M365_CONVERSATION_TTL_HOURS`): the old 30-minute eviction forced
   those replays, and M365 keeps a conversation for at least 21 h (F126).
 - **A tool turn is stopped once the model's own `<tool_response>` after a call runs past 2,000 chars**

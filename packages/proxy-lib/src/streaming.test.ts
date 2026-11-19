@@ -1548,7 +1548,7 @@ describe("a conversation M365 has lost (§46)", () => {
     expect(scripted.texts).toHaveLength(4);
     expect(scripted.texts[3]).toContain(opener);
     expect(scripted.newConversations).toBe(2);
-    expect(pool.unkeptOpeningChars).toBeGreaterThanOrEqual(250_000);
+    expect(pool.unkeptOpeningChars("claude-sonnet")).toBeGreaterThanOrEqual(250_000);
   });
 
   it("treats a short history's loss as a one-off: the next request continues it", async () => {
@@ -1565,7 +1565,7 @@ describe("a conversation M365 has lost (§46)", () => {
     await ask(pool, history);
     expect(scripted.texts).toHaveLength(4);
     expect(scripted.texts[3]).not.toContain(opener);
-    expect(pool.unkeptOpeningChars).toBe(Infinity);
+    expect(pool.unkeptOpeningChars("claude-sonnet")).toBe(Infinity);
   });
 
   it("keeps an idle conversation for 24 hours, not 30 minutes", async () => {
@@ -1584,5 +1584,95 @@ describe("a conversation M365 has lost (§46)", () => {
     history.push({ role: "assistant", content: "Answer 2." }, { role: "user", content: "Question 3" });
     await ask(pool, history);
     expect(scripted.texts[2]).toContain(opener);
+  });
+
+  it("doesn't take a whole history sent after a failed request for a lost conversation", async () => {
+    const pool = new SessionPool();
+    const opener = `${"Background for the task. ".repeat(10_000)}${Math.random()}`; // 250k chars
+    // M365 rejects the turn outright, so it never stores it, but the session has counted it.
+    reset({ fullText: "", result: { value: "InvalidRequest" } });
+    expect((await ask(pool, [{ role: "user", content: opener }])).status).toBe(400);
+    // The client's retry sends the whole history into that conversation, where it's message 1.
+    scripted.queue = [{ fullText: "Answer.", throttle: { current: 1, max: 600 } }];
+    expect(await answerOf(await ask(pool, [{ role: "user", content: opener }]))).toBe("Answer.");
+    expect(scripted.texts).toHaveLength(2);
+    expect(scripted.newConversations).toBe(0);
+    expect(pool.unkeptOpeningChars("claude-sonnet")).toBe(Infinity);
+  });
+
+  it("learns no size limit from an opening M365 never answered", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    const pool = new SessionPool();
+    const opener = `${"Background for the task. ".repeat(10_000)}${Math.random()}`; // 250k chars
+    // An empty opening; the quick retry's "Please continue." then finds no history.
+    reset({ fullText: "" }, LOST, { fullText: "Answer." });
+    const pending = ask(pool, [{ role: "user", content: opener }]);
+    await vi.runAllTimersAsync();
+    expect(await answerOf(await pending)).toBe("Answer.");
+    expect(scripted.texts.map((t) => t.includes(opener))).toEqual([true, false, true]);
+    expect(pool.unkeptOpeningChars("claude-sonnet")).toBe(Infinity);
+  });
+
+  const tools = [{ type: "function", function: { name: "bash", parameters: { type: "object", properties: { command: { type: "string" } } } } }];
+  const askWithTools = (pool: InstanceType<typeof SessionPool>, messages: Msg[]) =>
+    handleChatCompletion(ChatCompletionRequest.parse({ model: "claude-sonnet", stream: false, tools, messages }), pool);
+  const CONFAB = { fullText: "I can't access your files from here. Please paste the contents of calc.py." };
+  const commandOf = async (res: Response) => JSON.parse((await res.json()).choices[0].message.tool_calls[0].function.arguments).command;
+
+  it("re-sends a forcing turn's instruction after the whole history", async () => {
+    const pool = new SessionPool();
+    const opener = `fix calc.py ${Math.random()}`;
+    reset(CONFAB, LOST, { fullText: "```bash\ncat calc.py\n```" });
+    expect(await commandOf(await askWithTools(pool, [{ role: "user", content: opener }]))).toBe("cat calc.py");
+    expect(scripted.texts).toHaveLength(3);
+    expect(scripted.texts[2]).toContain(opener);
+    expect(scripted.texts[2].endsWith(`\n\n${scripted.texts[1]}`)).toBe(true); // the forcing prompt
+    expect(scripted.newConversations).toBe(1);
+  });
+
+  it("re-sends the history once per request, not once per forcing turn", async () => {
+    const pool = new SessionPool();
+    const opener = `fix calc.py ${Math.random()}`;
+    reset({ fullText: "Noted." });
+    await askWithTools(pool, [{ role: "user", content: opener }]);
+    scripted.queue = [LOST, CONFAB, { fullText: "```bash\ncat calc.py\n```", throttle: { current: 1, max: 600 } }];
+    const res = await askWithTools(pool, [
+      { role: "user", content: opener },
+      { role: "assistant", content: "Noted." },
+      { role: "user", content: "Go ahead" },
+    ]);
+    expect(await commandOf(res)).toBe("cat calc.py");
+    expect(scripted.texts).toHaveLength(4); // opening, lost delta, whole re-send, forcing turn
+    expect(scripted.newConversations).toBe(1);
+  });
+
+  it("keeps a size limit for the model that lost the history, for a day", () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date("2026-11-18T12:00:00Z"));
+    const pool = new SessionPool();
+    pool.noteUnkeptOpening("claude-sonnet", 300_000);
+    pool.noteUnkeptOpening("claude-sonnet", 250_000);
+    expect(pool.unkeptOpeningChars("claude-sonnet")).toBe(250_000);
+    expect(pool.unkeptOpeningChars("gpt-6.1-sol")).toBe(Infinity);
+    vi.setSystemTime(new Date("2026-11-19T13:00:00Z")); // 25 h later
+    expect(pool.unkeptOpeningChars("claude-sonnet")).toBe(Infinity);
+  });
+
+  it("evicts to make room for a new conversation, never the one a request continues", () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    const pool = new SessionPool();
+    const messages = (content: string) => ChatCompletionRequest.parse({ model: "claude-sonnet", messages: [{ role: "user", content }] }).messages;
+    const start = Date.parse("2026-11-18T12:00:00Z");
+    vi.setSystemTime(start);
+    const oldest = pool.resolve(messages("conversation 0"));
+    for (let i = 1; i < 1000; i++) {
+      vi.setSystemTime(start + i);
+      pool.resolve(messages(`conversation ${i}`));
+    }
+    vi.setSystemTime(start + 1000);
+    expect(pool.resolve(messages("conversation 0"))).toBe(oldest); // least recently used, and kept
+    expect(pool.size).toBe(1000);
+    pool.resolve(messages("conversation 1000"));
+    expect(pool.size).toBe(1000);
   });
 });
