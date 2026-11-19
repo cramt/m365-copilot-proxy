@@ -8,6 +8,7 @@ import {
 import { execSync } from "node:child_process";
 import { join } from "node:path";
 import { homedir } from "node:os";
+import { createWamAuth } from "./wam-auth.js";
 
 const CLIENT_ID = "c0ab8ce9-e9a0-42e7-b064-33d422df41f1";
 const AUTHORITY = "https://login.microsoftonline.com/common";
@@ -46,6 +47,15 @@ function resolveFile(envVar: string, defaultName: string): string {
 
 const CACHE_FILE = resolveFile("M365_CACHE_FILE", "msal-cache.json");
 const SECRETS_FILE = resolveFile("M365_SECRETS_FILE", "secrets.json");
+const wamAuth = createWamAuth({
+  clientId: CLIENT_ID,
+  authority: AUTHORITY,
+  accountFile: join(CONFIG_DIR, "wam-account.json"),
+});
+
+function useWam(): boolean {
+  return process.env.M365_AUTH_MODE === "wam";
+}
 
 // Browser identity for both login paths. These defaults are the §11 F25
 // anti-fingerprint config — empirically tuned against AAD's bot scoring for the
@@ -423,6 +433,7 @@ async function runBrowserLogin(
 // --- Token acquisition methods ---
 
 export async function getTokenSilent(): Promise<string | null> {
+  if (useWam()) return wamAuth.getToken(SCOPES, false);
   const app = getApp();
   const accounts = await app.getTokenCache().getAllAccounts();
   if (accounts.length === 0) return null;
@@ -444,6 +455,7 @@ export async function loginAutomated(
   password: string,
   mfaSecret: string,
 ): Promise<string> {
+  if (useWam()) return getToken();
   const app = getApp();
   log.info("Starting automated login...");
   const token = await runBrowserLogin(
@@ -583,6 +595,7 @@ export function forceReauth(): Promise<boolean> {
 
 async function doForceReauth(): Promise<boolean> {
   try {
+    if (useWam()) return Boolean(await getTokenForScope(SCOPES));
     const silent = await getTokenSilent();
     if (silent) {
       log.info("forceReauth: refreshed silently — no interactive login needed");
@@ -632,6 +645,9 @@ export function loadSecrets(): {
 }
 
 export async function getTokenForScope(scopes: string[]): Promise<string | null> {
+  if (useWam()) {
+    return wamAuth.getToken(scopes, interactiveApprovalEnabled() && interactiveAllowed());
+  }
   const app = getApp();
   const accounts = await app.getTokenCache().getAllAccounts();
   log.info(`getTokenForScope: ${scopes.join(",")} — ${accounts.length} accounts in cache`);
@@ -674,6 +690,15 @@ export function getToken(): Promise<string> {
 }
 
 async function doGetToken(): Promise<string> {
+  if (useWam()) {
+    const token = await getTokenForScope(SCOPES);
+    if (!token) {
+      throw new Error(
+        "No usable WAM token. Set M365_ENABLE_INTERACTIVE_APPROVAL=1 for the Windows account picker, or M365_LOGIN_HINT to select an existing broker account. Browser fallback is disabled.",
+      );
+    }
+    return token;
+  }
   const silent = await getTokenSilent();
   if (silent) {
     log.info("Token refreshed silently");

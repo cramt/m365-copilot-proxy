@@ -121,7 +121,38 @@ export {
 export {
   ModelSession,
   type ModelSessionOptions,
+  type TurnSession,
+  type TurnOptions,
 } from "./model.js";
+
+export {
+  AetherSession,
+  AETHER_SCOPE,
+  containerConfig,
+  resetRuntimeEndpoint,
+  runtimeCatalog,
+  runtimeEffort,
+  runtimeFailure,
+  sseEvents,
+  textItems,
+  type AetherSessionOptions,
+  type RuntimeMode,
+  type SseEvent,
+} from "./aether.js";
+
+export {
+  BACKENDS,
+  defaultBackend,
+  enabledBackends,
+  formatModelId,
+  formatWindow,
+  listModelEntries,
+  resolveModelRoute,
+  runtimeModelFor,
+  type Backend,
+  type ModelEntry,
+  type ModelRoute,
+} from "./backends.js";
 
 export {
   formatMessages,
