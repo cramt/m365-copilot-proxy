@@ -174,13 +174,15 @@ proxy handles both modes; see below.
 - **Models and context windows.** 0.169 has no `model_context_window`: a model's window is its catalog
   entry's `context_window`, and Codex compacts at 90% of it. With no catalog the app lists the GPT
   models it ships with, not `m365/*`, so no Claude. copilot-api's `/models` serves a Codex catalog
-  (to a `codex…` User-Agent) with `m365/<id>` Code Mode entries, Claude included, windowed by each
-  model's `contextWindow`. Its size limit can omit routable models, so use
-  `node scripts/codex-catalog.mjs --all --out=~/.codex/m365-models.json` to discover every model from
-  `/v1/models` and fill missing entries from a Codex template. Alternatively, pass explicit model IDs
-  for a smaller picker. The script sets `context_window` and `max_context_window`; point a top-level
-  `model_catalog_json` at the output file. A top-level catalog applies
-  to every provider and overrides both discovery and `model_catalog_url` (F114).
+  (to a `codex…` User-Agent) with `m365/<id>` Code Mode entries, Claude included. By default it caps
+  that catalog at 1 MiB and drops some models by name (2.9.12 served 18 of 53 entries here);
+  `x-full-model-catalog: true` returns all of it. An entry copied from an upstream model of the same
+  name, such as `m365/gpt-6.1-sol`, also carries that model's window (272,000), not the route's.
+  `node scripts/codex-catalog.mjs --all --out=~/.codex/m365-models.json` asks for the full catalog,
+  keeps the models `/v1/models` advertises, and windows each by the gateway's advertised window.
+  Alternatively, pass explicit model IDs for a smaller picker. The script sets `context_window` and
+  `max_context_window`; point a top-level `model_catalog_json` at the output file. A top-level catalog
+  applies to every provider and overrides both discovery and `model_catalog_url` (F114).
 - **One provider for every model.** The app saves the model you last picked as `model` in
   `config.toml`, without its provider. With a second provider, picking one of its models breaks new
   threads: copilot-api answers "This model does not support the responses endpoint". Put the other

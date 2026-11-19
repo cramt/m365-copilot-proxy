@@ -138,9 +138,11 @@ own GPT models without one, so this is also what puts Claude in its picker:
 node scripts/codex-catalog.mjs --all --out=~/.codex/m365-models.json
 ```
 
-`--all` includes every model advertised by the gateway's `/v1/models`, including models omitted from
-its size-limited Codex catalog. For a smaller picker, replace `--all` with explicit model IDs, for
-example `m365/gpt-6.1-sol m365/claude-sonnet-5 m365/claude-opus`. Re-run after the proxy adds models.
+`--all` includes every model the gateway advertises on `/v1/models` that its Codex catalog offers,
+each with the context window the gateway advertises for it (the proxy's `M365_CONTEXT_WINDOW`,
+1,000,000 by default); `--window=N` gives them all one, and `MODEL=WINDOW` gives one model its own.
+For a smaller picker, replace `--all` with explicit model IDs, for example
+`m365/gpt-6.1-sol m365/claude-sonnet-5 m365/claude-opus`. Re-run after the proxy adds models.
 This discovers the proxy's **Chat** routes, not the separate **Cowork** or **Code** backend: a model
 shown only in those web-app pickers is not automatically supported here.
 
