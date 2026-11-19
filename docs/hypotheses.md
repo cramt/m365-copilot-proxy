@@ -111,6 +111,10 @@ than "we eyeballed one run." See §M (Methods) for the experimental rig.
   long replay has no context (F125); it keeps a conversation for at least 21 h, while the pool evicted
   one after 30 min, forcing that replay (F126); the fix: a 24-h pool, a lost history caught and re-sent,
   a history past the limit replayed whole (F127); the limit's unit (H46a, open)
+- §47 — how much context each model gets: in one turn GPT-6.x about 270k tokens, Claude 2M characters or
+  more (F128); M365 doesn't keep a long turn on Claude either (F129); over a conversation Claude keeps
+  about 1.6M characters verbatim and GPT-6.x summarizes past its window (F130); long turns in parts,
+  failed turns, estimated usage (F131); a longer window for GPT-6.x (H47a, open)
 
 ---
 
@@ -6325,7 +6329,7 @@ Probes: filler log lines (3.1 characters a token, o200k) with marked codes, thro
 StreamHub, one conversation per size, n=1 each. In one turn the codes sat at 1%, 50% and 99% and the
 same turn asked for them.
 
-### F128 — one turn: GPT-6.x reads ~250k tokens, Claude ~1M 🟢
+### F128 — one turn: GPT-6.x reads about 270k tokens, Claude 2M characters or more 🟢
 
 | model | answered, all three codes | refused |
 |---|---|---|
@@ -6337,7 +6341,9 @@ same turn asked for them.
 | `claude-sonnet-5.5`, `claude-fable` | 2M | – |
 
 780k characters is ~252k tokens and 900k ~291k: GPT-6.x gets the standard ~272k-token window, not a
-long-context one. It says so badly. The turn ends `request_end` `InternalError` with
+long-context one. Claude's 2M answered and 2.6M refused are ~650k and ~840k tokens in this count (it may
+be about 1M in Claude's own tokenizer, which wasn't measured). GPT-6.x says so badly. On StreamHub (the
+only transport tested) the turn ends `request_end` `InternalError` with
 `Microsoft.Sydney.GhcpRuntime\CopilotSdkRuntimeBackend.cs:1889 - The GHCP runtime completed with a
 recorded session error` (5–27 s), and its message, `turnState: Failed`, carries "Sorry, I wasn't able to
 respond to that. Is there something else I can help with?", which the proxy returned as the answer.
@@ -6351,7 +6357,7 @@ A 900k opening on `claude-sonnet-5`, then "list the codes": the follow-up's coun
 kept the opening (the proxy re-sent the request, F127, and the codes came back). §46's 420k-kept,
 540k-lost boundary isn't GPT's alone.
 
-### F130 — a conversation of turns that fit: Claude keeps ~1M tokens verbatim, GPT-6.x summarizes past its window 🟢
+### F130 — a conversation of turns that fit: Claude keeps about 1.6M characters verbatim, GPT-6.x summarizes past its window 🟢
 A log in parts, one turn each ("reply OK n"), a code in the middle of each; then a turn asking for every
 code and for one random record line per part, quoted, which a summary wouldn't keep:
 
@@ -6361,9 +6367,10 @@ code and for one random record line per part, quoted, which a summary wouldn't k
 | | | part 6 (1.8M) | 2–6 | 6 |
 | `claude-sonnet-5` | 5 × 400k | part 5 (2M) | 2–5 | 2, 3 (4 and 5 quoted, not checked) |
 
-M365 kept every turn (counts 1…8). Claude said "only Parts 2–5 were provided to me": past its window
-M365 drops the oldest turns whole. GPT-6.x keeps about its window verbatim and a summary of the rest:
-the codes, marked IMPORTANT, outlived the record lines, and part 1's code didn't.
+M365 kept every turn (counts 1…8). Claude said "only Parts 2–5 were provided to me": by 2M characters
+(~650k tokens in this count) M365 had dropped the oldest turn whole. Past its window GPT-6.x works from
+a summary: the codes, marked IMPORTANT, outlived the record lines (none exact at 900k, only the last
+part's at 1.8M), and part 1's code didn't.
 
 ### F131 — what the proxy does now 🟢
 - A turn over `M365_TURN_CHUNK_BYTES` (400,000 UTF-8 bytes; 0 sends everything whole) goes up in parts
@@ -6374,7 +6381,11 @@ the codes, marked IMPORTANT, outlived the record lines, and part 1's code didn't
   to 75% of it for 24 h, starting with the same request's re-send, so the replayed history is kept and
   continued with deltas, instead of replayed whole on every request.
 - A failed turn (`InternalError` and `turnState: Failed`) has no answer: its apology counts as an empty
-  `InternalError`, re-sent once in a fresh conversation, and the streaming path holds it back.
+  `InternalError`, re-sent once in a fresh conversation (a second failure ends the request), and the
+  streaming path holds it back. It is not the dead agent route, which carries no text.
+- A part M365 doesn't acknowledge is judged like any turn (the agent-less, Bing-less and fallback-model
+  re-sends, the 400 and 429), a count of 1 on a part means the history is gone (F127's re-send), and a
+  long turn may take at most `M365_MAX_TURN_PARTS` (12) M365 turns, sent at most twice per request.
 - `usage` carries estimates: the whole formatted request, and the reply, at 4 UTF-8 bytes a token
   (`M365_REPORT_USAGE=0` for zeros). Codex sees its context fill, and compacts near its window.
 
@@ -6389,11 +6400,13 @@ question about all of them), the way Codex replays a thread:
 Before, it went up as one 1.2M-character turn: Claude answered and M365 didn't keep it, so every later
 request replayed it; GPT-6.x refused, and the proxy returned the apology as the answer.
 
-**Codex:** a window is counted in the proxy's estimate (4 characters a token), and Codex compacts at 90%
-of it. Windows that compact before M365 starts summarizing (GPT-6.x) or dropping turns (Claude), by
-these tests: 225,000 for GPT-6.x (compaction at ~810k characters) and 450,000 for the Claude models
-(~1.6M). The tests used dense log text, 3.1 characters a token; ordinary code and prose has fewer tokens
-a character, so this errs early. Live, Codex 0.169 then showed usable windows of 213,750 and 427,500.
+**Codex:** a window is counted in the proxy's estimate (4 UTF-8 bytes a token, 4 characters for ASCII
+text), and Codex compacts at 90% of it. Windows that compact before M365 starts summarizing (GPT-6.x) or
+dropping turns (Claude), by these tests: 225,000 for GPT-6.x (compaction at ~810k bytes) and 450,000 for
+the Claude models (~1.6M). For GPT-6.x this is extrapolated from the one-turn limit (780k answered);
+conversations between 780k and 900k weren't tested. The tests used dense log text, 3.1 characters a
+token; ordinary code and prose has fewer tokens a character, so this errs early. Live, Codex 0.169 then
+showed usable windows of 213,750 and 427,500.
 
 **Open — H47a:** can a request get GPT-6.x a longer window? Half an answer (n=1 each): the web app's Code
 tab has a tier, Chat doesn't. Code is GitHub's Copilot app embedded in M365 (its script cites

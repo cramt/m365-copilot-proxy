@@ -218,10 +218,10 @@ app's account menu; the CLI ran with this file and no ChatGPT login. Things to k
   behind copilot-api too: [claude-code-codex.md](claude-code-codex.md), step 5).
 - **Context windows** come from the catalog. M365 reports no token counts, so the proxy estimates
   them by default; Codex uses those estimates to decide when to compact. In the proxy's tests,
-  Claude models read roughly 1M tokens in a turn, while GPT-6.x read about 250k and summarized
-  older turns (hypotheses §47). Codex compacts at 90% of a window, counted in the proxy's estimate
-  (4 characters a token): 225,000 for GPT-6.x and 450,000 for Claude compact before M365 summarizes or
-  drops turns.
+  Claude models read 2M characters or more in a turn, while GPT-6.x read about 270k tokens and
+  summarized older turns (hypotheses §47). Codex compacts at 90% of a window, counted in the proxy's
+  estimate (4 UTF-8 bytes a token): 225,000 for GPT-6.x and 450,000 for Claude compact before M365
+  summarizes or drops turns.
 - **Metered models.** On Chathub `claude-opus` (Opus 5.5) is limited to 40 turns a day and
   `claude-sonnet-5.5` to 80, every tool call a turn, while `gpt-6.1-sol` and `claude-sonnet-5` spend no
   allowance. StreamHub reports no meters at all (hypotheses §41), so prefer the unmetered models.
@@ -236,13 +236,14 @@ tokens for [GPT-6 Astra](https://developers.openai.com/api/docs/models/gpt-6-ast
 [GPT-6 Sol](https://developers.openai.com/api/docs/models/gpt-6-sol),
 [GPT-6.1 Sol](https://developers.openai.com/api/docs/models/gpt-6.1-sol),
 [GPT-6.2 Astra](https://developers.openai.com/api/docs/models/gpt-6.2-astra), and
-[GPT-6.2 Sol](https://developers.openai.com/api/docs/models/gpt-6.2-sol), based on their published
-OpenAI API context windows. Keep 1,000,000 as the catalog fallback for the other M365 models.
+[GPT-6.2 Sol](https://developers.openai.com/api/docs/models/gpt-6.2-sol), their published OpenAI API
+context windows (input and output; up to 922,000 input). Keep 1,000,000 as the catalog fallback for the
+other M365 models.
 
-M365 serves less than those windows: GPT-6.x reads about 250k tokens a turn and summarizes older
-turns, Claude about 1M (hypotheses §47). With these windows Codex compacts after M365 has already
-summarized or dropped earlier turns. To have Codex compact first, use the same `MODEL=WINDOW` form
-with 225,000 for GPT-6.x and 450,000 for the Claude models, counted in the proxy's estimate.
+M365 serves less than those windows: GPT-6.x reads about 270k tokens a turn and summarizes older
+turns, Claude 2M characters or more (hypotheses §47). With these windows Codex compacts after M365 has
+already summarized or dropped earlier turns. To have Codex compact first, use the same `MODEL=WINDOW`
+form with 225,000 for GPT-6.x and 450,000 for the Claude models, counted in the proxy's estimate.
 
 From the repo root in PowerShell, with the gateway running, discover every M365 model and pass
 `MODEL=WINDOW` for the five overrides. `--all` takes the same overrides, but lists every gateway

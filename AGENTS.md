@@ -305,11 +305,14 @@ pnpm test:live      # M365_LIVE=1; live tests that hit real M365 (uses quota)
   opening of 200k+ characters is lost, that model's parts are cut to 75% of it for 24 h
   (`unkeptOpeningChars(model)`). Idle
   conversations stay pooled 24 h (`M365_CONVERSATION_TTL_HOURS`): the old 30-minute eviction forced
-  those replays, and M365 keeps a conversation for at least 21 h (F126). GPT-6.x reads ~250k tokens a turn
-  and summarizes older turns; Claude reads ~1M (§47).
+  those replays, and M365 keeps a conversation for at least 21 h (F126). A part M365 doesn't acknowledge
+  is judged like any turn (`sendParts` hands it to `runBuffered`), a part's count of 1 means the history is
+  gone, and a long turn takes at most `M365_MAX_TURN_PARTS` (12) turns. GPT-6.x reads about 270k tokens a
+  turn and summarizes older turns; Claude reads 2M characters or more and keeps about 1.6M (§47).
 - **A failed turn has text, and it isn't an answer.** `InternalError` with the message's `turnState: Failed`
-  carries M365's canned "Sorry, I wasn't able to respond to that…" (GPT-6.x over its input limit, §47 F128).
-  `turnFailed` handles it as an empty `InternalError`, and the live stream holds the text back. `usage`
+  carries M365's canned "Sorry, I wasn't able to respond to that…" (GPT-6.x over its input limit on
+  StreamHub, §47 F128). `turnFailed` handles it as an empty `InternalError`, re-sent once; it isn't the dead
+  agent route, which has no text. The live stream holds the text back. `usage`
   carries estimated tokens (4 UTF-8 bytes a token; `M365_REPORT_USAGE=0` for zeros), so a client sees its
   context fill and compacts.
 - **A tool turn is stopped once the model's own `<tool_response>` after a call runs past 2,000 chars**

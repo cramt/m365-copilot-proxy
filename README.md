@@ -689,7 +689,8 @@ not an exemption from your organization's Conditional Access policy.
 | `M365_SCENARIO` / `M365_LICENSE_TYPE` | Override the entitlement the WebSocket is opened under (defaults: `OfficeWebIncludedCopilot` / `Starter`, switching to `OfficeWebPaidCopilot` / `Premium` for the entitlement-gated models — `claude-opus`, `gpt-6-think-deeper`, `claude-sonnet-5` and `claude-sonnet-5.5`; `claude-opus-4.8` and `gpt-6.1-sol` stay on the included one). `scenario` is what gates the model list (and picks Sonnet 4.6 vs 5.5 for the `Claude_Sonnet` tone, Sonnet 4.6 vs 5 for `Claude_Sonnet_5`, Opus 4.8 vs 5.5 for `Claude_Opus`); `licenseType` rides along and unlocks nothing by itself. Forcing the paid scenario on `gpt-6.1-sol` spends its separate GPT-6.1 Sol allowance (40 turns a day, 75 a week), which the proxy doesn't track. |
 | `M365_TRANSPORT` | `streamhub` sends every model over StreamHub, the new web client's WebSocket (`copilot.cloud.microsoft`), under its `officeweb` scenario and without the tool agent; unset, every model uses Chathub. For accounts whose Chathub refuses GPT-6 (`InputTokenLimitExceeded` on any prompt). Under it the scenario no longer picks between models: `claude-sonnet` is Sonnet 5.5 there. See [StreamHub](#streamhub-the-new-web-clients-transport). |
 | `M365_CONVERSATION_TTL_HOURS` | How long the proxy keeps an idle conversation and continues it with only the new messages (default `24`). After that, the next request replays the whole history into a fresh M365 conversation. M365 keeps a conversation for at least 21 h ([hypotheses §46](docs/hypotheses.md)). |
-| `M365_TURN_CHUNK_BYTES` | The longest turn the proxy sends M365 whole, in UTF-8 bytes (default `400000`; `0` sends every turn whole). M365 answers a turn of about 500k characters but doesn't keep it in the conversation, so a longer one goes up in parts: a replayed history as earlier-conversation parts the model acknowledges, then the request with the system prompt and tool framing; a long follow-up as numbered parts ([hypotheses §46, §47](docs/hypotheses.md)). |
+| `M365_TURN_CHUNK_BYTES` | The longest turn the proxy sends M365 whole, in UTF-8 bytes (default `400000`, at least `1024`; `0` sends every turn whole). M365 answers a turn of about 500k characters but doesn't keep it in the conversation, so a longer one goes up in parts: a replayed history as earlier-conversation parts the model acknowledges, then the request with the system prompt and tool framing; a long follow-up as numbered parts ([hypotheses §46, §47](docs/hypotheses.md)). |
+| `M365_MAX_TURN_PARTS` | The most M365 turns a long turn may take, its parts and the answered one (default `12`, at least `2`). Each part is a turn on the account's turn budget and, on a metered model, a unit of its allowance. A request that needs more gets a 400 `context_length_exceeded`, so the client compacts. |
 | `M365_REPORT_USAGE` | Set to `0` for zero token counts in `usage`. By default they are estimates (see below). |
 | `M365_CACHE_FILE` | Override MSAL token cache location |
 | `M365_SECRETS_FILE` | Override credentials file location |
@@ -701,9 +702,11 @@ M365 reports no token counts, so `prompt_tokens` and `completion_tokens` are the
 proxy's estimates: the whole request as the model reads it (history, system
 prompt, tool framing) and the reply, at 4 UTF-8 bytes a token (`M365_REPORT_USAGE=0`
 for zeros). They let a client see its context fill and compact before its window
-runs out; Codex never compacted without them. How much context M365 actually gives:
-GPT-6.x models read about 250k tokens a turn and summarize older turns; the Claude
-models about 1M ([hypotheses §47](docs/hypotheses.md)).
+runs out; Codex never compacted without them. A client compacts at the window it
+is configured with: OpenClaw's generated config gives every model 128,000. How much
+context M365 actually gives: GPT-6.x models read about 270k tokens a turn and
+summarize older turns; the Claude models read 2M characters or more and keep about
+1.6M over a conversation ([hypotheses §47](docs/hypotheses.md)).
 
 The block also carries M365 extension fields with the **per-conversation
 message quota**:
@@ -718,8 +721,7 @@ message quota**:
   "x_m365_conversation_pct": 7,
   "x_m365_conversation_remaining": 558,
   "x_m365_content_origin": "DeepLeo",
-  "x_m365_message_type": null,
-  "x_m365_turn_count": 3,
+  "x_m365_turn_count": 42,
   "x_m365_classifier_scores": {
     "BotOffense": 1.27e-7,
     "dea_violation": 2.81e-6
