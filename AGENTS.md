@@ -295,6 +295,38 @@ pnpm test:live      # M365_LIVE=1; live tests that hit real M365 (uses quota)
   opencode's title request shares the task's opener but has no tools; keyed on the opener alone it ran in
   the task's M365 conversation, concurrently (#83). Don't add the system prompt or tool descriptions to
   the key: those are where a harness puts per-turn text, and every change starts a new thread.
+- **M365 can lose a conversation's history, and says so.** It answers an opening prompt of about 500k
+  characters but doesn't keep it, on Claude too: the next turn's `numUserMessagesInConversation` reads 1 and
+  the model answers without context (§46 F125, §47 F129). `runBuffered` treats count 1 on a turn that
+  doesn't carry the whole history itself (`wholePrompts`) as a lost history: it stops the turn and re-sends
+  the whole request in a fresh conversation, once per request. So no turn goes up over 400,000 UTF-8 bytes
+  (`M365_TURN_CHUNK_BYTES`, `replay.ts`): a longer history goes as parts the model acknowledges, then the
+  request with the system prompt and tool framing; don't send a long history as one turn. After an answered
+  opening of 200k+ characters is lost, that model's parts are cut to 75% of it for 24 h
+  (`unkeptOpeningChars(model)`). Idle
+  conversations stay pooled 24 h (`M365_CONVERSATION_TTL_HOURS`): the old 30-minute eviction forced
+  those replays, and M365 keeps a conversation for at least 21 h (F126). A part M365 doesn't acknowledge
+  is judged like any turn (`sendParts` hands it to `runBuffered`), a part's count of 1 means the history is
+  gone, and a long turn takes at most `M365_MAX_TURN_PARTS` (12) turns. GPT-6.x reads about 270k tokens a
+  turn and summarizes older turns; Claude reads 2M characters or more and keeps about 1.6M (§47).
+- **A failed turn has text, and it isn't an answer.** `InternalError` with the message's `turnState: Failed`
+  carries M365's canned "Sorry, I wasn't able to respond to that…" (GPT-6.x over its input limit on
+  StreamHub, §47 F128). `turnFailed` handles it as an empty `InternalError`, re-sent once; it isn't the dead
+  agent route, which has no text. The live stream holds the text back. `usage`
+  carries estimated tokens (4 UTF-8 bytes a token; `M365_REPORT_USAGE=0` for zeros), so a client sees its
+  context fill and compacts.
+- **Cowork and Code are another service, and every turn there costs credits.** A model ID with `(cowork)` or
+  `(code)` (`<model>(<backend>)[_<window>][_credit]`, `core/src/backends.ts`) runs on Copilot's agent
+  runtime (`aether.ts`, API doc §14), not Chat, when `M365_BACKENDS` lists the backend (all three by
+  default; an ID without parentheses always stays on Chat). Its turns are charged to the user's Copilot
+  credits, hundreds for a 2M-character turn (README *Credit usage*), so don't sweep them. Its models
+  follow the runtime's live catalog (`runtimeCatalog`), which dropped every GPT model on Nov 19 2026 and
+  refuses what it doesn't list (§48 F137). The handler skips Chat's machinery there: turn budget,
+  degradation backoff, tool agent, priority access, the Bing fallback, parts (`turnLimit` 0) and the 12k
+  output ceiling. The runtime keeps the history; a turn ends at `rl ok`/`fail`, and the proxy deletes
+  conversations it leaves (five minutes on). Windows in the IDs are one needle turn each (§48). The Code
+  tab's local sessions ("Long context") run on Office's LLM API, which the proxy's app isn't consented
+  for (§48 F136); don't work around that.
 - **A tool turn is stopped once the model's own `<tool_response>` after a call runs past 2,000 chars**
   (#65, `runBuffered` in `handler.ts`): waiting for M365 to finish let invented continuations run for
   minutes, past pi's timeout. Not at the tag itself: M365 keeps the whole message, Sonnet 4.6 seems to
