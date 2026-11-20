@@ -323,8 +323,12 @@ pnpm test:live      # M365_LIVE=1; live tests that hit real M365 (uses quota)
   follow the runtime's live catalog (`runtimeCatalog`), which dropped every GPT model on Nov 19 2026 and
   refuses what it doesn't list (§48 F137). The handler skips Chat's machinery there: turn budget,
   degradation backoff, tool agent, priority access, the Bing fallback, parts (`turnLimit` 0) and the 12k
-  output ceiling. The runtime keeps the history; a turn ends at `rl ok`/`fail`, and the proxy deletes
-  conversations it leaves (five minutes on). Windows in the IDs are one needle turn each (§48). The Code
+  output ceiling. The runtime keeps the history; a turn ends at `rl ok`/`fail`. Its conversations show in
+  the user's Copilot app until deleted (no temporary mode), so the proxy deletes the ones it leaves (five
+  minutes on), drops idle ones after 30 minutes (`M365_RUNTIME_CONVERSATION_TTL_MINUTES`, a timer), and at
+  startup deletes those a stopped proxy left (`runtime-ledger.ts`); never anything it didn't open. A failed
+  request's retry goes into a fresh conversation: the runtime keeps a message once posted (§48 F140).
+  Windows in the IDs are one needle turn each (§48). The Code
   tab's local sessions ("Long context") run on Office's LLM API, which the proxy's app isn't consented
   for (§48 F136); don't work around that. A runtime turn with no text is a 502 `runtime_no_reply`, never
   Chat's "Please continue.": Code's agent works in its own workspace, and each retry re-ran a
