@@ -1244,6 +1244,14 @@ export async function handleChatCompletion(
       if (t && t.current >= t.max) {
         return { error: rateLimitResponse(t) };
       }
+      // On the agent runtime an empty reply isn't Chat's transient: its own agent
+      // worked in its cloud workspace instead of answering (Code's does, Nov 19),
+      // and each "Please continue." re-ran a minutes-long, credit-charged turn
+      // that came back empty again. Say so instead.
+      if (!chat) {
+        log.info(`Agent runtime (${route.backend}) turn had no reply text (${copilotStream.agentToolCalls ?? 0} tool calls of its own) — 502, no retry`);
+        return { error: runtimeEmptyResponse(route.backend, copilotStream.agentToolCalls ?? 0) };
+      }
       if (attempt < MAX_RETRIES) {
         // A dead/deleted agent returns an instant empty reply (throttle: null).
         // Re-resolve the agent once before retrying so a long-lived host
@@ -1332,7 +1340,7 @@ export async function handleChatCompletion(
     log.info(`Parse result: hasToolCalls=${parsed.hasToolCalls}, count=${parsed.toolCalls.length}`);
 
     // The reply tried to call a tool, but the call couldn't be read: ask for it
-    // once more, saying what was wrong, before any give-up handling (§49 F138).
+    // once more, saying what was wrong, before any give-up handling (§49 F140).
     // Transport/filter retries (Bing overflow, Apology, Disengaged) already ran
     // inside runBuffered above; the forcing retry below is skipped after this
     // re-ask, while strippedTypeMember still guards any PowerShell call it
@@ -1829,6 +1837,20 @@ function tooManyPartsResponse(turns: number, limit: number): Response {
       message: `This conversation would take ${turns} M365 turns to send, more than M365_MAX_TURN_PARTS (${limit}) allows. Compact it, or raise M365_MAX_TURN_PARTS.`,
       type: "invalid_request_error",
       code: "context_length_exceeded",
+    },
+  });
+}
+
+/** The agent runtime answered a turn with no text. */
+function runtimeEmptyResponse(backend: string, agentToolCalls: number): Response {
+  const why = agentToolCalls > 0
+    ? `its own agent made ${agentToolCalls} tool call${agentToolCalls === 1 ? "" : "s"} in its cloud workspace instead of answering`
+    : "it returned no text";
+  return jsonResponse(502, {
+    error: {
+      message: `M365 Copilot's agent runtime (${backend}) wrote no reply: ${why}. Code's agent tends to work in its own workspace; Cowork or Chat models answer in text, and a lower reasoning effort makes a turn shorter.`,
+      type: "upstream_empty_response",
+      code: "runtime_no_reply",
     },
   });
 }

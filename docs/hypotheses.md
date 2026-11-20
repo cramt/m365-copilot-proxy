@@ -119,11 +119,12 @@ than "we eyeballed one run." See §M (Methods) for the experimental rig.
   token (F132); one turn reads 2M characters on GPT, 1.6M on Claude (F133); every turn costs credits
   (F134); a conversation can be deleted, a run can't be stopped (F135); the Code tab's "Long context"
   switch belongs to its local sessions, on Office's LLM API, which the proxy can't use (F136); the catalog
-  changes and refuses what it doesn't list (F137); GPT-6.2 Sol's one-turn limit, ~806k to ~1.0M tokens, and its
-  turns now almost free (H48a)
+  changes and refuses what it doesn't list (F137); GPT-6.2 Sol takes 885k tokens in a message, not 892k, and its
+  turns are now almost free (H48a); Code turns are charged and the monthly budget counts them (F138); Code's
+  agent works in its own workspace, and slow turns met Codex's 5-minute timeout (F139)
 - §49 — dropped tool calls: eight fence shapes the scanner dropped or changed, and a ninth in real replies
   (a closer with the next sentence glued on: 3 dropped calls in 1,153); CommonMark fences, and asking
-  again for a call that still can't be read (F138)
+  again for a call that still can't be read (F140)
 
 ---
 
@@ -6528,16 +6529,52 @@ the three Claude models; no `gpt-6.2-sol`, `gpt-6.1-sol-substrate` or `gpt-5.5`.
 runtime's models from the live catalog (kept 10 minutes; the built-in table when it can't be read) and
 answers a refused model with a 400 `model_not_found`.
 
-**H48a — answered for GPT-6.2 Sol:** its one-turn limit is between ~806k and ~1.0M tokens. On
-`gpt-6.2-sol-substrate` (Cowork, 17:45), a needle turn of 2.0M characters answered (3/3, 10.3 s), and 2.5M
-(~1.0M tokens) and 3.0M (~1.2M) were refused as too long (`engine.v2_refusal`). The other GPT models'
-limits weren't probed past 2.0M.
+**H48a — answered for GPT-6.2 Sol: 885k tokens fit in one message, 892k don't.** On
+`gpt-6.2-sol-substrate`, needle turns (log filler, 2.47 characters an o200k token) bisected from 2.0M
+answered and 2.5M refused: 2,125,470 and 2,188,372 characters answered (3/3), 2,204,466, 2,219,475 and
+2,250,397 refused (`engine.v2_refusal`), and 3.0M too. In o200k tokens: 885,233 answered, 891,591 refused,
+on Cowork and on Code alike (Code: the same two prompts). GPT-6.2 Astra and GPT-6.2 Sol Fast refused the
+891,591-token message too; on their answering side only Astra's 809k (F133) was measured. The runtime's
+own system prompt comes on top, so its input cap is a little higher than 885k. The proxy labels the model
+`_885k`.
 
-**Its turns cost almost nothing (n=1).** The answered 2.0M-character turn's task total was 0.061 credits
-(`costCredits`, `costFullyCounted: true`), and each refused one's 0.03–0.04: the title and suggestion calls
-alone. That morning the same turn cost 224 on `gpt-6.2-sol` and 232 on `gpt-6.1-sol-substrate`, also an
-`llmapi` model. Whether `llmapi` turns now go uncharged, as the Code tab's local sessions on Office's LLM
-API do (F136), is open: a second probe on another day would tell.
+**Its turns cost almost nothing.** Each answered turn on `gpt-6.2-sol-substrate` was charged only for the
+title and suggestion calls (`gpt-5-chat-mini`): 0.055–0.065 credits for 2.0M–2.19M characters, 0.023 for
+one line, on Cowork and Code (n=6). That morning the same 2.0M-character turn cost 224 on `gpt-6.2-sol` and
+232 on `gpt-6.1-sol-substrate`, also an `llmapi` model. So prices change; whether this one lasts is open.
+
+### F138 — Code turns are charged, and the monthly budget counts them 🟢
+One line in a new conversation, the turn's charges (task `costCredits`, Nov 19 evening):
+
+| model | Code | Cowork |
+|---|---|---|
+| GPT-6.2 Sol (substrate) | 0.023 | 0.023 |
+| Sonnet 5.5 | 0.015 | 5.19 |
+| Opus 5.5 | 4.25 | – |
+| GPT-6.2 Sol Fast | 9.61 | – |
+| GPT-6.2 Astra | 38.38 | 37.05 |
+
+So Code is charged like Cowork. Sonnet's 0.015 on Code against 5.19 on Cowork looks like a warm prompt cache,
+not a free mode: the same turn on Cowork cost 0.04 that afternoon. The monthly budget (`GET
+/v1/entitlement`, polled every minute) moves in batches about five minutes apart, not per turn: +340,
++331, +580 and +1,154 between 22:58 and 23:15, 2,405 in all, while about 2,150 credits of charges finished,
+some 1,800 of them on Code (a Codex session on GPT-6.2 Astra, F139). The +1,154 batch covered a window
+with no Cowork turn at all. So the budget counts Code's charges as well, about one for one; a single
+Code-only control (130 credits) didn't show within five minutes, which fits the batching. Two more
+batches settled it: +744 at 23:20 and +854 at 23:25, while the only Cowork charge was a 34-credit
+control and the user's Codex kept running Code turns. From 22:58 to 23:25 the budget took 4,003, of
+which about 380 were the probes'. The Code tab's local sessions (F136) don't touch this runtime: their
+session records show no premium requests, which fits the app showing no credits for them.
+
+### F139 — Code's agent works in its own workspace, and slow turns meet Codex's timeout 🟢
+Codex on `gpt-6.2-astra(code)` at max effort, with a 537,804-character history: each turn took 3–4.5
+minutes, and three of five came back with no text, the runtime's agent having made 2–6 tool calls of its
+own in its cloud workspace. The proxy answered an empty turn as on Chat, with "Please continue." (another
+minutes-long turn), and Codex, with `stream_idle_timeout_ms = 300000`, re-sent the whole request every 5
+minutes exactly (22:49:14, 22:54:14, 22:59:15, 23:04:16, 23:09:17), so two requests ran in one conversation
+at once (subscribe 404s, `stream_closed`). Four Code sessions cost about 3,200 credits in 30 minutes. The
+proxy now ends a runtime turn with no text at once, with a 502 `runtime_no_reply` that says what the agent
+did; Codex wants `stream_idle_timeout_ms` of 900000 or more for runtime models.
 
 **Shipped:** `M365_BACKENDS` (default all three; `chat` keeps a proxy off the runtime)
 lists the Cowork and Code models as `<model>(<backend>)[_<window>][_credit]`, Chat's as well
@@ -6546,7 +6583,7 @@ parentheses stays on Chat unless `M365_DEFAULT_BACKEND` names a backend that ser
 Code list what the catalog has (F137). On the runtime the proxy sends a history whole (no parts), passes
 `reasoning_effort`, skips Chat's throttle budget, tool agent and priority-access handling, reports the
 turn's credits as `usage.x_m365_credits`, maps `engine.v2_refusal` on a prompt of 400k characters or more
-to a 400 `context_length_exceeded`, and a model outside the catalog to a 400 `model_not_found`.
+to a 400 `context_length_exceeded`, a model outside the catalog to a 400 `model_not_found`, and a turn with no text to a 502 `runtime_no_reply` rather than retrying it (F139).
 `core/src/backends.ts`, `core/src/aether.ts`.
 
 ---
@@ -6558,7 +6595,7 @@ the harness ends its turn, and the model reads the silence as having no tools. 9
 shapes #44's scanner had dropped (a glued closer, a mid-line opener) as insurance; this asks which others
 exist, and whether any reach real replies.
 
-### F138 — eight fence shapes dropped or changed a call; a ninth was in the logs, 3 dropped calls in 1,153 replies 🟢
+### F140 — eight fence shapes dropped or changed a call; a ninth was in the logs, 3 dropped calls in 1,153 replies 🟢
 **Probe** (model-free: `parseToolCalls` with pi's tools on `main` after 91bf23b). Read: a plain fence, a
 glued closer, a mid-line opener, CRLF. Dropped: ```` ```Bash ````, ```` ``` bash ````, `~~~bash`, ```` ```bash
 title="x" ````, a one-line ```` ```bash ls -la``` ````, a closer with text after it, a fence never closed.

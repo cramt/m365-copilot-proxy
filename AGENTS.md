@@ -326,7 +326,9 @@ pnpm test:live      # M365_LIVE=1; live tests that hit real M365 (uses quota)
   output ceiling. The runtime keeps the history; a turn ends at `rl ok`/`fail`, and the proxy deletes
   conversations it leaves (five minutes on). Windows in the IDs are one needle turn each (§48). The Code
   tab's local sessions ("Long context") run on Office's LLM API, which the proxy's app isn't consented
-  for (§48 F136); don't work around that.
+  for (§48 F136); don't work around that. A runtime turn with no text is a 502 `runtime_no_reply`, never
+  Chat's "Please continue.": Code's agent works in its own workspace, and each retry re-ran a
+  minutes-long, charged turn (§48 F139).
 - **A tool turn is stopped once the model's own `<tool_response>` after a call runs past 2,000 chars**
   (#65, `runBuffered` in `handler.ts`): waiting for M365 to finish let invented continuations run for
   minutes, past pi's timeout. Not at the tag itself: M365 keeps the whole message, Sonnet 4.6 seems to
@@ -337,7 +339,7 @@ pnpm test:live      # M365_LIVE=1; live tests that hit real M365 (uses quota)
 - **Two default-on retries spend an upstream turn when a tool turn ends without a call.** First, if the
   reply had a tool block the parser couldn't read (a fence never closed, an edit without its markers;
   `unreadableToolFence` in `fenced.ts`), the proxy asks once, in the same conversation, saying what was
-  wrong and that the model may reply without it (`M365_NO_FENCE_RETRY=1` off; hyp §49 F138). Otherwise
+  wrong and that the model may reply without it (`M365_NO_FENCE_RETRY=1` off; hyp §49 F140). Otherwise
   the give-up / confabulation forcing retry (`M365_NO_CONFAB_RETRY=1` off, `M365_CONFAB_RETRIES`). Each
   costs a turn from the F58 bucket, and on Opus a priority-access unit. Transport/filter retries
   (Bing-overflow and `Apology` / `Disengaged` in `runBuffered`) run before the re-ask; the forcing retry
