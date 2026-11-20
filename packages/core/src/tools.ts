@@ -134,7 +134,7 @@ function toolCallSummary(rawArgs: string): { key: string; value: string } | null
   // A long value is cut, and says so: cut silently, the label reads as the call
   // itself cut short. GPT-5.6 took `command="… margin: 22m"` for its command
   // truncated there, and gave up ("I can't generate files in the current
-  // session", §49 F140).
+  // session", §50 F149).
   const flat = (unwrapped ?? (hit[1] as string)).replace(/\s+/g, " ").trim();
   const value = (flat.length > 100 ? `${flat.slice(0, 100)}…` : flat).replace(/\\/g, "\\\\").replace(/"/g, '\\"');
   return { key: unwrapped !== null ? "command" : hit[0], value };

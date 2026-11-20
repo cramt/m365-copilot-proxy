@@ -29,17 +29,19 @@ const TONES = (process.env.TONES || "Claude_Sonnet,Claude_Opus,Claude_Sonnet_Rea
 for (const tone of TONES) {
   // 1) self-id (no tools, agent-less) — confirm which model the tone routes to
   const id = await oneTurn({ token, claims, text: "In one short sentence, what AI model are you?", agentId: null, tone });
-  console.log(`\n[${tone}] self-id: origin=${id.contentOrigin} disengaged=${id.disengaged}\n   "${(id.fullText || "").replace(/\s+/g, " ").slice(0, 120)}"`);
+  console.log(`\n[${tone}] self-id: transport=${id.transport} origin=${id.contentOrigin} disengaged=${id.disengaged}\n   "${(id.fullText || "").replace(/\s+/g, " ").slice(0, 120)}"`);
   await sleep(6000);
   // 2) tool-call propensity (agent-less + softened framing on a coding task)
   let fences = 0, dis = 0;
+  const transports = new Set([id.transport]);
   for (let i = 0; i < REPEAT; i++) {
     const text = formatMessages([{ role: "user", content: TASK }], BENCH_TOOLS, "auto", crypto.randomUUID());
     const r = await oneTurn({ token, claims, text, agentId: null, tone });
     const f = FENCE.test(r.fullText || ""); if (f) fences++; if (r.disengaged) dis++;
-    console.log(`   ${tone} #${i + 1}: fence=${f} disengaged=${r.disengaged} origin=${r.contentOrigin} len=${(r.fullText || "").length}`);
+    transports.add(r.transport);
+    console.log(`   ${tone} #${i + 1}: transport=${r.transport} fence=${f} disengaged=${r.disengaged} origin=${r.contentOrigin} len=${(r.fullText || "").length}`);
     await sleep(6000);
   }
-  console.log(`[${tone}] => tool-fence ${fences}/${REPEAT}, disengaged ${dis}/${REPEAT}`);
+  console.log(`[${tone}] => tool-fence ${fences}/${REPEAT}, disengaged ${dis}/${REPEAT}, transport=${[...transports].join("+")}`);
 }
 console.log("\nVIABLE Claude-for-tools iff Claude_Sonnet: self-id=Claude AND tool-fence ≈ REPEAT AND disengaged 0.");

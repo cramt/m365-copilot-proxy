@@ -122,8 +122,8 @@ than "we eyeballed one run." See §M (Methods) for the experimental rig.
   changes and refuses what it doesn't list (F137); GPT-6.2 Sol takes 885k tokens in a message, not 892k, and its
   turns are now almost free (H48a); Code turns are charged and the monthly budget counts them (F138); Code's
   agent works in its own workspace, and slow turns met Codex's 5-minute timeout (F139)
-- §49 — tool-result labels that misdescribed calls or cut silently (F140), and M365 file-chip markup
-  in answers (F141)
+- §50 — tool-result labels that misdescribed calls or cut silently (F149), and M365 file-chip markup
+  in answers (F150)
 
 ---
 
@@ -5938,6 +5938,8 @@ then answered. Agent-less GPT-6 self-identified as "the GPT-5 chat model" (H40a)
 `officeweb` for every model; `licenseType` changed nothing (`Claude_Sonnet` was Sonnet 5.5 under
 `officeweb` with `Starter` and with `Premium`), while the included scenario made it "Sonnet 5".
 
+**Nov 20 (§49 F143):** under `officeweb` with Bing, `Gpt_6_Reasoning` and `Gpt_5_5_Reasoning` answered.
+
 ### F109 — Codex on GPT-6.1 Sol over StreamHub: 7/7 🟢
 `scripts/harness-check.mjs` with the user's own Codex brief (`model_instructions_file`), the seven tasks
 that have a Node verifier, once each, `M365_HARNESS_PROMPT=lean`, `M365_TRANSPORT=streamhub`,
@@ -6012,6 +6014,7 @@ Nov 11, F109's setup.
   chat model" (n=2). **Falsify:** a task GPT-5.5 Chat fails and GPT-6 solved on the bench (§22).
 - **H40b** — The tool agent works over StreamHub (`gpts` with the agent's MOS3 id). Untested; the proxy
   sends StreamHub turns agent-less.
+  **Nov 20 (§49 F144):** sent that way, the agent isn't applied; the turn is plain chat.
 - **H40c** — StreamHub holds up beyond these short runs: long real sessions, compaction, many
   conversations. **Probe:** `--repeat=2` on the bench tasks over StreamHub; watch the priority-access
   and credit budgets.
@@ -6238,6 +6241,8 @@ probe behind §40 F106), now declines to name a model on every route. The traini
 families: asked for it without naming itself, `Claude_Fable` said June 2026 on Chathub and on StreamHub,
 `Gpt_5_5_Chat` June 2024. That retires §10's reading (`Claude_Fable` answering as GPT-5). Opus 5.5 also
 reports 2026-06, which the cutoff can't rule out, but the picker doesn't mark Opus as using credits.
+
+**Nov 20 (§49 F143):** no turn carried a `billing_info` item, these tones' included.
 
 ### F123 — harness runs 🟢 (n=3 per arm, Nov 11)
 The setup of §40 F109 (`harness-check.mjs`, `M365_HARNESS_PROMPT=lean`, `M365_TRANSPORT=streamhub`,
@@ -6469,7 +6474,7 @@ new Cowork conversation:
 
 Code's GPT-6.2 Sol read 900k (3/3). 2.0M was the most tried, so the GPT models' limit is unknown; it is at
 least three times Chat's ~272k (F128). The runtime's 1M-character cap on a text item didn't matter: 2.0M
-went as three items. The proxy names these windows in its model IDs (`_800k`, `_640k`); the Fast variants
+went as three items. The proxy names these windows in its model IDs (`_800k`, `_640k`; GPT now `_885k`, H48a); the Fast variants
 and Code take the same numbers unmeasured.
 
 ### F134 — every turn costs credits 🟢
@@ -6534,8 +6539,8 @@ answered and 2.5M refused: 2,125,470 and 2,188,372 characters answered (3/3), 2,
 2,250,397 refused (`engine.v2_refusal`), and 3.0M too. In o200k tokens: 885,233 answered, 891,591 refused,
 on Cowork and on Code alike (Code: the same two prompts). GPT-6.2 Astra and GPT-6.2 Sol Fast refused the
 891,591-token message too; on their answering side only Astra's 809k (F133) was measured. The runtime's
-own system prompt comes on top, so its input cap is a little higher than 885k. The proxy labels the model
-`_885k`.
+own system prompt comes on top, so its input cap is a little higher than 885k. The proxy labels every
+runtime GPT model `_885k`: each answered 806k (F133), and Astra and Sol Fast refused at Sol's boundary.
 
 **Its turns cost almost nothing.** Each answered turn on `gpt-6.2-sol-substrate` was charged only for the
 title and suggestion calls (`gpt-5-chat-mini`): 0.055–0.065 credits for 2.0M–2.19M characters, 0.023 for
@@ -6575,6 +6580,51 @@ at once (subscribe 404s, `stream_closed`). Four Code sessions cost about 3,200 c
 proxy now ends a runtime turn with no text at once, with a 502 `runtime_no_reply` that says what the agent
 did; Codex wants `stream_idle_timeout_ms` of 900000 or more for runtime models.
 
+### F140 — runtime tasks crowd the Copilot app's Recent list, and a failed request's retry piled on 🟢
+The user (Nov 19 evening) found "temporary chats" from the proxy cluttering the Copilot app, and a chat
+comparing code graph tools missing. The app (`copilot.cloud.microsoft`, same account, read over CDP) lists
+Cowork and Code tasks in **Recent** with the Chat history, newest first. Above that chat were 18 entries:
+4 Code tasks from Codex sessions through the proxy ("Project Task Guidance", "Project Work Session", …) and
+12 from this section's needle and cost probes, 5 still "Working" (their runs were refused). The chat itself
+was a Cowork task ("Comparing Code Graph Tools and Benchmarks", 18:03Z), intact, 19th in the list. No proxy
+Chat turn is listed: those are temporary (`disableMemory=1`, Chathub and StreamHub alike; none of the
+evening's `claude-fable` turns shows). The proxy deletes only conversations it opened itself (random keys,
+`AetherSession.discard`), and the probe scripts only their own tasks, each key from its own 202 reply.
+Deleting needs the auth headers only: with the message's `x-conversation-id` and `x-container-config` too,
+`DELETE /v1/conversations/<key>` answered 400 and the task stayed (n=1; the probe scripts' cleanup sent
+those, which is why their tasks were left); without them 204, then `task_not_found` (n=12).
+
+Why the proxy's stayed: three were open in a proxy that a deploy restarted, and a stopped proxy can't
+delete; the fourth was still pooled, and an idle conversation stayed so for 24 hours, Chat's TTL. That
+one, `code-eb886380…`, took the same 122-message, 537,804-character Codex request seven times in full
+(23:26Z to 01:36Z, turns 0 to 6). Each of the first six ended with no text (`runtime_no_reply`, F139),
+which left the pool's sent count at 0, so the client's retry went in whole again, on top: the runtime
+keeps a message once it's posted, answered or not.
+
+Now a runtime conversation is dropped and deleted 30 minutes after its last request
+(`M365_RUNTIME_CONVERSATION_TTL_MINUTES`; a timer checks every minute, and never during a request); each
+proxy lists the conversations it opens in `~/.config/opencode-m365/runtime-conversations/<pid>.json`, and
+one starting up deletes those whose process isn't running (`trackRuntimeConversations`); and a failed
+runtime request starts the next one in a fresh conversation, deleting the old one, which also ends a run
+still going there. `M365_SAVE_HISTORY=1` keeps them all, under Chat's TTL.
+
+**But an open Copilot app shows every new task until it reloads.** The user's app (open two days) still
+listed the 16 deleted tasks an hour later; in Chrome, a deleted task stayed in the open page's Recent for
+60 s and more, and left on reload (n=2). Nothing tried keeps a new task out of an open app's Recent:
+- **Projects.** `POST /v1/projects` `{title, instructions, tags}` → 201 (the project ID is a Teams thread
+  ID, `19:…@thread.v2`); `POST /v1/projects/<id>/tasks` `{conversationId: "<tid>:<oid>:<key>"}` → 201
+  `{bound: true}`, right after the prewarm (before the first message) too, and into an archived project
+  (`PATCH /v1/projects/<id>` `{state: "archived"}`, which still takes messages). On reload a project's
+  tasks are out of Recent (the four project tasks the user had were the ones missing from it), and an
+  archived project is out of the sidebar. An open page listed a new task in Recent anyway, bound before
+  its first message, in an archived project and in an active one it knew (n=1 each).
+- **Another experience.** A conversation's experience is set at creation (`X-Experience-Id`, the web app's
+  `/v2/{experience}`): `tasks` and `cowork` are taken, and the app shows both; `pages` is 403, and `api`,
+  `proxy`, `chat`, `copilot` 400 "Unknown X-Experience-Id value". Rapid prewarms then got 429.
+
+So the proxy doesn't file its tasks: deleting them clears them at the app's next reload, and only Chat's
+temporary chats never show.
+
 **Shipped:** `M365_BACKENDS` (default all three; `chat` keeps a proxy off the runtime)
 lists the Cowork and Code models as `<model>(<backend>)[_<window>][_credit]`, Chat's as well
 (`gpt-6.2-sol(chat)_272k`); a request may name `cowork` or `code` only when listed, and an ID without
@@ -6583,15 +6633,205 @@ Code list what the catalog has (F137). On the runtime the proxy sends a history 
 `reasoning_effort`, skips Chat's throttle budget, tool agent and priority-access handling, reports the
 turn's credits as `usage.x_m365_credits`, maps `engine.v2_refusal` on a prompt of 400k characters or more
 to a 400 `context_length_exceeded`, a model outside the catalog to a 400 `model_not_found`, and a turn with no text to a 502 `runtime_no_reply` rather than retrying it (F139).
-`core/src/backends.ts`, `core/src/aether.ts`.
+A failed runtime request's retry goes into a fresh conversation, and the proxy deletes runtime
+conversations 30 minutes after their last request and, at startup, those a stopped proxy left (F140).
+`core/src/backends.ts`, `core/src/aether.ts`, `core/src/runtime-ledger.ts`.
+
+## 49. Nov 20 2026 — the probe helper over StreamHub
+
+`scripts/_probe-chat.mjs` now sends its one turn over StreamHub with `transport: "streamhub"`, or on
+every call under `M365_TRANSPORT=streamhub`, the proxy's variable. Its StreamHub defaults are the proxy's
+(`officeweb` + `Premium`, `ConciseV2`), and its `variants` are its own five flags plus `streamhub11` and
+`feature.enablestreamhubstop`; a value a probe passes is sent as it is. With `agentId` it sends the agent
+as a Chathub turn does, so it can test §40 H40b. Offline, against a fake socket and with the proxy's
+options (no code interpreter, `GeneratedCode` allowed), its `subscribe` and `chat_request` items, its
+headers and its query string apart from `variants` matched `CopilotSession`'s, and its Chathub frames
+matched the previous helper's byte for byte. Its result adds `transport`, the turn's `result` (Chathub's
+final `result`; StreamHub's `request_end` outcome or `error` item, in the same names) and, over
+StreamHub, the item types seen and any `billing_info` items (§45 F122).
+
+### F141 — live: `magic` is served over StreamHub; a long answer came without F107's re-send 🟢 (n=1 each)
+A premium account, agent-less, Bing on, Nov 20 04:48–04:50 UTC, one conversation per turn:
+
+| transport, scenario | tone, prompt | outcome |
+|---|---|---|
+| StreamHub, `officeweb` | `magic`, a story of about 250 words | `request_end` `Success`, `DeepLeo`, 1,446 characters in 14.5 s |
+| StreamHub, `officeweb` | `Gpt_99_Bogus_Reasoning`, "pong" | `error` item `InvalidRequest` / `InvalidNote`; the turn ended at 2.7 s |
+| Chathub, `OfficeWebIncludedCopilot` | `magic`, "pong" | `Success`, "pong" in 4.1 s |
+
+The story arrived as one cursor frame that restated the message's first word ("Every") and then 303
+deltas, and the text was there once. §40 F107's second restatement, which re-sent a 1,531-character
+GPT-6.1 Sol story whole, did not occur. No `network_info` item arrived, in these turns or in the proxy's
+nine StreamHub turns logged earlier on Nov 20, though API doc §13 lists one.
+
+### F142 — the probes over StreamHub, live: `Claude_Sonnet_5`'s sandbox and the code interpreter run there 🟢 (n=1 each)
+A premium account, agent-less, `officeweb` + `Premium`, Nov 20 06:07 UTC. `sonnet5-native-tools-probe.mjs`,
+cell `pwd-none` (`Claude_Sonnet_5`, no optionsSets): the model ran `pwd` in its own sandbox and answered
+"The command printed `/home/claude`". Its tool call arrived with Chathub's fields, as `Progress` messages
+with `contentType: "Code"` and the command in `hiddenText`, and its summary as a `Progress` message with
+`contentOrigin: "ChainOfThoughtSummary"`, here inside `message_part` items. `code-interpreter-probe.mjs`
+(`magic`, the code-interpreter optionsSets): a `GeneratedCode` message and the correct SHA-256.
+
+**Shipped:** the probes that use the helper record each turn's `transport`, read StreamHub's `message_part`
+items where they read frames, and over StreamHub send what the proxy sends there (`getStreamHubScenario()`,
+`streamhub11` in `variants`, `ConciseV2`). `tone-probe.mjs` and `agent-tone-probe.mjs` then probe each tone
+once, because their included and paid cells are Chathub's routes to different models; a `--tones` pin is
+sent as given. Before this, over StreamHub, `agent-tone-probe.mjs` read no outcome, so a throttled turn
+didn't stop its sweep, and the two probes above missed the messages they look for.
+
+### F143 — `tone-probe.mjs` over StreamHub: 17 tones serve, 3 are rejected, no `billing_info` came 🟢 (n=1 per tone)
+A premium account, agent-less, the Bing plugin on, `officeweb` + `Premium`, Nov 20 07:14–07:16 UTC, one
+conversation per tone, "Reply with exactly the single word: pong":
+
+| verdict | tones |
+|---|---|
+| LIVE: `request_end` `Success`, `DeepLeo`, "pong" | `magic`, `Gpt_5_5_Chat`, `Gpt_5_5_Reasoning`, `Gpt_5_6_Chat`, `Gpt_5_6_Reasoning`, `Gpt_6_Reasoning`, `Gpt_6_Sol_Reasoning`, `Gpt_6_Sol_Chat`, `Gpt_61_Sol_Reasoning`, `Gpt_62_Sol_Reasoning`, `Gpt_62_Astra_Reasoning`, `Gpt_6_Astra_Reasoning`, `Claude_Sonnet`, `Claude_Sonnet_5`, `Claude_Opus`, `Claude_Fable`, `Claude_Reasoning` |
+| REJECTED: `error` item `InvalidRequest` / `InvalidNote`, about 2 s | `Gpt_6_Chat`, `Anthropic_Claude`, the invalid-tone control |
+
+Two results differ from earlier records:
+- `Gpt_6_Reasoning` and `Gpt_5_5_Reasoning` answered with the Bing plugin attached, where §40 F108 recorded
+  `InputTokenLimitExceeded` for both under `officeweb` with Bing.
+- No turn carried a `billing_info` item, `Gpt_62_Astra_Reasoning`, `Gpt_6_Astra_Reasoning` and `Claude_Fable`
+  included; §45 F122 recorded one on each `Gpt_62_Astra_Reasoning` and `Claude_Fable` turn. The proxy's nine
+  StreamHub turns logged earlier on Nov 20 had none either (four on `Claude_Fable`, one on
+  `Gpt_62_Astra_Reasoning`). The helper and the proxy both close the socket at `request_end`, so one more
+  `Claude_Fable` turn listened 20 s past it, with the proxy's flags and the helper's (44): only a ping came.
+  The item didn't arrive late; it didn't arrive. Whether these turns drew on Copilot credits wasn't
+  measured (§41 H41b).
+
+### F144 — the tool agent over StreamHub: not applied, which answers H40b 🟢 (n=1 per tone)
+`agent-tone-probe.mjs` over StreamHub, the same account, `officeweb` + `Premium`, Nov 20 07:22–07:25 UTC, its
+default cells as one cell per tone (12), the self-ID prompt. The agent went out as a Chathub turn sends it:
+a MOS3 `gpts` entry in place of the built-in `bizchat-as-gpt-scenario`, and `threadLevelGptId`. All 11 real
+tones answered (`request_end` `Success`, `DeepLeo`) and read `AGENT_DROPPED`: no frame of any cell named the
+agent (no `3PDeclarativeAgent`, no `gptIdentifiers`, no `MOS3`, not its id). The invalid-tone control was
+rejected with `InvalidNote`, so tones are still validated, and each reply named its tone's family
+(`Claude_Opus` "Claude Opus 5.5", `Claude_Sonnet` "Claude Sonnet 5.5", `Gpt_61_Sol_Reasoning` "GPT-6
+reasoning", and `Gpt_6_Reasoning` "the GPT-5 chat model", as agent-less in H40a). So sent this way the
+agent is dropped and the turn is plain chat. The proxy already sends StreamHub turns agent-less
+(`requestUsesAgent`), so nothing changes there.
+
+**Open — H49a:** does StreamHub re-send a long answer whole (F107) for some tones only, or only past some
+length? **Probe:** the same story prompt through the helper on `magic`, `Gpt_61_Sol_Reasoning` and
+`Claude_Sonnet_5`, counting cursor frames per message.
+**Nov 20 (F148):** on a non-premium account no answer was re-sent, up to 5,418 characters (`magic`,
+`Gpt_5_6_Reasoning`, `Gpt_5_5_Chat`); the other two tones H49a names are refused there (F146).
+
+**Open — H49b:** does an agent work over StreamHub in the shape the web client uses for one? **Probe:**
+capture the web client chatting with a declarative agent (the `chat_request`'s `gpts` and
+`threadLevelGptId`), then send that shape from a copy of the helper that builds it.
+
+### F145 — a non-premium account is refused under `officeweb` on both transports; the included scenario serves it 🟢 (n=1 per cell)
+F141–F144 ran on a premium account. On non-premium accounts, Nov 20 08:42–08:45 UTC, agent-less, `magic`,
+"Reply with exactly the single word: pong", through the helper:
+
+| transport | scenario + `licenseType` | outcome |
+|---|---|---|
+| StreamHub | `officeweb` + `Premium`, the helper's and the proxy's default | `ForbiddenRequest` / `InvalidCopilotLicense`, "It looks like you don't have a valid license…", origin `MaestroGrain`, 2.6–2.8 s, on every non-premium account probed |
+| StreamHub | `officeweb` + `Starter` | the same |
+| StreamHub | `OfficeWebIncludedCopilot` + `Starter` | `Success`, "pong" |
+| StreamHub | `OfficeWebIncludedCopilot` + `Premium` | `Success`, "pong" |
+| Chathub | `officeweb` + `Premium` | `ForbiddenRequest` / `InvalidCopilotLicense`, origin `BotConnection` |
+| Chathub | `officeweb` + `Starter` | the same |
+| Chathub | `OfficeWebIncludedCopilot` + `Starter`, Chathub's default | `Success`, "pong" |
+
+So a non-premium seat isn't licensed for `officeweb`, as for the paid scenario (API doc §5), and
+`licenseType` changes nothing. Through the proxy (`proxy-verify.mjs`, `M365_TRANSPORT=streamhub`,
+`m365-copilot`) such an account got HTTP 200 with the refusal as the answer (`finish_reason: stop`);
+with `M365_SCENARIO=OfficeWebIncludedCopilot` the same request answered "4".
+
+`tone-probe`, `agent-tone-probe` and `sonnet5-native-tools-probe` take that variable over StreamHub
+(`getStreamHubScenario()`). The helper's own StreamHub default didn't, so `code-interpreter-probe` and
+`output-ceiling-probe` couldn't leave `officeweb`: with `M365_SCENARIO` set, `code-interpreter-probe` was
+refused and reported "hallucinated or refused".
+
+**Shipped:** the helper's StreamHub default pair follows the proxy's rule, `M365_SCENARIO` /
+`M365_LICENSE_TYPE` first, which `scripts/probe-chat.test.mjs` checks against `getStreamHubScenario()`
+through a stand-in WebSocket. With it, on a non-premium account under the included scenario,
+`code-interpreter-probe` (`magic`) saw a `GeneratedCode` message and the correct SHA-256 (F142's second
+half), and `output-ceiling-probe` (`ConciseV2`) read 1,000 integers whole (3,892 characters). Asked for
+5,000, `magic` answered with 23 characters naming a file (`[integers_1_to_5000.txt`), which the probe
+reports as a cap at 1. Sent again through the helper with its frames kept, the same prompt was declined
+in about 235 characters on StreamHub and on Chathub alike ("I can't provide 5,000 separate lines in a
+single response…"), so that cell measures the model declining, not a cut.
+
+### F146 — on a non-premium account only `magic` and GPT-5.5/5.6 serve; Claude and GPT-6.x are refused by licence on both transports 🟢 (n=1 per tone)
+`tone-probe.mjs` over StreamHub with `M365_SCENARIO=OfficeWebIncludedCopilot M365_LICENSE_TYPE=Starter`, a
+non-premium account, agent-less, the Bing plugin on, Nov 20 08:47–08:48 UTC:
+
+| verdict | tones |
+|---|---|
+| LIVE: `request_end` `Success`, `DeepLeo`, "pong" | `magic`, `Gpt_5_5_Chat`, `Gpt_5_5_Reasoning`, `Gpt_5_6_Chat`, `Gpt_5_6_Reasoning` |
+| `ForbiddenRequest` / `ClaudeUnavailableForLicense`: "Claude isn't available with your current license. Choose another model and try again." | `Claude_Sonnet`, `Claude_Sonnet_5`, `Claude_Reasoning`, `Claude_Opus`, `Claude_Fable` |
+| `ForbiddenRequest` / `PremiumModelUnavailableForLicense`: "This model requires a Premium license. Choose another model and try again." | `Gpt_6_Reasoning`, `Gpt_6_Sol_Reasoning`, `Gpt_6_Sol_Chat`, `Gpt_61_Sol_Reasoning`, `Gpt_62_Sol_Reasoning`, `Gpt_62_Astra_Reasoning`, `Gpt_6_Astra_Reasoning` |
+| REJECTED: `error` item `InvalidRequest` / `InvalidNote`, as in F143 | `Gpt_6_Chat`, `Anthropic_Claude`, the invalid-tone control |
+
+A refused turn took 0.7–1.3 s and carried only `request_end`, with the refusal as `outcome.message`.
+Chathub refuses the same tones the same way. On the included scenario, agent-less, the same account
+(08:49–08:50 UTC): `Claude_Sonnet`, `Claude_Sonnet_5` and `Claude_Fable` read `ClaudeUnavailableForLicense`,
+and `Gpt_6_Sol_Reasoning`, `Gpt_61_Sol_Reasoning`, `Gpt_62_Sol_Reasoning` and `Gpt_62_Astra_Reasoning`
+`PremiumModelUnavailableForLicense`, with the text only in the final `result`. With the tool agent on a
+non-premium account (`agent-tone-probe`, the included scenario), `Claude_Sonnet` and `Gpt_61_Sol_Reasoning`
+read the same, where §22 and §27 recorded the dead route. Chathub probe runs of Nov 6 on a non-premium
+account (`scripts/tone-out/`) read the same refusals for `Claude_Sonnet`, `Claude_Fable`, `Gpt_6_Sol_Reasoning`
+and `Gpt_61_Sol_Reasoning`; open PR #99 (Nov 3) recorded them on its author's tenant, and open PR #101
+maps them to a 403 `m365_model_not_licensed`. So GPT-6 Sol and GPT-6.1 Sol no longer serve "on every
+account" (§23, §27): of the tones probed, a non-premium account reaches `magic` and GPT-5.5/5.6 only.
+
+On `main` the proxy doesn't read these codes: `claude-sonnet` over Chathub on a non-premium account
+(`proxy-verify.mjs`) got the refusal as an empty turn, re-sent "Please continue." twice and answered 502
+after 11.2 s and three upstream turns. F143's `billing_info` question can't be asked on a non-premium
+account: the credit-billed tones are refused before they answer.
+
+The probes misread these turns: `tone-probe` as `UNKNOWN(origin=null)`, and `agent-tone-probe` as
+`AGENT_DROPPED`, with a "claude" self-ID taken from "Claude isn't available…".
+
+**Shipped:** both probes read `InvalidCopilotLicense`, `ClaudeUnavailableForLicense` and
+`PremiumModelUnavailableForLicense` as `UNLICENSED`, on either transport (`isLicenceRefusal` in
+`agent-tone-probe.mjs`, which `tone-probe.mjs` uses too), and their summaries name the refused scenario
+or models; `scripts/probe-chat.test.mjs` checks that rule and `agent-tone-probe`'s verdicts and summary.
+Applied to the `results.json` files the runs above saved, with no new turns sent, the new rules read
+`UNLICENSED` on the 12 refused `tone-probe` cells and the 6 refused `agent-tone-probe` cells, and no
+other verdict changed.
+
+### F147 — the tool agent over StreamHub on a non-premium account: not applied there either; Chathub applies it 🟢 (n=1 per cell)
+`agent-tone-probe.mjs` over StreamHub, `M365_SCENARIO=OfficeWebIncludedCopilot`, a non-premium account,
+Nov 20 08:48–08:50 UTC, its default cells as one cell per tone, the self-ID prompt, the agent sent as in
+F144. The five tones that serve there answered as plain chat (`AGENT_DROPPED`: no frame named the agent),
+the invalid-tone control was rejected, and the six Claude and GPT-6.x cells were refused by licence
+(F146). On Chathub, the same account, agent and scenario (08:53 UTC), `magic` and `Gpt_5_5_Chat` were
+agent-handled (`3PDeclarativeAgent`, `SUPPORTED`). So the transport drops the agent on a non-premium
+account as on a premium one.
+
+The probe's reading of a refused scenario, which #131 rebuilt on the helper's `result`, works over
+StreamHub: `Gpt_5_5_Chat` under the default pair read `UNLICENSED` (`InvalidCopilotLicense`, 2.75 s), and
+the summary named `officeweb`.
+
+### F148 — F141 and H49a on a non-premium account 🟢 (n=1 each)
+StreamHub, `OfficeWebIncludedCopilot` + `Starter`, agent-less, the Bing plugin on, Nov 20 08:47–08:55 UTC,
+one conversation per turn:
+
+| tone, prompt | outcome |
+|---|---|
+| `magic`, a story of about 250 words | `request_end` `Success`, `DeepLeo`, 1,629 characters in 12.0 s |
+| `Gpt_5_6_Reasoning`, the same | 1,489 characters in 9.3 s |
+| `Gpt_5_5_Chat`, the same | 1,591 characters in 12.6 s |
+| `magic`, a story of about 700 words | 5,418 characters in 28.7 s |
+| `Gpt_99_Bogus_Reasoning`, "pong" | `error` item `InvalidRequest` / `InvalidNote`; the turn ended at 1.1 s |
+
+Each story arrived as one cursor frame that restated the message's first word, then 316–1,123 deltas,
+and the text was there once: no F107 re-send, up to 5,418 characters. A Chathub `magic` "pong" was
+unchanged (`Success`, 4.8 s). No `network_info` item came in the 15 StreamHub turns whose item types
+were recorded. F142's other half, `Claude_Sonnet_5`'s sandbox (`sonnet5-native-tools-probe`, `pwd-none`),
+can't run on a non-premium account: it is refused by licence.
 
 ---
 
-## 49. Oct 4–14 2026 — Tool-result labels (`formatToolResponse`) and file-chip markup (`plainFileNames`)
+## 50. Oct 4–14 2026 — Tool-result labels (`formatToolResponse`) and file-chip markup (`plainFileNames`)
 
 Follow-up from the Oct 4–14 real-pi runs on Windows (#70 split into standalone PRs).
 
-### F140 — tool-result labels that misdescribed calls or cut silently 🟢
+### F149 — tool-result labels that misdescribed calls or cut silently 🟢
 `formatToolResponse` labelled file tools `command="todo.mjs"` and swapped `"` for `'` (`"$f"` shown as
 `'$f'`, a different shell command). The model's chain of thought flagged it twice: "the tool is
 responding with an unexpected label", "the command tool response that indicates a mislabeling issue".
@@ -6604,7 +6844,7 @@ silently. In one `relay_batch` PDF run the last label read `command="set -eu css
 truncated at `margin: 22m` … I can't generate files in the current session"; the task failed. The command
 had run whole. A shortened summary now ends in "…", and the same eight runs then passed 8/8.
 
-### F141 — M365's file-chip markup reached the client 🟢
+### F150 — M365's file-chip markup reached the client 🟢
 The web client renders `<File>notlar.docx</File>` as a file chip, and the GPT models write it into
 their answers; pi showed the raw tags ("<File>notlar.docx</File> başarıyla oluşturuldu"). In the 245
 distinct final answers of the pi transcripts (Oct 2–5): `<File>` 58 times, plus `<document>`,

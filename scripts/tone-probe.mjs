@@ -20,6 +20,9 @@
 // So: never conclude "dead" from a single scenario, and treat the third state
 // as a property of the CONNECTION, not of the tone.
 //
+// Over StreamHub (M365_TRANSPORT=streamhub) the proxy sends every model under
+// one scenario pair, so there each tone is probed once, under that pair.
+//
 // Usage: M365_NO_INTERACTIVE=1 CHROMIUM_PATH=$(which chromium) node scripts/tone-probe.mjs
 // Cost: 1 message per cell. Opus and Sonnet 5.5 cells spend their scarce
 // priority-access budgets (see docs §15, §26) — drop them from the list when
@@ -27,8 +30,9 @@
 
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { getToken, decodeJwt, parsePriorityAccessExhaustion } from "../packages/core/dist/index.mjs";
+import { getToken, decodeJwt, getStreamHubScenario, getTransport, parsePriorityAccessExhaustion } from "../packages/core/dist/index.mjs";
 import { oneTurn } from "./_probe-chat.mjs";
+import { isLicenceRefusal } from "./agent-tone-probe.mjs";
 
 const INCLUDED = { scenario: "OfficeWebIncludedCopilot", licenseType: "Starter" };
 const PAID = { scenario: "OfficeWebPaidCopilot", licenseType: "Premium" };
@@ -108,6 +112,23 @@ const TONES = [
   { tone: "Definitely_Not_A_Real_Tone_XYZ", note: "CONTROL: invalid" },
 ];
 
+// The cells above pin Chathub's scenarios, under which one tone reaches
+// different models, or none. Over StreamHub the proxy sends every model under
+// one pair (getStreamHubScenario: `officeweb` + `Premium`, hypotheses §40 F108;
+// M365_SCENARIO / M365_LICENSE_TYPE change it, as for the proxy), so there each
+// tone is one cell, under that pair, with the notes of its cells.
+const TRANSPORT = getTransport();
+const CELLS = TRANSPORT === "streamhub" ? oneCellPerTone(TONES, getStreamHubScenario()) : TONES;
+
+function oneCellPerTone(cells, route) {
+  const byTone = new Map();
+  for (const { tone, note } of cells) {
+    const prev = byTone.get(tone);
+    byTone.set(tone, { tone, note: prev ? `${prev.note} / ${note}` : note, ...route });
+  }
+  return [...byTone.values()];
+}
+
 const TS = new Date().toISOString().replace(/[:.]/g, "-");
 const OUT = join(process.cwd(), "scripts", "tone-out", TS);
 mkdirSync(OUT, { recursive: true });
@@ -118,6 +139,13 @@ const claims = decodeJwt(token);
 /** Live / rejected / registered-but-dead — never infer from "no error" alone. */
 function verdict(r) {
   if (r.error) return "REJECTED";
+  // The account isn't licensed for the cell's scenario (`InvalidCopilotLicense`:
+  // a paid or `officeweb` cell on a non-premium account) or for the tone's model
+  // (`ClaudeUnavailableForLicense`, `PremiumModelUnavailableForLicense`, on either
+  // transport): about the account, not the tone. Before the BotConnection check,
+  // which Chathub's scenario refusal would match (hypotheses §49 F145, F146).
+  // agent-tone-probe's rule, tested in probe-chat.test.mjs.
+  if (isLicenceRefusal(r.result)) return "UNLICENSED";
   const text = (r.fullText || "").trim();
   if (!text) return "EMPTY";
   if (parsePriorityAccessExhaustion(text)) return "QUOTA_EXHAUSTED";
@@ -127,17 +155,18 @@ function verdict(r) {
 }
 
 const results = [];
-for (const cell of TONES) {
+for (const cell of CELLS) {
   const scenario = cell.scenario ?? INCLUDED.scenario;
   const licenseType = cell.licenseType ?? INCLUDED.licenseType;
   const r = await oneTurn({
-    token, claims, agentId: null, tone: cell.tone, scenario, licenseType, timeoutMs: 60000,
+    token, claims, agentId: null, transport: TRANSPORT, tone: cell.tone, scenario, licenseType, timeoutMs: 60000,
     text: `Reply with exactly the single word: pong`,
   });
   const row = {
     tone: cell.tone,
     scenario,
     licenseType,
+    transport: r.transport,
     note: cell.note,
     verdict: verdict(r),
     gotContent: (r.fullText || "").trim().length > 0,
@@ -145,15 +174,20 @@ for (const cell of TONES) {
     contentOrigin: r.contentOrigin,
     disengaged: r.disengaged,
     error: r.error,
+    // The turn's outcome (Chathub's final `result`, StreamHub's `request_end`) and,
+    // over StreamHub, any `billing_info` items (hypotheses §45 F122 saw them on the
+    // credit-billed models, §49 F143 on none).
+    result: r.result,
+    billing: r.billing,
     elapsedMs: r.elapsedMs,
   };
   results.push(row);
-  console.log(`[tone] ${cell.tone.padEnd(32)} ${scenario.padEnd(25)} ${row.verdict.padEnd(20)} origin=${String(r.contentOrigin)} ${r.elapsedMs}ms ${r.error ? "ERR=" + r.error : ""} reply=${JSON.stringify(row.reply)}`);
+  console.log(`[tone] ${cell.tone.padEnd(32)} ${scenario.padEnd(25)} ${row.verdict.padEnd(20)} transport=${r.transport} origin=${String(r.contentOrigin)}${r.result && r.result.value !== "Success" ? ` result=${r.result.value}${r.result.errorCode ? `/${r.result.errorCode}` : ""}` : ""}${r.billing.length ? ` billing=${r.billing.map((b) => b.status).join(",")}` : ""} ${r.elapsedMs}ms ${r.error ? "ERR=" + r.error : ""} reply=${JSON.stringify(row.reply)}`);
   await new Promise((res) => setTimeout(res, 1500)); // gentle spacing
 }
 
 writeFileSync(join(OUT, "results.json"), JSON.stringify(results, null, 2));
-console.log(`\n[tone] === VERDICT ===`);
+console.log(`\n[tone] === VERDICT (transport=${[...new Set(results.map((r) => r.transport))].join("+")}) ===`);
 const control = results.find((r) => r.tone.includes("Definitely_Not"));
 console.log(`[tone] control (invalid tone): content=${control?.gotContent} error=${control?.error} → ${control?.gotContent ? "server SILENTLY FALLS BACK (can't distinguish fallback from real)" : "server REJECTS unknown tones (so content = a real tone)"}`);
 for (const r of results) {
@@ -166,6 +200,16 @@ for (const tone of new Set(results.map((r) => r.tone))) {
   if (cells.length > 1 && new Set(cells.map((c) => c.verdict)).size > 1) {
     console.log(`[tone] SCENARIO-SENSITIVE: ${tone} → ${cells.map((c) => `${c.scenario}=${c.verdict}`).join(", ")}`);
   }
+}
+const unlicensed = results.filter((r) => r.verdict === "UNLICENSED");
+const scenarioRefused = [...new Set(unlicensed.filter((r) => r.result?.errorCode === "InvalidCopilotLicense").map((r) => r.scenario))];
+const modelRefused = unlicensed.filter((r) => r.result?.errorCode !== "InvalidCopilotLicense");
+if (scenarioRefused.length) {
+  console.log(`[tone] UNLICENSED: this account can't use ${scenarioRefused.join(", ")} (InvalidCopilotLicense); those cells say nothing about the tone.` +
+    `${TRANSPORT === "streamhub" ? " Over StreamHub, M365_SCENARIO=OfficeWebIncludedCopilot sends the included scenario." : ""}`);
+}
+if (modelRefused.length) {
+  console.log(`[tone] UNLICENSED: this account's licence doesn't cover ${modelRefused.map((r) => `${r.tone} (${r.result.errorCode})`).join(", ")}.`);
 }
 console.log(`[tone] NOTE: a non-empty reply is not proof — only contentOrigin "DeepLeo" is (§12.15).`);
 console.log(`[tone] out: ${OUT}`);
