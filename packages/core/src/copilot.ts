@@ -686,4 +686,6 @@ export interface CopilotStream {
   sawAction?: boolean;
   /** Copilot credits charged for the turn (the agent runtime's `cq` events). */
   credits?: number | null;
+  /** Tool calls the agent runtime's own agent made in its cloud workspace (`rl.tc`). */
+  agentToolCalls?: number;
 }

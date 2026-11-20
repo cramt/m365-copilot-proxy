@@ -221,7 +221,7 @@ requires_openai_auth = true                            # the Codex app keeps you
 experimental_bearer_token = "not-needed"               # and your ChatGPT token stays out of copilot-api
 request_max_retries = 1
 stream_max_retries = 1
-stream_idle_timeout_ms = 300000
+stream_idle_timeout_ms = 900000   # Cowork/Code turns at high effort can run past 5 minutes
 ```
 
 Use absolute paths (on Windows, single-quoted: `'C:\Users\you\.codex\m365-models.json'`). The Codex app
