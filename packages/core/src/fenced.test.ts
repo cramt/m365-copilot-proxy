@@ -676,7 +676,7 @@ describe("defaultFramingForTone", () => {
     expect(defaultFramingForModel("gpt-6.1-sol")).toBe("relay_batch");
   });
 
-  it("gives GPT-5.6 Think Deeper relay_batch (instruction conflict on the agent path, docs §49 F138)", () => {
+  it("gives GPT-5.6 Think Deeper relay_batch (instruction conflict on the agent path, docs §49 F140)", () => {
     expect(defaultFramingForTone("Gpt_5_6_Reasoning")).toBe("relay_batch");
     expect(defaultFramingForModel("gpt-5.6-think-deeper")).toBe("relay_batch");
     // Measured on the reasoning tone only; the chat tone keeps baseline.

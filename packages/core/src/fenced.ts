@@ -638,7 +638,7 @@ export function currentFramingVariant(toneDefault?: string): string {
  *  its sandbox: under relay_batch it never went in (0 of 80 bench tasks and pi
  *  runs, GPT-6 Sol 25 of 100), under honest 3 of 40 (GPT-6 Sol 17 of 20; docs §29).
  *
- *  `Gpt_5_6_Reasoning` (gpt-5.6-think-deeper) defaults to `relay_batch` (docs §49 F138).
+ *  `Gpt_5_6_Reasoning` (gpt-5.6-think-deeper) defaults to `relay_batch` (docs §49 F140).
  *  It serves with the agent, and M365's own instructions there tell it file
  *  generation is disabled; baseline's `<system>` block, which the model calls
  *  "the user's embedded system", tells it to create files. Its chain of thought

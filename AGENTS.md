@@ -176,7 +176,7 @@ pnpm test:live      # M365_LIVE=1; live tests that hit real M365 (uses quota)
   prompt, and this note used to say they don't work with the agent at all. They do: GPT-5.5 Think Deeper
   tool-calls with the agent under baseline, and GPT-5.6 Think Deeper under the user-voice framings
   (`relay_batch` by default). Under baseline 5.6 gave up on file-producing turns (runs with a give-up turn
-  12/14, relay 0/14, relay_batch 0/8, §49 F138): on the agent path
+  12/14, relay 0/14, relay_batch 0/8, §49 F140): on the agent path
   M365's own instructions say file generation is disabled, and baseline's `<system>`-tagged block says
   create the file. When a reasoning tone refuses, read its chain-of-thought frames before blaming the
   tone. What still holds: the model can't be bound to our (declarative `minimalBots`) agent type as its
@@ -331,7 +331,9 @@ pnpm test:live      # M365_LIVE=1; live tests that hit real M365 (uses quota)
   output ceiling. The runtime keeps the history; a turn ends at `rl ok`/`fail`, and the proxy deletes
   conversations it leaves (five minutes on). Windows in the IDs are one needle turn each (§48). The Code
   tab's local sessions ("Long context") run on Office's LLM API, which the proxy's app isn't consented
-  for (§48 F136); don't work around that.
+  for (§48 F136); don't work around that. A runtime turn with no text is a 502 `runtime_no_reply`, never
+  Chat's "Please continue.": Code's agent works in its own workspace, and each retry re-ran a
+  minutes-long, charged turn (§48 F139).
 - **A tool turn is stopped once the model's own `<tool_response>` after a call runs past 2,000 chars**
   (#65, `runBuffered` in `handler.ts`): waiting for M365 to finish let invented continuations run for
   minutes, past pi's timeout. Not at the tag itself: M365 keeps the whole message, Sonnet 4.6 seems to
