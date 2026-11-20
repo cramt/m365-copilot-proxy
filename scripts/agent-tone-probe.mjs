@@ -48,6 +48,10 @@
 //   --baseline  also run every cell agent-less and compare self-IDs (2x cost)
 //   --prompt    ask this instead of the default self-ID question (the reply is
 //               still classified by the model it names)
+// Over StreamHub (M365_TRANSPORT=streamhub) an unpinned cell goes out under the
+// proxy's one scenario pair for every model, and the default list is one cell
+// per tone; a --tones pin is sent as given. There the agent sent this way isn't
+// applied, so every real tone reads AGENT_DROPPED (hypotheses §49 F144).
 // Cost: 1 message AND 1 fresh conversation per cell (2 with --baseline), so it
 // spends the thread-rate budget (F13) — don't loop it. The sweep stops at the
 // first Throttled turn. Claude_Opus@paid and Claude_Sonnet@paid (Sonnet 5.5)
@@ -67,6 +71,8 @@ import {
   decodeJwt,
   getOrCreateAgent,
   getScenarioForTone,
+  getStreamHubScenario,
+  getTransport,
   parsePriorityAccessExhaustion,
 } from "../packages/core/dist/index.mjs";
 
@@ -109,6 +115,16 @@ export function parseCells(spec) {
     if (where && !pin.scenario) throw new Error(`unknown scenario "@${where}" — use @paid or @included`);
     return { tone, note: "from --tones", ...pin };
   });
+}
+
+/** One unpinned cell per tone, with the tone's notes: the default list over StreamHub. */
+export function oneCellPerTone(cells) {
+  const byTone = new Map();
+  for (const { tone, note } of cells) {
+    const prev = byTone.get(tone);
+    byTone.set(tone, { tone, note: prev ? `${prev.note} / ${note}` : note });
+  }
+  return [...byTone.values()];
 }
 
 // --- classification ----------------------------------------------------------
@@ -241,16 +257,18 @@ const short = (s, n = 90) => JSON.stringify(s.length > n ? `${s.slice(0, n)}…`
 // The final item's result.value: "Success" is the norm, so only show the rest
 // (a dead route under the agent comes back "InternalError", not an error frame).
 const resultTag = (t) => (t.result && t.result.value !== "Success" ? ` result=${t.result.value}${t.result.errorCode ? `/${t.result.errorCode}` : ""}` : "");
+// The transport the turn went over. Runs saved before probeTurn recorded it have none.
+const transportTag = (t) => (t.transport ? ` transport=${t.transport}` : "");
 
 /** The per-cell lines printed as the sweep goes. */
 export function cellLines({ tone, verdict: v, agent, baseline }) {
   const lines = [
     `[agent-tone] ${tone.padEnd(30)} ${agent.scenario.padEnd(25)} ${v.padEnd(22)} ` +
-    `origin=${agent.answerOrigin} agentTag=${agent.agentNames.join("|") || "-"}${resultTag(agent)} ${agent.elapsedMs}ms` +
+    `origin=${agent.answerOrigin} agentTag=${agent.agentNames.join("|") || "-"}${resultTag(agent)}${transportTag(agent)} ${agent.elapsedMs}ms` +
     `${agent.error ? ` ERR=${agent.error}` : ""} reply=${short(agent.reply)}`,
   ];
   if (baseline) {
-    lines.push(`[agent-tone] ${"".padEnd(30)} ${"  └ agent-less".padEnd(25)} ${outcome(baseline).padEnd(22)} origin=${baseline.answerOrigin}${resultTag(baseline)} ${baseline.elapsedMs}ms reply=${short(baseline.reply)}`);
+    lines.push(`[agent-tone] ${"".padEnd(30)} ${"  └ agent-less".padEnd(25)} ${outcome(baseline).padEnd(22)} origin=${baseline.answerOrigin}${resultTag(baseline)}${transportTag(baseline)} ${baseline.elapsedMs}ms reply=${short(baseline.reply)}`);
   }
   return lines;
 }
@@ -266,7 +284,8 @@ const describeId = ({ family, gptVersion, claudeModel }) =>
 
 /** The end-of-sweep verdict block, as lines. Pure: takes a results.json object. */
 export function summarize({ account, baseline: ranBaseline, results }) {
-  const out = [`[agent-tone] === VERDICT (agent attached${account ? `, ${account}` : ""}) ===`];
+  const transports = [...new Set(results.flatMap((r) => [r.agent?.transport, r.baseline?.transport]).filter(Boolean))];
+  const out = [`[agent-tone] === VERDICT (agent attached${transports.length ? `, transport=${transports.join("+")}` : ""}${account ? `, ${account}` : ""}) ===`];
   const control = results.find((r) => r.tone === CONTROL_TONE);
   if (control) {
     out.push(
@@ -321,12 +340,16 @@ function scanFrame(frame, acc) {
 }
 
 async function probeTurn({ oneTurn, token, claims, agentId, cell, framesFile, prompt = PROMPT }) {
-  const scenario = cell.scenario ?? getScenarioForTone(cell.tone).scenario;
-  const licenseType = cell.licenseType ?? getScenarioForTone(cell.tone).licenseType;
+  // An unpinned cell goes out as the proxy would send it: over StreamHub under
+  // one pair for every model (getStreamHubScenario), over Chathub by its tone.
+  const transport = getTransport();
+  const route = transport === "streamhub" ? getStreamHubScenario() : getScenarioForTone(cell.tone);
+  const scenario = cell.scenario ?? route.scenario;
+  const licenseType = cell.licenseType ?? route.licenseType;
   const acc = { origins: new Set(), agentNames: new Set(), result: null };
   const frames = [];
   const r = await oneTurn({
-    token, claims, agentId, tone: cell.tone, scenario, licenseType,
+    token, claims, agentId, transport, tone: cell.tone, scenario, licenseType,
     timeoutMs: 90000, text: prompt,
     onFrame: (f) => { frames.push(f); scanFrame(f, acc); },
   });
@@ -334,13 +357,16 @@ async function probeTurn({ oneTurn, token, claims, agentId, cell, framesFile, pr
   const reply = (r.fullText || "").trim();
   return {
     scenario, licenseType,
+    transport: r.transport,
     reply,
     id: selfId(reply),
     answerOrigin: r.contentOrigin,
     origins: [...acc.origins].sort(),
     agentNames: [...acc.agentNames].sort(),
     agentHandled: acc.agentNames.has("3PDeclarativeAgent") || acc.origins.has("3PDeclarativeAgent"),
-    result: acc.result,
+    // The helper reads the outcome on either transport; StreamHub frames carry no
+    // `result` for scanFrame to find (a turn ends with request_end's `outcome`).
+    result: r.result?.value ? { value: r.result.value, errorCode: r.result.errorCode ?? null } : acc.result,
     disengaged: r.disengaged,
     messageTypes: r.messageTypes,
     error: r.error,
@@ -356,7 +382,12 @@ async function main(argv) {
   const flagValue = (name) => flag(name)?.split("=").slice(1).join("=");
   const BASELINE = !!flag("baseline");
   const COOLDOWN_MS = Number(flagValue("cooldown-ms") ?? 5000);
-  const CELLS = flagValue("tones") ? parseCells(flagValue("tones")) : DEFAULT_CELLS;
+  // The default cells pin Chathub's scenarios to reach a model (Sonnet 4.6 or
+  // 5.5, Opus 4.8 or 5.5). Over StreamHub the proxy sends every model under one
+  // pair, so there each tone is one unpinned cell.
+  const CELLS = flagValue("tones")
+    ? parseCells(flagValue("tones"))
+    : getTransport() === "streamhub" ? oneCellPerTone(DEFAULT_CELLS) : DEFAULT_CELLS;
   const prompt = flagValue("prompt") || PROMPT;
 
   // Loaded here, not at the top: _probe-chat resolves `ws` from the cwd, and

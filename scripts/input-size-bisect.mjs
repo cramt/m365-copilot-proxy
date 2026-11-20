@@ -84,6 +84,7 @@ async function run(chars) {
   const row = {
     inputChars: text.length,
     approxTokens: Math.round(text.length / 4),
+    transport: r.transport,
     gotContent: out.trim().length > 0,
     sawHeadCanary: sawHead,
     sawTailCanary: sawTail,
@@ -101,7 +102,7 @@ async function run(chars) {
   };
   results.push(row);
   console.log(
-    `[in-probe] in=${text.length}c (~${row.approxTokens}t) → content=${row.gotContent} ` +
+    `[in-probe] in=${text.length}c (~${row.approxTokens}t) transport=${r.transport} → content=${row.gotContent} ` +
     `head=${sawHead} tail=${sawTail} disengaged=${r.disengaged} ` +
     `dea=${row.dea != null ? row.dea.toExponential(2) : "?"} ${r.elapsedMs}ms ` +
     `${r.error ? "ERR=" + r.error : ""}`
@@ -120,7 +121,7 @@ writeFileSync(join(OUT, "results.json"), JSON.stringify({
 }, null, 2));
 
 // Verdict
-console.log(`\n[in-probe] === VERDICT ===`);
+console.log(`\n[in-probe] === VERDICT (transport=${[...new Set(results.map((r) => r.transport))].join("+")}) ===`);
 for (const r of results) {
   const verdict = r.error ? `ERROR(${r.error})`
     : r.disengaged ? "DISENGAGED"

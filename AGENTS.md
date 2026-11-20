@@ -99,7 +99,13 @@ hypothesis that teaches us something.
 - **Probes live in `scripts/`** — small, single-purpose, read-mostly. Reuse
   `scripts/_probe-chat.mjs` (one M365 turn in → structured result out; supports
   `optionsSets` / `extraAllowed` / `plugins` / `variants` / `tone` / agent
-  overrides) and copy an existing probe rather than starting from scratch.
+  overrides; Chathub by default, StreamHub with `transport: "streamhub"` or
+  `M365_TRANSPORT=streamhub`, as for the proxy) and copy an existing probe rather
+  than starting from scratch. Record the result's `transport` with every turn a
+  probe saves or prints: the variable changes it without a change to the probe.
+  A probe that sets its own scenario, `variants` or `streamingMode` sends the
+  proxy's values over StreamHub (`getStreamHubScenario()`, `streamhub11`,
+  `ConciseV2`): the proxy doesn't use Chathub's included/paid split there.
 - **Quantify with the benchmark** — `scripts/bench/` (Terminal-Bench-style) scores
   real agentic coding tasks objectively, executing every tool call in a
   `--network none` Docker sandbox. To compare *any* lever (tool format, model/tone,

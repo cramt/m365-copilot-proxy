@@ -13,6 +13,9 @@
 // Plain chat (no agent) by default — isolates raw generation capacity from
 // tool-calling. Add --agent to measure the realistic agent-on capacity.
 //
+// The default mode is the one the proxy sends on the transport: ConciseWithPadding
+// over Chathub, ConciseV2 over StreamHub (M365_TRANSPORT=streamhub).
+//
 // Usage:
 //   M365_NO_INTERACTIVE=1 CHROMIUM_PATH=$(which chromium) \
 //     node scripts/output-ceiling-probe.mjs [--agent] [--targets 200,1000,4000]
@@ -22,7 +25,7 @@
 
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { getToken, getOrCreateAgent, decodeJwt } from "../packages/core/dist/index.mjs";
+import { getToken, getOrCreateAgent, decodeJwt, getTransport } from "../packages/core/dist/index.mjs";
 import { oneTurn } from "./_probe-chat.mjs";
 
 const args = process.argv.slice(2);
@@ -33,8 +36,11 @@ const USE_AGENT = has("--agent");
 const TARGETS = val("--targets", "200,1000,2500,5000").split(",").map(Number);
 const SWEEP_MODES = has("--sweep-modes");
 const SWEEP_TARGET = Number(val("--target-for-sweep", String(Math.max(...TARGETS))));
-// Candidate streamingMode values to try. "ConciseWithPadding" is current.
-const MODES = ["ConciseWithPadding", "Balanced", "Verbose", "Full", "None"];
+// Candidate streamingMode values to try. The first is the proxy's on this
+// transport (session.ts): ConciseV2 over StreamHub.
+const TRANSPORT = getTransport();
+const DEFAULT_MODE = TRANSPORT === "streamhub" ? "ConciseV2" : "ConciseWithPadding";
+const MODES = [DEFAULT_MODE, ...["ConciseWithPadding", "Balanced", "Verbose", "Full", "None"].filter((m) => m !== DEFAULT_MODE)];
 
 const TS = new Date().toISOString().replace(/[:.]/g, "-");
 const OUT = join(process.cwd(), "scripts", "output-ceiling-out", TS);
@@ -74,10 +80,10 @@ const results = [];
 
 async function run(target, mode) {
   const prompt = makePrompt(target);
-  const r = await oneTurn({ token, claims, text: prompt, agentId, streamingMode: mode });
+  const r = await oneTurn({ token, claims, text: prompt, agentId, transport: TRANSPORT, streamingMode: mode });
   const a = analyze(r.fullText);
   const row = {
-    target, mode, agent: USE_AGENT,
+    target, mode, agent: USE_AGENT, transport: r.transport,
     ...a,
     reached_pct: target ? Math.round((a.contiguousTo / target) * 100) : 0,
     truncated: a.contiguousTo < target,
@@ -92,7 +98,7 @@ async function run(target, mode) {
   };
   results.push(row);
   console.log(
-    `[out-probe] target=${target} mode=${mode} → contiguousTo=${a.contiguousTo} (${row.reached_pct}%) ` +
+    `[out-probe] target=${target} mode=${mode} transport=${r.transport} → contiguousTo=${a.contiguousTo} (${row.reached_pct}%) ` +
     `chars=${a.chars} maxInt=${a.maxIntSeen} disengaged=${r.disengaged} ` +
     `${r.error ? "ERR=" + r.error : ""} ${r.elapsedMs}ms`
   );
@@ -102,14 +108,14 @@ async function run(target, mode) {
 
 // 1) Sweep targets at the default mode.
 for (const t of TARGETS) {
-  await run(t, "ConciseWithPadding");
+  await run(t, DEFAULT_MODE);
 }
 
 // 2) Optionally sweep modes at a fixed (large) target.
 if (SWEEP_MODES) {
   console.log(`\n[out-probe] --- streamingMode sweep at target=${SWEEP_TARGET} ---`);
   for (const m of MODES) {
-    if (m === "ConciseWithPadding") continue; // already covered above if in TARGETS
+    if (m === DEFAULT_MODE) continue; // already covered above if in TARGETS
     await run(SWEEP_TARGET, m);
   }
 }
@@ -120,9 +126,9 @@ writeFileSync(join(OUT, "results.json"), JSON.stringify({
 }, null, 2));
 
 // Verdict
-const def = results.filter((r) => r.mode === "ConciseWithPadding").sort((a, b) => a.target - b.target);
+const def = results.filter((r) => r.mode === DEFAULT_MODE).sort((a, b) => a.target - b.target);
 const firstTrunc = def.find((r) => r.truncated);
-console.log(`\n[out-probe] === VERDICT (mode=ConciseWithPadding) ===`);
+console.log(`\n[out-probe] === VERDICT (mode=${DEFAULT_MODE}, transport=${[...new Set(def.map((r) => r.transport))].join("+")}) ===`);
 for (const r of def) console.log(`  ${r.target}: reached ${r.contiguousTo} (${r.reached_pct}%) chars=${r.chars}`);
 if (firstTrunc) {
   console.log(`[out-probe] OUTPUT CAP: first truncation at target=${firstTrunc.target}, capped near ${firstTrunc.contiguousTo} ints / ${firstTrunc.chars} chars (~${Math.round(firstTrunc.chars / 4)} tokens).`);

@@ -19,12 +19,16 @@
 // Falsified if the native Code frames still appear with optionsSets = [].
 //
 // Usage: [TONE=Claude_Sonnet_5] node scripts/sonnet5-native-tools-probe.mjs [cell,cell,...]
+// Over StreamHub (M365_TRANSPORT=streamhub) every cell goes out under the proxy's
+// StreamHub scenario pair, and a cell that sends the proxy's variants sends its
+// StreamHub ones, so an -included cell sends the same request as the cell
+// without that suffix.
 // Cost: 1 message (1 fresh thread) per cell. Run sequentially. With
 // TONE=Claude_Sonnet the paid cells spend Sonnet 5.5's priority access.
 
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { getToken, decodeJwt } from "../packages/core/dist/index.mjs";
+import { getToken, decodeJwt, getStreamHubScenario, getTransport } from "../packages/core/dist/index.mjs";
 import { oneTurn } from "./_probe-chat.mjs";
 
 // Mirrors of session.ts (not exported from core). Keep in sync if those change.
@@ -58,6 +62,13 @@ const PROXY_VARIANTS = [
   "feature.M365TeamsHubToHelix", "feature.OwaHubToHelix", "feature.MonarchHubToHelix",
   "feature.Win32OutlookHubToHelix", "feature.MacOutlookHubToHelix", "Agt_bizchat_enableGpt5ForHelix",
 ].join(",");
+
+// Over StreamHub the proxy sends every model under one scenario pair, and its
+// Chathub variants plus two StreamHub flags (session.ts). The cells' scenarios
+// are Chathub's routes to Sonnet 5 (paid) and Sonnet 4.6 (included).
+const TRANSPORT = getTransport();
+const STREAMHUB_ROUTE = TRANSPORT === "streamhub" ? getStreamHubScenario() : null;
+const PROXY_STREAMHUB_VARIANTS = `${PROXY_VARIANTS},streamhub11,feature.enablestreamhubstop`;
 
 const PAID = { scenario: "OfficeWebPaidCopilot", licenseType: "Premium" };
 const INCLUDED = { scenario: "OfficeWebIncludedCopilot", licenseType: "Starter" };
@@ -93,11 +104,13 @@ mkdirSync(OUT, { recursive: true });
 const token = await getToken();
 const claims = decodeJwt(token);
 const results = [];
+if (STREAMHUB_ROUTE) console.log(`[probe] over StreamHub every cell goes out under ${STREAMHUB_ROUTE.scenario} + ${STREAMHUB_ROUTE.licenseType}, the proxy's pair`);
 
 for (const name of pick) {
   const cell = CELLS[name];
   if (!cell) { console.error(`unknown cell ${name}`); continue; }
   const frames = [];
+  const route = STREAMHUB_ROUTE ?? { scenario: cell.scenario, licenseType: cell.licenseType };
   const r = await oneTurn({
     token, claims, text: cell.text, tone: TONE,
     optionsSets: cell.optionsSets,
@@ -105,28 +118,31 @@ for (const name of pick) {
     ...(cell.baseAllowed ? { baseAllowed: cell.baseAllowed } : {}),
     ...(cell.plugins ? { plugins: cell.plugins } : {}),
     // `variants: null` → the helper's own minimal default list
-    ...(cell.variants === null ? {} : { variants: cell.variants ?? PROXY_VARIANTS }),
-    scenario: cell.scenario, licenseType: cell.licenseType, timeoutMs: 180000,
+    ...(cell.variants === null ? {} : { variants: cell.variants ?? (STREAMHUB_ROUTE ? PROXY_STREAMHUB_VARIANTS : PROXY_VARIANTS) }),
+    transport: TRANSPORT, ...route, timeoutMs: 180000,
     onFrame: (f) => frames.push(f),
   });
-  // Distinct bot messages (last snapshot per messageId wins).
+  // Distinct bot messages (last snapshot per messageId wins), from Chathub's
+  // `update` invocations or StreamHub's `message_part` items.
   const byId = new Map();
   for (const f of frames) {
-    const msgs = f.type === 1 && f.target === "update" ? (f.arguments || []).flatMap((a) => a.messages || []) : [];
-    for (const m of msgs) if (m.author === "bot") byId.set(m.messageId, m);
+    const msgs = f.type === 1 && f.target === "update" ? (f.arguments || []).flatMap((a) => a.messages || [])
+      : f.type === 2 && f.item?.type === "message_part" ? f.item.argument?.messages || []
+      : [];
+    for (const m of msgs) if (m?.author === "bot") byId.set(m.messageId, m);
   }
   const bots = [...byId.values()];
   const native = bots.filter((m) => m.contentType === "Code" || m.contentOrigin === "CreateFileExecutor" || m.messageType === "GeneratedCode");
   const cot = bots.filter((m) => m.contentOrigin === "ChainOfThoughtSummary").map((m) => m.text);
   const row = {
-    cell: name, scenario: cell.scenario, optionsSets: cell.optionsSets.length,
+    cell: name, scenario: route.scenario, transport: r.transport, optionsSets: cell.optionsSets.length,
     contentOrigin: r.contentOrigin, disengaged: r.disengaged, elapsedMs: r.elapsedMs, error: r.error,
     nativeCalls: native.map((m) => ({ kind: m.contentOrigin || m.contentType || m.messageType, cmd: m.hiddenText ?? m.text })),
     cot, reply: r.fullText,
   };
   results.push(row);
   writeFileSync(join(OUT, `${name}.frames.json`), JSON.stringify(frames, null, 1));
-  console.log(`\n[probe] ${name}  scenario=${cell.scenario} optionsSets=${cell.optionsSets.length} origin=${r.contentOrigin} ${r.elapsedMs}ms${r.error ? " error=" + r.error : ""}`);
+  console.log(`\n[probe] ${name}  scenario=${route.scenario} transport=${r.transport} optionsSets=${cell.optionsSets.length} origin=${r.contentOrigin} ${r.elapsedMs}ms${r.error ? " error=" + r.error : ""}`);
   console.log(`  native tool calls: ${native.length}${native.map((m) => `\n    - ${m.contentOrigin || m.contentType}: ${JSON.stringify((m.hiddenText ?? m.text ?? "").slice(0, 160))}`).join("")}`);
   for (const c of cot) console.log(`  CoT: ${JSON.stringify(c.slice(0, 300))}`);
   console.log(`  reply: ${JSON.stringify(r.fullText.slice(0, 600))}`);
