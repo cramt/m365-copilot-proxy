@@ -6712,7 +6712,113 @@ agent is dropped and the turn is plain chat. The proxy already sends StreamHub t
 **Open — H49a:** does StreamHub re-send a long answer whole (F107) for some tones only, or only past some
 length? **Probe:** the same story prompt through the helper on `magic`, `Gpt_61_Sol_Reasoning` and
 `Claude_Sonnet_5`, counting cursor frames per message.
+**Nov 20 (F148):** on a non-premium account no answer was re-sent, up to 5,418 characters (`magic`,
+`Gpt_5_6_Reasoning`, `Gpt_5_5_Chat`); the other two tones H49a names are refused there (F146).
 
 **Open — H49b:** does an agent work over StreamHub in the shape the web client uses for one? **Probe:**
 capture the web client chatting with a declarative agent (the `chat_request`'s `gpts` and
 `threadLevelGptId`), then send that shape from a copy of the helper that builds it.
+
+### F145 — a non-premium account is refused under `officeweb` on both transports; the included scenario serves it 🟢 (n=1 per cell)
+F141–F144 ran on a premium account. On non-premium accounts, Nov 20 08:42–08:45 UTC, agent-less, `magic`,
+"Reply with exactly the single word: pong", through the helper:
+
+| transport | scenario + `licenseType` | outcome |
+|---|---|---|
+| StreamHub | `officeweb` + `Premium`, the helper's and the proxy's default | `ForbiddenRequest` / `InvalidCopilotLicense`, "It looks like you don't have a valid license…", origin `MaestroGrain`, 2.6–2.8 s, on every non-premium account probed |
+| StreamHub | `officeweb` + `Starter` | the same |
+| StreamHub | `OfficeWebIncludedCopilot` + `Starter` | `Success`, "pong" |
+| StreamHub | `OfficeWebIncludedCopilot` + `Premium` | `Success`, "pong" |
+| Chathub | `officeweb` + `Premium` | `ForbiddenRequest` / `InvalidCopilotLicense`, origin `BotConnection` |
+| Chathub | `officeweb` + `Starter` | the same |
+| Chathub | `OfficeWebIncludedCopilot` + `Starter`, Chathub's default | `Success`, "pong" |
+
+So a non-premium seat isn't licensed for `officeweb`, as for the paid scenario (API doc §5), and
+`licenseType` changes nothing. Through the proxy (`proxy-verify.mjs`, `M365_TRANSPORT=streamhub`,
+`m365-copilot`) such an account got HTTP 200 with the refusal as the answer (`finish_reason: stop`);
+with `M365_SCENARIO=OfficeWebIncludedCopilot` the same request answered "4".
+
+`tone-probe`, `agent-tone-probe` and `sonnet5-native-tools-probe` take that variable over StreamHub
+(`getStreamHubScenario()`). The helper's own StreamHub default didn't, so `code-interpreter-probe` and
+`output-ceiling-probe` couldn't leave `officeweb`: with `M365_SCENARIO` set, `code-interpreter-probe` was
+refused and reported "hallucinated or refused".
+
+**Shipped:** the helper's StreamHub default pair follows the proxy's rule, `M365_SCENARIO` /
+`M365_LICENSE_TYPE` first, which `scripts/probe-chat.test.mjs` checks against `getStreamHubScenario()`
+through a stand-in WebSocket. With it, on a non-premium account under the included scenario,
+`code-interpreter-probe` (`magic`) saw a `GeneratedCode` message and the correct SHA-256 (F142's second
+half), and `output-ceiling-probe` (`ConciseV2`) read 1,000 integers whole (3,892 characters). Asked for
+5,000, `magic` answered with 23 characters naming a file (`[integers_1_to_5000.txt`), which the probe
+reports as a cap at 1. Sent again through the helper with its frames kept, the same prompt was declined
+in about 235 characters on StreamHub and on Chathub alike ("I can't provide 5,000 separate lines in a
+single response…"), so that cell measures the model declining, not a cut.
+
+### F146 — on a non-premium account only `magic` and GPT-5.5/5.6 serve; Claude and GPT-6.x are refused by licence on both transports 🟢 (n=1 per tone)
+`tone-probe.mjs` over StreamHub with `M365_SCENARIO=OfficeWebIncludedCopilot M365_LICENSE_TYPE=Starter`, a
+non-premium account, agent-less, the Bing plugin on, Nov 20 08:47–08:48 UTC:
+
+| verdict | tones |
+|---|---|
+| LIVE: `request_end` `Success`, `DeepLeo`, "pong" | `magic`, `Gpt_5_5_Chat`, `Gpt_5_5_Reasoning`, `Gpt_5_6_Chat`, `Gpt_5_6_Reasoning` |
+| `ForbiddenRequest` / `ClaudeUnavailableForLicense`: "Claude isn't available with your current license. Choose another model and try again." | `Claude_Sonnet`, `Claude_Sonnet_5`, `Claude_Reasoning`, `Claude_Opus`, `Claude_Fable` |
+| `ForbiddenRequest` / `PremiumModelUnavailableForLicense`: "This model requires a Premium license. Choose another model and try again." | `Gpt_6_Reasoning`, `Gpt_6_Sol_Reasoning`, `Gpt_6_Sol_Chat`, `Gpt_61_Sol_Reasoning`, `Gpt_62_Sol_Reasoning`, `Gpt_62_Astra_Reasoning`, `Gpt_6_Astra_Reasoning` |
+| REJECTED: `error` item `InvalidRequest` / `InvalidNote`, as in F143 | `Gpt_6_Chat`, `Anthropic_Claude`, the invalid-tone control |
+
+A refused turn took 0.7–1.3 s and carried only `request_end`, with the refusal as `outcome.message`.
+Chathub refuses the same tones the same way. On the included scenario, agent-less, the same account
+(08:49–08:50 UTC): `Claude_Sonnet`, `Claude_Sonnet_5` and `Claude_Fable` read `ClaudeUnavailableForLicense`,
+and `Gpt_6_Sol_Reasoning`, `Gpt_61_Sol_Reasoning`, `Gpt_62_Sol_Reasoning` and `Gpt_62_Astra_Reasoning`
+`PremiumModelUnavailableForLicense`, with the text only in the final `result`. With the tool agent on a
+non-premium account (`agent-tone-probe`, the included scenario), `Claude_Sonnet` and `Gpt_61_Sol_Reasoning`
+read the same, where §22 and §27 recorded the dead route. Chathub probe runs of Nov 6 on a non-premium
+account (`scripts/tone-out/`) read the same refusals for `Claude_Sonnet`, `Claude_Fable`, `Gpt_6_Sol_Reasoning`
+and `Gpt_61_Sol_Reasoning`; open PR #99 (Nov 3) recorded them on its author's tenant, and open PR #101
+maps them to a 403 `m365_model_not_licensed`. So GPT-6 Sol and GPT-6.1 Sol no longer serve "on every
+account" (§23, §27): of the tones probed, a non-premium account reaches `magic` and GPT-5.5/5.6 only.
+
+On `main` the proxy doesn't read these codes: `claude-sonnet` over Chathub on a non-premium account
+(`proxy-verify.mjs`) got the refusal as an empty turn, re-sent "Please continue." twice and answered 502
+after 11.2 s and three upstream turns. F143's `billing_info` question can't be asked on a non-premium
+account: the credit-billed tones are refused before they answer.
+
+The probes misread these turns: `tone-probe` as `UNKNOWN(origin=null)`, and `agent-tone-probe` as
+`AGENT_DROPPED`, with a "claude" self-ID taken from "Claude isn't available…".
+
+**Shipped:** both probes read `InvalidCopilotLicense`, `ClaudeUnavailableForLicense` and
+`PremiumModelUnavailableForLicense` as `UNLICENSED`, on either transport (`isLicenceRefusal` in
+`agent-tone-probe.mjs`, which `tone-probe.mjs` uses too), and their summaries name the refused scenario
+or models; `scripts/probe-chat.test.mjs` checks that rule and `agent-tone-probe`'s verdicts and summary.
+Applied to the `results.json` files the runs above saved, with no new turns sent, the new rules read
+`UNLICENSED` on the 12 refused `tone-probe` cells and the 6 refused `agent-tone-probe` cells, and no
+other verdict changed.
+
+### F147 — the tool agent over StreamHub on a non-premium account: not applied there either; Chathub applies it 🟢 (n=1 per cell)
+`agent-tone-probe.mjs` over StreamHub, `M365_SCENARIO=OfficeWebIncludedCopilot`, a non-premium account,
+Nov 20 08:48–08:50 UTC, its default cells as one cell per tone, the self-ID prompt, the agent sent as in
+F144. The five tones that serve there answered as plain chat (`AGENT_DROPPED`: no frame named the agent),
+the invalid-tone control was rejected, and the six Claude and GPT-6.x cells were refused by licence
+(F146). On Chathub, the same account, agent and scenario (08:53 UTC), `magic` and `Gpt_5_5_Chat` were
+agent-handled (`3PDeclarativeAgent`, `SUPPORTED`). So the transport drops the agent on a non-premium
+account as on a premium one.
+
+The probe's reading of a refused scenario, which #131 rebuilt on the helper's `result`, works over
+StreamHub: `Gpt_5_5_Chat` under the default pair read `UNLICENSED` (`InvalidCopilotLicense`, 2.75 s), and
+the summary named `officeweb`.
+
+### F148 — F141 and H49a on a non-premium account 🟢 (n=1 each)
+StreamHub, `OfficeWebIncludedCopilot` + `Starter`, agent-less, the Bing plugin on, Nov 20 08:47–08:55 UTC,
+one conversation per turn:
+
+| tone, prompt | outcome |
+|---|---|
+| `magic`, a story of about 250 words | `request_end` `Success`, `DeepLeo`, 1,629 characters in 12.0 s |
+| `Gpt_5_6_Reasoning`, the same | 1,489 characters in 9.3 s |
+| `Gpt_5_5_Chat`, the same | 1,591 characters in 12.6 s |
+| `magic`, a story of about 700 words | 5,418 characters in 28.7 s |
+| `Gpt_99_Bogus_Reasoning`, "pong" | `error` item `InvalidRequest` / `InvalidNote`; the turn ended at 1.1 s |
+
+Each story arrived as one cursor frame that restated the message's first word, then 316–1,123 deltas,
+and the text was there once: no F107 re-send, up to 5,418 characters. A Chathub `magic` "pong" was
+unchanged (`Success`, 4.8 s). No `network_info` item came in the 15 StreamHub turns whose item types
+were recorded. F142's other half, `Claude_Sonnet_5`'s sandbox (`sonnet5-native-tools-probe`, `pwd-none`),
+can't run on a non-premium account: it is refused by licence.

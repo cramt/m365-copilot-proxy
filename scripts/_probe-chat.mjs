@@ -9,7 +9,10 @@
 // client's (copilot.cloud.microsoft). `transport: "streamhub"` sends one call
 // over StreamHub; M365_TRANSPORT=streamhub, the variable the proxy reads, makes
 // StreamHub the default for every call. A StreamHub turn has the shape the
-// proxy's session.ts sends, with this call's tone, options and plugins. With
+// proxy's session.ts sends, with this call's tone, options and plugins, and
+// the proxy's scenario pair: M365_SCENARIO / M365_LICENSE_TYPE, else `officeweb`
+// + `Premium`, under which a non-premium account is refused (hypotheses §49
+// F145; M365_SCENARIO=OfficeWebIncludedCopilot serves it). With
 // `agentId` it carries the agent in `gpts` and `threadLevelGptId`, as a
 // Chathub turn does; over StreamHub the agent sent this way isn't applied (the
 // turn is plain chat, hypotheses §49 F144), and the proxy sends StreamHub
@@ -294,12 +297,15 @@ export function oneTurn(o) {
     // will NOT serve Claude_Opus (canned BotConnection apology); the paid one
     // does. `licenseType` is the value the paid scenario travels with — it is
     // not a model lever on its own. See packages/core/src/copilot.ts.
-    // StreamHub's default is the new web client's own pair, as the proxy's
-    // (`getStreamHubScenario`): under the included scenario StreamHub refuses
-    // GPT-6.1 Sol, as Chathub does, and serves it under `officeweb`
-    // (hypotheses §40 F108).
-    scenario = transport === "streamhub" ? "officeweb" : "OfficeWebIncludedCopilot",
-    licenseType = transport === "streamhub" ? "Premium" : "Starter",
+    // StreamHub's default is the proxy's pair, by the proxy's rule
+    // (`getStreamHubScenario`): M365_SCENARIO / M365_LICENSE_TYPE, else the new
+    // web client's own pair. On a premium account the included scenario refused
+    // GPT-6.1 Sol there, as Chathub did, and `officeweb` served it (hypotheses
+    // §40 F108); a non-premium account is refused under `officeweb` on both
+    // transports (`InvalidCopilotLicense`) and served under the included
+    // scenario (§49 F145).
+    scenario = transport === "streamhub" ? (process.env.M365_SCENARIO ?? "officeweb") : "OfficeWebIncludedCopilot",
+    licenseType = transport === "streamhub" ? (process.env.M365_LICENSE_TYPE ?? "Premium") : "Starter",
     // Temporary chat (`disableMemory=1`), the proxy's default since #15: context
     // survives, but the thread never lands in the Copilot history sidebar
     // (docs/hypotheses.md §16 F28/F29). `false` / M365_SAVE_HISTORY=1 restores the

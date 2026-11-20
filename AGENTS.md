@@ -105,7 +105,9 @@ hypothesis that teaches us something.
   probe saves or prints: the variable changes it without a change to the probe.
   A probe that sets its own scenario, `variants` or `streamingMode` sends the
   proxy's values over StreamHub (`getStreamHubScenario()`, `streamhub11`,
-  `ConciseV2`): the proxy doesn't use Chathub's included/paid split there.
+  `ConciseV2`): the proxy doesn't use Chathub's included/paid split there. A non-premium account is
+  refused under that pair (`officeweb`, `InvalidCopilotLicense`): there, run StreamHub probes with
+  `M365_SCENARIO=OfficeWebIncludedCopilot`, which the helper's own default reads too.
 - **Quantify with the benchmark** — `scripts/bench/` (Terminal-Bench-style) scores
   real agentic coding tasks objectively, executing every tool call in a
   `--network none` Docker sandbox. To compare *any* lever (tool format, model/tone,
@@ -274,7 +276,10 @@ pnpm test:live      # M365_LIVE=1; live tests that hit real M365 (uses quota)
   `relay_batch` (20/20 at a third fewer turns, 10/10 in real pi). See docs/hypotheses.md §22, §25.
 - **Some tones take the agent only on a premium account — and nothing on the token says which
   account this is.** `Gpt_6_Sol_Reasoning` (`gpt-6-sol`) serves with the agent on a premium account
-  and is the dead route (`InternalError`) on a non-premium one. It is in `PREMIUM_ONLY_AGENT_TONES`:
+  and is the dead route (`InternalError`) on a non-premium one. By November a non-premium account is
+  refused the model itself, agent or not, on either transport (`PremiumModelUnavailableForLicense`;
+  Claude tones `ClaudeUnavailableForLicense`), which the proxy reads as an empty turn: two "Please
+  continue." retries, then a 502 (docs/hypotheses.md §49 F146). It is in `PREMIUM_ONLY_AGENT_TONES`:
   the first tool request carries the agent, and the handler turns a no-content `InternalError` into
   "this account isn't premium" (`noteAgentRouteDead`, process-lifetime) and re-sends agent-less —
   unless the agent already answered for that tone (`noteAgentRouteAlive`): premium accounts emit the
