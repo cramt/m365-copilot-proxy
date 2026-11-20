@@ -122,6 +122,8 @@ than "we eyeballed one run." See §M (Methods) for the experimental rig.
   changes and refuses what it doesn't list (F137); GPT-6.2 Sol takes 885k tokens in a message, not 892k, and its
   turns are now almost free (H48a); Code turns are charged and the monthly budget counts them (F138); Code's
   agent works in its own workspace, and slow turns met Codex's 5-minute timeout (F139)
+- §50 — over-cap shell commands on Windows: save any non-heredoc or bundled command to a temp script
+  and run it whole without an extra M365 turn (F149)
 
 ---
 
@@ -6822,3 +6824,26 @@ and the text was there once: no F107 re-send, up to 5,418 characters. A Chathub 
 unchanged (`Success`, 4.8 s). No `network_info` item came in the 15 StreamHub turns whose item types
 were recorded. F142's other half, `Claude_Sonnet_5`'s sandbox (`sonnet5-native-tools-probe`, `pwd-none`),
 can't run on a non-premium account: it is refused by licence.
+
+---
+
+## 50. Oct 8 2026 — Running over-cap shell commands whole on Windows (`longCommandAsScript`)
+
+Follow-up from the Oct 4–8 real-pi runs on Windows (#70 split into standalone PRs).
+
+### F149 — the heredoc rewrite left every other long command cut; a script carries any of them 🟢 (model-free)
+F78's fix covers one shape: a lone quoted heredoc that writes a file. A long `py - <<'EOF'` analysis
+script, a long `py -c "…"`, or a heredoc bundled with other commands (`cd`, `find`, `wc`) still reached
+the shell cut at ~8.2k characters. The proxy holds the whole command, and the harness's write tool has
+no length cap, so an over-cap call to a POSIX shell on Windows now goes out in two steps: the write tool
+saves the command unchanged to `<temp>/m365-cmd-<id>.sh`, and when that result comes back the proxy
+answers `bash '<script>'; s=$?; rm -f '<script>'; exit $s` itself, with no M365 turn
+(`longCommandAsScript`). M365 never sees the write: the next delta is the run's output, after a note
+saying the command was saved and run unchanged. A lone heredoc write still goes straight to the write
+tool (one step); one bundled with other commands now runs whole instead of skipping them.
+**Measured** (real pi, the real handler with a scripted model, one 14,785-char `cd sub && py - <<'EOF'
+… EOF; echo …; pwd`): with the fix the script printed the right sum with Turkish text intact, the
+trailing `echo`/`pwd` ran in `sub`, the script was deleted, and M365's second message was the note plus
+that output; with it off (`M365_HOST_SHELL=powershell`) bash said "here-document … delimited by
+end-of-file" and Python a SyntaxError on the cut list. **Not covered:** WSL bash (it can't see the
+Windows temp path) and a PowerShell shell tool (left as it was).

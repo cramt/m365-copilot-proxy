@@ -11,6 +11,7 @@ import {
   shellDialect,
   findWriteTool,
   longHeredocAsWrite,
+  longCommandAsScript,
   strippedTypeMember,
   currentFramingVariant,
   defaultFramingForTone,
@@ -585,6 +586,36 @@ describe("longHeredocAsWrite", () => {
     const r = longHeredocAsWrite(shellCall(`mkdir -p docs && cat > docs/a.md <<'EOF'\n${body}\nEOF`), tools, "win32");
     expect(args(r!.call).path).toBe("docs/a.md");
     expect(r?.skipped).toBe("mkdir -p docs");
+  });
+
+  // Everything the heredoc rewrite can't carry: here a Python heredoc, the shape
+  // of a long analysis script (`py - <<'EOF'`), which reached Python cut short.
+  describe("longCommandAsScript", () => {
+    const script = `cd data && py - <<'EOF'\n${"print('ı ş ğ', 1)\n".repeat(600)}EOF`;
+
+    it("saves the whole command with the write tool and runs it from there", () => {
+      const r = longCommandAsScript(shellCall(script), tools, "win32", "C:\\Users\\O'Neil\\Temp");
+      expect(r?.path).toMatch(/^C:\/Users\/O'Neil\/Temp\/m365-cmd-[0-9a-f]{8}\.sh$/);
+      expect(r?.write.function.name).toBe("write");
+      expect(args(r!.write)).toEqual({ path: r!.path, content: `${script}\n` });
+      const q = `'${r!.path.replace("'", "'\\''")}'`;
+      expect(args(r!.run)).toEqual({ command: `bash ${q}; s=$?; rm -f ${q}; exit $s` });
+      expect(r?.length).toBe(script.length);
+    });
+
+    it("keeps the call's other arguments on the run", () => {
+      const call = { ...shellCall(script), function: { name: "bash", arguments: JSON.stringify({ command: script, timeout: 600 }) } };
+      expect(args(longCommandAsScript(call, tools, "win32", "C:/t")!.run).timeout).toBe(600);
+    });
+
+    it("leaves alone what the command line carries, or a host it can't run on", () => {
+      expect(longCommandAsScript(shellCall("py - <<'EOF'\nprint(1)\nEOF"), tools, "win32")).toBeNull();
+      expect(longCommandAsScript(shellCall(script), tools, "linux")).toBeNull();
+      expect(longCommandAsScript(shellCall(script), [bash], "win32")).toBeNull();
+      const ps: ToolDef = { type: "function", function: { name: "shell", description: "Run a PowerShell command", parameters: { type: "object", properties: { command: { type: "string" } } } } };
+      const psCall = { ...shellCall(script), function: { name: "shell", arguments: JSON.stringify({ command: script }) } };
+      expect(longCommandAsScript(psCall, [ps, write], "win32")).toBeNull();
+    });
   });
 });
 
