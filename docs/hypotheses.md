@@ -122,6 +122,8 @@ than "we eyeballed one run." See §M (Methods) for the experimental rig.
   changes and refuses what it doesn't list (F137); GPT-6.2 Sol takes 885k tokens in a message, not 892k, and its
   turns are now almost free (H48a); Code turns are charged and the monthly budget counts them (F138); Code's
   agent works in its own workspace, and slow turns met Codex's 5-minute timeout (F139)
+- §50 — tool-result labels that misdescribed calls or cut silently (F149), and M365 file-chip markup
+  in answers (F150)
 
 ---
 
@@ -6822,3 +6824,31 @@ and the text was there once: no F107 re-send, up to 5,418 characters. A Chathub 
 unchanged (`Success`, 4.8 s). No `network_info` item came in the 15 StreamHub turns whose item types
 were recorded. F142's other half, `Claude_Sonnet_5`'s sandbox (`sonnet5-native-tools-probe`, `pwd-none`),
 can't run on a non-premium account: it is refused by licence.
+
+---
+
+## 50. Oct 4–14 2026 — Tool-result labels (`formatToolResponse`) and file-chip markup (`plainFileNames`)
+
+Follow-up from the Oct 4–14 real-pi runs on Windows (#70 split into standalone PRs).
+
+### F149 — tool-result labels that misdescribed calls or cut silently 🟢
+`formatToolResponse` labelled file tools `command="todo.mjs"` and swapped `"` for `'` (`"$f"` shown as
+`'$f'`, a different shell command). The model's chain of thought flagged it twice: "the tool is
+responding with an unexpected label", "the command tool response that indicates a mislabeling issue".
+Labels now say `command=`, `path=`, `query=` or `input=` (while still unwrapping Codex Code Mode
+scripts to `command=`) and escape backslashes and quotes.
+
+**A cut label read as a cut command (Oct 14).** The label shortens a long value to 100 characters,
+silently. In one `relay_batch` PDF run the last label read `command="set -eu css=… printf '%s\n' \
+'@page { size: A4; margin: 22m"`, and the model answered "You're right. The recorded command was
+truncated at `margin: 22m` … I can't generate files in the current session"; the task failed. The command
+had run whole. A shortened summary now ends in "…", and the same eight runs then passed 8/8.
+
+### F150 — M365's file-chip markup reached the client 🟢
+The web client renders `<File>notlar.docx</File>` as a file chip, and the GPT models write it into
+their answers; pi showed the raw tags ("<File>notlar.docx</File> başarıyla oluşturuldu"). In the 245
+distinct final answers of the pi transcripts (Oct 2–5): `<File>` 58 times, plus `<document>`,
+`<Files>`, `<file>`, `<FILE>` and "< File>". **Fixed:** a prose answer in tool mode gets the bare
+file name (`plainFileNames`); fenced and inline code are left alone, and a bare `<name.ext>` is not
+touched (`#include <stdio.h>`). Not applied to a tool-less streamed answer, which goes to the client
+delta by delta before the markup is complete.
