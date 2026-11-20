@@ -190,6 +190,10 @@ interface ConversationState {
   /** M365 lost this conversation's history after a reply had already streamed:
    *  the next request replays the whole history in a fresh conversation. */
   replayNext: boolean;
+  /** On the agent runtime (Cowork or Code), whose conversations show in the user's sidebar. */
+  runtime: boolean;
+  /** Requests running in it now: the pool doesn't drop it for idleness meanwhile. */
+  activeRequests: number;
 }
 
 /**
@@ -234,6 +238,22 @@ export function conversationTtlMs(): number {
   const hours = Number(process.env.M365_CONVERSATION_TTL_HOURS);
   return (Number.isFinite(hours) && hours > 0 ? hours : DEFAULT_CONVERSATION_TTL_HOURS) * 3_600_000;
 }
+/** How long an idle Cowork or Code conversation stays, in minutes
+ *  (M365_RUNTIME_CONVERSATION_TTL_MINUTES). Chat's are temporary chats, out of
+ *  the user's sight; the runtime has no such mode, and lists each conversation
+ *  in the user's Copilot sidebar until it's deleted (§48 F140). So these go
+ *  half an hour after their last request, without waiting for another one, and
+ *  the session deletes them (AetherSession.discard). A later request replays the
+ *  whole history into a fresh one. Under M365_SAVE_HISTORY=1, which keeps them,
+ *  Chat's TTL applies. */
+const DEFAULT_RUNTIME_CONVERSATION_TTL_MINUTES = 30;
+export function runtimeConversationTtlMs(): number {
+  const minutes = Number(process.env.M365_RUNTIME_CONVERSATION_TTL_MINUTES);
+  if (Number.isFinite(minutes) && minutes > 0) return minutes * 60_000;
+  return process.env.M365_SAVE_HISTORY === "1" ? conversationTtlMs() : DEFAULT_RUNTIME_CONVERSATION_TTL_MINUTES * 60_000;
+}
+/** How often the pool looks for idle runtime conversations while it holds any. */
+const RUNTIME_SWEEP_MS = 60_000;
 /** Most conversations the pool keeps; past it the least recently used go first. */
 const MAX_CONVERSATIONS = 1000;
 /** Openings at least this long that M365 turned out not to keep teach the pool
@@ -244,6 +264,8 @@ const UNKEPT_OPENING_MIN_CHARS = 200_000;
 export class SessionPool {
   private conversations = new Map<string, ConversationState>();
   private sessionOptions: ModelSessionOptions;
+  /** Runs evictStale while the pool holds runtime conversations (RUNTIME_SWEEP_MS). */
+  private runtimeSweep: ReturnType<typeof setInterval> | null = null;
   /** Per model: the shortest answered opening (chars, at least
    *  UNKEPT_OPENING_MIN_CHARS) whose history M365 was later found not to have
    *  kept, and when that was last seen. */
@@ -318,16 +340,20 @@ export class SessionPool {
     // New conversation
     this.evictOverflow();
     log.info(`New conversation ${fingerprint}, ${this.conversations.size} active`);
+    const runtime = backend !== "chat";
     const state: ConversationState = {
-      session: backend === "chat" ? new ModelSession(this.sessionOptions) : new AetherSession({ mode: backend }),
+      session: runtime ? new AetherSession({ mode: backend }) : new ModelSession(this.sessionOptions),
       sentMessageCount: 0,
       pendingNote: null,
       lastAccessedAt: Date.now(),
       openingChars: 0,
       openingAnswered: false,
       replayNext: false,
+      runtime,
+      activeRequests: 0,
     };
     this.conversations.set(fingerprint, state);
+    this.scheduleRuntimeSweep();
     return state;
   }
 
@@ -359,12 +385,28 @@ export class SessionPool {
   private evictStale() {
     const now = Date.now();
     const ttl = conversationTtlMs();
+    const runtimeTtl = runtimeConversationTtlMs();
     for (const [key, state] of this.conversations) {
-      if (now - state.lastAccessedAt > ttl) {
+      if (state.activeRequests > 0) continue;
+      if (now - state.lastAccessedAt > (state.runtime ? runtimeTtl : ttl)) {
         log.info(`Evicting idle conversation ${key}`);
         this.conversations.delete(key);
         state.session.close?.();
       }
+    }
+    this.scheduleRuntimeSweep();
+  }
+
+  /** Sweeps for idle runtime conversations while there are any, so they're
+   *  deleted on time even when no request comes (runtimeConversationTtlMs). */
+  private scheduleRuntimeSweep() {
+    const any = [...this.conversations.values()].some((s) => s.runtime);
+    if (any && !this.runtimeSweep) {
+      this.runtimeSweep = setInterval(() => this.evictStale(), RUNTIME_SWEEP_MS);
+      this.runtimeSweep.unref?.();
+    } else if (!any && this.runtimeSweep) {
+      clearInterval(this.runtimeSweep);
+      this.runtimeSweep = null;
     }
   }
 
@@ -1489,6 +1531,31 @@ export async function handleChatCompletion(
   }
   } // end produce()
 
+  // On the agent runtime a message stays in its conversation once it's posted,
+  // answered or not, so the client's retry of a failed request (the same history
+  // again) went in on top of it: Codex re-sent one 537,804-character request into
+  // one Code conversation seven times (§48 F140). Start the next request in a
+  // fresh conversation; the old one is deleted (AetherSession.discard), which
+  // also ends a run still going there. Meanwhile the pool keeps the conversation
+  // however long the request runs, and its idle time counts from the end.
+  async function produceTurn(onDelta?: (delta: string) => void): Promise<Produced> {
+    conv.activeRequests++;
+    let failed = true;
+    try {
+      const p = await produce(onDelta);
+      failed = p.kind === "error";
+      return p;
+    } finally {
+      conv.activeRequests--;
+      conv.lastAccessedAt = Date.now();
+      if (failed && !chat && session.turnCount > 0) {
+        log.info(`Agent runtime (${route.backend}) request failed: the next one starts a fresh conversation`);
+        session.newConversation();
+        conv.sentMessageCount = 0;
+      }
+    }
+  }
+
   // --- Render: JSON (non-stream) or an early-flushed SSE stream (stream) ---
   const includeUsage = !!body.stream_options?.include_usage;
   const errorsAsText = streamErrorsAsText(opts.userAgent);
@@ -1510,7 +1577,7 @@ export async function handleChatCompletion(
     calls.map((c) => `${c.function.name} ${c.function.arguments}`).join("\n");
 
   if (!body.stream) {
-    const p = await produce();
+    const p = await produceTurn();
     if (p.kind === "error") return p.resp;
     if (p.kind === "tools") {
       return jsonResponse(200, {
@@ -1577,7 +1644,7 @@ export async function handleChatCompletion(
       if (liveDelta) liveGate = { released: () => sent.length > 0, discard: () => { if (gated) head = ""; } };
 
       let p: Produced;
-      try { p = await produce(liveDelta); }
+      try { p = await produceTurn(liveDelta); }
       catch (err: any) { p = { kind: "error", resp: jsonResponse(502, { error: { message: err?.message ?? "stream error", type: "upstream_error" } }) }; }
       clearInterval(hb);
       try {

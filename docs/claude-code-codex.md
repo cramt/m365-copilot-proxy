@@ -121,8 +121,8 @@ GPT models need more care ([F105](hypotheses.md), §40):
   rejects. `m365/think-deeper` is the same tone under a name Codex doesn't know.
 - For a long context, the Cowork and Code backends (on by default) read about three times as much per
   turn as Chat's GPT-6.x, at a charge to your Copilot credits on every turn:
-  `m365/claude-opus-5.5(cowork)_640k_credit`, and `m365/gpt-6.2-sol(cowork)_800k_credit` whenever the
-  runtime's catalog lists GPT again ([Backends](../README.md#backends-chat-cowork-and-code),
+  `m365/claude-opus-5.5(cowork)_640k_credit`, and `m365/gpt-6.2-sol-substrate(cowork)_885k_credit` while the
+  runtime's catalog lists it ([Backends](../README.md#backends-chat-cowork-and-code),
   [hypotheses §48](hypotheses.md)). Live: a Codex Responses request and a Claude Code Messages request
   through copilot-api, and an Opus 5.5 bash tool call; not yet benched.
 

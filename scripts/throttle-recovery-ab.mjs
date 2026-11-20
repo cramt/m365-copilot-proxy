@@ -73,23 +73,27 @@ function isThrottleEmpty(r) {
   return !r.disengaged && text.length < 3;
 }
 
+// The transports the probes went over, for the verdict.
+const transports = new Set();
+
 async function probe(label, token, claims) {
   const r = await oneTurn({
     token, claims, agentId: null,
     text: "Reply with exactly the word: pong",
     timeoutMs: 60000,
   });
+  transports.add(r.transport);
   const empty = isThrottleEmpty(r);
   const clean = !empty && !r.disengaged && /pong/i.test(r.fullText || "");
   const line = rec({
-    kind: "probe", label,
+    kind: "probe", label, transport: r.transport,
     empty, clean, disengaged: r.disengaged,
     reply: (r.fullText || "").slice(0, 40),
     throttle: r.throttle, elapsedMs: r.elapsedMs, msgTypes: r.messageTypes,
   });
   console.log(
     `  [${label}] ${clean ? "CLEAN" : empty ? "empty" : r.disengaged ? "DISENGAGED" : "other"}` +
-    ` reply=${JSON.stringify(line.reply)} throttle=${JSON.stringify(r.throttle)} ${r.elapsedMs}ms`,
+    ` reply=${JSON.stringify(line.reply)} transport=${r.transport} throttle=${JSON.stringify(r.throttle)} ${r.elapsedMs}ms`,
   );
   return line;
 }
@@ -124,7 +128,7 @@ if (confirm.clean) {
     "    An A/B on a rested account is meaningless (everything recovers at round 0).\n" +
     "    Rerun when the account is degraded, or pass --induce=N to force it (burns N threads).",
   );
-  rec({ kind: "verdict", verdict: "NOT_DEGRADED", note: "aborted before A/B" });
+  rec({ kind: "verdict", verdict: "NOT_DEGRADED", note: "aborted before A/B", transport: [...transports].join("+") });
   process.exit(0);
 }
 console.log("Confirmed degraded (OLD token empties). Proceeding to A/B.\n");
@@ -172,7 +176,7 @@ for (let round = 1; round <= ROUNDS; round++) {
 }
 
 // --- verdict ---
-console.log("\n=== RESULT ===");
+console.log(`\n=== RESULT (transport=${[...transports].join("+")}) ===`);
 console.log(`first CLEAN round — OLD: ${firstClean.OLD ?? "never"}` + (tokenNew ? `  NEW: ${firstClean.NEW ?? "never"}` : ""));
 let verdict;
 if (!tokenNew) {
@@ -189,5 +193,5 @@ if (!tokenNew) {
   console.log("OLD and NEW recovered together → recovery is time/identity-driven, NOT the token.");
   console.log("Auto-reauth provides no throttle benefit; the loud login is pure downside.");
 }
-rec({ kind: "verdict", verdict, firstClean });
+rec({ kind: "verdict", verdict, firstClean, transport: [...transports].join("+") });
 console.log(`\nverdict=${verdict}\nraw: ${OUT}`);

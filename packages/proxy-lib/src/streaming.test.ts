@@ -112,6 +112,7 @@ vi.mock("@m365-copilot/core", async (importActual) => {
       runtimeRuns.push({ mode: this.mode, model: model ?? "", useAgent, turn, text });
       return Object.assign(await super.run(text, model, signal, useAgent, images, waitForBudget), { throttle: null, credits: 0.5, agentToolCalls: runtimeToolCalls });
     }
+    close() { runtimeClosed.push(this.conversationId); }
   }
   return { ...actual, ModelSession: FakeModelSession, AetherSession: FakeAetherSession, awaitTurnBudget };
 });
@@ -120,6 +121,8 @@ vi.mock("@m365-copilot/core", async (importActual) => {
 const runtimeRuns: Array<{ mode: string; model: string; useAgent?: boolean; turn: unknown; text: string }> = [];
 /** The tool calls the fake runtime's own agent reports on each turn. */
 let runtimeToolCalls = 0;
+/** The conversation of every fake agent-runtime session the pool dropped (close()), in order. */
+const runtimeClosed: string[] = [];
 
 /** Which fake ModelSession (by creation order) served every run() call, in order. */
 const servedBy: number[] = [];
@@ -2091,5 +2094,40 @@ describe("the agent runtime backends: Cowork and Code (§48)", () => {
     expect(runtimeRuns).toHaveLength(1);
     expect(runtimeRuns[0].mode).toBe("code");
     expect(runtimeRuns[0].text.length).toBeGreaterThan(20_000);
+  });
+
+  it("starts the client's retry of a failed request in a fresh conversation, not on top of the failed one", async () => {
+    process.env.M365_BACKENDS = "code";
+    const pool = new SessionPool();
+    const opener = `fix calc.py ${Math.random()}`;
+    const retry = () => handleChatCompletion(ChatCompletionRequest.parse({ model: "gpt-6.2-astra(code)", tools, messages: [{ role: "user", content: opener }] }), pool);
+    scripted.queue = [{ fullText: "" }, { fullText: "```bash\nls\n```" }];
+    const fresh = scripted.newConversations;
+    expect((await retry()).status).toBe(502); // runtime_no_reply
+    expect(scripted.newConversations).toBe(fresh + 1);
+    expect((await retry()).status).toBe(200);
+    expect(runtimeRuns).toHaveLength(2);
+    expect(runtimeRuns[1].text).toContain(opener);
+    expect(scripted.newConversations).toBe(fresh + 1);
+  });
+
+  it("drops an idle runtime conversation half an hour after its last request, without waiting for another; Chat's stay", async () => {
+    process.env.M365_BACKENDS = "chat,cowork";
+    vi.useFakeTimers({ toFake: ["setInterval", "clearInterval", "Date"] });
+    try {
+      const pool = new SessionPool();
+      const send = (model: string) => handleChatCompletion(ChatCompletionRequest.parse({ model, messages: [{ role: "user", content: `${model} ${Math.random()}` }] }), pool);
+      scripted.queue = [{ fullText: "a" }, { fullText: "b" }];
+      await send("claude-sonnet");
+      await send("claude-sonnet-5.5(cowork)"); // the last request: no later one runs the pool's eviction
+      const closed = runtimeClosed.length;
+      await vi.advanceTimersByTimeAsync(29 * 60_000);
+      expect(runtimeClosed).toHaveLength(closed);
+      await vi.advanceTimersByTimeAsync(2 * 60_000);
+      expect(runtimeClosed).toHaveLength(closed + 1);
+      expect(pool.size).toBe(1); // the Chat conversation, a temporary chat, stays its 24 hours
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
