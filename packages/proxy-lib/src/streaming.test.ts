@@ -110,7 +110,7 @@ vi.mock("@m365-copilot/core", async (importActual) => {
     }
     override async run(text: string, model?: string, signal?: AbortSignal, useAgent?: boolean, images: string[] = [], waitForBudget?: () => Promise<unknown>, turn?: unknown) {
       runtimeRuns.push({ mode: this.mode, model: model ?? "", useAgent, turn, text });
-      return Object.assign(await super.run(text, model, signal, useAgent, images, waitForBudget), { throttle: null, credits: 0.5 });
+      return Object.assign(await super.run(text, model, signal, useAgent, images, waitForBudget), { throttle: null, credits: 0.5, agentToolCalls: runtimeToolCalls });
     }
   }
   return { ...actual, ModelSession: FakeModelSession, AetherSession: FakeAetherSession, awaitTurnBudget };
@@ -118,6 +118,8 @@ vi.mock("@m365-copilot/core", async (importActual) => {
 
 /** Every run() on a fake agent-runtime session, in order. */
 const runtimeRuns: Array<{ mode: string; model: string; useAgent?: boolean; turn: unknown; text: string }> = [];
+/** The tool calls the fake runtime's own agent reports on each turn. */
+let runtimeToolCalls = 0;
 
 /** Which fake ModelSession (by creation order) served every run() call, in order. */
 const servedBy: number[] = [];
@@ -2043,6 +2045,23 @@ describe("the agent runtime backends: Cowork and Code (§48)", () => {
     await ask("gpt-5.5(cowork)", { tools });
     expect(runtimeRuns).toHaveLength(1);
     expect(runtimeRuns[0].text).not.toContain("<system>");
+  });
+
+  it("ends a runtime turn with no reply text with an explanation, not Chat's \"Please continue.\" retries", async () => {
+    process.env.M365_BACKENDS = "code";
+    runtimeToolCalls = 3;
+    try {
+      scripted.queue = [{ fullText: "" }, { fullText: "late" }];
+      const res = await ask("gpt-6.2-astra(code)", { tools });
+      expect(res.status).toBe(502);
+      const error = (await res.json()).error;
+      expect(error.code).toBe("runtime_no_reply");
+      expect(error.message).toMatch(/3 tool calls in its cloud workspace/);
+      expect(runtimeRuns.map((r) => r.text)).not.toContain("Please continue.");
+      expect(runtimeRuns).toHaveLength(1);
+    } finally {
+      runtimeToolCalls = 0;
+    }
   });
 
   it("answers a model the runtime's catalog doesn't have with a 400 model_not_found", async () => {

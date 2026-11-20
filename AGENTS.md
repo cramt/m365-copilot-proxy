@@ -326,7 +326,9 @@ pnpm test:live      # M365_LIVE=1; live tests that hit real M365 (uses quota)
   output ceiling. The runtime keeps the history; a turn ends at `rl ok`/`fail`, and the proxy deletes
   conversations it leaves (five minutes on). Windows in the IDs are one needle turn each (§48). The Code
   tab's local sessions ("Long context") run on Office's LLM API, which the proxy's app isn't consented
-  for (§48 F136); don't work around that.
+  for (§48 F136); don't work around that. A runtime turn with no text is a 502 `runtime_no_reply`, never
+  Chat's "Please continue.": Code's agent works in its own workspace, and each retry re-ran a
+  minutes-long, charged turn (§48 F139).
 - **A tool turn is stopped once the model's own `<tool_response>` after a call runs past 2,000 chars**
   (#65, `runBuffered` in `handler.ts`): waiting for M365 to finish let invented continuations run for
   minutes, past pi's timeout. Not at the tag itself: M365 keeps the whole message, Sonnet 4.6 seems to
