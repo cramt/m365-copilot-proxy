@@ -122,6 +122,7 @@ than "we eyeballed one run." See §M (Methods) for the experimental rig.
   changes and refuses what it doesn't list (F137); GPT-6.2 Sol takes 885k tokens in a message, not 892k, and its
   turns are now almost free (H48a); Code turns are charged and the monthly budget counts them (F138); Code's
   agent works in its own workspace, and slow turns met Codex's 5-minute timeout (F139)
+- §50 — concurrent sessions sharing a first user message (or `prompt_cache_key` + opener): `SessionPool` keeps a bucket per fingerprint and matches continuations by the echoed reply (F149)
 
 ---
 
@@ -6822,3 +6823,32 @@ and the text was there once: no F107 re-send, up to 5,418 characters. A Chathub 
 unchanged (`Success`, 4.8 s). No `network_info` item came in the 15 StreamHub turns whose item types
 were recorded. F142's other half, `Claude_Sonnet_5`'s sandbox (`sonnet5-native-tools-probe`, `pwd-none`),
 can't run on a non-premium account: it is refused by licence.
+
+---
+
+## 50. Oct 4–8 2026 — Concurrent sessions sharing a first message (`SessionPool` bucket per fingerprint + `replyKey`)
+
+Follow-up from the Oct 4–5 real-pi sweeps on Windows (#70 split into standalone PRs).
+
+### F149 — sessions that share a first message: keeping each in its own conversation 🟢
+A sleeping measurement job was taken for dead (its log had stopped because it was sleeping) and a second
+one was started; both woke and ran against the same two proxies. Every session opened with the same first
+message, so `SessionPool` mapped both sweeps' sessions to one `ConversationState`, and under F84 each
+kept resetting the other's conversation — replies like "What would you like me to do with this CLI code?"
+and "this is just the same erroneous command's real output being passed again". All data from that hour is
+discarded.
+
+In real use the same collision happens whenever concurrent sessions open with the same message, e.g.
+parallel subagents given one prompt (even when they inherit the parent's `prompt_cache_key` / `user`),
+and sequentially too: open a second pi session with "merhaba", go back to the first, and the first one's
+next turn went into the second one's thread.
+
+**Fixed** without client cooperation: under the fingerprint (`prompt_cache_key` / `user` + first user
+message + sorted tool names), `SessionPool` keeps a bucket of every conversation sharing that fingerprint,
+and a request continues the non-busy conversation whose last reply it echoes back at position
+`sentMessageCount` (`replyKey` = joined tool-call ids, else trimmed text). A conversation with a turn in
+flight (`busy`) can't be joined, and F84's fresh conversation no longer replaces an earlier one. Without an
+echo match it falls back to the most recent candidate, so a client that rewrites old replies still
+continues. Regression tests in `packages/proxy-lib/src/streaming.test.ts` cover two sessions continuing in
+their own threads by tool-call ids and by text, a same-opener request alongside an in-flight turn,
+subagents sharing `prompt_cache_key` and opener, and rewritten-reply fallback.

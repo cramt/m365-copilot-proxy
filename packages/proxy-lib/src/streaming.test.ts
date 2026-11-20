@@ -34,9 +34,12 @@ const scripted: {
   awaitTurnBudgetCalls: Array<{ maxWaitMs?: number; signal?: AbortSignal }>;
   /** The `waitForBudget` argument of every run() call, in order (one function per call). */
   budgetWaits: Array<(() => Promise<unknown>) | undefined>;
+  /** The M365 conversation id of every run() call, in order (unique per conversation). */
+  convs: string[];
+  ids: number;
   /** Replies to the parts of a long turn (replay.ts), consumed front-first; past them a part gets "OK". */
   partQueue: Array<{ fullText: string; messageType?: string | null; contentOrigin?: string; apology?: boolean; result?: { value: string; errorCode?: string; message?: string }; throttle?: { current: number; max: number } | null; turnState?: string }>;
-} = { deltas: [], runs: 0, texts: [], queue: [], agentFlags: [], newConversations: 0, models: [], images: [], gate: null, signals: [], stoppedAfter: null, budgetHold: null, awaitTurnBudgetCalls: [], budgetWaits: [], partQueue: [] };
+} = { deltas: [], runs: 0, texts: [], queue: [], agentFlags: [], newConversations: 0, models: [], images: [], gate: null, signals: [], stoppedAfter: null, budgetHold: null, awaitTurnBudgetCalls: [], budgetWaits: [], convs: [], ids: 0, partQueue: [] };
 
 vi.mock("@m365-copilot/core", async (importActual) => {
   const actual = await importActual<typeof import("@m365-copilot/core")>();
@@ -44,9 +47,9 @@ vi.mock("@m365-copilot/core", async (importActual) => {
   class FakeModelSession {
     readonly uid = ++sessionsMade;
     turnCount = 0;
-    conversationId = "conv-test";
+    conversationId = `conv-${++scripted.ids}`;
     reset() {}
-    newConversation() { this.conversationId = "conv-test-2"; this.turnCount = 0; scripted.newConversations++; }
+    newConversation() { this.conversationId = `conv-${++scripted.ids}`; this.turnCount = 0; scripted.newConversations++; }
     async refreshAgent() { return false; }
     async run(text: string, model?: string, signal?: AbortSignal, useAgent?: boolean, images: string[] = [], waitForBudget?: () => Promise<unknown>) {
       if (scripted.gate) await scripted.gate;
@@ -58,6 +61,7 @@ vi.mock("@m365-copilot/core", async (importActual) => {
       this.turnCount++; // like the real session: later requests go down the delta path
       scripted.runs++;
       scripted.texts.push(text);
+      scripted.convs.push(this.conversationId);
       scripted.agentFlags.push(useAgent);
       servedBy.push(this.uid);
       // A part of a long turn (replay.ts) is acknowledged, as the model does, without using up the queue.
@@ -128,11 +132,15 @@ const runtimeClosed: string[] = [];
 const servedBy: number[] = [];
 
 const { handleChatCompletion, SessionPool, ChatCompletionRequest } = await import("./index.js");
-const { resetAgentRoutes, resetPriorityAccessState, TurnBudgetHold, noteWebSearchOverflow, toneUsesWebSearch, resetWebSearchOverflow } = await import("@m365-copilot/core");
+const { resetAgentRoutes, resetPriorityAccessState, noteRequestOutcome, TurnBudgetHold, noteWebSearchOverflow, toneUsesWebSearch, resetWebSearchOverflow } = await import("@m365-copilot/core");
 
-// The proxy remembers a priority-access wall for the process (until the reset);
-// don't let one test's refusal 429 the next test's Opus request.
-afterEach(() => resetPriorityAccessState());
+// The proxy remembers a priority-access wall and degradation backoff for the
+// process; reset both between tests so one test's refusal/throttle doesn't
+// stall or 429 the next test (the fake numbers distinct conversation ids).
+afterEach(() => {
+  resetPriorityAccessState();
+  noteRequestOutcome(false, "");
+});
 
 /** One request on a fresh pool with a fake clock: an empty upstream turn makes
  *  the handler wait 2 s before each quick retry, and that wait is the handler's
@@ -752,7 +760,11 @@ describe("GPT-6 Sol: agent on premium, learned fallback on non-premium (#23)", (
     expect(scripted.newConversations).toBe(1);
     expect(scripted.agentFlags).toEqual([true, true]);
     expect(scripted.texts[1]).not.toBe("Please continue.");
-    expect(scripted.texts[1]).toBe(scripted.texts[0].replace("conv-test<", "conv-test-2<"));
+    // The same request, in another conversation (the fake numbers its ids).
+    const id = (t: string) => /<conversation_id>([^<]*)</.exec(t)?.[1];
+    const sameRequest = (t: string) => t.replace(/<conversation_id>[^<]*</, "<conversation_id><");
+    expect(id(scripted.texts[1])).not.toBe(id(scripted.texts[0]));
+    expect(sameRequest(scripted.texts[1])).toBe(sameRequest(scripted.texts[0]));
     scripted.queue = [CALL];
     await send();
     expect(scripted.agentFlags).toEqual([true]);
@@ -867,7 +879,7 @@ describe("a new harness session that shares the first user message", () => {
   it("gets a fresh M365 conversation after a longer earlier session", async () => {
     scripted.result = null;
     scripted.texts = [];
-    scripted.newConversations = 0;
+    scripted.convs = [];
     scripted.queue = [{ fullText: "```bash\nls\n```" }, { fullText: "Done." }, { fullText: "```bash\nls\n```" }];
     const pool = new SessionPool();
     const prompt = `make a pdf ${Math.random()}`;
@@ -877,7 +889,7 @@ describe("a new harness session that shares the first user message", () => {
     first.push({ role: "tool", tool_call_id: m1.tool_calls[0].id, content: "notlar.md" });
     await ask(first, pool);
     await ask([{ role: "user", content: prompt }], pool); // a new session, same opener
-    expect(scripted.newConversations).toBe(1);
+    expect(scripted.convs[2]).not.toBe(scripted.convs[0]);
     expect(scripted.texts[2]).toContain(prompt); // the full prompt, not a delta
     scripted.queue = [];
   });
@@ -885,13 +897,13 @@ describe("a new harness session that shares the first user message", () => {
   it("gets one after a single-turn session too (equal length used to send 'Please continue.')", async () => {
     scripted.result = null;
     scripted.texts = [];
-    scripted.newConversations = 0;
+    scripted.convs = [];
     scripted.queue = [{ fullText: "I can't do that." }, { fullText: "```bash\nls\n```" }];
     const pool = new SessionPool();
     const prompt = `make a docx ${Math.random()}`;
     await ask([{ role: "user", content: prompt }], pool);
     await ask([{ role: "user", content: prompt }], pool);
-    expect(scripted.newConversations).toBe(1);
+    expect(scripted.convs[1]).not.toBe(scripted.convs[0]);
     expect(scripted.texts[scripted.texts.length - 1]).not.toBe("Please continue.");
     expect(scripted.texts[scripted.texts.length - 1]).toContain(prompt);
     scripted.queue = [];
@@ -900,7 +912,7 @@ describe("a new harness session that shares the first user message", () => {
   it("still continues a real continuation in the same conversation", async () => {
     scripted.result = null;
     scripted.texts = [];
-    scripted.newConversations = 0;
+    scripted.convs = [];
     scripted.queue = [{ fullText: "```bash\nls\n```" }, { fullText: "Done." }];
     const pool = new SessionPool();
     const msgs: any[] = [{ role: "user", content: `go ${Math.random()}` }];
@@ -908,8 +920,74 @@ describe("a new harness session that shares the first user message", () => {
     msgs.push({ role: "assistant", content: null, tool_calls: m1.tool_calls });
     msgs.push({ role: "tool", tool_call_id: m1.tool_calls[0].id, content: "a.txt" });
     await ask(msgs, pool);
-    expect(scripted.newConversations).toBe(0);
+    expect(scripted.convs[1]).toBe(scripted.convs[0]);
     expect(scripted.texts[1]).toContain('<tool_response tool="bash"'); // a delta
+    scripted.queue = [];
+  });
+
+  // §50 F149: the fresh conversation used to REPLACE the earlier session's, so a
+  // session still running (two measurement jobs at once) lost its thread each
+  // time the other one moved, and its next delta landed in the other's.
+  it("leaves the earlier session's conversation alone: each continues in its own", async () => {
+    scripted.result = null;
+    scripted.texts = [];
+    scripted.convs = [];
+    scripted.queue = [{ fullText: "```bash\nls\n```" }, { fullText: "```bash\npwd\n```" }, { fullText: "X done." }, { fullText: "Y done." }];
+    const pool = new SessionPool();
+    const prompt = `merhaba ${Math.random()}`;
+    const x: any[] = [{ role: "user", content: prompt }];
+    const y: any[] = [{ role: "user", content: prompt }];
+    const mx = await ask(x, pool);
+    const my = await ask(y, pool);
+    x.push({ role: "assistant", content: null, tool_calls: mx.tool_calls }, { role: "tool", tool_call_id: mx.tool_calls[0].id, content: "x.txt" });
+    y.push({ role: "assistant", content: null, tool_calls: my.tool_calls }, { role: "tool", tool_call_id: my.tool_calls[0].id, content: "/y" });
+    await ask(x, pool);
+    await ask(y, pool);
+    expect(scripted.convs[1]).not.toBe(scripted.convs[0]);
+    expect(scripted.convs[2]).toBe(scripted.convs[0]);
+    expect(scripted.convs[3]).toBe(scripted.convs[1]);
+    expect(scripted.texts[2]).toContain("x.txt"); // deltas, each in its own thread
+    expect(scripted.texts[3]).toContain("/y");
+    scripted.queue = [];
+  });
+
+  it("tells text replies apart too", async () => {
+    scripted.result = null;
+    scripted.texts = [];
+    scripted.convs = [];
+    scripted.queue = [{ fullText: "Hi from X." }, { fullText: "Hi from Y." }, { fullText: "Sure." }];
+    const pool = new SessionPool();
+    const prompt = `hi ${Math.random()}`;
+    const mx = await ask([{ role: "user", content: prompt }], pool);
+    await ask([{ role: "user", content: prompt }], pool);
+    await ask([{ role: "user", content: prompt }, { role: "assistant", content: mx.content }, { role: "user", content: "and X?" }], pool);
+    expect(scripted.convs[2]).toBe(scripted.convs[0]); // X's, though Y spoke last
+    scripted.queue = [];
+  });
+
+  it("gives a same-opener request its own conversation while a turn is in flight", async () => {
+    scripted.result = null;
+    scripted.texts = [];
+    scripted.convs = [];
+    scripted.queue = [{ fullText: "```bash\nls\n```" }, { fullText: "```bash\nls\n```" }];
+    const pool = new SessionPool();
+    const prompt = `parallel ${Math.random()}`;
+    await Promise.all([ask([{ role: "user", content: prompt }], pool), ask([{ role: "user", content: prompt }], pool)]);
+    expect(scripted.convs[1]).not.toBe(scripted.convs[0]);
+    scripted.queue = [];
+  });
+
+  it("still continues when the client rewrote the reply it echoes", async () => {
+    scripted.result = null;
+    scripted.texts = [];
+    scripted.convs = [];
+    scripted.queue = [{ fullText: "Hello there." }, { fullText: "Sure." }];
+    const pool = new SessionPool();
+    const prompt = `hello ${Math.random()}`;
+    const m1 = await ask([{ role: "user", content: prompt }], pool);
+    await ask([{ role: "user", content: prompt }, { role: "assistant", content: `${m1.content} (trimmed)` }, { role: "user", content: "and now?" }], pool);
+    expect(scripted.convs[1]).toBe(scripted.convs[0]);
+    expect(scripted.texts[1]).not.toContain(prompt); // a delta, not a fresh full prompt
     scripted.queue = [];
   });
 });
@@ -1442,6 +1520,28 @@ describe("Claude Code and Codex behind copilot-api", () => {
     expect(servedBy[1]).not.toBe(servedBy[0]);
     expect(servedBy[2]).toBe(servedBy[0]);
     expect(scripted.newConversations).toBe(0);
+  });
+
+  it("keeps subagents sharing both prompt_cache_key and the same opener in their own conversations (§50 F149)", async () => {
+    const pool = new SessionPool();
+    const opener = { role: "user", content: "audit module" };
+    const ask = (messages: unknown[]) => handleChatCompletion(ChatCompletionRequest.parse({
+      model: "claude-sonnet", prompt_cache_key: "parent-session", messages,
+    }), pool);
+    scripted.queue = [{ fullText: "sub-a" }, { fullText: "sub-b" }, { fullText: "done-a" }, { fullText: "done-b" }];
+    scripted.texts = [];
+    servedBy.length = 0;
+    await ask([opener]);
+    await ask([opener]);
+    await ask([opener, { role: "assistant", content: "sub-a" }, { role: "user", content: "next for a" }]);
+    await ask([opener, { role: "assistant", content: "sub-b" }, { role: "user", content: "next for b" }]);
+    scripted.queue = [];
+    expect(pool.size).toBe(2);
+    expect(servedBy[1]).not.toBe(servedBy[0]);
+    expect(servedBy[2]).toBe(servedBy[0]);
+    expect(servedBy[3]).toBe(servedBy[1]);
+    expect(scripted.texts[2]).toContain("next for a");
+    expect(scripted.texts[3]).toContain("next for b");
   });
 
   it("drops copilot-api's JavaScript tool tips from the system prompt", async () => {
