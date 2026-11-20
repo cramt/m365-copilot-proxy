@@ -238,7 +238,7 @@ There is no `model` parameter. The `tone` string on the chat message picks the m
 | `gpt-6-sol` | `Gpt_6_Sol_Reasoning` | "GPT 6.0 Sol" in the web client (not called Think Deeper). Self-IDs as the GPT-6 reasoning model. **Not** gated: serves on the included scenario on every account. Takes the tool agent only on a **premium** account (non-premium: dead route), which the proxy learns at runtime; agent-less it has a sandbox of its own. Default framing `relay_batch` on both paths (hypotheses §23, §28, #23). `Gpt_6_Sol_Chat` is accepted but serves the GPT-5 chat model, so it isn't mapped |
 | `gpt-6.1-sol` | `Gpt_61_Sol_Reasoning` | "GPT-6.1 Sol" in the web client. Self-IDs as the GPT-6 reasoning model. Serves on the included scenario on every account; the paid scenario serves it too but spends the `GPT61Sol*` budget (40/day, 75/week), so the proxy stays on the included one. Like `gpt-6-sol`, it serves with the tool agent attached only on a **premium** account (non-premium: dead route, so the proxy goes agent-less there), and agent-less it has the same kind of sandbox, though unlike `gpt-6-sol` it stays out of it under the user-voice framings (hypotheses §29). Default framing `relay_batch` on both paths (hypotheses §27). Every sibling (`Gpt_61_Sol`, `Gpt_61_Sol_Chat`, `Gpt_61_Reasoning`, `Gpt_61_Chat`, `Gpt_61`) is rejected |
 | `gpt-6.2-sol` | `Gpt_62_Sol_Reasoning` | "GPT-6.2 Sol" in the web client (since 2026-11-17; picking it sends this tone and no other model field). Self-IDs as the GPT-6 reasoning model, as in the web client. Serves on the included scenario (2026-11-18, n=1) and over StreamHub; the paid scenario's metering carries `GPT62SolQuery*` budgets, so the proxy stays on the included one, like `gpt-6.1-sol`. Default framing `relay_batch`, unbenched (hypotheses §45) |
-| `gpt-6.2-astra` | `Gpt_62_Astra_Reasoning` | "GPT-6.2 Astra" in the web client, marked "Uses credits": every StreamHub turn reports a `billing_info` charge to the user's Copilot credits (`PremiumModelsInM365Chat`, `creditInUse`). Otherwise routed like `gpt-6.2-sol` (`GPT62AstraQuery*` budgets on the paid scenario). The near misses `Gpt_61_Astra_Reasoning`, `Gpt_62_Luna_Reasoning` and `Gpt_63_Astra_Reasoning` are rejected (hypotheses §45) |
+| `gpt-6.2-astra` | `Gpt_62_Astra_Reasoning` | "GPT-6.2 Astra" in the web client, marked "Uses credits": its StreamHub turns reported a `billing_info` charge to the user's Copilot credits (`PremiumModelsInM365Chat`, `creditInUse`) on Nov 17–18, and none on Nov 20 (hypotheses §49 F143). Otherwise routed like `gpt-6.2-sol` (`GPT62AstraQuery*` budgets on the paid scenario). The near misses `Gpt_61_Astra_Reasoning`, `Gpt_62_Luna_Reasoning` and `Gpt_63_Astra_Reasoning` are rejected (hypotheses §45) |
 | `gpt-6-astra` | `Gpt_6_Astra_Reasoning` **+ paid scenario** | GPT-6 Astra, also billed to Copilot credits. Gated like `Gpt_6_Reasoning`: the BotConnection apology on the included scenario, served on the paid one and over StreamHub (2026-11-18, n=1). The web client's picker replaced it with GPT-6.2 Astra on 2026-11-17 (hypotheses §45) |
 | `gpt-5.4` / `gpt-5.4-think-deeper` | `Gpt_5_4_Reasoning` | |
 | `gpt-5.4-quick` | `Gpt_5_4_Chat` | was `Gpt_5_4_Quick` (retired) |
@@ -758,7 +758,8 @@ wss://substrate.svc.cloud.microsoft/m365Copilot/StreamHub/{oid}@{tid}?{query}
 
 with the same SignalR JSON protocol, `0x1E` separators and Sydney token (`access_token=` in the
 query). The proxy sends a turn this way under `M365_TRANSPORT=streamhub` (`getTransport`,
-`session.ts`). Observed 2026-11-11 on a premium account; hypotheses §40.
+`session.ts`), and so does the probe helper `scripts/_probe-chat.mjs`, under the same variable or
+with `transport: "streamhub"`. Observed 2026-11-11 on a premium account; hypotheses §40.
 
 **Query string** (the client's order): `chatsessionid`, `XRoutingParameterSessionKey` (the user's `oid`:
 a browser can't set the Chathub header), `clientrequestid`, `X-SessionId`, `disableMemory=1` for a
@@ -790,7 +791,9 @@ Headers: `Origin: https://copilot.cloud.microsoft` and a browser `User-Agent`.
 - `chatStreamRequest` is Chathub's chat argument, reshaped: `conversationId` and `requestId` move in,
   `streamingMode: "ConciseV2"`, `clientInfo.clientPlatform: "ccmcopilot-web"` (also inside `message`),
   `gpts: [{id: "bizchat-as-gpt-scenario", source: "BuiltInAgents"}]`, plus the usual `optionsSets`,
-  `allowedMessageTypes`, `plugins`, `tone`. An unknown tone is rejected as a note (below).
+  `allowedMessageTypes`, `plugins`, `tone`. An unknown tone is rejected as a note (below). A declarative
+  agent in place of the built-in one (a MOS3 `gpts` entry and `threadLevelGptId`, as on Chathub) isn't
+  applied: the turn is answered as plain chat (hypotheses §49 F144).
 - Stop: `{"type":"stop","topicId":"/conversations/<cid>","turnId":"<requestId>","requestId":"<requestId>","reason":"ClientRequested"}`
   as an item on stream `"0"`.
 
@@ -798,7 +801,7 @@ Headers: `Origin: https://copilot.cloud.microsoft` and a browser `User-Agent`.
 
 | item | carries |
 |---|---|
-| `network_info` | the client's IP prefix |
+| `network_info` | the client's IP prefix (none came on Nov 20, hypotheses §49 F141) |
 | `request_pending`, `request_start` | the echoed user message; the turn started |
 | `message_part` | `argument` = what a Chathub `update` invocation carried (below) |
 | `answer_complete` | the answer is done |

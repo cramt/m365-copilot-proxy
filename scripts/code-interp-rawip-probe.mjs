@@ -83,4 +83,4 @@ console.log(`\n[rawip] === RESULT === saved ${fp} (${out.length} chars)`);
 console.log(out);
 console.log(`\n[rawip] sentinel inbound hit: ${serverGotHit}  leaked value: ${out.includes(SENTINEL)}`);
 if (newHits.trim()) console.log(`[rawip] new hit log lines:\n${newHits.trim()}`);
-console.log(`[rawip] msgTypes=${r.messageTypes.join(",")} elapsed=${r.elapsedMs}ms throttle=${JSON.stringify(r.throttle)}`);
+console.log(`[rawip] transport=${r.transport} msgTypes=${r.messageTypes.join(",")} elapsed=${r.elapsedMs}ms throttle=${JSON.stringify(r.throttle)}`);

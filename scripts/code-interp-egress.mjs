@@ -44,4 +44,4 @@ console.log(`[egress] model reply (first 500):\n${out.slice(0, 500)}`);
 console.log(`\n[egress] sentinel server got a NEW inbound hit: ${serverGotHit}  ${serverGotHit ? "🎉 SANDBOX HAS EGRESS" : "❌ no inbound hit"}`);
 console.log(`[egress] model reported the correct sentinel value: ${modelHasValue}  ${modelHasValue ? "🎉 END-TO-END" : ""}`);
 if (newHits.trim()) console.log(`[egress] new hit log lines:\n${newHits.trim().slice(0, 400)}`);
-console.log(`[egress] msgTypes=${r.messageTypes.join(",")} ${r.elapsedMs}ms`);
+console.log(`[egress] transport=${r.transport} msgTypes=${r.messageTypes.join(",")} ${r.elapsedMs}ms`);

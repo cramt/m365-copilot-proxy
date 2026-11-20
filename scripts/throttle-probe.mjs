@@ -52,8 +52,8 @@ for (let i = 0; i < MAX; i++) {
     const s = Date.now();
     const r = await oneTurn({ token, claims, agentId, text: "Reply with exactly the single word: pong", timeoutMs: 60000 });
     const cls = classify(r);
-    const row = { i, startMs: s - t0, cls, latencyMs: Date.now() - s, throttle: r.throttle };
-    console.log(`  #${String(i).padStart(2)} @${String(Math.round(row.startMs / 1000)).padStart(3)}s  ${cls.padEnd(11)} ${row.latencyMs}ms throttle=${JSON.stringify(r.throttle)}`);
+    const row = { i, startMs: s - t0, cls, latencyMs: Date.now() - s, transport: r.transport, throttle: r.throttle };
+    console.log(`  #${String(i).padStart(2)} @${String(Math.round(row.startMs / 1000)).padStart(3)}s  ${cls.padEnd(11)} ${row.latencyMs}ms transport=${r.transport} throttle=${JSON.stringify(r.throttle)}`);
     return row;
   })());
 }
@@ -71,14 +71,14 @@ if (RECOVER && onset) {
     await sleep(30000);
     const r = await oneTurn({ token, claims, agentId, text: "Reply with exactly: pong", timeoutMs: 60000 });
     const cls = classify(r);
-    console.log(`  recovery probe @${k * 30}s: ${cls}`);
+    console.log(`  recovery probe @${k * 30}s: ${cls} transport=${r.transport}`);
     if (cls === "ok") { recoveryMin = (k * 30) / 60; break; }
   }
 }
 
 writeFileSync(join(OUT, "results.json"), JSON.stringify({ rpm: RPM, max: MAX, useAgent: USE_AGENT, counts, okRate, onsetIndex: onset?.i ?? null, onsetAtSec: onset ? Math.round(onset.startMs / 1000) : null, recoveryMin, results }, null, 2));
 
-console.log(`\n[throttle] === RESULT (rpm=${RPM}) ===`);
+console.log(`\n[throttle] === RESULT (rpm=${RPM}, transport=${[...new Set(results.map((r) => r.transport))].join("+")}) ===`);
 console.log(`[throttle] ok ${counts.ok || 0}/${results.length} (${okRate}%)  | ${Object.entries(counts).map(([k, v]) => `${k}=${v}`).join(" ")}`);
 console.log(`[throttle] degradation onset: ${onset ? `request #${onset.i} at ~${Math.round(onset.startMs / 1000)}s (${onset.cls})` : "NONE — sustained this RPM cleanly"}`);
 if (RECOVER && onset) console.log(`[throttle] recovery: ${recoveryMin != null ? `~${recoveryMin} min` : ">10 min (not recovered in window)"}`);

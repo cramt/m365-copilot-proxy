@@ -46,6 +46,7 @@ const modes = [
 ].filter((m) => m.key === "agentless" || m.aid);
 
 const summary = {};
+const transports = new Set();
 for (const m of modes) {
   summary[m.key] = { n: 0, dis: 0, fence: 0 };
   for (let i = 0; i < REPEAT; i++) {
@@ -53,13 +54,14 @@ for (const m of modes) {
     const text = formatMessages([{ role: "user", content: TASK }], BENCH_TOOLS, "auto", crypto.randomUUID());
     const r = await oneTurn({ token, claims, text, agentId: m.aid, tone: "magic" });
     const hasFence = FENCE.test(r.fullText || "");
+    transports.add(r.transport);
     summary[m.key].n++; if (r.disengaged) summary[m.key].dis++; if (hasFence) summary[m.key].fence++;
-    console.log(`  ${m.key.padEnd(10)} #${i + 1}  disengaged=${r.disengaged}  fence=${hasFence}  origin=${r.contentOrigin ?? "?"}  dea=${r.scores?.dea_violation ?? "?"}  len=${(r.fullText || "").length}`);
+    console.log(`  ${m.key.padEnd(10)} #${i + 1}  transport=${r.transport}  disengaged=${r.disengaged}  fence=${hasFence}  origin=${r.contentOrigin ?? "?"}  dea=${r.scores?.dea_violation ?? "?"}  len=${(r.fullText || "").length}`);
     await sleep(COOLDOWN_MS);
   }
 }
 
-console.log("\n[agentless] === SUMMARY ===");
+console.log(`\n[agentless] === SUMMARY (transport=${[...transports].join("+")}) ===`);
 for (const [k, s] of Object.entries(summary)) {
   console.log(`  ${k.padEnd(10)} disengaged ${s.dis}/${s.n}   emitted-tool-fence ${s.fence}/${s.n}`);
 }

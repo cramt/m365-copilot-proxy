@@ -88,4 +88,4 @@ console.log(`[diag] --- model reply ---\n${out}`);
 console.log(`\n[diag] sentinel server got a NEW inbound hit: ${serverGotHit}  ${serverGotHit ? "SANDBOX HAS EGRESS" : "no inbound hit"}`);
 console.log(`[diag] model reported the correct sentinel value: ${modelHasValue}`);
 if (newHits.trim()) console.log(`[diag] new hit log lines:\n${newHits.trim()}`);
-console.log(`[diag] msgTypes=${r.messageTypes.join(",")} elapsed=${r.elapsedMs}ms throttle=${JSON.stringify(r.throttle)} disengaged=${r.disengaged}`);
+console.log(`[diag] transport=${r.transport} msgTypes=${r.messageTypes.join(",")} elapsed=${r.elapsedMs}ms throttle=${JSON.stringify(r.throttle)} disengaged=${r.disengaged}`);
