@@ -414,7 +414,10 @@ See §7.
 `Disengaged` (see §9), `ReferencesListComplete`, `Progress`, `InternalSearchQuery`, `RenderCardRequest`, `EndOfRequest`, … — none of these carry the answer text.
 
 Two `Progress` shapes are worth reading rather than skipping, both first seen on Claude Sonnet 5 (paid scenario, §5):
-- `contentOrigin: "ChainOfThoughtSummary"`, `addToChainOfThought: true` — a summary of the model's reasoning, streamed as it goes. It is the best RE instrument this API has: it says in plain words *why* the model refused a framing ("this looks like a prompt injection…").
+- `contentOrigin: "ChainOfThoughtSummary"`, `addToChainOfThought: true` — the model's reasoning, as it goes. It is the best RE instrument this API has: it says in plain words *why* the model refused a framing ("this looks like a prompt injection…"). The proxy returns it as `reasoning_content` (hypotheses §50).
+  - **Who sends it** (a premium account, agent-less, 2026-11-20, n=1 per tone and prompt): `Claude_Sonnet` @ paid (Sonnet 5.5) and over StreamHub, `Claude_Sonnet_5` over StreamHub, `Claude_Opus` @ included (Opus 4.8) and over StreamHub, and `Gpt_5_5_Reasoning` on both transports; in the Chathub frame dumps from Sep 28 to Nov 9, `Claude_Sonnet_5` @ paid (Sonnet 5) on 21 of 39 turns. Not on every turn: an easy step usually has none. For a puzzle those tones reasoned about, `Claude_Sonnet` @ included (Sonnet 4.6) and `Claude_Fable` over StreamHub sent none and used the code interpreter, and so did `Gpt_62_Sol_Reasoning` over StreamHub; @ included it answered with neither. None of the 34 GPT-6.x turns in the frame dumps carried one.
+  - **What it says:** `Claude_Sonnet`, `Claude_Sonnet_5` and `Claude_Opus` over StreamHub send summaries ("I'm setting up the equations: …"); `Gpt_5_5_Reasoning`'s open with a bold title line (`**Validating Pell sequence calculations** \n…`); `Claude_Opus` @ included (Opus 4.8) sends text that reads like its own thinking ("This is a Pell equation! … Wait, let me check: (1, 0) is also a solution but y must be positive.").
+  - **How it arrives:** one `messageId` per message, a turn can hold several, all of them so far before the answer's first text. A message comes as full-text snapshots, each the last one plus a sentence or so; no cursor names it and no delta extends it. Chathub restates each message unchanged in the final item; StreamHub doesn't restate it. Of 87 such messages in those Chathub dumps, 21 grew over two or more snapshots, and no snapshot rewrote the text before it.
 - `contentType: "Code"` (text "Coding and executing", the command in `hiddenText`) and `contentOrigin: "CreateFileExecutor"` — the model calling its **own** server-side tools. They are declare-to-receive: drop `Progress` from `allowedMessageTypes` and the frames vanish, but the reply still reports `/home/claude` after a tool-call-length pause (10.7 s), so hiding the frames doesn't stop the sandbox (n=1).
 
 ### End of turn
@@ -815,7 +818,8 @@ Headers: `Origin: https://copilot.cloud.microsoft` and a browser `User-Agent`.
 
 `message_part.argument` shapes:
 - `{messages}`: Progress messages, the user echo, the final snapshot of a short answer
-  (`isLastUpdate`), and an `EndOfRequest` message whose `author` is `null`.
+  (`isLastUpdate`), and an `EndOfRequest` message whose `author` is `null`. A chain-of-thought message
+  (§6) comes this way, its whole text again each time it grows, and isn't restated at the end of the turn.
 - `{throttling}`: the message cap. It carried no `metering` in any observed turn (the web client
   also asks for `MeteringInfo` messages; not tried), so the proxy can't see priority-access
   allowances on StreamHub.

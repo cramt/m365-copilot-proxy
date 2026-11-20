@@ -122,6 +122,9 @@ than "we eyeballed one run." See §M (Methods) for the experimental rig.
   changes and refuses what it doesn't list (F137); GPT-6.2 Sol takes 885k tokens in a message, not 892k, and its
   turns are now almost free (H48a); Code turns are charged and the monthly budget counts them (F138); Code's
   agent works in its own workspace, and slow turns met Codex's 5-minute timeout (F139)
+- §50 — the model's chain of thought as `reasoning_content`: which tones send it and how it arrives on each
+  transport (F149); pi and opencode read it as thinking with no setting (F150); live in both clients on both
+  transports (F151); what might make GPT-6.x send one (H50a, open)
 
 ---
 
@@ -6822,3 +6825,94 @@ and the text was there once: no F107 re-send, up to 5,418 characters. A Chathub 
 unchanged (`Success`, 4.8 s). No `network_info` item came in the 15 StreamHub turns whose item types
 were recorded. F142's other half, `Claude_Sonnet_5`'s sandbox (`sonnet5-native-tools-probe`, `pwd-none`),
 can't run on a non-premium account: it is refused by licence.
+
+---
+
+## 50. Nov 20 2026 — the model's chain of thought as `reasoning_content`
+
+M365 streams the model's reasoning as `Progress` messages with `contentOrigin: "ChainOfThoughtSummary"`
+(API doc §6), and the proxy dropped them. pi and opencode both show an OpenAI-style `reasoning_content` as
+thinking, so the proxy now returns it there. A premium account, agent-less unless a row says otherwise.
+
+### F149 — who sends it, and how it arrives on each transport 🟢 (n=1 per tone and prompt)
+`scripts/cot-probe.mjs` (new) sends one turn per model through the proxy's own `CopilotSession`, with
+frame dumping on, and reads the turn back from its dump. Nov 20 10:37–10:44 UTC, one conversation per turn.
+Two prompts: an easy one (the bat-and-ball question) and one that takes work (every pair of positive
+integers with x < 200 and x² − 2y² = 1). A cell gives the snapshot lengths of each chain-of-thought message.
+
+| transport | tone | easy prompt | worked prompt |
+|---|---|---|---|
+| StreamHub (`officeweb`) | `Claude_Sonnet` | none | 105 → 229 |
+| StreamHub | `Claude_Sonnet_5` | 109 → 179 → 275 | – |
+| StreamHub | `Claude_Opus` | – | 75 → 157 |
+| StreamHub | `Gpt_5_5_Reasoning` | none | 220, then the code interpreter |
+| StreamHub | `Claude_Fable`, `Gpt_62_Sol_Reasoning` | none | none; the code interpreter |
+| StreamHub | `Gpt_6_Reasoning`, `magic` | none | – |
+| Chathub @ paid | `Claude_Sonnet` (Sonnet 5.5) | – | 110 → 151 → 217 |
+| Chathub @ included | `Claude_Opus` (Opus 4.8) | – | 89 → 195 → … → 650 (8 snapshots) |
+| Chathub @ included | `Gpt_5_5_Reasoning` | – | 207 |
+| Chathub @ included | `Claude_Sonnet` (Sonnet 4.6) | – | none; the code interpreter |
+| Chathub @ included | `Gpt_62_Sol_Reasoning` | – | none |
+
+- **Shape.** One message per `messageId` (`messageType: Progress`, `addToChainOfThought: true`,
+  `responseOrigin: ModelRunner`), sent as full-text snapshots, each the last one plus a sentence or so. No
+  cursor named one and no delta extended one. Chathub restates each message unchanged in the final item;
+  StreamHub sends `{messages}` parts and no restatement. Every one arrived before the answer's first text.
+- **Text.** `Claude_Sonnet`, `Claude_Sonnet_5` and `Claude_Opus` over StreamHub send summaries ("I'm
+  setting up the equations: …"). `Gpt_5_5_Reasoning`'s open with a bold title line, in OpenAI's summary
+  style (`**Validating Pell sequence calculations** \n…`). `Claude_Opus` @ included sends text that reads like
+  Opus 4.8's own thinking ("This is a Pell equation! … Wait, let me check: (1, 0) is also a solution but y
+  must be positive.").
+- **Earlier dumps.** The Chathub frame dumps from Sep 28 to Nov 9 hold 87 such messages, from
+  `Claude_Sonnet_5` (on 21 of its 39 turns), `Claude_Sonnet` (34 of 143) and `Claude_Opus` (5 of 7). 21 grew
+  over two or more snapshots; none rewrote the text before it; 84 were restated unchanged in the final item.
+  None of the 30 GPT-6.x turns there carried one (nor the 4 above). Counted on turns with real server
+  messages: the dump folder also holds the unit tests' fake-socket turns.
+
+### F150 — pi and opencode read `reasoning_content` as thinking, with no setting 🟢 (code read)
+- **pi 1.5.2** (`openai-completions` in pi-ai) takes the first non-empty of `reasoning_content`,
+  `reasoning` and `reasoning_text` in a delta into one thinking block per message, ahead of the text block
+  when it comes first, and shows it by default (`hideThinkingBlock: false`). On the next request it sends
+  the thinking back on that assistant message, under the field it came in.
+- **opencode 2.3.2** reads the same three fields, a configured `reasoning_field` first, into one reasoning
+  part per step, whatever the model's `capabilities.reasoning` says.
+- The proxy's request schema drops fields it doesn't know, so the thinking pi sends back never reaches M365.
+
+### F151 — live, four real-harness runs: thinking in both clients on both transports 🟢 (n=1 per run)
+The bench's fix-calc task (a bug in `calc.py`), through the proxy with the change, Nov 20 10:51–10:58 UTC.
+"Turns" counts the requests of the task, each one M365 turn unless noted.
+
+| client | transport | model ID | outcome | turns | with a chain of thought |
+|---|---|---|---|---|---|
+| pi | StreamHub | `claude-sonnet-5.5` | solved, 15 s | 4 | 0 |
+| pi | StreamHub | `claude-sonnet-5` | solved, 25 s | 5 | 3 |
+| opencode | StreamHub | `claude-sonnet-5` | solved, 19 s | 4 | 3 |
+| pi | Chathub | `claude-opus-4.8` (tool agent) | solved, 24 s | 3 | 2 |
+| opencode | Chathub | `gpt-5.5-think-deeper` (tool agent) | solved, 93 s | 3 (4 M365 turns) | 3 (4 turns) |
+
+pi stored each one as a `thinking` block with signature `reasoning_content`, ahead of that message's tool
+call; opencode as a `reasoning` part ahead of its tool call. In the last run the first turn was a
+confabulation that the proxy re-prompted (`CONFAB_FORCE_PROMPT`), and opencode showed both turns' chain of
+thought in one part, a blank line apart. opencode's session-title requests carried none. Two `curl` checks:
+a streamed `claude-sonnet-5.5` reply over StreamHub sent three `delta.reasoning_content` chunks before its
+content; an unstreamed `gpt-5.5-think-deeper` reply over Chathub carried `message.reasoning_content`.
+
+The chain of thought is the RE instrument API doc §6 describes, now in the debug log on every turn:
+`gpt-5.5-think-deeper`'s first turn read "I'm currently examining options for a user-injected execution
+system, focusing on shell blocks…", and it then wrote no tool call.
+
+**Shipped:** `ChainOfThoughtComposer` (`session.ts`) folds each `ChainOfThoughtSummary` snapshot and hands
+out what it adds, a blank line between messages; `ChatTurnOptions.onReasoning` / `TurnOptions.onReasoning`
+carry it from `CopilotSession` through `ModelSession.run`, and `stream.reasoning` holds the turn's whole
+text. The handler streams each piece as `delta.reasoning_content` as it arrives, tool turns included, and
+puts the request's whole chain of thought in `message.reasoning_content` when unstreamed. Every turn of the
+request adds its own, a retry's and a forcing turn's included, a blank line apart; a long turn's parts don't.
+`M365_NO_REASONING=1` leaves it out. The debug log records each turn's (`Chain of thought (N chars): …`).
+The other `Progress` messages stay out (EarlyProgress's fixed list, the sandbox's "Coding and executing").
+
+### H50a — does a request field make GPT-6.x send its chain of thought? 🔴
+No GPT-6.x turn has carried one (F149), on a prompt that `Gpt_5_5_Reasoning` reasoned about on both
+transports. Does the web client show one for GPT-6.2 Sol, and if so, which of its `variants` (261 flags;
+the proxy sends 43 over StreamHub), `optionsSets` or `allowedMessageTypes` turns it on? Probe: capture
+the web client's `chat_request` for a GPT-6.2 Sol turn that shows a chain of thought, then add its extra
+fields to `cot-probe.mjs`'s turn one group at a time. Falsified if the web client shows none either.

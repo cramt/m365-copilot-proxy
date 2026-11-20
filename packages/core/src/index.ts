@@ -101,6 +101,7 @@ export {
 
 export {
   CopilotSession,
+  ChainOfThoughtComposer,
   type CopilotSessionOptions,
   type ChatTurnOptions,
   type NativeActionConfig,
