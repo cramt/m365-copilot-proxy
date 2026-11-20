@@ -235,10 +235,10 @@ There is no `model` parameter. The `tone` string on the chat message picks the m
 | `gpt-5.6-think-deeper` | `Gpt_5_6_Reasoning` | confirmed live 2026-08-06; GPT-5.6 Think deeper |
 | `gpt-5.6` / `gpt-5.6-quick` | `Gpt_5_6_Chat` | "GPT 5.6 Quick response" in the web UI. Live on the **included** scenario since 2026-09-24 — it was entitlement-gated before that (§18), which §12.15 misread as dead |
 | `gpt-6-think-deeper` | `Gpt_6_Reasoning` | GPT-6 Think deeper. Reachable ONLY under `scenario=OfficeWebPaidCopilot` (see below), like Opus — but **not** separately metered. No chat variant: `Gpt_6_Chat` is rejected. Doesn't serve with the tool agent, so its tool requests go agent-less with a user-voice relay framing, `relay_batch` since hypotheses §25 (§22, #41) |
-| `gpt-6-sol` | `Gpt_6_Sol_Reasoning` | "GPT 6.0 Sol" in the web client (not called Think Deeper). Self-IDs as the GPT-6 reasoning model. **Not** gated: serves on the included scenario on every account. Takes the tool agent only on a **premium** account (non-premium: dead route), which the proxy learns at runtime; agent-less it has a sandbox of its own. Default framing `relay_batch` on both paths (hypotheses §23, §28, #23). `Gpt_6_Sol_Chat` is accepted but serves the GPT-5 chat model, so it isn't mapped |
-| `gpt-6.1-sol` | `Gpt_61_Sol_Reasoning` | "GPT-6.1 Sol" in the web client. Self-IDs as the GPT-6 reasoning model. Serves on the included scenario on every account; the paid scenario serves it too but spends the `GPT61Sol*` budget (40/day, 75/week), so the proxy stays on the included one. Like `gpt-6-sol`, it serves with the tool agent attached only on a **premium** account (non-premium: dead route, so the proxy goes agent-less there), and agent-less it has the same kind of sandbox, though unlike `gpt-6-sol` it stays out of it under the user-voice framings (hypotheses §29). Default framing `relay_batch` on both paths (hypotheses §27). Every sibling (`Gpt_61_Sol`, `Gpt_61_Sol_Chat`, `Gpt_61_Reasoning`, `Gpt_61_Chat`, `Gpt_61`) is rejected |
+| `gpt-6-sol` | `Gpt_6_Sol_Reasoning` | "GPT 6.0 Sol" in the web client (not called Think Deeper). Self-IDs as the GPT-6 reasoning model. **Not** gated on a premium account: serves on the included scenario there. A non-premium account is refused it by licence (`PremiumModelUnavailableForLicense`, hypotheses §49 F146), where it served on 2026-10-07 (§29). Takes the tool agent only on a **premium** account (non-premium: dead route, before the licence refusal), which the proxy learns at runtime; agent-less it has a sandbox of its own. Default framing `relay_batch` on both paths (hypotheses §23, §28, #23). `Gpt_6_Sol_Chat` is accepted but serves the GPT-5 chat model, so it isn't mapped |
+| `gpt-6.1-sol` | `Gpt_61_Sol_Reasoning` | "GPT-6.1 Sol" in the web client. Self-IDs as the GPT-6 reasoning model. Serves on the included scenario on a premium account (a non-premium account is refused it by licence, `PremiumModelUnavailableForLicense`, hypotheses §49 F146); the paid scenario serves it too but spends the `GPT61Sol*` budget (40/day, 75/week), so the proxy stays on the included one. Like `gpt-6-sol`, it serves with the tool agent attached only on a **premium** account (non-premium: dead route, so the proxy goes agent-less there), and agent-less it has the same kind of sandbox, though unlike `gpt-6-sol` it stays out of it under the user-voice framings (hypotheses §29). Default framing `relay_batch` on both paths (hypotheses §27). Every sibling (`Gpt_61_Sol`, `Gpt_61_Sol_Chat`, `Gpt_61_Reasoning`, `Gpt_61_Chat`, `Gpt_61`) is rejected |
 | `gpt-6.2-sol` | `Gpt_62_Sol_Reasoning` | "GPT-6.2 Sol" in the web client (since 2026-11-17; picking it sends this tone and no other model field). Self-IDs as the GPT-6 reasoning model, as in the web client. Serves on the included scenario (2026-11-18, n=1) and over StreamHub; the paid scenario's metering carries `GPT62SolQuery*` budgets, so the proxy stays on the included one, like `gpt-6.1-sol`. Default framing `relay_batch`, unbenched (hypotheses §45) |
-| `gpt-6.2-astra` | `Gpt_62_Astra_Reasoning` | "GPT-6.2 Astra" in the web client, marked "Uses credits": every StreamHub turn reports a `billing_info` charge to the user's Copilot credits (`PremiumModelsInM365Chat`, `creditInUse`). Otherwise routed like `gpt-6.2-sol` (`GPT62AstraQuery*` budgets on the paid scenario). The near misses `Gpt_61_Astra_Reasoning`, `Gpt_62_Luna_Reasoning` and `Gpt_63_Astra_Reasoning` are rejected (hypotheses §45) |
+| `gpt-6.2-astra` | `Gpt_62_Astra_Reasoning` | "GPT-6.2 Astra" in the web client, marked "Uses credits": its StreamHub turns reported a `billing_info` charge to the user's Copilot credits (`PremiumModelsInM365Chat`, `creditInUse`) on Nov 17–18, and none on Nov 20 (hypotheses §49 F143). Otherwise routed like `gpt-6.2-sol` (`GPT62AstraQuery*` budgets on the paid scenario). The near misses `Gpt_61_Astra_Reasoning`, `Gpt_62_Luna_Reasoning` and `Gpt_63_Astra_Reasoning` are rejected (hypotheses §45) |
 | `gpt-6-astra` | `Gpt_6_Astra_Reasoning` **+ paid scenario** | GPT-6 Astra, also billed to Copilot credits. Gated like `Gpt_6_Reasoning`: the BotConnection apology on the included scenario, served on the paid one and over StreamHub (2026-11-18, n=1). The web client's picker replaced it with GPT-6.2 Astra on 2026-11-17 (hypotheses §45) |
 | `gpt-5.4` / `gpt-5.4-think-deeper` | `Gpt_5_4_Reasoning` | |
 | `gpt-5.4-quick` | `Gpt_5_4_Chat` | was `Gpt_5_4_Quick` (retired) |
@@ -289,7 +289,9 @@ Two things worth separating, because conflating them wastes probes:
 - **`scenario` is the lever.** Flipping it to `OfficeWebPaidCopilot` is what makes `Claude_Opus` serve a real answer instead of the canned BotConnection apology. This also rewrites the old F23 reading of "Opus is a dead tone, 0/3": that measurement was taken on the included scenario, where the observation was correct and the conclusion wasn't. (On a premium account the included scenario has served a different model there since October 2026, Opus 4.8: hypotheses §36.)
 - **`licenseType` is not.** `Premium` is simply the value the paid scenario travels with; setting `licenseType` alone does **not** grant access to different models. We send the pair for coherence with the real client, not because both halves do work.
 
-This is an entitlement, not a bypass: the account has to actually hold the paid/premium access. On a seat that doesn't, the paid scenario is refused outright: the final item carries `result.value: "ForbiddenRequest"`, `errorCode: "InvalidCopilotLicense"`, and a BotConnection reply *"It looks like you don't have a valid licence. To get access, please check with your administrator…"* (~2.5 s). It is about the account, not the tone: `Gpt_5_6_Chat`, `Claude_Sonnet` and `Claude_Opus` were all refused this way (6/6 across two runs, agent attached, 2026-10-01; hypotheses §22 F46), and `Gpt_5_6_Chat` serves on the same account under the included scenario. One exception: with the agent attached, `Gpt_6_Reasoning` returns its dead-route `InternalError` instead (2/2), so an `InternalError` on the paid scenario doesn't prove the account is licensed. The licence refusal is a different wire state from the dead route's `InternalError` + "Sorry, I wasn't able to respond to that". The proxy has no handling for it yet.
+This is an entitlement, not a bypass: the account has to actually hold the paid/premium access. On a seat that doesn't, the paid scenario is refused outright: the final item carries `result.value: "ForbiddenRequest"`, `errorCode: "InvalidCopilotLicense"`, and a BotConnection reply *"It looks like you don't have a valid licence. To get access, please check with your administrator…"* (~2.5 s). It is about the account, not the tone: `Gpt_5_6_Chat`, `Claude_Sonnet` and `Claude_Opus` were all refused this way (6/6 across two runs, agent attached, 2026-10-01; hypotheses §22 F46), and `Gpt_5_6_Chat` serves on the same account under the included scenario. One exception: with the agent attached, `Gpt_6_Reasoning` returns its dead-route `InternalError` instead (2/2), so an `InternalError` on the paid scenario doesn't prove the account is licensed. The licence refusal is a different wire state from the dead route's `InternalError` + "Sorry, I wasn't able to respond to that". The proxy has no handling for it yet. A non-premium seat is refused the same way under `officeweb`, StreamHub's scenario, on either transport (hypotheses §49 F145).
+
+**A non-premium seat is also refused by model.** On the included scenario, the one it can use, a non-premium account is refused the Claude tones (`Claude_Sonnet`, `Claude_Sonnet_5`, `Claude_Reasoning`, `Claude_Opus`, `Claude_Fable`) with `result.value: "ForbiddenRequest"`, `errorCode: "ClaudeUnavailableForLicense"` ("Claude isn't available with your current license. Choose another model and try again.") and the GPT-6.x tones (`Gpt_6_Reasoning`, `Gpt_6_Sol_Reasoning`, `Gpt_6_Sol_Chat`, `Gpt_61_Sol_Reasoning`, `Gpt_62_Sol_Reasoning`, `Gpt_62_Astra_Reasoning`, `Gpt_6_Astra_Reasoning`) with `PremiumModelUnavailableForLicense` ("This model requires a Premium license…"), in 0.5–2.5 s, on both transports, agent-less or with the tool agent. On Chathub the refusal is only in the final `result`; StreamHub ends the turn at a `request_end` carrying it (§13). That leaves `magic` and the GPT-5.5 and GPT-5.6 tones. The refusals were recorded on another tenant on 2026-11-03 (open PR #99), on a non-premium account on 2026-11-06, and on 2026-11-20 on every non-premium account probed (hypotheses §49 F146). The proxy has no handling for them either: on Chathub it reads the turn as empty, re-sends "Please continue." twice and answers 502.
 
 **The gate is not a budget.** Opus is both entitlement-gated *and* metered by priority access (below), and while it was the only paid-scenario tone those two properties were indistinguishable — it was easy to read "paid scenario" as shorthand for "scarce". `Gpt_6_Reasoning` separates them: same gate, no priority-access allowance, throttled by the ordinary per-conversation cap and thread-rate governor like everything else. Sonnet 5 (`Claude_Sonnet_5`) is the same, and Sonnet 5.5 (`Claude_Sonnet` @ paid) is metered like Opus. So membership of `PAID_SCENARIO_TONES` says what a tone needs to *reach* a model and nothing about what it costs once it does. Downstream code should not infer one from the other — the metered models are listed on their own (`meteredBudgetOf`), the priority-access detector keys on `OutOfCredits` (so it simply never fires for GPT-6), and the framing default is decided per model (`defaultFramingForModel`). Opus and GPT-6 both end up on user-voice relays, for unrelated reasons: on Opus the `<system>`-tagged framings trip the jailbreak classifier and its budget counts turns, hence `relay_batch` (hypotheses §24 F56, F60); GPT-6 runs agent-less, next to M365's code interpreter, hence a relay (§22 F47) — batched, as `relay_batch`, since it cut a third of its turns without sending it to that sandbox (§25 F61).
 
@@ -758,7 +760,11 @@ wss://substrate.svc.cloud.microsoft/m365Copilot/StreamHub/{oid}@{tid}?{query}
 
 with the same SignalR JSON protocol, `0x1E` separators and Sydney token (`access_token=` in the
 query). The proxy sends a turn this way under `M365_TRANSPORT=streamhub` (`getTransport`,
-`session.ts`). Observed 2026-11-11 on a premium account; hypotheses §40.
+`session.ts`), and so does the probe helper `scripts/_probe-chat.mjs`, under the same variable or
+with `transport: "streamhub"`. Observed 2026-11-11 on a premium account; hypotheses §40. A non-premium
+account is refused under the `officeweb` scenario on either transport (`InvalidCopilotLicense`, §5),
+whatever the model, and served under `OfficeWebIncludedCopilot`, which `M365_SCENARIO` selects for the
+proxy and the probes (hypotheses §49 F145).
 
 **Query string** (the client's order): `chatsessionid`, `XRoutingParameterSessionKey` (the user's `oid`:
 a browser can't set the Chathub header), `clientrequestid`, `X-SessionId`, `disableMemory=1` for a
@@ -790,7 +796,9 @@ Headers: `Origin: https://copilot.cloud.microsoft` and a browser `User-Agent`.
 - `chatStreamRequest` is Chathub's chat argument, reshaped: `conversationId` and `requestId` move in,
   `streamingMode: "ConciseV2"`, `clientInfo.clientPlatform: "ccmcopilot-web"` (also inside `message`),
   `gpts: [{id: "bizchat-as-gpt-scenario", source: "BuiltInAgents"}]`, plus the usual `optionsSets`,
-  `allowedMessageTypes`, `plugins`, `tone`. An unknown tone is rejected as a note (below).
+  `allowedMessageTypes`, `plugins`, `tone`. An unknown tone is rejected as a note (below). A declarative
+  agent in place of the built-in one (a MOS3 `gpts` entry and `threadLevelGptId`, as on Chathub) isn't
+  applied: the turn is answered as plain chat (hypotheses §49 F144).
 - Stop: `{"type":"stop","topicId":"/conversations/<cid>","turnId":"<requestId>","requestId":"<requestId>","reason":"ClientRequested"}`
   as an item on stream `"0"`.
 
@@ -798,11 +806,11 @@ Headers: `Origin: https://copilot.cloud.microsoft` and a browser `User-Agent`.
 
 | item | carries |
 |---|---|
-| `network_info` | the client's IP prefix |
+| `network_info` | the client's IP prefix (none came on Nov 20, hypotheses §49 F141) |
 | `request_pending`, `request_start` | the echoed user message; the turn started |
 | `message_part` | `argument` = what a Chathub `update` invocation carried (below) |
 | `answer_complete` | the answer is done |
-| `request_end` | `outcome.category`: `Success`, or e.g. `InvalidRequest` with `code: "InputTokenLimitExceeded"`, `message`, `error` (the server exception) |
+| `request_end` | `outcome.category`: `Success`, or e.g. `InvalidRequest` with `code: "InputTokenLimitExceeded"`, `message`, `error` (the server exception). A model the account isn't licensed for (§5) ends the turn at `request_end` alone, with no `message_part`: `ForbiddenRequest`, `code: "ClaudeUnavailableForLicense"` or `"PremiumModelUnavailableForLicense"`, the refusal in `message` (hypotheses §49 F146) |
 | `error` | a rejected note: `errorCategory: "InvalidRequest"`, `errorCode: "InvalidNote"` (an unknown tone). No `request_end` follows; the server holds the socket ~120 s, then a type-7 close |
 
 `message_part.argument` shapes:
@@ -885,11 +893,19 @@ a model outside it was refused: `POST /v1/messages` → 400 `{"detail": {"type":
 "model": …}}` (hypotheses §48 F137). `GET /v1/entitlement`: `{budget, consumed, remaining}`. `GET
 /v1/tasks`: the sidebar's tasks, both tabs. `GET /v1/tasks/live/detail?sessionId=<key>`: a task's
 `snapshot.costCredits` (all its charges, `costFullyCounted`) and `activeModel`. `DELETE
-/v1/conversations/<key>`: 204, and the task leaves the sidebar (the web app's `tasks.delete`). No stop
+/v1/conversations/<key>`: 204, and the task leaves the sidebar (the web app's `tasks.delete`), with only
+the auth headers; with the message's `x-conversation-id` and `x-container-config` too it answered 400 and
+the task stayed (hypotheses §48 F140). There's no temporary mode: every conversation stays listed, in the
+Copilot app's Recent list too, until it's deleted, and an open app keeps listing a deleted one until it
+reloads. Projects: `POST /v1/projects` `{title, instructions, tags}` creates one (its ID a Teams thread ID),
+and `POST /v1/projects/<id>/tasks` `{conversationId}` binds a conversation to it (`DELETE …/tasks/<id>`
+unbinds); a project's tasks leave Recent, but only on the app's next load. `X-Experience-Id` (set at
+creation) takes `tasks` and `cowork`, which the app shows alike. No stop
 call turned up: closing the stream leaves the run going, and the next message queues behind it.
 
 **What a turn holds** (needle probes, one turn each, hypotheses §48 F133): the GPT models answered 2.0M
-characters (~806k tokens), and GPT-6.2 Sol (`gpt-6.2-sol-substrate`) refused 2.5M (~1.0M) and 3.0M (H48a);
+characters (~806k tokens), and GPT-6.2 Sol (`gpt-6.2-sol-substrate`) answered 885,233 o200k tokens and
+refused 891,591, on Cowork and Code alike, as GPT-6.2 Astra and Sol Fast refused 891,591 (H48a);
 Opus 5.5 and Sonnet 5.5 answered 1.6M (~645k), and Sonnet 5.5 refused 2.0M with `engine.v2_refusal`.
 Chat's GPT-6.x reads about 272k (§47).
 

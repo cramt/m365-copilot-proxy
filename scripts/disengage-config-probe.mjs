@@ -34,13 +34,13 @@ for (const v of VARIANTS) {
   for (let i = 0; i < REPEAT; i++) {
     const r = await oneTurn({ token, claims, text: v.text, agentId: null, tone: "magic" });
     const dea = r.scores?.dea_violation;
-    rows.push({ key: v.key, disengaged: r.disengaged, dea, origin: r.contentOrigin, mtypes: r.messageTypes.join("|"), err: r.error });
-    console.log(`  ${v.key.padEnd(18)} #${i + 1}  disengaged=${r.disengaged}  dea=${dea ?? "?"}  origin=${r.contentOrigin ?? "?"}  ${r.error ? "ERR:" + r.error : ""}`);
+    rows.push({ key: v.key, transport: r.transport, disengaged: r.disengaged, dea, origin: r.contentOrigin, mtypes: r.messageTypes.join("|"), err: r.error });
+    console.log(`  ${v.key.padEnd(18)} #${i + 1}  transport=${r.transport}  disengaged=${r.disengaged}  dea=${dea ?? "?"}  origin=${r.contentOrigin ?? "?"}  ${r.error ? "ERR:" + r.error : ""}`);
     await sleep(COOLDOWN_MS);
   }
 }
 
-console.log("\n[f17] === SUMMARY (disengaged count / n, max dea_violation) ===");
+console.log(`\n[f17] === SUMMARY (disengaged count / n, max dea_violation; transport=${[...new Set(rows.map((r) => r.transport))].join("+")}) ===`);
 const byKey = {};
 for (const r of rows) {
   (byKey[r.key] ??= { n: 0, dis: 0, deas: [] });

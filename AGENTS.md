@@ -99,7 +99,15 @@ hypothesis that teaches us something.
 - **Probes live in `scripts/`** — small, single-purpose, read-mostly. Reuse
   `scripts/_probe-chat.mjs` (one M365 turn in → structured result out; supports
   `optionsSets` / `extraAllowed` / `plugins` / `variants` / `tone` / agent
-  overrides) and copy an existing probe rather than starting from scratch.
+  overrides; Chathub by default, StreamHub with `transport: "streamhub"` or
+  `M365_TRANSPORT=streamhub`, as for the proxy) and copy an existing probe rather
+  than starting from scratch. Record the result's `transport` with every turn a
+  probe saves or prints: the variable changes it without a change to the probe.
+  A probe that sets its own scenario, `variants` or `streamingMode` sends the
+  proxy's values over StreamHub (`getStreamHubScenario()`, `streamhub11`,
+  `ConciseV2`): the proxy doesn't use Chathub's included/paid split there. A non-premium account is
+  refused under that pair (`officeweb`, `InvalidCopilotLicense`): there, run StreamHub probes with
+  `M365_SCENARIO=OfficeWebIncludedCopilot`, which the helper's own default reads too.
 - **Quantify with the benchmark** — `scripts/bench/` (Terminal-Bench-style) scores
   real agentic coding tasks objectively, executing every tool call in a
   `--network none` Docker sandbox. To compare *any* lever (tool format, model/tone,
@@ -176,7 +184,7 @@ pnpm test:live      # M365_LIVE=1; live tests that hit real M365 (uses quota)
   prompt, and this note used to say they don't work with the agent at all. They do: GPT-5.5 Think Deeper
   tool-calls with the agent under baseline, and GPT-5.6 Think Deeper under the user-voice framings
   (`relay_batch` by default). Under baseline 5.6 gave up on file-producing turns (runs with a give-up turn
-  12/14, relay 0/14, relay_batch 0/8, §49 F140): on the agent path
+  12/14, relay 0/14, relay_batch 0/8, §50 F149): on the agent path
   M365's own instructions say file generation is disabled, and baseline's `<system>`-tagged block says
   create the file. When a reasoning tone refuses, read its chain-of-thought frames before blaming the
   tone. What still holds: the model can't be bound to our (declarative `minimalBots`) agent type as its
@@ -273,7 +281,10 @@ pnpm test:live      # M365_LIVE=1; live tests that hit real M365 (uses quota)
   `relay_batch` (20/20 at a third fewer turns, 10/10 in real pi). See docs/hypotheses.md §22, §25.
 - **Some tones take the agent only on a premium account — and nothing on the token says which
   account this is.** `Gpt_6_Sol_Reasoning` (`gpt-6-sol`) serves with the agent on a premium account
-  and is the dead route (`InternalError`) on a non-premium one. It is in `PREMIUM_ONLY_AGENT_TONES`:
+  and is the dead route (`InternalError`) on a non-premium one. By November a non-premium account is
+  refused the model itself, agent or not, on either transport (`PremiumModelUnavailableForLicense`;
+  Claude tones `ClaudeUnavailableForLicense`), which the proxy reads as an empty turn: two "Please
+  continue." retries, then a 502 (docs/hypotheses.md §49 F146). It is in `PREMIUM_ONLY_AGENT_TONES`:
   the first tool request carries the agent, and the handler turns a no-content `InternalError` into
   "this account isn't premium" (`noteAgentRouteDead`, process-lifetime) and re-sends agent-less —
   unless the agent already answered for that tone (`noteAgentRouteAlive`): premium accounts emit the
@@ -328,8 +339,12 @@ pnpm test:live      # M365_LIVE=1; live tests that hit real M365 (uses quota)
   follow the runtime's live catalog (`runtimeCatalog`), which dropped every GPT model on Nov 19 2026 and
   refuses what it doesn't list (§48 F137). The handler skips Chat's machinery there: turn budget,
   degradation backoff, tool agent, priority access, the Bing fallback, parts (`turnLimit` 0) and the 12k
-  output ceiling. The runtime keeps the history; a turn ends at `rl ok`/`fail`, and the proxy deletes
-  conversations it leaves (five minutes on). Windows in the IDs are one needle turn each (§48). The Code
+  output ceiling. The runtime keeps the history; a turn ends at `rl ok`/`fail`. Its conversations show in
+  the user's Copilot app until deleted (no temporary mode), so the proxy deletes the ones it leaves (five
+  minutes on), drops idle ones after 30 minutes (`M365_RUNTIME_CONVERSATION_TTL_MINUTES`, a timer), and at
+  startup deletes those a stopped proxy left (`runtime-ledger.ts`); never anything it didn't open. A failed
+  request's retry goes into a fresh conversation: the runtime keeps a message once posted (§48 F140).
+  Windows in the IDs are one needle turn each (§48). The Code
   tab's local sessions ("Long context") run on Office's LLM API, which the proxy's app isn't consented
   for (§48 F136); don't work around that. A runtime turn with no text is a 502 `runtime_no_reply`, never
   Chat's "Please continue.": Code's agent works in its own workspace, and each retry re-ran a
