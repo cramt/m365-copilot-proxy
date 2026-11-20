@@ -122,6 +122,8 @@ than "we eyeballed one run." See §M (Methods) for the experimental rig.
   changes and refuses what it doesn't list (F137); GPT-6.2 Sol takes 885k tokens in a message, not 892k, and its
   turns are now almost free (H48a); Code turns are charged and the monthly budget counts them (F138); Code's
   agent works in its own workspace, and slow turns met Codex's 5-minute timeout (F139)
+- §50 — a "<" at the head of a message came out twice: `TurnTextComposer` drops a restated leading `"<"`
+  after a cursor or StreamHub restart (F149)
 
 ---
 
@@ -6822,3 +6824,25 @@ and the text was there once: no F107 re-send, up to 5,418 characters. A Chathub 
 unchanged (`Success`, 4.8 s). No `network_info` item came in the 15 StreamHub turns whose item types
 were recorded. F142's other half, `Claude_Sonnet_5`'s sandbox (`sonnet5-native-tools-probe`, `pwd-none`),
 can't run on a non-premium account: it is refused by licence.
+
+---
+
+## 50. Oct 5 2026 — Doubled leading `<` in `TurnTextComposer`
+
+Follow-up from the Oct 5 real-pi sweep (#70 split into standalone PRs).
+
+### F149 — a "<" at the head of a message came out twice 🟢
+In the 5.5 sweep three baseline answers began `<<notlar.pdf>`, `<<notlar.docx>`,
+`<<document>notlar.docx</document>`. M365 sent the snapshot `"<"` with the message's cursor and then
+the delta `"<document"`: it holds a leading `<` back until it knows the tag, so the first delta
+restates the head. `TurnTextComposer` appended it, and the final snapshot, one character shorter than
+the doubled text, never replaced it (`foldStreamText` ignores a shorter snapshot). Across the Oct 2–5
+debug logs every cursor has `p: -1`; in 9 of 1,061 cursor frames the first delta restated the
+snapshot, each one a `"<"`.
+
+**Fixed:** the first delta after a cursor (or StreamHub `restart`) replaces a held-back `"<"` head
+when it starts with `"<"`, otherwise appends as before (`afterCursor`). Taken for any head, the rule ate
+a one-character head the delta continues (`"*"` + `"*Summary**"` came out as broken bold, and `` "`" `` +
+`` "``bash" `` as a two-backtick fence); narrowing to `"<"` matches all 9 restated frames while keeping
+markdown continuations intact. On top of StreamHub's `TurnTextComposer`, `run.base` also drops the
+restated `"<"` so `finalText` / `restoreStrippedBrackets` and StreamHub restating cursors stay aligned.
