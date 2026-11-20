@@ -32,6 +32,7 @@ import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { getToken, decodeJwt, getStreamHubScenario, getTransport, parsePriorityAccessExhaustion } from "../packages/core/dist/index.mjs";
 import { oneTurn } from "./_probe-chat.mjs";
+import { isLicenceRefusal } from "./agent-tone-probe.mjs";
 
 const INCLUDED = { scenario: "OfficeWebIncludedCopilot", licenseType: "Starter" };
 const PAID = { scenario: "OfficeWebPaidCopilot", licenseType: "Premium" };
@@ -138,6 +139,13 @@ const claims = decodeJwt(token);
 /** Live / rejected / registered-but-dead — never infer from "no error" alone. */
 function verdict(r) {
   if (r.error) return "REJECTED";
+  // The account isn't licensed for the cell's scenario (`InvalidCopilotLicense`:
+  // a paid or `officeweb` cell on a non-premium account) or for the tone's model
+  // (`ClaudeUnavailableForLicense`, `PremiumModelUnavailableForLicense`, on either
+  // transport): about the account, not the tone. Before the BotConnection check,
+  // which Chathub's scenario refusal would match (hypotheses §49 F145, F146).
+  // agent-tone-probe's rule, tested in probe-chat.test.mjs.
+  if (isLicenceRefusal(r.result)) return "UNLICENSED";
   const text = (r.fullText || "").trim();
   if (!text) return "EMPTY";
   if (parsePriorityAccessExhaustion(text)) return "QUOTA_EXHAUSTED";
@@ -192,6 +200,16 @@ for (const tone of new Set(results.map((r) => r.tone))) {
   if (cells.length > 1 && new Set(cells.map((c) => c.verdict)).size > 1) {
     console.log(`[tone] SCENARIO-SENSITIVE: ${tone} → ${cells.map((c) => `${c.scenario}=${c.verdict}`).join(", ")}`);
   }
+}
+const unlicensed = results.filter((r) => r.verdict === "UNLICENSED");
+const scenarioRefused = [...new Set(unlicensed.filter((r) => r.result?.errorCode === "InvalidCopilotLicense").map((r) => r.scenario))];
+const modelRefused = unlicensed.filter((r) => r.result?.errorCode !== "InvalidCopilotLicense");
+if (scenarioRefused.length) {
+  console.log(`[tone] UNLICENSED: this account can't use ${scenarioRefused.join(", ")} (InvalidCopilotLicense); those cells say nothing about the tone.` +
+    `${TRANSPORT === "streamhub" ? " Over StreamHub, M365_SCENARIO=OfficeWebIncludedCopilot sends the included scenario." : ""}`);
+}
+if (modelRefused.length) {
+  console.log(`[tone] UNLICENSED: this account's licence doesn't cover ${modelRefused.map((r) => `${r.tone} (${r.result.errorCode})`).join(", ")}.`);
 }
 console.log(`[tone] NOTE: a non-empty reply is not proof — only contentOrigin "DeepLeo" is (§12.15).`);
 console.log(`[tone] out: ${OUT}`);

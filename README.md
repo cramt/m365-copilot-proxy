@@ -323,8 +323,8 @@ without NixOS: `nix run github:cramt/m365-copilot-proxy -- 4141`.
 | Model ID | M365 Tone | Description |
 |---|---|---|
 | `gpt-6-think-deeper` | Gpt_6_Reasoning | GPT-6 reasoning. **Needs a paid/premium Copilot seat** (see below); 30/30 on the bench (agent-less, `relay` framing). Defaults to `relay_batch`: 20/20 at 2.1 turns per task (relay: 3.2), 10/10 driving real pi |
-| `gpt-6-sol` | Gpt_6_Sol_Reasoning | GPT-6 Sol ("GPT 6.0 Sol" in the web UI). **Works on every account**, no paid seat needed; uses the tool agent only on a premium account (see below). Defaults to `relay_batch`: 40/40 on the bench with the agent, 60/60 without, 30/30 driving real pi, at 2.1 turns per bench task either way |
-| `gpt-6.1-sol` | Gpt_61_Sol_Reasoning | GPT-6.1 Sol ("GPT-6.1 Sol" in the web UI). **Works on every account**, and uses the tool agent only on a premium account, like `gpt-6-sol`. Defaults to `relay_batch`: 40/40 on the bench, 30/30 driving real pi, at 2.7 turns per bench task with the agent and 2.2 without, and without the agent it keeps out of its sandbox, which `gpt-6-sol` doesn't always (see below) |
+| `gpt-6-sol` | Gpt_6_Sol_Reasoning | GPT-6 Sol ("GPT 6.0 Sol" in the web UI). Needs no paid scenario, but **a premium account**: a non-premium one is refused it by licence ([hypotheses §49 F146](docs/hypotheses.md)). Uses the tool agent (see below). Defaults to `relay_batch`: 40/40 on the bench with the agent, 60/60 without, 30/30 driving real pi, at 2.1 turns per bench task either way |
+| `gpt-6.1-sol` | Gpt_61_Sol_Reasoning | GPT-6.1 Sol ("GPT-6.1 Sol" in the web UI). Like `gpt-6-sol`: **a premium account** (a non-premium one is refused it by licence), and the tool agent. Defaults to `relay_batch`: 40/40 on the bench, 30/30 driving real pi, at 2.7 turns per bench task with the agent and 2.2 without, and without the agent it keeps out of its sandbox, which `gpt-6-sol` doesn't always (see below) |
 | `gpt-6.2-sol` | Gpt_62_Sol_Reasoning | GPT-6.2 Sol ("GPT-6.2 Sol" in the web UI, since 2026-11-17). Serves on the included scenario. Defaults to `relay_batch`, not yet benched; Codex 3/3 over StreamHub ([hypotheses §45](docs/hypotheses.md)) |
 | `gpt-6.2-astra` | Gpt_62_Astra_Reasoning | GPT-6.2 Astra (marked "Uses credits" in the web UI): **its turns are charged to the user's Copilot credits.** Serves on the included scenario. Defaults to `relay_batch`, not yet benched |
 | `gpt-6-astra` | Gpt_6_Astra_Reasoning (paid scenario) | GPT-6 Astra, also charged to Copilot credits. **Needs a paid/premium Copilot seat**: the included scenario gives M365's canned apology. The web UI replaced it with GPT-6.2 Astra on 2026-11-17. Defaults to `relay_batch`, not yet benched |
@@ -417,8 +417,9 @@ no entitlement: making GPT-6 the default would hand most seats a model they can'
 
 The web client calls it **"GPT 6.0 Sol"**; the tone is `Gpt_6_Sol_Reasoning` and it identifies
 itself as the GPT-6 reasoning model. Unlike `gpt-6-think-deeper` it is **not** entitlement-gated: it
-serves on the default included scenario on premium and non-premium accounts alike, so the proxy
-sends nothing special for it.
+serves on the default included scenario, so the proxy sends nothing special for it. It needs a
+premium account now: a non-premium account, where it served in October, is refused it by licence
+("This model requires a Premium license"), on either transport ([hypotheses §49 F146](docs/hypotheses.md)).
 
 **The tool agent depends on the account.** With the Copilot Studio tool agent attached, GPT-6 Sol
 serves on a premium (paid Copilot) account and returns a canned apology on a non-premium one.
@@ -444,8 +445,9 @@ than `relay` (an earlier, smaller run suggested it did; the retest found no diff
 
 The web client calls it **"GPT-6.1 Sol"**; the tone is `Gpt_61_Sol_Reasoning`, and like GPT-6 Sol it
 identifies itself as the GPT-6 reasoning model. It is routed exactly like `gpt-6-sol`: the default
-included scenario, which serves it on premium and non-premium accounts alike, and the tool agent
-only on a premium account, which the proxy learns from the first tool request (see above).
+included scenario, which serves it on a premium account (a non-premium one is refused it by licence,
+as for GPT-6 Sol), and the tool agent only on a premium account, which the proxy learns from the
+first tool request (see above).
 
 **It has a separate allowance, which the proxy doesn't use.** The paid scenario serves it too, but
 every paid turn spends a GPT-6.1 Sol allowance of 40 turns a day and 75 a week, the size of Opus
@@ -555,7 +557,14 @@ Override with `M365_FRAMING_VARIANT` as usual. Details: [hypotheses §24, §36](
 
 The new web client (`copilot.cloud.microsoft`) reaches Copilot over a second WebSocket, StreamHub.
 The proxy speaks both: `M365_TRANSPORT=streamhub` sends every model over StreamHub, under the web
-client's own `officeweb` scenario and without the tool agent (it hasn't been tried there).
+client's own `officeweb` scenario and without the tool agent (sent there, it isn't applied:
+[hypotheses §49 F144](docs/hypotheses.md)).
+
+**A non-premium account needs the included scenario there.** Under `officeweb` it is refused,
+whatever the model, and the proxy passes the refusal on as the answer ("It looks like you don't have
+a valid license…"). With `M365_SCENARIO=OfficeWebIncludedCopilot` StreamHub serves it, and of the
+models probed, the same ones as Chathub: `m365-copilot` and the GPT-5.5 and GPT-5.6 models. Every
+Claude and GPT-6.x model is refused on either transport ([hypotheses §49 F145, F146](docs/hypotheses.md)).
 
 That switch is for accounts whose Chathub refuses GPT-6.x: on the test account, `gpt-6-think-deeper`,
 `gpt-6-sol`, `gpt-6.1-sol` and `gpt-5.5-think-deeper` answered every prompt with
@@ -796,7 +805,7 @@ not an exemption from your organization's Conditional Access policy.
 | `M365_OPUS_FALLBACK_MODEL` | Model to serve `claude-opus` (Opus 5.5) requests with once its priority-access budget is used up, instead of returning a 429 — typically `claude-opus-4.8`, which isn't metered (premium accounts only). Applies until the budget resets; the response's `model` field names the model that answered. Unset by default. |
 | `M365_SONNET_FALLBACK_MODEL` | The same for `claude-sonnet-5.5` (Sonnet 5.5) once its priority-access budget is used up — e.g. `claude-sonnet-5` (unmetered) or `claude-sonnet` (Sonnet 4.6, any account). A fallback naming a metered model is ignored. Unset by default. |
 | `M365_SCENARIO` / `M365_LICENSE_TYPE` | Override the entitlement the WebSocket is opened under (defaults: `OfficeWebIncludedCopilot` / `Starter`, switching to `OfficeWebPaidCopilot` / `Premium` for the entitlement-gated models — `claude-opus`, `gpt-6-think-deeper`, `claude-sonnet-5` and `claude-sonnet-5.5`; `claude-opus-4.8` and `gpt-6.1-sol` stay on the included one). `scenario` is what gates the model list (and picks Sonnet 4.6 vs 5.5 for the `Claude_Sonnet` tone, Sonnet 4.6 vs 5 for `Claude_Sonnet_5`, Opus 4.8 vs 5.5 for `Claude_Opus`); `licenseType` rides along and unlocks nothing by itself. Forcing the paid scenario on `gpt-6.1-sol` spends its separate GPT-6.1 Sol allowance (40 turns a day, 75 a week), which the proxy doesn't track. |
-| `M365_TRANSPORT` | `streamhub` sends every model over StreamHub, the new web client's WebSocket (`copilot.cloud.microsoft`), under its `officeweb` scenario and without the tool agent; unset, every model uses Chathub. For accounts whose Chathub refuses GPT-6 (`InputTokenLimitExceeded` on any prompt). Under it the scenario no longer picks between models: `claude-sonnet` is Sonnet 5.5 there. See [StreamHub](#streamhub-the-new-web-clients-transport). |
+| `M365_TRANSPORT` | `streamhub` sends every model over StreamHub, the new web client's WebSocket (`copilot.cloud.microsoft`), under its `officeweb` scenario and without the tool agent; unset, every model uses Chathub. For accounts whose Chathub refuses GPT-6 (`InputTokenLimitExceeded` on any prompt). Under it the scenario no longer picks between models: `claude-sonnet` is Sonnet 5.5 there. A non-premium account needs `M365_SCENARIO=OfficeWebIncludedCopilot` with it: `officeweb` refuses it every model, and the included scenario serves it no more models than Chathub does. See [StreamHub](#streamhub-the-new-web-clients-transport). |
 | `M365_BACKENDS` | Comma list of the backends whose models `/v1/models` lists and requests may name: `chat`, `cowork`, `code` (default: all three). Cowork and Code run on Copilot's agent runtime and **charge every turn to your Copilot credits**; `M365_BACKENDS=chat` keeps a proxy off them, and a request naming one that isn't listed then gets a 400. Chat requests are always served. See [Backends](#backends-chat-cowork-and-code). |
 | `M365_DEFAULT_BACKEND` | Where a model ID without a `(backend)` goes when that backend is in `M365_BACKENDS` and serves the model (default `chat`). `cowork` moves `claude-sonnet-5.5` and the other runtime models there; every other ID stays on Chat. |
 | `M365_AETHER_ENDPOINT` | The agent runtime's endpoint for `cowork` and `code`. Unset, the proxy asks the runtime's routing service once per process. |

@@ -15,7 +15,10 @@
 //   REGISTERED_BUT_DEAD  BotConnection apology — the route serves nothing
 //   UNLICENSED           result ForbiddenRequest/InvalidCopilotLicense — this
 //                        ACCOUNT can't use the cell's scenario at all (a paid
-//                        cell on a non-premium account). Says nothing about the
+//                        or `officeweb` cell on a non-premium account); or
+//                        …/ClaudeUnavailableForLicense or
+//                        …/PremiumModelUnavailableForLicense — its licence
+//                        doesn't cover the tone's model. Says nothing about the
 //                        agent; run the cell on a premium account
 //   AGENT_DROPPED        a real answer, but not tagged 3PDeclarativeAgent —
 //                        something other than our agent handled the turn
@@ -181,6 +184,14 @@ function identityMismatch(id, want) {
   return null;
 }
 
+/**
+ * A licence refusal, on either transport: the account isn't licensed for the
+ * cell's scenario (`InvalidCopilotLicense`) or for the tone's model
+ * (`ClaudeUnavailableForLicense`, `PremiumModelUnavailableForLicense`; hypotheses
+ * §49 F145, F146). Its text is the refusal, not a reply.
+ */
+export const isLicenceRefusal = (result) => /^(InvalidCopilotLicense|\w+UnavailableForLicense)$/.test(result?.errorCode ?? "");
+
 /** Turn-level outcome, before any question of identity. */
 export function outcome(t) {
   if (t.error === "timeout") return "TIMEOUT";
@@ -188,7 +199,7 @@ export function outcome(t) {
   if (t.result?.value === "Throttled") return "THROTTLED";
   // Before the BotConnection check: the licence refusal ALSO comes from
   // BotConnection, but it's about the account, not the route (§22).
-  if (t.result?.errorCode === "InvalidCopilotLicense") return "UNLICENSED";
+  if (isLicenceRefusal(t.result)) return "UNLICENSED";
   const text = t.reply.trim();
   if (!text) return t.disengaged ? "DISENGAGED" : "EMPTY";
   if (parsePriorityAccessExhaustion(text)) return "QUOTA_EXHAUSTED";
@@ -298,7 +309,9 @@ export function summarize({ account, baseline: ranBaseline, results }) {
     if (r.tone === CONTROL_TONE) continue;
     const b = bucket(r.verdict);
     const misnamed = r.toneMisnamed ? ` — tone itself serves ${r.toneMisnamed} agent-less (not the agent's doing)` : "";
-    out.push(`  ${b.padEnd(14)} ${`${r.tone} @ ${r.agent.scenario}`.padEnd(52)} ${["SUPPORTED", "UNLICENSED"].includes(b) ? "" : r.verdict}${describeId(r.agent.id)}${misnamed}`.trimEnd());
+    // An UNLICENSED reply is the refusal ("Claude isn't available…"): no self-ID.
+    const id = b === "UNLICENSED" ? "" : describeId(r.agent.id);
+    out.push(`  ${b.padEnd(14)} ${`${r.tone} @ ${r.agent.scenario}`.padEnd(52)} ${["SUPPORTED", "UNLICENSED"].includes(b) ? "" : r.verdict}${id}${misnamed}`.trimEnd());
   }
   // A cell this account isn't licensed for can't differ "by scenario" in any
   // sense that matters to the agent, so leave those out of the comparison.
@@ -308,9 +321,14 @@ export function summarize({ account, baseline: ranBaseline, results }) {
       out.push(`[agent-tone] SCENARIO-SENSITIVE: ${tone} → ${cells.map((c) => `${c.agent.scenario}=${c.verdict}`).join(", ")}`);
     }
   }
-  const unlicensed = [...new Set(results.filter((r) => r.verdict === "UNLICENSED").map((r) => r.agent.scenario))];
-  if (unlicensed.length) {
-    out.push(`[agent-tone] UNLICENSED: ${account ?? "this account"} can't use ${unlicensed.join(", ")} at all (InvalidCopilotLicense). Those cells say nothing about the agent; run them on an account that has the licence.`);
+  const refused = results.filter((r) => r.verdict === "UNLICENSED");
+  const scenarioRefused = refused.filter((r) => r.agent.result?.errorCode === "InvalidCopilotLicense");
+  const modelRefused = refused.filter((r) => r.agent.result?.errorCode !== "InvalidCopilotLicense");
+  if (scenarioRefused.length) {
+    out.push(`[agent-tone] UNLICENSED: ${account ?? "this account"} can't use ${[...new Set(scenarioRefused.map((r) => r.agent.scenario))].join(", ")} at all (InvalidCopilotLicense). Those cells say nothing about the agent; run them on an account that has the licence.`);
+  }
+  if (modelRefused.length) {
+    out.push(`[agent-tone] UNLICENSED: ${account ?? "this account"}'s licence doesn't cover ${modelRefused.map((r) => `${r.tone} (${r.agent.result.errorCode})`).join(", ")}. Those cells say nothing about the agent; run them on an account that has the licence.`);
   }
   if (!ranBaseline && results.some((r) => /^(WRONG_MODEL|VERSION_MISMATCH)/.test(r.verdict))) {
     out.push(`[agent-tone] re-run the WRONG_MODEL / VERSION_MISMATCH cells with --baseline to tell an agent override from a misnamed tone.`);
