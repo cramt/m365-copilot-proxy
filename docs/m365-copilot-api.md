@@ -885,11 +885,15 @@ a model outside it was refused: `POST /v1/messages` → 400 `{"detail": {"type":
 "model": …}}` (hypotheses §48 F137). `GET /v1/entitlement`: `{budget, consumed, remaining}`. `GET
 /v1/tasks`: the sidebar's tasks, both tabs. `GET /v1/tasks/live/detail?sessionId=<key>`: a task's
 `snapshot.costCredits` (all its charges, `costFullyCounted`) and `activeModel`. `DELETE
-/v1/conversations/<key>`: 204, and the task leaves the sidebar (the web app's `tasks.delete`). No stop
+/v1/conversations/<key>`: 204, and the task leaves the sidebar (the web app's `tasks.delete`), with only
+the auth headers; with the message's `x-conversation-id` and `x-container-config` too it answered 400 and
+the task stayed (hypotheses §48 F140). There's no temporary mode: every conversation stays listed, in the
+Copilot app's Recent list too, until it's deleted. No stop
 call turned up: closing the stream leaves the run going, and the next message queues behind it.
 
 **What a turn holds** (needle probes, one turn each, hypotheses §48 F133): the GPT models answered 2.0M
-characters (~806k tokens), and GPT-6.2 Sol (`gpt-6.2-sol-substrate`) refused 2.5M (~1.0M) and 3.0M (H48a);
+characters (~806k tokens), and GPT-6.2 Sol (`gpt-6.2-sol-substrate`) answered 885,233 o200k tokens and
+refused 891,591, on Cowork and Code alike, as GPT-6.2 Astra and Sol Fast refused 891,591 (H48a);
 Opus 5.5 and Sonnet 5.5 answered 1.6M (~645k), and Sonnet 5.5 refused 2.0M with `engine.v2_refusal`.
 Chat's GPT-6.x reads about 272k (§47).
 

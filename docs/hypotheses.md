@@ -6467,7 +6467,7 @@ new Cowork conversation:
 
 Code's GPT-6.2 Sol read 900k (3/3). 2.0M was the most tried, so the GPT models' limit is unknown; it is at
 least three times Chat's ~272k (F128). The runtime's 1M-character cap on a text item didn't matter: 2.0M
-went as three items. The proxy names these windows in its model IDs (`_800k`, `_640k`); the Fast variants
+went as three items. The proxy names these windows in its model IDs (`_800k`, `_640k`; GPT now `_885k`, H48a); the Fast variants
 and Code take the same numbers unmeasured.
 
 ### F134 — every turn costs credits 🟢
@@ -6532,8 +6532,8 @@ answered and 2.5M refused: 2,125,470 and 2,188,372 characters answered (3/3), 2,
 2,250,397 refused (`engine.v2_refusal`), and 3.0M too. In o200k tokens: 885,233 answered, 891,591 refused,
 on Cowork and on Code alike (Code: the same two prompts). GPT-6.2 Astra and GPT-6.2 Sol Fast refused the
 891,591-token message too; on their answering side only Astra's 809k (F133) was measured. The runtime's
-own system prompt comes on top, so its input cap is a little higher than 885k. The proxy labels the model
-`_885k`.
+own system prompt comes on top, so its input cap is a little higher than 885k. The proxy labels every
+runtime GPT model `_885k`: each answered 806k (F133), and Astra and Sol Fast refused at Sol's boundary.
 
 **Its turns cost almost nothing.** Each answered turn on `gpt-6.2-sol-substrate` was charged only for the
 title and suggestion calls (`gpt-5-chat-mini`): 0.055–0.065 credits for 2.0M–2.19M characters, 0.023 for
@@ -6573,6 +6573,34 @@ at once (subscribe 404s, `stream_closed`). Four Code sessions cost about 3,200 c
 proxy now ends a runtime turn with no text at once, with a 502 `runtime_no_reply` that says what the agent
 did; Codex wants `stream_idle_timeout_ms` of 900000 or more for runtime models.
 
+### F140 — runtime tasks crowd the Copilot app's Recent list, and a failed request's retry piled on 🟢
+The user (Nov 19 evening) found "temporary chats" from the proxy cluttering the Copilot app, and a chat
+comparing code graph tools missing. The app (`copilot.cloud.microsoft`, same account, read over CDP) lists
+Cowork and Code tasks in **Recent** with the Chat history, newest first. Above that chat were 18 entries:
+4 Code tasks from Codex sessions through the proxy ("Project Task Guidance", "Project Work Session", …) and
+12 from this section's needle and cost probes, 5 still "Working" (their runs were refused). The chat itself
+was a Cowork task ("Comparing Code Graph Tools and Benchmarks", 18:03Z), intact, 19th in the list. No proxy
+Chat turn is listed: those are temporary (`disableMemory=1`, Chathub and StreamHub alike; none of the
+evening's `claude-fable` turns shows). The proxy deletes only conversations it opened itself (random keys,
+`AetherSession.discard`), and the probe scripts only their own tasks, each key from its own 202 reply.
+Deleting needs the auth headers only: with the message's `x-conversation-id` and `x-container-config` too,
+`DELETE /v1/conversations/<key>` answered 400 and the task stayed (n=1; the probe scripts' cleanup sent
+those, which is why their tasks were left); without them 204, then `task_not_found` (n=12).
+
+Why the proxy's stayed: three were open in a proxy that a deploy restarted, and a stopped proxy can't
+delete; the fourth was still pooled, and an idle conversation stayed so for 24 hours, Chat's TTL. That
+one, `code-eb886380…`, took the same 122-message, 537,804-character Codex request seven times in full
+(23:26Z to 01:36Z, turns 0 to 6). Each of the first six ended with no text (`runtime_no_reply`, F139),
+which left the pool's sent count at 0, so the client's retry went in whole again, on top: the runtime
+keeps a message once it's posted, answered or not.
+
+Now a runtime conversation is dropped and deleted 30 minutes after its last request
+(`M365_RUNTIME_CONVERSATION_TTL_MINUTES`; a timer checks every minute, and never during a request); each
+proxy lists the conversations it opens in `~/.config/opencode-m365/runtime-conversations/<pid>.json`, and
+one starting up deletes those whose process isn't running (`trackRuntimeConversations`); and a failed
+runtime request starts the next one in a fresh conversation, deleting the old one, which also ends a run
+still going there. `M365_SAVE_HISTORY=1` keeps them all, under Chat's TTL.
+
 **Shipped:** `M365_BACKENDS` (default all three; `chat` keeps a proxy off the runtime)
 lists the Cowork and Code models as `<model>(<backend>)[_<window>][_credit]`, Chat's as well
 (`gpt-6.2-sol(chat)_272k`); a request may name `cowork` or `code` only when listed, and an ID without
@@ -6581,4 +6609,6 @@ Code list what the catalog has (F137). On the runtime the proxy sends a history 
 `reasoning_effort`, skips Chat's throttle budget, tool agent and priority-access handling, reports the
 turn's credits as `usage.x_m365_credits`, maps `engine.v2_refusal` on a prompt of 400k characters or more
 to a 400 `context_length_exceeded`, a model outside the catalog to a 400 `model_not_found`, and a turn with no text to a 502 `runtime_no_reply` rather than retrying it (F139).
-`core/src/backends.ts`, `core/src/aether.ts`.
+A failed runtime request's retry goes into a fresh conversation, and the proxy deletes runtime
+conversations 30 minutes after their last request and, at startup, those a stopped proxy left (F140).
+`core/src/backends.ts`, `core/src/aether.ts`, `core/src/runtime-ledger.ts`.
