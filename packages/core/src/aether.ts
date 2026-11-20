@@ -4,6 +4,7 @@ import { runtimeModelFor } from "./backends.js";
 import type { CopilotStream, CapturedImage } from "./copilot.js";
 import { createLogger, trunc } from "./log.js";
 import type { TurnOptions, TurnSession } from "./model.js";
+import { DEFAULT_LEDGER_DIR, RuntimeLedger } from "./runtime-ledger.js";
 
 const log = createLogger("aether");
 
@@ -101,6 +102,80 @@ function runtimeEndpoint(token: string, ids: TokenIds): Promise<string> {
 export function resetRuntimeEndpoint(): void {
   endpoint = null;
   catalog = null;
+}
+
+/** Delete a conversation on the runtime (the web app's `tasks.delete`); true once it's gone. */
+async function deleteConversation(session: string, mode: RuntimeMode, token: string): Promise<boolean> {
+  const ids = tokenIds(token);
+  const base = await runtimeEndpoint(token, ids);
+  const res = await fetch(`${base}/v1/conversations/${encodeURIComponent(session)}`, {
+    method: "DELETE",
+    headers: {
+      authorization: `Bearer ${token}`,
+      "x-tenant-id": ids.tid,
+      "x-user-id": ids.oid,
+      "x-cowork-host-type": "officeweb:web",
+      "x-request-id": randomUUID(),
+      ...(mode === "code" ? { "x-container-type": "copilot" } : {}),
+    },
+  });
+  if (res.ok || res.status === 404) return true;
+  log.info(`Deleting agent runtime conversation ${session}: HTTP ${res.status}`);
+  return false;
+}
+
+/** The conversations this process opens, once trackRuntimeConversations is on. */
+let ledger: RuntimeLedger | null = null;
+let leftoversSwept: Promise<number> | null = null;
+/** Older leftovers aren't tried again. */
+const LEFTOVER_MAX_AGE_MS = 7 * 24 * 3_600_000;
+
+/**
+ * List the conversations this process opens on the runtime in a file
+ * (runtime-ledger.ts), and delete the ones proxies no longer running left: the
+ * runtime shows every conversation in the user's Copilot sidebar until it's
+ * deleted, and a stopped or restarted proxy used to leave its open ones there
+ * for good. A delete that fails is tried again by the next process. Once per
+ * process; the standalone proxy calls it at startup. Resolves to how many it
+ * deleted. Not under M365_SAVE_HISTORY=1, which keeps them all.
+ */
+export function trackRuntimeConversations(options: { dir?: string; getToken?: () => Promise<string> } = {}): Promise<number> {
+  if (process.env.M365_SAVE_HISTORY === "1") return Promise.resolve(0);
+  if (leftoversSwept) return leftoversSwept;
+  const own = new RuntimeLedger(options.dir ?? DEFAULT_LEDGER_DIR);
+  ledger = own;
+  const getToken = options.getToken ?? defaultToken;
+  leftoversSwept = (async () => {
+    const leftovers = own.takeLeftovers().filter((e) => Date.now() - e.at < LEFTOVER_MAX_AGE_MS);
+    if (leftovers.length === 0) return 0;
+    let token: string;
+    try {
+      token = await getToken();
+    } catch (err: any) {
+      log.info(`Agent runtime conversations that proxies no longer running left weren't deleted: ${err?.message ?? err}`);
+      for (const entry of leftovers) own.add(entry);
+      return 0;
+    }
+    let deleted = 0;
+    for (const entry of leftovers) {
+      const gone = await deleteConversation(entry.session, entry.mode, token).catch((err) => {
+        log.info(`Deleting agent runtime conversation ${entry.session} failed: ${err?.message ?? err}`);
+        return false;
+      });
+      if (gone) deleted++;
+      else own.add(entry);
+    }
+    const kept = leftovers.length - deleted;
+    log.info(`Deleted ${deleted} agent runtime conversation(s) that proxies no longer running left${kept ? `; ${kept} kept for the next start` : ""}`);
+    return deleted;
+  })();
+  return leftoversSwept;
+}
+
+/** Stop listing conversations (tests). */
+export function resetRuntimeTracking(): void {
+  ledger = null;
+  leftoversSwept = null;
 }
 
 /** How long a fetched catalog is used, and how long a failed fetch waits to be retried. */
@@ -473,26 +548,13 @@ export class AetherSession implements TurnSession {
    * has no temporary mode, as Chat has. M365_SAVE_HISTORY=1 keeps them. Deleting
    * ends a run still going in it, so it waits a while (discardDelayMs): another
    * request may still be reading one. Fire and forget; a process that exits
-   * first leaves the conversation.
+   * first leaves the conversation to the next one (trackRuntimeConversations).
    */
   private discard(session: string): void {
     if (process.env.M365_SAVE_HISTORY === "1") return;
+    const mode = this.mode;
     const remove = () => void (async () => {
-      const token = await this.resolveToken();
-      const ids = tokenIds(token);
-      const base = await runtimeEndpoint(token, ids);
-      const res = await fetch(`${base}/v1/conversations/${encodeURIComponent(session)}`, {
-        method: "DELETE",
-        headers: {
-          authorization: `Bearer ${token}`,
-          "x-tenant-id": ids.tid,
-          "x-user-id": ids.oid,
-          "x-cowork-host-type": "officeweb:web",
-          "x-request-id": randomUUID(),
-          ...(this.mode === "code" ? { "x-container-type": "copilot" } : {}),
-        },
-      });
-      if (!res.ok && res.status !== 404) log.info(`Deleting agent runtime conversation ${session}: HTTP ${res.status}`);
+      if (await deleteConversation(session, mode, await this.resolveToken())) ledger?.remove(session);
     })().catch((err) => log.info(`Deleting agent runtime conversation ${session} failed: ${err?.message ?? err}`));
     if (this.discardDelayMs <= 0) return remove();
     setTimeout(remove, this.discardDelayMs).unref?.();
@@ -535,6 +597,7 @@ export class AetherSession implements TurnSession {
     });
 
     if (!this.prewarmed) {
+      ledger?.add({ session: this.session, mode: this.mode, at: Date.now() });
       // The web app opens each conversation so; the message is accepted after it.
       try {
         const pre = await fetch(`${base}/v1/prewarm`, { method: "POST", headers: headers({ "content-type": "application/json", accept: "application/json" }), body: "{}", signal });

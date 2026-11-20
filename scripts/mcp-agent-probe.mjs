@@ -131,7 +131,7 @@ const calledTool = readFileSync("scripts/sentinel-hits.log", "utf8").includes("t
 const leaked = got.includes(SENTINEL);
 console.log(`\n[mcp] === RESULT ===`);
 console.log(`[mcp] reply: ${JSON.stringify(got.slice(0, 300))}`);
-console.log(`[mcp] msgTypes: ${r.messageTypes.join(",")} disengaged=${r.disengaged} ${r.elapsedMs}ms`);
+console.log(`[mcp] transport=${r.transport} msgTypes: ${r.messageTypes.join(",")} disengaged=${r.disengaged} ${r.elapsedMs}ms`);
 console.log(`[mcp] OUR MCP SERVER GOT A tools/call: ${calledTool}  ${calledTool ? "🎉 COPILOT CALLED OUR TOOL" : "❌ not called"}`);
 console.log(`[mcp] sentinel value present in reply: ${leaked}  ${leaked ? "🎉🎉 END-TO-END TOOL EXECUTION" : ""}`);
 await cleanup();

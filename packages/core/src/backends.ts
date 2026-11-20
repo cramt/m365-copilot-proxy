@@ -7,14 +7,14 @@ const log = createLogger("backends");
 // `chat` is Microsoft 365 Copilot Chat (Chathub or StreamHub, session.ts): what
 // the proxy has always used. `cowork` and `code` are the web app's Cowork and
 // Code tabs. Both run on the Copilot agent runtime (aether.ts), which reads a
-// longer turn than Chat does (GPT-6.2 Sol answered about 806k tokens in one
+// longer turn than Chat does (GPT-6.2 Sol answered about 885k tokens in one
 // turn, Chat's GPT-6.x about 272k) and isn't under Chat's per-user throttle,
 // but every turn is charged to the account's Copilot credits (docs/hypotheses.md
 // §48).
 //
 // A model ID names its backend in parentheses, then the tokens one turn has been
 // seen to carry and whether turns cost credits: `gpt-6.2-sol(chat)_272k`,
-// `gpt-6.2-sol(cowork)_800k_credit`. Only the parentheses route; the rest is
+// `gpt-6.2-sol(cowork)_885k_credit`. Only the parentheses route; the rest is
 // information, so a client may send `gpt-6.2-sol(cowork)` or an ID with stale
 // suffixes. An ID without parentheses is a Chat model, as before, unless
 // M365_DEFAULT_BACKEND moves it.
@@ -112,16 +112,17 @@ const CHAT_MODELS: ReadonlyArray<{ base: string; window?: number; credits?: bool
 // tokens). GPT-6.2 Sol on the `llmapi` bucket (`gpt-6.2-sol-substrate`, which
 // replaced `gpt-6.2-sol` in the catalog on Nov 19) answered 885,233 o200k
 // tokens and refused 891,591, on Cowork and Code alike; GPT-6.2 Astra and Sol
-// Fast refused 891,591 too. Opus 5.5 and Sonnet 5.5 answered 1.6M characters
-// (~645k), and Sonnet 5.5 refused 2.0M. The Fast variants serve the same
-// models faster and take their numbers. Code is the same runtime.
+// Fast refused 891,591 too, so every GPT model takes 885k. Opus 5.5 and Sonnet
+// 5.5 answered 1.6M characters (~645k), and Sonnet 5.5 refused 2.0M. The Fast
+// variants serve the same models faster and take their numbers. Code is the
+// same runtime.
 const RUNTIME_MODELS: ReadonlyArray<{ base: string; runtimeModel: string; window?: number }> = [
-  { base: "gpt-6.2-sol", runtimeModel: "gpt-6.2-sol", window: 800_000 },
+  { base: "gpt-6.2-sol", runtimeModel: "gpt-6.2-sol", window: 885_000 },
   { base: "gpt-6.2-sol-substrate", runtimeModel: "gpt-6.2-sol-substrate", window: 885_000 },
-  { base: "gpt-6.2-sol-fast", runtimeModel: "gpt-6.2-sol-fast", window: 800_000 },
-  { base: "gpt-6.2-astra", runtimeModel: "gpt-6.2-astra", window: 800_000 },
-  { base: "gpt-6.1-sol", runtimeModel: "gpt-6.1-sol-substrate", window: 800_000 },
-  { base: "gpt-5.5", runtimeModel: "gpt-5.5", window: 800_000 },
+  { base: "gpt-6.2-sol-fast", runtimeModel: "gpt-6.2-sol-fast", window: 885_000 },
+  { base: "gpt-6.2-astra", runtimeModel: "gpt-6.2-astra", window: 885_000 },
+  { base: "gpt-6.1-sol", runtimeModel: "gpt-6.1-sol-substrate", window: 885_000 },
+  { base: "gpt-5.5", runtimeModel: "gpt-5.5", window: 885_000 },
   { base: "claude-opus-5.5", runtimeModel: "opus-5.5", window: 640_000 },
   { base: "claude-opus-5.5-fast", runtimeModel: "opus-5.5-fast", window: 640_000 },
   { base: "claude-sonnet-5.5", runtimeModel: "sonnet-5.5", window: 640_000 },

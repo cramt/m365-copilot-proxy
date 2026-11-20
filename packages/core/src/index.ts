@@ -130,15 +130,19 @@ export {
   AETHER_SCOPE,
   containerConfig,
   resetRuntimeEndpoint,
+  resetRuntimeTracking,
   runtimeCatalog,
   runtimeEffort,
   runtimeFailure,
   sseEvents,
   textItems,
+  trackRuntimeConversations,
   type AetherSessionOptions,
   type RuntimeMode,
   type SseEvent,
 } from "./aether.js";
+
+export { DEFAULT_LEDGER_DIR, RuntimeLedger, type LedgerEntry } from "./runtime-ledger.js";
 
 export {
   BACKENDS,

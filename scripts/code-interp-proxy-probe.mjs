@@ -103,4 +103,4 @@ console.log(out);
 console.log(`\n[proxy] sentinel server got a NEW inbound hit: ${serverGotHit}`);
 console.log(`[proxy] model leaked sentinel value: ${out.includes(SENTINEL)}`);
 if (newHits.trim()) console.log(`[proxy] new hit log lines:\n${newHits.trim()}`);
-console.log(`[proxy] msgTypes=${r.messageTypes.join(",")} elapsed=${r.elapsedMs}ms throttle=${JSON.stringify(r.throttle)}`);
+console.log(`[proxy] transport=${r.transport} msgTypes=${r.messageTypes.join(",")} elapsed=${r.elapsedMs}ms throttle=${JSON.stringify(r.throttle)}`);

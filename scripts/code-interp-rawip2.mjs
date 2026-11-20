@@ -37,4 +37,4 @@ const out = r.fullText || "";
 const fp = `scripts/code-interp-out/rawip2-${new Date().toISOString().replace(/[:.]/g, "-")}.txt`;
 writeFileSync(fp, out);
 console.log(`[rawip2] saved ${fp} (${out.length} chars)\n${out}`);
-console.log(`[rawip2] msgTypes=${r.messageTypes.join(",")} elapsed=${r.elapsedMs}ms throttle=${JSON.stringify(r.throttle)} disengaged=${r.disengaged}`);
+console.log(`[rawip2] transport=${r.transport} msgTypes=${r.messageTypes.join(",")} elapsed=${r.elapsedMs}ms throttle=${JSON.stringify(r.throttle)} disengaged=${r.disengaged}`);
