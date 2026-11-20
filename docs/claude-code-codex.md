@@ -141,7 +141,7 @@ env_key = "M365_GATEWAY_KEY"   # any non-empty value; export it
 wire_api = "responses"
 request_max_retries = 1
 stream_max_retries = 1
-stream_idle_timeout_ms = 300000
+stream_idle_timeout_ms = 900000   # Cowork/Code turns at high effort can run past 5 minutes
 ```
 
 `model_instructions_file` replaces Codex's own ~40k-character instructions, which are written for GPT
