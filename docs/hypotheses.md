@@ -122,6 +122,8 @@ than "we eyeballed one run." See §M (Methods) for the experimental rig.
   changes and refuses what it doesn't list (F137); GPT-6.2 Sol takes 885k tokens in a message, not 892k, and its
   turns are now almost free (H48a); Code turns are charged and the monthly budget counts them (F138); Code's
   agent works in its own workspace, and slow turns met Codex's 5-minute timeout (F139)
+- §50 — GPT-5.6 Think Deeper through pi: its give-up is an instruction conflict that `relay` dissolves,
+  and `relay_batch` too at baseline's turn count (F149); a pile of global skills (F150)
 
 ---
 
@@ -6822,3 +6824,155 @@ and the text was there once: no F107 re-send, up to 5,418 characters. A Chathub 
 unchanged (`Success`, 4.8 s). No `network_info` item came in the 15 StreamHub turns whose item types
 were recorded. F142's other half, `Claude_Sonnet_5`'s sandbox (`sonnet5-native-tools-probe`, `pwd-none`),
 can't run on a non-premium account: it is refused by licence.
+
+---
+
+## 50. Oct 4–14 2026 — GPT-5.6 Think Deeper through pi on Windows (`relay_batch` default, give-up patterns, and global skills pile)
+
+Follow-ups to §31 and §32 from the same real-pi setup (Windows, `gpt-5.6-think-deeper`, the user's
+Turkish prompts). Originally opened together in #70; the orthogonal fixes from those runs were split out
+into separate PRs (#113 SessionPool `replyKey`, #114 `TurnTextComposer`, #115 tool-result labels &
+file-chip markup, #116 `longCommandAsScript`).
+
+### F149 — the give-up is an instruction conflict, and `relay` dissolves it for GPT-5.6 Think Deeper (`relay_batch` ships) 🟢
+**Why it gives up.** M365 streams chain-of-thought summaries as `addToChainOfThought` frames (visible
+with `M365_DEBUG`). In give-up turns they name a conflict between two instruction sources: "There
+seems to be a conflict between the developer's statement about file generation being disabled and
+the system execution indicating it is required"; "Mevcut geliştirici dosya oluşturmayı devre dışı
+bıraktı… Bu nedenle, sınırlamaları belirtmemiz gerekiyor". The model also knows where our framing
+sits: "the developer's instructions and the user's embedded system". So on the agent path M365's own
+(developer-level) instructions say file generation is disabled, baseline's `<system>`-tagged framing
+inside the user turn says create the file, and the model resolves the conflict either way — refusing
+is following the instruction hierarchy, not a malfunction.
+
+**Sweep** (Oct 4; real pi, `gpt-5.6-think-deeper`, PDF + .docx × 7 per arm, arms interleaved,
+per-request framing via `M365_FRAMING_FILE`): baseline · `relay` · `conflict` (baseline plus a note
+that the restriction means Copilot's built-in downloadable files, not the harness's shell). Every
+model turn audited with the proxy's own detector plus the phrases it missed:
+
+| arm | runs with any give-up turn | give-up turns | task passed | format drift |
+|---|---|---|---|---|
+| baseline | **12/14** | 22/55 | 10/14 | 2 turns |
+| `relay` | **0/14** | **0/89** | **14/14** | 0 |
+| `conflict` | 7/14 (every PDF run, no .docx run) | 14/53 | 12/13 | 0 |
+
+Relay vs baseline, runs with a give-up: Fisher p ≈ 6×10⁻⁶. One `conflict` run was lost to
+`PerUserThrottled` and is excluded from its pass rate. Notes:
+- **The final message undercounts give-ups.** In baseline most give-up turns still passed the task:
+  the refusal came with one "run this yourself" fence, and shell routing executed it. Final messages
+  showed 9/14 runs giving up; the turn audit shows 12/14.
+- **Relay doesn't hide the restriction; it changes how it is resolved.** 3 of 53 relay CoT summaries
+  still mention it, e.g. "need to follow the harness despite the developer's indication of no file
+  generation… the user is requesting commands one at a time" — commands the user runs are not file
+  generation by the model.
+- **Format drift, baseline only:** one turn emitted `<tool_name>bash</tool_name>` and one
+  `<tool_call>{"command": …}` repeated ~1,400 times (332 KB, 12.7 min, cut by M365); neither parses.
+- **Cost:** relay takes more turns (6.4 per run vs 3.9) — one command per turn.
+- **Throttle data point (F13):** the sweep's last run hit `PerUserThrottled` after ~100 threads in
+  ~4 hours.
+
+**Coding tasks don't regress** (the same day, on a rested account; the general suite's repo Q&A,
+write code, fix a bug and use a skill, × 3 per arm, interleaved, through the shipped build with
+`M365_FRAMING_FILE` overriding per run): baseline 11/12, relay **12/12**. Runs with a give-up turn:
+baseline 1/12, relay 0/12 — the baseline one ended "I'm sorry, but I wasn't able to complete and
+verify the code change in this run" after one exploration turn, with its CoT planning the next bash
+step; no confabulation pattern matches "wasn't able to complete", so no retry ran. The cost is turns:
+4.2 tool calls and 30.5 s per coding task under relay vs 1.7 and 19.8 s.
+Both sweeps together: relay 26/26 tasks with 0 give-up runs, baseline 21/26 with 13.
+
+**Shipped:** `Gpt_5_6_Reasoning` → `relay`; the `conflict` note is not shipped. **Not measured:**
+`Gpt_5_6_Chat`, and GPT-5.5 Think Deeper (the README's recommended model), which runs the same agent
+path under baseline. **Shipped (Oct 4, evening):** three English patterns from the give-ups our pi
+transcripts hold — "no execution tool is enabled", "file tools aren't enabled in this chat", and "I
+wasn't able to complete … in this run" scoped to the whole task or run, so "I couldn't complete the
+integration tests because they need Docker" stays an answer — plus "erişilebilir değil" for Turkish.
+Old vs new detector over every distinct no-tool reply in those transcripts (198): 4 new hits, all
+give-ups; 0 lost; 0 false positives. The old detector's 38 hits are all give-ups too: they reached
+the user because the one forcing retry didn't turn them (the F149 conflict). Caveat: only 18 of the
+198 are English and about 6 of those are genuine answers (the prompts were Turkish; the rest are
+give-ups, hand-backs and two unparsed tool calls), which is why the English patterns stay narrow.
+
+**GPT-5.5 Think Deeper after the fork fix (F85)** (Oct 5, 01:54; real pi, baseline vs relay via
+`M365_FRAMING_FILE`, interleaved; .pdf and .docx in Turkish as F149, write-code and fix-bug in
+English; × 2): baseline **8/8**, relay 8/8, **0 give-up turns in either arm**. Relay took about twice
+the calls (write-code 4 vs 1, pdf 7.5 vs 4). The run first scored baseline 7/8: its "failure" was a
+valid one-page PDF 1.7 (pandoc + xelatex) whose page object sits in a compressed object stream, where
+the verifier's plain-bytes `/Type /Page` search can't see it; the verifier now accepts `/ObjStm`. So
+5.5 keeps `baseline`.
+
+**GPT-5.6 Think Deeper after the fork fix (F85)** (Oct 5, 05:39; F149's document sweep with its prompts,
+baseline vs relay, × 4, interleaved, one job): the conflict survives the fork fix.
+
+| arm | task passed | runs with a give-up final |
+|---|---|---|
+| baseline | 6/8 (pdf 2/4, docx 4/4) | 3/8, all PDF |
+| `relay` | **8/8** | **0/8** |
+
+Baseline's give-ups came after the first obstacle: "PDF oluşturma işlemi tamamlanamadı" when
+WeasyPrint lacked a system library (2 calls, no file); "PDF dosyası oluşturamıyorum veya komut
+çalıştıramıyorum; bu oturumda dosya üretme ve betik yürütme özellikle…" (detected, the retry didn't
+turn it); and "Şu anda dosyayı doğrudan oluşturup doğrulayamıyorum" after a pandoc run that had in
+fact made the file. Fewer than F149's 12/14 on forked conversations, but relay is still the only arm
+without them, so `Gpt_5_6_Reasoning` keeps `relay`. The passive form was invisible to the detector
+(its Turkish verbs are first person); it now catches "tamamlanamadı / oluşturulamadı" as a whole
+word, not "tamamlanamadıysa" or "oluşturulamadığında". Old vs new detector over the 245 distinct
+no-tool replies in the transcripts: 2 new hits, both give-ups; 0 lost; 0 false positives.
+
+**Review follow-up (Oct 14): `relay_batch`.** `relay` costs turns, and `relay_batch` is the default
+everywhere else `relay` won. `phase-sweep` on the bench (10 tasks; baseline, `relay`, `relay_batch`, two
+rotated rounds each; with the agent; `M365_AVOID_THROTTLING=1`):
+
+| arm | solved | turns per task |
+|---|---|---|
+| baseline | 19/20 (one prose give-up) | 2.15 |
+| `relay` | 20/20 | 2.85 |
+| `relay_batch` | 20/20 | 2.30 |
+
+`relay_batch` vs `relay`: −19% turns (task-stratified permutation p = 7·10⁻⁴); vs baseline +7%
+(p = 0.42); `relay` vs baseline +33% (p = 1·10⁻⁴). No sandbox, Disengaged or jailbreak turn in any arm.
+The bench has no document task, so the PDF + `.docx` real-pi runs above again, ×4 each, interleaved:
+`relay` 8/8 (5.6 tool calls a run), `relay_batch` 7/8 (3.4); the miss was a cut label read as a cut
+command (#115, now covered for detection by §43 F118), and with that fixed `relay_batch` went 8/8
+(3.4 calls a run). No other run gave up. **Shipped:** `Gpt_5_6_Reasoning` → `relay_batch`. The bench
+ran on Windows with a local adaptation of `phase-sweep.sh` (under Git Bash its port check doesn't
+parse and `$!` isn't the node process).
+
+### F150 — a pile of global pi skills: cheap up to ~120, a few broad descriptions are the real risk 🟡
+**Question.** What does installing many skills in `~/.pi/agent/skills` do through the proxy? pi puts every
+skill's name, description and path in the system prompt of every session (the instructions load only when
+the model reads `SKILL.md`), so the cost is the listing.
+
+**Size** (pi's own request, captured with a stand-in server, real SKILL.md frontmatter from one machine,
+average description 328 chars): 0 skills 2.9K chars of system prompt, 10 → 10.2K, 30 → 23.5K, 60 → 42K,
+120 → 78.5K, 233 → 151K (first M365 message 154K: framing + tools + system prompt). About 0.65K per skill.
+`disable-model-invocation: true` in the frontmatter takes a skill out of the listing: 120 such skills
+cost nothing (2.9K). The 27-skill bundle the user keeps elsewhere: 23.4K (first message 26.4K).
+
+**Live** (`gpt-5.6-think-deeper`, `relay`, real pi; two tasks, write-code and "write the report the project
+skill describes" (skill-use); two sweeps, the second after the fixes below; throttled runs excluded):
+
+| skills listed | write-code | skill-use |
+|---|---|---|
+| 0 | 7/7 | 6/6 |
+| 27 (the user's bundle, real bodies) | 4/4 | 4/4 |
+| 120 | 4/4 | 4/4 |
+| 308 (233 real descriptions + 75 renamed copies) | 8/8 | **4/8** |
+
+skill-use, 14/14 at up to 120 skills against 4/8 at 308: Fisher p ≈ 0.01. The four failures: one **instant
+rejection** of the ~200K first message (`InternalError`, 0.25 s, no bot message), after which the retry
+sent "Please continue." into a conversation that had never received the task ("What would you like me to
+continue with?"; the server's own count read 1 of 600). §38 F96 now covers it (a content-less
+`InternalError` re-sends the whole request in a fresh conversation); this branch's own resend was dropped
+for it. The other three began by reading `task-observer`, whose description says "Use during ANY
+multi-step task": two then answered "I need access to data.csv / upload it" (the Turkish form was not in
+the detector; **added**, and it did not turn the other), one ended on an unclosed `read` fence.
+**Caveat:** the 308 pile's bodies were stubs (a title line), so reading a distractor returned nothing; with
+real bodies (the 27 bundle, which includes the real `task-observer`) 8/8 passed, one run reading it.
+2 of the bundle's 4 skill-use runs needed the forcing retry (0 of 6 with no skills): the broad descriptions
+cost turns even when they don't fail.
+
+**Advice.** Up to ~120 skills is fine. Keep descriptions that claim every task out of the automatic
+listing (`task-observer` "ANY multi-step task", `modern-web-guidance` "MANDATORY: Execute FIRST … Do NOT
+skip" and it needs a search tool pi doesn't have, `graphify`, `ponytail`) with `disable-model-invocation:
+true` and call them with `/skill:name`. Don't copy `~/.agents/skills` into `~/.pi/agent/skills` (pi reads
+both; duplicate names keep the first and warn). **Not measured:** real bodies at 308; `gpt-5.5-think-deeper`.
