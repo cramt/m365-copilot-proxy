@@ -63,9 +63,14 @@ const r = await oneTurn({
   timeoutMs: 180000,
   onFrame: (f) => {
     appendFileSync(framesPath, JSON.stringify(f) + "\n");
-    // surface any message types / targets we see
+    // surface any message types / targets we see: a Chathub update is an
+    // invocation (`target`, `arguments`), a StreamHub one a `message_part` item
+    // with one `argument`
     if (f?.target) seenTypes.add(`target:${f.target}`);
-    const args = Array.isArray(f?.arguments) ? f.arguments : [];
+    if (f?.item?.type) seenTypes.add(`item:${f.item.type}`);
+    const args = Array.isArray(f?.arguments) ? f.arguments
+      : f?.item?.type === "message_part" && f.item.argument ? [f.item.argument]
+      : [];
     for (const a of args) {
       if (a?.messages) for (const m of a.messages) if (m?.messageType) seenTypes.add(`msgType:${m.messageType}`);
       // code interpreter often carries a `messageType` or a code/result payload
@@ -83,6 +88,7 @@ const sawCodeFrame = [...seenTypes].some((t) => /GeneratedCode|GenerateContentQu
 
 writeFileSync(join(OUT, "result.json"), JSON.stringify({
   mode: CONTROL ? "control" : "codeinterp",
+  transport: r.transport,
   secret: SECRET, expected: EXPECTED,
   correctDigestPresent: correct,
   sawCodeFrame,
@@ -96,6 +102,6 @@ console.log(`\n[ci] === RESULT ===`);
 console.log(`[ci] frames/types seen: ${[...seenTypes].sort().join(", ") || "(none special)"}`);
 console.log(`[ci] saw code-interpreter frame: ${sawCodeFrame}`);
 console.log(`[ci] CORRECT sha256 in reply: ${correct}  ${correct ? "✅ REAL EXECUTION" : "❌ (hallucinated or refused)"}`);
-console.log(`[ci] disengaged=${r.disengaged} origin=${r.contentOrigin} throttle=${JSON.stringify(r.throttle)} ${r.elapsedMs}ms ${r.error ? "ERR=" + r.error : ""}`);
+console.log(`[ci] transport=${r.transport} disengaged=${r.disengaged} origin=${r.contentOrigin} throttle=${JSON.stringify(r.throttle)} ${r.elapsedMs}ms ${r.error ? "ERR=" + r.error : ""}`);
 console.log(`[ci] --- reply (first 600 chars) ---\n${out.slice(0, 600)}`);
 console.log(`[ci] full frames: ${framesPath}`);

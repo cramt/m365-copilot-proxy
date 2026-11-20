@@ -1,5 +1,9 @@
+import { mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { AetherSession, containerConfig, resetRuntimeEndpoint, runtimeCatalog, runtimeFailure, sseEvents, textItems } from "./aether.js";
+import { AetherSession, containerConfig, resetRuntimeEndpoint, resetRuntimeTracking, runtimeCatalog, runtimeFailure, sseEvents, textItems, trackRuntimeConversations } from "./aether.js";
+import { RuntimeLedger } from "./runtime-ledger.js";
 
 const RUNTIME = "https://runtime.test";
 const token = `h.${Buffer.from(JSON.stringify({ tid: "t1", oid: "o1" })).toString("base64url")}.s`;
@@ -169,6 +173,37 @@ describe("AetherSession", () => {
       expect(calls.filter((c) => c.method === "DELETE")).toHaveLength(1);
     } finally {
       delete process.env.M365_SAVE_HISTORY;
+    }
+  });
+
+  it("deletes once what proxies no longer running left, keeps a running one's, and lists its own until they're deleted", async () => {
+    const { calls, fetchImpl } = fakeRuntime([answered(["a"])]);
+    vi.stubGlobal("fetch", fetchImpl);
+    const dir = mkdtempSync(join(tmpdir(), "runtime-ledger-"));
+    try {
+      const now = Date.now();
+      const gone = new RuntimeLedger(dir, 2147483647); // no such process
+      gone.add({ session: "c1", mode: "cowork", at: now });
+      gone.add({ session: "code-c2", mode: "code", at: now });
+      gone.add({ session: "too-old", mode: "cowork", at: now - 8 * 24 * 3_600_000 });
+      new RuntimeLedger(dir, process.ppid).add({ session: "theirs", mode: "cowork", at: now });
+
+      expect(await trackRuntimeConversations({ dir, getToken: async () => token })).toBe(2);
+      expect(await trackRuntimeConversations({ dir, getToken: async () => token })).toBe(2);
+      const deletes = calls.filter((c) => c.method === "DELETE");
+      expect(deletes.map((c) => c.url)).toEqual([`${RUNTIME}/v1/conversations/c1`, `${RUNTIME}/v1/conversations/code-c2`]);
+      expect(deletes[1].headers["x-container-type"]).toBe("copilot");
+      expect(readdirSync(dir)).toEqual([`${process.ppid}.json`]);
+
+      const session = new AetherSession({ mode: "cowork", getToken: async () => token, discardDelayMs: 0 });
+      await drain(await session.run("hi"));
+      const own = JSON.parse(readFileSync(join(dir, `${process.pid}.json`), "utf8"));
+      expect(own.conversations.map((e: { session: string }) => e.session)).toEqual([session.conversationId]);
+      session.close();
+      await vi.waitFor(() => expect(readdirSync(dir)).toEqual([`${process.ppid}.json`]));
+    } finally {
+      resetRuntimeTracking();
+      rmSync(dir, { recursive: true, force: true });
     }
   });
 
