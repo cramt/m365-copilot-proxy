@@ -888,7 +888,11 @@ a model outside it was refused: `POST /v1/messages` → 400 `{"detail": {"type":
 /v1/conversations/<key>`: 204, and the task leaves the sidebar (the web app's `tasks.delete`), with only
 the auth headers; with the message's `x-conversation-id` and `x-container-config` too it answered 400 and
 the task stayed (hypotheses §48 F140). There's no temporary mode: every conversation stays listed, in the
-Copilot app's Recent list too, until it's deleted. No stop
+Copilot app's Recent list too, until it's deleted, and an open app keeps listing a deleted one until it
+reloads. Projects: `POST /v1/projects` `{title, instructions, tags}` creates one (its ID a Teams thread ID),
+and `POST /v1/projects/<id>/tasks` `{conversationId}` binds a conversation to it (`DELETE …/tasks/<id>`
+unbinds); a project's tasks leave Recent, but only on the app's next load. `X-Experience-Id` (set at
+creation) takes `tasks` and `cowork`, which the app shows alike. No stop
 call turned up: closing the stream leaves the run going, and the next message queues behind it.
 
 **What a turn holds** (needle probes, one turn each, hypotheses §48 F133): the GPT models answered 2.0M

@@ -621,7 +621,8 @@ model there is labelled `_885k` ([hypotheses §48 H48a](docs/hypotheses.md)).
   (`M365_RUNTIME_CONVERSATION_TTL_MINUTES`; the next request replays the history into a fresh one), and
   on startup deletes the ones a proxy that's no longer running left (it lists its own in
   `~/.config/opencode-m365/runtime-conversations/`). It deletes nothing else. `M365_SAVE_HISTORY=1`
-  keeps them all ([hypotheses §48 F140](docs/hypotheses.md)).
+  keeps them all ([hypotheses §48 F140](docs/hypotheses.md)). An open Copilot app keeps listing a
+  deleted task until it reloads or restarts; only Chat models stay out of the list entirely.
 - A failed request's conversation isn't continued: the runtime keeps a message once it's posted, so the
   client's retry, the same history again, goes into a fresh conversation (F140).
 - Closing a request doesn't stop a run there (the runtime has no stop call the proxy could find), and

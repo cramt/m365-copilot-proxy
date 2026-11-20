@@ -6601,6 +6601,23 @@ one starting up deletes those whose process isn't running (`trackRuntimeConversa
 runtime request starts the next one in a fresh conversation, deleting the old one, which also ends a run
 still going there. `M365_SAVE_HISTORY=1` keeps them all, under Chat's TTL.
 
+**But an open Copilot app shows every new task until it reloads.** The user's app (open two days) still
+listed the 16 deleted tasks an hour later; in Chrome, a deleted task stayed in the open page's Recent for
+60 s and more, and left on reload (n=2). Nothing tried keeps a new task out of an open app's Recent:
+- **Projects.** `POST /v1/projects` `{title, instructions, tags}` → 201 (the project ID is a Teams thread
+  ID, `19:…@thread.v2`); `POST /v1/projects/<id>/tasks` `{conversationId: "<tid>:<oid>:<key>"}` → 201
+  `{bound: true}`, right after the prewarm (before the first message) too, and into an archived project
+  (`PATCH /v1/projects/<id>` `{state: "archived"}`, which still takes messages). On reload a project's
+  tasks are out of Recent (the four project tasks the user had were the ones missing from it), and an
+  archived project is out of the sidebar. An open page listed a new task in Recent anyway, bound before
+  its first message, in an archived project and in an active one it knew (n=1 each).
+- **Another experience.** A conversation's experience is set at creation (`X-Experience-Id`, the web app's
+  `/v2/{experience}`): `tasks` and `cowork` are taken, and the app shows both; `pages` is 403, and `api`,
+  `proxy`, `chat`, `copilot` 400 "Unknown X-Experience-Id value". Rapid prewarms then got 429.
+
+So the proxy doesn't file its tasks: deleting them clears them at the app's next reload, and only Chat's
+temporary chats never show.
+
 **Shipped:** `M365_BACKENDS` (default all three; `chat` keeps a proxy off the runtime)
 lists the Cowork and Code models as `<model>(<backend>)[_<window>][_credit]`, Chat's as well
 (`gpt-6.2-sol(chat)_272k`); a request may name `cowork` or `code` only when listed, and an ID without
