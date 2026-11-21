@@ -511,7 +511,7 @@ export function textAfterFirstToolCall(text: string, tools?: ToolDef[]): string 
   return first ? text.slice(first.end).trim() : "";
 }
 
-export function parseToolCalls(text: string, tools?: ToolDef[], options?: { reservedNames?: Set<string>; strictShell?: boolean }): ParseResult {
+export function parseToolCalls(text: string, tools?: ToolDef[], options?: { reservedNames?: Set<string>; strictShell?: boolean; rejectJsonAliases?: boolean }): ParseResult {
   // Fenced is the format: parse ```toolname blocks first. Needs the tool schemas
   // to map header/body args. The JSON parse below is only a tolerance fallback for
   // when M365 ignores the contract and emits a `{"tool":...}` object anyway.
@@ -526,7 +526,7 @@ export function parseToolCalls(text: string, tools?: ToolDef[], options?: { rese
   // The spec map carries the shell aliases too, so a JSON call naming a leaked
   // runtime tool (`container.exec`) resolves to the harness shell tool here.
   const resolveName = (raw: unknown): string | undefined =>
-    typeof raw === "string" ? (specMap?.get(raw)?.name ?? raw) : undefined;
+    typeof raw === "string" ? (options?.rejectJsonAliases ? raw : (specMap?.get(raw)?.name ?? raw)) : undefined;
 
   const toolCalls: ParsedToolCall[] = [];
 

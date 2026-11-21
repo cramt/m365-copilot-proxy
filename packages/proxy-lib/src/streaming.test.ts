@@ -2241,6 +2241,69 @@ describe("named choice parsing and emission", () => {
       } finally { if (old === undefined) delete process.env.M365_ALLOW_MULTI_TOOL; else process.env.M365_ALLOW_MULTI_TOOL = old; }
     });
   }
+  for (const stream of [false, true]) for (const reverse of [false, true]) {
+    it(`rejects JSON shell aliases for Codex but preserves exact JavaScript (${stream}, ${reverse})`, async () => {
+      const tools = reverse ? [exec, search] : [search, exec];
+      for (const alias of ["sh", "container.exec"]) {
+        const r = await ask(JSON.stringify({tool: alias, arguments: {input: "id"}}), tools, named("functions__exec"), stream);
+        expect(r.raw).toContain("invalid_tool_call");
+        expect(r.raw).not.toContain('"name":"functions__exec"');
+      }
+      const exact = await ask('{"tool":"functions__exec","arguments":{"input":"await tools.exec_command({cmd: \'pwd\'})"}}', tools, named("functions__exec"), stream);
+      expect(exact.raw).toContain('"name":"functions__exec"');
+      expect(exact.raw).toContain("tools.exec_command");
+    });
+    it(`does not skip an earlier unselected action (${stream}, ${reverse})`, async () => {
+      const tools = reverse ? [exec, search] : [search, exec];
+      for (const first of ["```functions__exec\nalert()\n```", '{"tool":"functions__exec","arguments":{"input":"danger()"}}']) {
+        const r = await ask(first + "\n```search_docs\nhello\n```", tools, named("search_docs"), stream);
+        expect(r.raw).not.toContain('"name":"search_docs"');
+        expect(r.raw).not.toContain('"name":"functions__exec"');
+        expect(r.raw).toContain('invalid_tool_call');
+      }
+    });
+    it(`preserves the earlier action on a recovery retry (${stream}, ${reverse})`, async () => {
+      const tools = reverse ? [exec, search] : [search, exec];
+      const text = "```functions__exec\ndanger()\n```\n```search_docs\nhello\n```";
+      const before = scripted.runs;
+      const r = await ask(text, tools, named("search_docs"), stream, true);
+      expect(scripted.runs - before).toBe(2);
+      expect(r.raw).toContain("invalid_tool_call");
+      expect(r.raw).not.toContain('"name":"search_docs"');
+    });
+    it(`emits a caller-defined reply tool (${stream}, ${reverse})`, async () => {
+      const reply = { type: "function", function: { name: "reply", parameters: { type: "object", properties: { text: { type: "string" } } } } };
+      const tools = reverse ? [reply, search] : [search, reply];
+      const r = await ask('{"tool":"reply","arguments":{"text":"hello"}}', tools, named("reply"), stream);
+      expect(r.raw).toContain('"name":"reply"');
+      expect(r.raw).toContain('tool_calls');
+    });
+  }
+  for (const stream of [false, true]) {
+    it(`does not expose a model-controlled damaged type member (${stream})`, async () => {
+      const ps = {type:"function", function:{name:"PowerShell", parameters:{type:"object", properties:{command:{type:"string"}}}}};
+      const reply = "```PowerShell\n:SecretCanary123()\n```";
+      scripted.queue = [{fullText: reply}, {fullText: reply}];
+      scripted.fullText = reply;
+      const body = ChatCompletionRequest.parse({model:"m365-copilot",stream,messages:[{role:"user",content:"work"}],tools:[ps],tool_choice:named("PowerShell")});
+      const res = await respond(body);
+      const raw = await res.text();
+      expect(raw).toContain("damaged_tool_call");
+      expect(raw).not.toContain("SecretCanary123");
+    });
+    it(`preserves a nested code example before the selected action (${stream})`, async () => {
+      const r = await ask("```markdown\nExample:\n```functions__exec\nnot an action\n```\n```\n```search_docs\nhello\n```", [search, exec], named("search_docs"), stream);
+      expect(r.raw).toContain('"name":"search_docs"');
+    });
+    it(`routes auto shell to Codex when search is also present (${stream})`, async () => {
+      for (const tools of [[search,exec],[exec,search]]) {
+        const r = await ask("```bash\nprintf hello\n```", tools, "auto", stream);
+        expect(r.raw).toContain('"name":"functions__exec"');
+        expect(r.raw).toContain("tools.exec_command");
+        expect(r.raw).not.toContain('"name":"search_docs"');
+      }
+    });
+  }
   for (const stream of [false, true]) {
     it(`retains selected schema and accepts same-tool batches (${stream})`, async () => {
       const text = "```bash\nprintf one\n```\n```bash\nprintf two\n```";

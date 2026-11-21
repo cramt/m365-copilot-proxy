@@ -43,6 +43,7 @@ import {
   textAfterFirstToolCall,
   longHeredocAsWrite,
   isExplicitShellTool,
+  hasEarlierUnselectedAction,
   strippedTypeMember,
   formatToolResponse,
   isProseDocument,
@@ -561,6 +562,7 @@ export async function handleChatCompletion(
   const parseTools = selected ?? body.tools;
   const parseOptions = selected ? {
     strictShell: true,
+    rejectJsonAliases: true,
     reservedNames: new Set(body.tools?.filter(t => t.function.name !== selectedName).map(t => t.function.name)),
   } : undefined;
   if (promptMode !== "off") log.debug(`Harness prompt: ${promptMode}`);
@@ -1439,6 +1441,7 @@ export async function handleChatCompletion(
     // JSON fallback can name undeclared tools; never let it bypass a named choice.
     const invalidChoiceCall = () => ({ kind: "error" as const, resp: jsonResponse(502, { error: { message: "M365 returned a tool call outside the selected tool or with invalid arguments", type: "invalid_tool_call" } }) });
     if (selectedName !== undefined && parsed.toolCalls.some(c => c.function.name !== selectedName)) return invalidChoiceCall();
+    if (selected && parsed.hasToolCalls && hasEarlierUnselectedAction(fullText, selected, body.tools!, parseOptions!)) return invalidChoiceCall();
 
     // M365's post-processing can strip a `[Type]:` out of a PowerShell command
     // that the deltas couldn't restore (a short reply arrives only as its final
@@ -1456,6 +1459,7 @@ export async function handleChatCompletion(
       conv.sentMessageCount = body.messages.length;
       fullText = stopAtFabricatedResult(retry.fullText);
       ({ parsed, judged } = parseReply(fullText, parseTools, parseOptions));
+      if (selected && parsed.hasToolCalls && hasEarlierUnselectedAction(fullText, selected, body.tools!, parseOptions!)) return invalidChoiceCall();
       const still = parsed.hasToolCalls ? strippedTypeMember(parsed.toolCalls[0], body.tools) : null;
       log.info(`After the damaged-command retry: hasToolCalls=${parsed.hasToolCalls}, damaged=${still ?? "no"}`);
       if (still) {
@@ -1463,7 +1467,7 @@ export async function handleChatCompletion(
           kind: "error",
           resp: jsonResponse(502, {
             error: {
-              message: `M365 Copilot stripped a .NET type name from the PowerShell command twice (it arrived as \`${still}\`), so it was not run: run as written it would have done nothing, or emptied a file. Retry; asking for full type names such as [System.Text.RegularExpressions.Regex]::Replace usually avoids it.`,
+              message: "M365 Copilot stripped a .NET type name from the PowerShell command twice, so it was not run: run as written it could have done nothing or emptied a file. Retry and ask for full type names such as [System.Text.RegularExpressions.Regex]::Replace.",
               type: "damaged_tool_call",
             },
           }),
@@ -1486,8 +1490,8 @@ export async function handleChatCompletion(
 
     // Handle "reply" tool calls — convert to plain text
     if (parsed.hasToolCalls) {
-      const replyCall = parsed.toolCalls.find(tc => tc.function.name === "reply");
-      const realToolCalls = parsed.toolCalls.filter(tc => tc.function.name !== "reply");
+      const replyCall = selectedName === "reply" ? undefined : parsed.toolCalls.find(tc => tc.function.name === "reply");
+      const realToolCalls = selectedName === "reply" ? parsed.toolCalls : parsed.toolCalls.filter(tc => tc.function.name !== "reply");
 
       if (replyCall && realToolCalls.length === 0) {
         let replyText: string;

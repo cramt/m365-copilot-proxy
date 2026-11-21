@@ -1155,6 +1155,34 @@ function scanFences(text: string): FenceBlock[] {
   return blocks;
 }
 
+/** Refuse an earlier explicit, unselected action before executing a later fence.
+ * Only top-level tool fences and standalone legacy JSON objects are considered;
+ * nested fenced examples stay opaque. */
+export function hasEarlierUnselectedAction(text: string, selected: ToolDef[], all: ToolDef[], options: { reservedNames?: Set<string>; strictShell?: boolean }): boolean {
+  const first = findFirstToolFence(text, buildSpecMap(selected, options));
+  if (!first) return false;
+  const names = new Set(all.filter(t => !selected.some(s => s.function.name === t.function.name)).map(t => t.function.name));
+  if (!names.size) return false;
+  const prefix = text.slice(0, first.start);
+  let pos = 0;
+  const outside: string[] = [];
+  for (const block of scanFences(prefix)) {
+    if (names.has(block.info)) return true;
+    outside.push(prefix.slice(pos, block.start));
+    pos = block.end;
+  }
+  outside.push(prefix.slice(pos));
+  for (const segment of outside) for (const line of segment.split("\n")) {
+    const candidate = line.trim();
+    if (!candidate.startsWith("{") || !candidate.endsWith("}")) continue;
+    try {
+      const obj = JSON.parse(candidate);
+      if (obj && typeof obj === "object" && names.has(obj.tool) && obj.arguments && typeof obj.arguments === "object" && !Array.isArray(obj.arguments)) return true;
+    } catch { /* not a legacy call */ }
+  }
+  return false;
+}
+
 // A fence opening with a tool-like info-string, for findUnclosedToolFence.
 const FENCE_OPEN_REGEX = /```([A-Za-z0-9_.-]+)[ \t]*\r?\n/g;
 const SEARCH_REPLACE_REGEX =
