@@ -125,6 +125,9 @@ than "we eyeballed one run." See §M (Methods) for the experimental rig.
 - §50 — the model's chain of thought as `reasoning_content`: which tones send it and how it arrives on each
   transport (F149); pi and opencode read it as thinking with no setting (F150); live in both clients on both
   transports (F151); what might make GPT-6.x send one (H50a, open)
+- §51 — dropped tool calls: eight fence shapes the scanner dropped or changed, and a ninth in real replies
+  (a closer with the next sentence glued on: 3 dropped calls in 1,153); CommonMark fences, and asking
+  again for a call that still can't be read (F152)
 
 ---
 
@@ -6934,3 +6937,67 @@ transports. Does the web client show one for GPT-6.2 Sol, and if so, which of it
 the proxy sends 43 over StreamHub), `optionsSets` or `allowedMessageTypes` turns it on? Probe: capture
 the web client's `chat_request` for a GPT-6.2 Sol turn that shows a chain of thought, then add its extra
 fields to `cot-probe.mjs`'s turn one group at a time. Falsified if the web client shows none either.
+## 51. Oct 11 2026 — dropped tool calls: the fence shapes the scanner missed, and asking again for the rest
+
+A call the parser can't read is the worst failure the proxy has: the reply goes to the harness as prose,
+the harness ends its turn, and the model reads the silence as having no tools. 91bf23b brought back two
+shapes #44's scanner had dropped (a glued closer, a mid-line opener) as insurance; this asks which others
+exist, and whether any reach real replies.
+
+### F152 — eight fence shapes dropped or changed a call; a ninth was in the logs, 3 dropped calls in 1,153 replies 🟢
+**Probe** (model-free: `parseToolCalls` with pi's tools on `main` after 91bf23b). Read: a plain fence, a
+glued closer, a mid-line opener, CRLF. Dropped: ```` ```Bash ````, ```` ``` bash ````, `~~~bash`, ```` ```bash
+title="x" ````, a one-line ```` ```bash ls -la``` ````, a closer with text after it, a fence never closed.
+Changed: a ```` ````bash ```` block ran `ls -la` followed by a stray backtick line, and a block indented in a
+list item kept its indentation in the command (or in a written file).
+
+**The logs** (every tool-mode reply the proxy logged in real pi runs, Oct 3–8, Windows, `gpt-5.6-think-deeper`
+and some `gpt-5.5-think-deeper`; 1,153 logged whole). None of those shapes occurs. A ninth does: the closer
+with the next sentence glued on — "```Raporu hazırlayabilmem için önce…", "```Word belgesi oluşturamıyorum…" —
+in 3 replies, and each was a call the parser dropped (one `read` of a skill, two `bash` checks). It read as a
+nested opener, so the block never closed. It turned up only because the new check below flagged it.
+
+**Fix.**
+- **The scanner follows CommonMark's fence rules**: a closer is a bare line of the opener's character
+  (backtick or tilde), at least as long; inside an open fence, an opener of the same character and length
+  nests (the models' habit, as before) and any other fence line is body; the info string's first word names
+  the tool and the rest is ignored; an indented block's body loses the opener's indentation.
+- **Tool names**: an info word matching no tool exactly takes the one tool whose name matches it ignoring
+  case (```` ```Bash ````); with two candidates, none.
+- **Fallback closers**: a glued closer, and a closer with prose glued on (three or more words, no `=` or
+  `{`, so never ```` ```python title=x ````), end a block only when nothing else does by the end of the text.
+  A body line that merely ends in ``` (a README showing inline code) no longer cuts a write short.
+- **What still can't be read is named** (`unreadableToolFence`): a tool fence never closed, an edit fence
+  without its markers, a reply that is nothing but a one-line fence. The handler then asks once, in the same
+  conversation, saying what was wrong and that nothing ran ("If you meant to run it, send it again as one
+  block… If you didn't mean to, reply without it"), before any give-up handling (`M365_NO_FENCE_RETRY=1`
+  turns it off; transport/filter retries in `runBuffered` run before it and `strippedTypeMember` runs after).
+  A truncated reply is asked about, never run: the command or file in it is incomplete.
+
+**It doesn't move anything else.** Old and new parser over every distinct reply on disk (863 logged
+tool-mode replies and 37 assistant texts from pi sessions): 897 parse to the same calls, and the other 3 are
+the dropped calls, now read. The unreadable check flags no whole reply; its 56 flags were all replies the
+log had cut at 1,000 characters. In real pi with a scripted model, the call with prose glued to its closer
+ran as sent; the unclosed one was asked for again, came back closed, and ran.
+**Not covered:** shapes not seen anywhere yet (the re-ask is there for them), and Claude's output, which
+this corpus lacks. A one-line fence inside prose stays prose, by design: it is inline code.
+
+**Review (Oct 14).** Two inputs the fallbacks turned into wrong behaviour, worse than a missed call:
+- A truncated heredoc: ```` ```bash ```` / `cat > README.md <<'EOF'` / `# Title` / ```` ```Then run the following
+  commands ```` / `make install`, with no `EOF` and no closer, ran `cat > README.md <<'EOF'\n# Title` and would
+  have clobbered the file (main dropped it). A fallback closer is no longer taken while a heredoc in the
+  body is open (`openHeredoc`: `<<EOF`, `<<'EOF'`, `<<-EOF`, not a `<<<` here-string); the block stays
+  unclosed and is asked about instead of run.
+- A prose opener at the top level: ```` ```Here is the plan for you ```` opened a block and swallowed the
+  real ```` ```bash ```` block after it (main ran it). A fence line whose text reads as prose (the same
+  `looksLikeProse` as the closer side) is no opener now, unless its first word names a tool
+  (```` ```bash run this one first ```` still opens).
+- The forcing retry no longer follows a re-ask: the re-ask tells the model it may reply without the
+  call, and a give-up-shaped answer to it was then forced into the call anyway.
+
+The 900-reply replay is unchanged by these: 897 identical, the same 3 dropped calls read, no whole reply
+flagged.
+
+**Review (Nov 17).** Aliased shell fences (`stripNativeCloser`) now match both the resolved tool name and the
+fence's own info word case-insensitively (`</bash>` inside a ```` ```bash ```` block routed to Codex's
+`functions__exec` or Claude Code's `Bash`).
