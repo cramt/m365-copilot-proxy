@@ -1066,6 +1066,24 @@ describe("a new harness session that shares the first user message", () => {
     expect(scripted.texts[1]).not.toContain(prompt); // a delta, not a fresh full prompt
     scripted.queue = [];
   });
+
+  // With two conversations on one fingerprint, a guess would put one session's
+  // turn into the other's thread; an unmatched echo starts fresh instead.
+  it("doesn't guess between several conversations when the echo matches none", async () => {
+    scripted.result = null;
+    scripted.texts = [];
+    scripted.convs = [];
+    scripted.queue = [{ fullText: "Hi from X." }, { fullText: "Hi from Y." }, { fullText: "Sure." }];
+    const pool = new SessionPool();
+    const prompt = `guess ${Math.random()}`;
+    await ask([{ role: "user", content: prompt }], pool);
+    await ask([{ role: "user", content: prompt }], pool);
+    await ask([{ role: "user", content: prompt }, { role: "assistant", content: "something neither said" }, { role: "user", content: "and now?" }], pool);
+    expect(scripted.convs[2]).not.toBe(scripted.convs[0]);
+    expect(scripted.convs[2]).not.toBe(scripted.convs[1]);
+    expect(scripted.texts[2]).toContain(prompt); // the full history, in a fresh conversation
+    scripted.queue = [];
+  });
 });
 
 describe("a side request that shares the session's first user message (#83)", () => {
