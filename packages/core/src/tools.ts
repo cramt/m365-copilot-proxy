@@ -1,6 +1,7 @@
 import { createLogger } from "./log.js";
 import {
   buildSpecMap,
+  codeModeShellScript,
   currentFramingVariant,
   deriveFencedSpec,
   findFirstToolFence,
@@ -528,6 +529,21 @@ export function parseToolCalls(text: string, tools?: ToolDef[], options?: { rese
   const resolveName = (raw: unknown): string | undefined =>
     typeof raw === "string" ? (options?.rejectJsonAliases ? raw : (specMap?.get(raw)?.name ?? raw)) : undefined;
 
+  // A JSON shell alias targeting Code Mode must never become raw JavaScript.
+  const jsonCall = (raw: unknown, args: unknown) => {
+    const spec = typeof raw === "string" ? specMap?.get(raw) : undefined;
+    if (!options?.rejectJsonAliases && spec?.codeModeShell === "always" && raw !== spec.name) {
+      let value = args;
+      if (typeof value === "string") {
+        try { value = JSON.parse(value); } catch { return { name: undefined, args }; }
+      }
+      if (!value || typeof value !== "object" || Array.isArray(value) || typeof (value as Record<string, unknown>).input !== "string") {
+        return { name: undefined, args };
+      }
+      return { name: spec.name, args: { ...value, input: codeModeShellScript((value as Record<string, string>).input) } };
+    }
+    return { name: resolveName(raw), args };
+  };
   const toolCalls: ParsedToolCall[] = [];
 
   // Tolerance fallback: a stray JSON tool call {"tool": "...", "arguments": {...}}
@@ -537,16 +553,16 @@ export function parseToolCalls(text: string, tools?: ToolDef[], options?: { rese
   while ((match = jsonRegex.exec(text)) !== null) {
     try {
       const parsed = JSON.parse(match[0]);
-      const name = resolveName(parsed.tool);
+      const { name, args } = jsonCall(parsed.tool, parsed.arguments);
       if (name) {
         toolCalls.push({
           id: `call_${crypto.randomUUID().replace(/-/g, "").slice(0, 24)}`,
           type: "function",
           function: {
             name,
-            arguments: typeof parsed.arguments === "string"
-              ? parsed.arguments
-              : JSON.stringify(parsed.arguments ?? {}),
+            arguments: typeof args === "string"
+              ? args
+              : JSON.stringify(args ?? {}),
           },
         });
       }
@@ -561,16 +577,16 @@ export function parseToolCalls(text: string, tools?: ToolDef[], options?: { rese
     while ((match = fencedRegex.exec(text)) !== null) {
       try {
         const parsed = JSON.parse(match[1]);
-        const name = resolveName(parsed.tool || parsed.name);
+        const { name, args } = jsonCall(parsed.tool || parsed.name, parsed.arguments);
         if (name) {
           toolCalls.push({
             id: `call_${crypto.randomUUID().replace(/-/g, "").slice(0, 24)}`,
             type: "function",
             function: {
               name,
-              arguments: typeof parsed.arguments === "string"
-                ? parsed.arguments
-                : JSON.stringify(parsed.arguments ?? {}),
+              arguments: typeof args === "string"
+                ? args
+                : JSON.stringify(args ?? {}),
             },
           });
         }

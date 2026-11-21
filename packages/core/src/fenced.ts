@@ -1155,32 +1155,65 @@ function scanFences(text: string): FenceBlock[] {
   return blocks;
 }
 
-/** Refuse an earlier explicit, unselected action before executing a later fence.
- * Only top-level tool fences and standalone legacy JSON objects are considered;
- * nested fenced examples stay opaque. */
+/** Compare recognizable top-level actions in order before emitting a named call.
+ * Standalone JSON objects may span lines; nested code fences remain opaque. */
 export function hasEarlierUnselectedAction(text: string, selected: ToolDef[], all: ToolDef[], options: { reservedNames?: Set<string>; strictShell?: boolean }): boolean {
-  const first = findFirstToolFence(text, buildSpecMap(selected, options));
-  if (!first) return false;
-  const names = new Set(all.filter(t => !selected.some(s => s.function.name === t.function.name)).map(t => t.function.name));
-  if (!names.size) return false;
-  const prefix = text.slice(0, first.start);
+  const selectedName = selected[0]?.function.name;
+  const declared = new Set(all.map(t => t.function.name));
+  const allSpecs = buildSpecMap(all);
+  const selectedSpecs = buildSpecMap(selected, options);
+  const classify = (name: unknown): number => {
+    if (typeof name !== "string") return 0;
+    if (name === selectedName) return 1;
+    if (declared.has(name)) return -1;
+    return allSpecs.has(name) ? -1 : 0;
+  };
+  // Scan only JSON objects starting at the beginning of a line. Quoted/prose
+  // examples and objects embedded in another fenced block are not actions here.
+  const jsonActions = (begin: number, end: number): number => {
+    let start = -1, depth = 0, inString = false, escaped = false, lineStart = true;
+    for (let i = begin; i < end; i++) {
+      const c = text[i];
+      if (start < 0) {
+        if (lineStart && (c === " " || c === "\t" || c === "\r")) continue;
+        if (lineStart && c === "{") { start = i; depth = 1; lineStart = false; continue; }
+        lineStart = c === "\n";
+        continue;
+      }
+      if (inString) {
+        if (escaped) escaped = false;
+        else if (c === "\\") escaped = true;
+        else if (c === '"') inString = false;
+      } else if (c === '"') inString = true;
+      else if (c === "{") depth++;
+      else if (c === "}" && --depth === 0) {
+        try {
+          const obj = JSON.parse(text.slice(start, i + 1));
+          if (obj && typeof obj === "object" && !Array.isArray(obj) &&
+              (typeof obj.arguments === "string" || (obj.arguments && typeof obj.arguments === "object" && !Array.isArray(obj.arguments)))) {
+            const action = classify(obj.tool);
+            if (action) return action;
+          }
+        } catch { /* not a valid legacy call */ }
+        start = -1;
+      }
+      lineStart = c === "\n";
+    }
+    return 0;
+  };
   let pos = 0;
-  const outside: string[] = [];
-  for (const block of scanFences(prefix)) {
-    if (names.has(block.info)) return true;
-    outside.push(prefix.slice(pos, block.start));
+  for (const block of scanFences(text)) {
+    const before = jsonActions(pos, block.start);
+    if (before) return before < 0;
+    // Exact declared names take priority; otherwise honor an authorized alias
+    // before consulting the full-tool routing map.
+    const resolved = declared.has(block.info) ? block.info : (selectedSpecs.get(block.info)?.name ?? allSpecs.get(block.info)?.name);
+    const action = classify(resolved);
+    if (action < 0) return true;
+    if (selectedSpecs.has(block.info) && resolved === selectedName) return false;
     pos = block.end;
   }
-  outside.push(prefix.slice(pos));
-  for (const segment of outside) for (const line of segment.split("\n")) {
-    const candidate = line.trim();
-    if (!candidate.startsWith("{") || !candidate.endsWith("}")) continue;
-    try {
-      const obj = JSON.parse(candidate);
-      if (obj && typeof obj === "object" && names.has(obj.tool) && obj.arguments && typeof obj.arguments === "object" && !Array.isArray(obj.arguments)) return true;
-    } catch { /* not a legacy call */ }
-  }
-  return false;
+  return jsonActions(pos, text.length) < 0;
 }
 
 // A fence opening with a tool-like info-string, for findUnclosedToolFence.

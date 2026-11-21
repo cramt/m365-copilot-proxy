@@ -2295,12 +2295,42 @@ describe("named choice parsing and emission", () => {
       const r = await ask("```markdown\nExample:\n```functions__exec\nnot an action\n```\n```\n```search_docs\nhello\n```", [search, exec], named("search_docs"), stream);
       expect(r.raw).toContain('"name":"search_docs"');
     });
+    it(`never sends raw JSON shell aliases as Codex JavaScript under auto (${stream})`, async () => {
+      for (const tools of [[search, exec], [exec, search]]) for (const alias of ["sh", "container.exec"]) {
+        const r = await ask(JSON.stringify({tool: alias, arguments: {input: "id"}}), tools, "auto", stream);
+        expect(r.raw).toContain('"name":"functions__exec"');
+        expect(r.raw).toContain('tools.exec_command');
+        expect(r.raw).not.toContain('"name":"search_docs"');
+        const legacy = await ask("```tool_call\n" + JSON.stringify({tool: alias, arguments: JSON.stringify({input: "id"})}) + "\n```", tools, "auto", stream);
+        expect(legacy.raw).toContain('"name":"functions__exec"');
+        expect(legacy.raw).toContain('tools.exec_command');
+      }
+    });
     it(`routes auto shell to Codex when search is also present (${stream})`, async () => {
       for (const tools of [[search,exec],[exec,search]]) {
         const r = await ask("```bash\nprintf hello\n```", tools, "auto", stream);
         expect(r.raw).toContain('"name":"functions__exec"');
         expect(r.raw).toContain("tools.exec_command");
         expect(r.raw).not.toContain('"name":"search_docs"');
+      }
+    });
+  }
+  for (const stream of [false, true]) for (const reverse of [false, true]) {
+    it(`rejects earlier structured unselected actions across output formats (${stream}, ${reverse})`, async () => {
+      const tools = reverse ? [exec, search] : [search, exec];
+      const forbidden = ["```functions__exec\ndanger()\n```", "```bash\nid\n```", "```sh\nid\n```", '{"tool":"functions__exec","arguments":{"input":"danger()"}}', '{\n"tool":"functions__exec",\n"arguments":"{\\"input\\":\\"danger()\\"}"\n}', '{"tool":"bash","arguments":{"command":"id"}}'];
+      const selected = ["```search_docs\nhello\n```", '{"tool":"search_docs","arguments":{"input":"hello"}}'];
+      for (const first of forbidden) for (const second of selected) {
+        const r = await ask(first + "\n" + second, tools, named("search_docs"), stream);
+        expect(r.raw, first + " => " + second).toContain("invalid_tool_call");
+        expect(r.raw).not.toContain('"name":"search_docs"');
+      }
+    });
+    it(`retains a selected action after ordinary prose or a quoted example (${stream}, ${reverse})`, async () => {
+      const tools = reverse ? [exec, search] : [search, exec];
+      for (const prefix of ["I will search first.", 'Example: "{\\"tool\\":\\"functions__exec\\"}"', "```markdown\nexample\n```"] ) {
+        const r = await ask(prefix + "\n```search_docs\nhello\n```", tools, named("search_docs"), stream);
+        expect(r.raw).toContain('"name":"search_docs"');
       }
     });
   }
