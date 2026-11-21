@@ -113,7 +113,9 @@ prompt is tuned. The layers, in handler order:
   assert filesystem access, suggest package installation, or request shell commands.
   An explicit named choice limits the follow-up to that provided tool (including
   when another tool is a shell); `none` bypasses tool recovery. Shell-enabled
-  requests retain the existing shell follow-ups unchanged. A tool name appearing
+  requests with a recognized shell tool name or Codex Code Mode `exec` retain the
+  existing shell follow-ups unchanged. A single input-like parameter alone is not
+  evidence of shell capability (legacy fence routing is unchanged). A tool name appearing
   in ordinary prose is **not** a new retry trigger. Retry counts, existing detectors,
   the remote-artifact fail-closed check, and one-call-per-turn are unchanged.
   This is covered by offline synthetic-handler JSON/SSE tests, not a new live

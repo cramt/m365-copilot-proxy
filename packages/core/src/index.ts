@@ -97,6 +97,7 @@ export {
   longHeredocAsWrite,
   strippedTypeMember,
   findShellTool,
+  findRecognizedShellTool,
   toolsBlock,
   type TranscriptStyle,
 } from "./fenced.js";

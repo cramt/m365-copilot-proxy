@@ -43,7 +43,7 @@ import {
   textAfterFirstToolCall,
   longHeredocAsWrite,
   strippedTypeMember,
-  findShellTool,
+  findRecognizedShellTool,
   toolsBlock,
   formatToolResponse,
   isProseDocument,
@@ -176,7 +176,7 @@ function recoveryPrompt(body: ChatBody, reason: "confab" | "remote" | "halluc", 
     ? (body.tools ?? []).filter(t => t.function.name === choice.function.name)
     : (body.tools ?? []);
   // Preserve the measured shell prompts byte-for-byte when shell routing is permitted.
-  if (findShellTool(tools)) {
+  if (findRecognizedShellTool(tools)) {
     return reason === "remote" ? REMOTE_ARTIFACT_FORCE_PROMPT
       : reason === "confab" ? (everActed ? MIDTASK_FORCE_PROMPT : CONFAB_FORCE_PROMPT)
       : HALLUCINATION_FORCE_PROMPT;

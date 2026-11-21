@@ -2136,7 +2136,7 @@ describe("the agent runtime backends: Cowork and Code (§48)", () => {
 // Synthetic ModelSession transport, real handler/parser/renderer: no credentials or network.
 describe("capability-aware existing recovery", () => {
   const stage = { type: "function", function: { name: "stage_skill", description: "Stage a skill by name", parameters: { type: "object", properties: { skill: { type: "string" }, enabled: { type: "boolean" } } } } };
-  const shell = { type: "function", function: { name: "execute_job", parameters: { type: "object", properties: { command: { type: "string" } } } } };
+  const shell = { type: "function", function: { name: "Bash", parameters: { type: "object", properties: { command: { type: "string" } } } } };
   const reasons = {
     confab: "I can't access the files. Please paste them here.",
     remote: "I created the patch: [download](sandbox:/mnt/data/fix.patch). Apply it to update the local file.",
@@ -2181,7 +2181,7 @@ describe("capability-aware existing recovery", () => {
           }
           const calls = chunks.flatMap(c => c.choices?.[0]?.message?.tool_calls ?? c.choices?.[0]?.delta?.tool_calls ?? []);
           expect(calls).toHaveLength(1);
-          expect(calls[0].function.name).toBe(hasShell ? "execute_job" : "stage_skill");
+          expect(calls[0].function.name).toBe(hasShell ? "Bash" : "stage_skill");
           expect(JSON.parse(calls[0].function.arguments)).toEqual(hasShell ? { command: "printf ok" } : { skill: "example", enabled: true });
         });
       }
@@ -2189,7 +2189,7 @@ describe("capability-aware existing recovery", () => {
         await send(stream, [shell, stage], reply, { type: "function", function: { name: "stage_skill" } });
         expect(scripted.texts).toHaveLength(2);
         expect(scripted.texts[1]).toContain("```stage_skill");
-        expect(scripted.texts[1]).not.toMatch(/```bash|execute_job/);
+        expect(scripted.texts[1]).not.toMatch(/```bash|Bash/);
       });
     }
     for (const [reason, reply] of Object.entries(reasons)) {
@@ -2215,8 +2215,35 @@ describe("capability-aware existing recovery", () => {
         expect(JSON.parse(calls[0].function.arguments)).toEqual({ skill: "example", verbose: true });
       });
     }
+    it(`${stream ? "SSE" : "JSON"}: input-shaped search is not shell capability`, async () => {
+      const search = { type: "function", function: { name: "search_docs", description: "Search documentation", parameters: { type: "object", properties: { input: { type: "string" } } } } };
+      const { res, chunks } = await send(stream, [search], reasons.confab, "auto", "```search_docs\nmanuals\n```");
+      expect(res.status).toBe(200);
+      expect(scripted.texts).toHaveLength(2);
+      expect(scripted.texts[1]).toContain("```search_docs");
+      expect(scripted.texts[1]).not.toMatch(/```bash|real filesystem|ls -la/);
+      const calls = chunks.flatMap(c => c.choices?.[0]?.message?.tool_calls ?? c.choices?.[0]?.delta?.tool_calls ?? []);
+      expect(calls).toHaveLength(1);
+      expect(calls[0].function.name).toBe("search_docs");
+      expect(JSON.parse(calls[0].function.arguments)).toEqual({ input: "manuals" });
+    });
+    it(`${stream ? "SSE" : "JSON"}: Codex Code Mode retains shell recovery`, async () => {
+      const codex = { type: "function", function: { name: "functions__exec", description: "Execute JavaScript", parameters: { type: "object", properties: { input: { type: "string" } } } } };
+      const { chunks } = await send(stream, [codex], reasons.confab, "auto", "```bash\nprintf ok\n```");
+      expect(scripted.texts[1]).toBe(legacy.confab);
+      const calls = chunks.flatMap(c => c.choices?.[0]?.message?.tool_calls ?? c.choices?.[0]?.delta?.tool_calls ?? []);
+      expect(calls).toHaveLength(1);
+      expect(calls[0].function.name).toBe("functions__exec");
+      expect(JSON.parse(calls[0].function.arguments).input).toContain("tools.exec_command");
+    });
+    for (const name of ["bash", "sh", "shell", "zsh", "run", "exec", "execute", "command", "cmd", "terminal", "run_command", "run_terminal_cmd", "execute_command", "execute_bash", "shell_exec", "system", "exec_command", "shell_command"]) {
+      it(`${stream ? "SSE" : "JSON"}: recognized ${name} retains legacy recovery`, async () => {
+        await send(stream, [{ ...shell, function: { ...shell.function, name } }], reasons.confab);
+        expect(scripted.texts[1]).toBe(legacy.confab);
+      });
+    }
     it(`${stream ? "SSE" : "JSON"}: explicit shell choice retains legacy recovery`, async () => {
-      await send(stream, [shell, stage], reasons.confab, { type: "function", function: { name: "execute_job" } });
+      await send(stream, [shell, stage], reasons.confab, { type: "function", function: { name: "Bash" } });
       expect(scripted.texts).toHaveLength(2);
       expect(scripted.texts[1]).toBe(legacy.confab);
     });

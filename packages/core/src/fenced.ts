@@ -205,6 +205,12 @@ export function strippedTypeMember(
   return null;
 }
 
+/** Explicitly recognized executors only; unlike routing, capability claims must not
+ *  infer a shell from an otherwise arbitrary tool's argument name. */
+export function findRecognizedShellTool(tools: ToolDef[]): ToolDef | undefined {
+  return tools.find((t) => SHELL_TOOL_NAME.test(t.function.name) || isCodeModeExecTool(t));
+}
+
 /** The harness tool (if any) that runs a shell command — the target for ```bash routing.
  *  Codex's Code Mode `exec` is the last resort: shell fences reach it wrapped as a
  *  nested `exec_command` call (codeModeShellScript). */
