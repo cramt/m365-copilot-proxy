@@ -20,7 +20,7 @@ import { oneTurn as defaultOneTurn } from "./_probe-chat.mjs";
 import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 
-export async function main({ oneTurn = defaultOneTurn, fetcher = fetch } = {}) {
+export async function main({ oneTurn = defaultOneTurn, fetcher = fetch, ownershipTimeoutMs = 3000, ownershipRetryMs = 200 } = {}) {
 
 const TUNNEL = (process.argv[2] || readFileSync("/tmp/tunnel_url.txt", "utf8")).trim().replace(/\/$/, "");
 const SHAPE = (() => { const i = process.argv.indexOf("--shape"); return i >= 0 ? process.argv[i + 1] : "bareurl"; })();
@@ -92,22 +92,55 @@ const createBody = {
 };
 
 console.log(`[mcp] creating temporary agent`);
-const createRes = await ppFetch(API, { method: "POST", body: JSON.stringify(createBody) });
-const createText = await createRes.text();
+let createRes;
+try { createRes = await ppFetch(API, { method: "POST", body: JSON.stringify(createBody) }); }
+catch { throw new Error("[mcp] create outcome unknown; temporary agent may remain. Inspect the probe-named agents in Copilot Studio; do not delete without verification."); }
+let createText;
+try { createText = await createRes.text(); } catch {
+  throw new Error("[mcp] create response unavailable; temporary agent may remain. Inspect the probe-named agents in Copilot Studio; do not delete without verification.");
+}
 console.log(`[mcp] create → ${createRes.status}`);
 if (!createRes.ok) throw new Error(`[mcp] create failed (HTTP ${createRes.status})`);
-const created = JSON.parse(createText);
-const botId = created.bot?.schemaName ?? created.bot?.cdsBotId;
-// Existing code accepts either field; constrain it to one literal path segment.
-if (typeof botId !== "string" || !/^[A-Za-z0-9_-][A-Za-z0-9_.-]{0,255}$/.test(botId) || botId === "." || botId === "..") {
-  throw new Error("Created agent response has invalid or no bot ID; cannot clean up safely");
+let created;
+try { created = JSON.parse(createText); } catch {
+  throw new Error("[mcp] invalid create response; temporary agent may remain. Inspect the probe-named agents in Copilot Studio; do not delete without verification.");
 }
-const ownershipRes = await ppFetch(API, { method: "GET" });
-if (!ownershipRes.ok) throw new Error("[mcp] unable to verify agent ownership");
-let owners;
-try { owners = await ownershipRes.json(); } catch { throw new Error("[mcp] unable to verify agent ownership"); }
-if (!Array.isArray(owners) || owners.filter((row) => row?.botId === botId && row?.shortBotName === NAME).length !== 1 || owners.filter((row) => row?.botId === botId || row?.shortBotName === NAME).length !== 1) {
-  throw new Error("[mcp] unable to verify agent ownership");
+const schema = created.bot?.schemaName;
+const cds = created.bot?.cdsBotId;
+const botId = schema ?? cds;
+// Existing code accepts either field, but does not establish equivalence between them.
+if ((schema != null && cds != null && schema !== cds) || typeof botId !== "string" || !/^[A-Za-z0-9_-][A-Za-z0-9_.-]{0,255}$/.test(botId)) {
+  throw new Error("Created agent response has invalid, ambiguous or no bot ID; temporary agent may remain. Inspect the probe-named agents in Copilot Studio; do not delete without verification.");
+}
+
+// Bound the entire listing operation, including response-body consumption, even
+// if a transport ignores abort. No late listing can authorize a mutation.
+const controller = new AbortController();
+let timer;
+const timeout = new Promise((resolve) => { timer = setTimeout(() => { controller.abort(); resolve(false); }, ownershipTimeoutMs); });
+const verify = (async () => {
+  for (let i = 0; i < 3 && !controller.signal.aborted; i++) {
+    try {
+      const res = await ppFetch(API, { method: "GET", signal: controller.signal });
+      if (res.ok) {
+        const owners = await res.json();
+        if (!Array.isArray(owners)) return false;
+        const relevant = owners.filter((row) => row?.botId === botId || row?.shortBotName === NAME);
+        if (relevant.length === 1 && relevant[0]?.botId === botId && relevant[0]?.shortBotName === NAME) return true;
+        if (relevant.length) return false;
+      } else if (res.status !== 429 && res.status < 500) return false;
+    } catch {
+      if (controller.signal.aborted) return false;
+    }
+    if (i < 2) await new Promise((resolve) => setTimeout(resolve, ownershipRetryMs));
+  }
+  return false;
+})();
+let verified;
+try { verified = await Promise.race([verify, timeout]); }
+finally { clearTimeout(timer); controller.abort(); }
+if (!verified) {
+  throw new Error("[mcp] unable to verify agent ownership; temporary agent may remain. Inspect the probe-named agents in Copilot Studio; do not delete without verification.");
 }
 const botPath = `${envUrl}/copilotstudio/minimalBots/api/${encodeURIComponent(botId)}`;
 console.log(`[mcp] created temporary agent`);
@@ -129,12 +162,12 @@ console.log(`[mcp] publish → ${pubRes.status}`);
 if (!pubRes.ok) throw new Error(`[mcp] publish failed (HTTP ${pubRes.status})`);
 let titleId = null;
 try { titleId = JSON.parse(pubText).TitleId; } catch {}
-console.log(`[mcp] titleId=${titleId}`);
+console.log(`[mcp] publish returned a title: ${!!titleId}`);
 
 if (!titleId) throw new Error("[mcp] no titleId — cannot chat-test");
 
 const agentId = `${titleId}.${botId}.gpt.default`;
-console.log(`[mcp] agentId=${agentId}`);
+console.log(`[mcp] agent ready for chat`);
 
 // chat test — ask it to use the tool
 const token = await getToken();
