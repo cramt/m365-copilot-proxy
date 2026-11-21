@@ -1018,6 +1018,16 @@ export async function handleChatCompletion(
         return { error: throttledResponse(copilotStream.result) };
       }
 
+      // A licence refusal comes with a canned BotConnection reply ("It looks like you
+      // don't have a valid licence…"), so without this check it would pass for the
+      // model's answer. Re-sending it (softened, or in a fresh conversation) is
+      // refused the same way: end the request with a 403.
+      if (copilotStream.result?.value === "ForbiddenRequest") {
+        noteOutcome(false, convId); // an answer, not a throttle
+        log.info(`Upstream ForbiddenRequest (${copilotStream.result.errorCode ?? "no errorCode"}) — 403, no retry`);
+        return { error: forbiddenResponse(model, copilotStream.result) };
+      }
+
       // An agent-less turn carries the Bing plugin, and on some accounts that
       // alone pushes a tone over its input limit: GPT-6 and GPT-5.5 Think Deeper
       // refuse a one-line prompt with it and serve without it (§40). Remember
@@ -1652,6 +1662,8 @@ export async function handleChatCompletion(
           let message = "upstream error";
           let type = "upstream_error";
           let code: string | undefined;
+          let param: string | undefined;
+          let retryable: boolean | undefined;
           // Carry the structured fields through, not just the prose: a streaming
           // client still has to tell a priority-access wall (back off until the
           // reset) from a transient upstream failure (retry now), and the status
@@ -1661,6 +1673,8 @@ export async function handleChatCompletion(
             if (parsed?.message) message = parsed.message;
             if (parsed?.type) type = parsed.type;
             if (parsed?.code) code = parsed.code;
+            if (typeof parsed?.param === "string") param = parsed.param;
+            if (typeof parsed?.retryable === "boolean") retryable = parsed.retryable;
           } catch {}
           const retryAfter = p.resp.headers.get("Retry-After");
           if (errorsAsText) {
@@ -1671,7 +1685,7 @@ export async function handleChatCompletion(
             send({ ...base, choices: [{ index: 0, delta: {}, finish_reason: "stop" }], ...(includeUsage ? { usage: usage(sent + reason) } : {}) });
           } else {
             // HTTP 200 is already committed, so surface the failure as an in-stream error chunk.
-            send({ ...base, error: { message, type, ...(code ? { code } : {}), ...(retryAfter ? { retry_after: Number(retryAfter) } : {}) } });
+            send({ ...base, error: { message, type, ...(code ? { code } : {}), ...(param ? { param } : {}), ...(retryable === undefined ? {} : { retryable }), ...(retryAfter ? { retry_after: Number(retryAfter) } : {}) } });
           }
         } else if (p.kind === "tools") {
           p.toolCalls.forEach((tc, i) => {
@@ -1775,7 +1789,7 @@ function priorityAccessResponse(exhaustion: PriorityAccessExhaustion, model: str
   const retryAfter = secondsUntilReset(exhaustion);
   const label = exhaustion.model ?? model;
   const when = exhaustion.window === "week" ? "this week" : "today";
-  return jsonResponse(
+  return terminalErrorResponse(
     429,
     {
       error: {
@@ -1792,6 +1806,38 @@ function priorityAccessResponse(exhaustion: PriorityAccessExhaustion, model: str
     },
     { "Retry-After": String(retryAfter) },
   );
+}
+
+/** A response that no retry can change: `error.retryable: false`, and
+ *  `x-should-retry: false` for the OpenAI SDKs, which otherwise re-send a 429
+ *  (twice, by default) on their own. */
+function terminalErrorResponse(status: number, body: { error: Record<string, unknown> }, headers: Record<string, string> = {}): Response {
+  return jsonResponse(status, { error: { ...body.error, retryable: false } }, { ...headers, "x-should-retry": "false" });
+}
+
+const MODEL_LICENCE_CODES = new Set(["PremiumModelUnavailableForLicense", "ClaudeUnavailableForLicense"]);
+
+/** M365 refused the request as forbidden (`result.value: "ForbiddenRequest"`). A 403, in
+ *  three kinds, by the result's `errorCode`: the model isn't licensed for this
+ *  account (`param` names it), the account holds no licence at all, or a code we
+ *  don't know. M365's own prose isn't repeated; only a well-formed code is. */
+function forbiddenResponse(model: string, result: { errorCode?: string }): Response {
+  const upstreamCode = result.errorCode && /^[A-Za-z][A-Za-z0-9_]{0,127}$/.test(result.errorCode) ? result.errorCode : undefined;
+  const modelDenied = upstreamCode !== undefined && MODEL_LICENCE_CODES.has(upstreamCode);
+  const accountDenied = upstreamCode === "InvalidCopilotLicense";
+  return terminalErrorResponse(403, {
+    error: {
+      message: accountDenied
+        ? "M365 Copilot is not licensed for this account."
+        : modelDenied
+          ? `M365 Copilot does not serve ${JSON.stringify(model)} with this account's licence.`
+          : "M365 Copilot denied this request (ForbiddenRequest); the result doesn't say why.",
+      type: "permission_error",
+      code: accountDenied ? "m365_account_not_licensed" : modelDenied ? "m365_model_not_licensed" : "m365_forbidden",
+      ...(modelDenied ? { param: model } : {}),
+      ...(upstreamCode ? { m365_error_code: upstreamCode } : {}),
+    },
+  });
 }
 
 function sseResponse(stream: ReadableStream): Response {
