@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 
 const CONFIG_DIR = join(homedir(), ".config", "opencode-m365");
 
@@ -127,5 +127,40 @@ describe("rolling window over the debug log (M365_LOG_MAX_BYTES)", () => {
     const withDefault = await loggerAt(nonsense, "sixty megabytes");
     withDefault.info("the newest line");
     expect(readFileSync(nonsense, "utf8").startsWith(original)).toBe(true);
+  });
+
+  // Windows refuses to rename over a file the process holds open (EPERM), and the
+  // trim's catch swallowed that, so the log grew forever there. Same rule here on any OS.
+  it("closes the log before replacing it, so the trim also works on Windows", async () => {
+    vi.doMock("node:fs", async (importOriginal) => {
+      const fs = await importOriginal<typeof import("node:fs")>();
+      const open = new Map<number, string>();
+      return {
+        ...fs,
+        openSync: (path: string, ...rest: [any?, any?]) => {
+          const fd = fs.openSync(path, ...rest);
+          open.set(fd, resolve(path));
+          return fd;
+        },
+        closeSync: (fd: number) => { open.delete(fd); fs.closeSync(fd); },
+        renameSync: (from: string, to: string) => {
+          if ([...open.values()].includes(resolve(to))) {
+            throw Object.assign(new Error("EPERM: operation not permitted, rename"), { code: "EPERM" });
+          }
+          fs.renameSync(from, to);
+        },
+      };
+    });
+    try {
+      const logFile = tempLog();
+      writeFileSync(logFile, history(2_000));
+      const logger = await loggerAt(logFile, "1000");
+
+      logger.info("the newest line");
+
+      expect(readFileSync(logFile, "utf8")).not.toContain("line 000");
+    } finally {
+      vi.doUnmock("node:fs");
+    }
   });
 });
