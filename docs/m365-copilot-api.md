@@ -236,8 +236,8 @@ that call, whatever `M365_PROBE_MAX_ATTEMPTS` says, and `latchThrottle: false`
 records a throttle result in the summary without stopping the run. The attempt
 count stays per principal, so a probe that makes follow-up turns after its main
 run (`throttle-probe.mjs --recover`) sets `maxAttempts` to cover both. A call
-with `latchThrottle: false` ignores a stop that another call already latched
-and sets none; the native pacing record of the throttle is kept either way, and
+with `latchThrottle: false` sets no stop, but cannot bypass a stop already
+latched by any caller; the native pacing record of the throttle is kept either way, and
 `M365_AVOID_THROTTLING` still applies. Every other caller keeps the 20-attempt
 cap and the latch. `throttle-probe.mjs` (its `--max`, plus its `--recover` polls)
 and `throttle-recovery-ab.mjs` (induce turns, the confirming probe and every

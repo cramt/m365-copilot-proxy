@@ -93,20 +93,20 @@ function runCap(maxAttempts) {
 /**
  * This helper's credential-scoped memory only; legacy budgetStatus remains log-based.
  * `maxAttempts` and `latchThrottle` are the options oneTurn takes; they change
- * what is reported as `cap` and `stopped` for a caller that passes them.
+ * the reported cap; stopped always reflects the principal-wide latch.
  */
 export function probeBudgetStatus({ token, claims, maxAttempts, latchThrottle = true }) {
   const { scope } = principal(token, claims);
   const cfg = budgetConfig();
   return {
-    attempts: attempts.get(scope) ?? 0, cap: runCap(maxAttempts), stopped: latchThrottle && stopped.has(scope),
+    attempts: attempts.get(scope) ?? 0, cap: runCap(maxAttempts), stopped: stopped.has(scope),
     observedRemaining: structuredClone(observations.get(scope) ?? null),
     pacing: proxyBudgetStatus(Date.now(), cfg, false, scope),
   };
 }
 
-function refusal(scope, cap, latchThrottle) {
-  if (latchThrottle && stopped.has(scope)) return "probe throttle stop: restart only after reviewing the upstream refusal";
+function refusal(scope, cap) {
+  if (stopped.has(scope)) return "probe throttle stop: restart only after reviewing the upstream refusal";
   if ((attempts.get(scope) ?? 0) >= cap) return "probe run cap reached";
   const cfg = budgetConfig();
   if (cfg.enabled && !decide(proxyBudgetStatus(Date.now(), cfg, false, scope), 1, Date.now(), cfg).ok) return "probe turn budget hold";
@@ -360,7 +360,7 @@ function streamHubResult(value, errorCode, message, detail) {
  *   (a positive safe integer); overrides M365_PROBE_MAX_ATTEMPTS and the default of 20
  * @param {boolean} [o.latchThrottle]  default true: an explicit throttle result stops the
  *   principal for the rest of the run. `false` observes it and lets the run go on; the call
- *   then ignores a stop that is already latched and sets none
+ *   sets no stop itself but cannot bypass an existing stop
  */
 export function oneTurn(o) {
   const {
@@ -407,7 +407,7 @@ export function oneTurn(o) {
 
   const { tid, oid, scope } = principal(token, claims);
   const cap = runCap(maxAttempts);
-  const preflight = refusal(scope, cap, latchThrottle);
+  const preflight = refusal(scope, cap);
   if (preflight) return Promise.resolve(refusedSummary(preflight, transport));
 
   const turn = {
@@ -570,7 +570,7 @@ export function oneTurn(o) {
           if (parsed.error) { finish(`Handshake error: ${parsed.error}`); continue; }
           handshakeDone = true;
           // Pending handshakes may race; serialize accounting synchronously at dispatch.
-          const denied = refusal(scope, cap, latchThrottle);
+          const denied = refusal(scope, cap);
           if (denied) { finish(denied); continue; }
           attempted = true;
           attempts.set(scope, (attempts.get(scope) ?? 0) + 1);
