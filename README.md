@@ -370,8 +370,8 @@ without NixOS: `nix run github:cramt/m365-copilot-proxy -- 4141`.
 | `gpt-6.2-sol` | Gpt_62_Sol_Reasoning | GPT-6.2 Sol ("GPT-6.2 Sol" in the web UI, since 2026-11-17). Serves on the included scenario. Defaults to `relay_batch`, not yet benched; Codex 3/3 over StreamHub ([hypotheses §45](docs/hypotheses.md)) |
 | `gpt-6.2-astra` | Gpt_62_Astra_Reasoning | GPT-6.2 Astra (marked "Uses credits" in the web UI): **its turns are charged to the user's Copilot credits.** Serves on the included scenario. Defaults to `relay_batch`, not yet benched |
 | `gpt-6-astra` | Gpt_6_Astra_Reasoning (paid scenario) | GPT-6 Astra, also charged to Copilot credits. **Needs a paid/premium Copilot seat**: the included scenario gives M365's canned apology. The web UI replaced it with GPT-6.2 Astra on 2026-11-17. Defaults to `relay_batch`, not yet benched |
-| `gpt-5.6-think-deeper` | Gpt_5_6_Reasoning | GPT-5.6 reasoning — 27/30 on the bench, tied with `gpt-5.5-think-deeper` |
-| `gpt-5.6` / `gpt-5.6-quick` | Gpt_5_6_Chat | GPT-5.6 fast ("GPT 5.6 Quick response" in the web UI). **Weak at tool calling** — 7/30 on the bench (see below) |
+| `gpt-5.6-think-deeper` | Gpt_5_6_Reasoning | GPT-5.6 reasoning ("GPT-5.6 Sol Think deeper" in the reported web picker; see H-SOL56 in `docs/hypotheses.md`) — 27/30 on the bench, tied with `gpt-5.5-think-deeper` |
+| `gpt-5.6` / `gpt-5.6-quick` | Gpt_5_6_Chat | GPT-5.6 fast ("GPT-5.6 Sol Quick response" in the reported web picker). **Weak at tool calling** — 7/30 on the bench (see below) |
 | `gpt-5.5-think-deeper` | Gpt_5_5_Reasoning | **Recommended default for agents/tool-calling** — 26/30 on the bench |
 | `gpt-5.5` / `gpt-5.5-quick` | Gpt_5_5_Chat | GPT-5.5 fast — 16/30 on the bench, the strongest benchmarked chat tone |
 | `m365-copilot` / `auto` | magic | Auto-routing — high-variance at tool-calling (confabulates; see below) |

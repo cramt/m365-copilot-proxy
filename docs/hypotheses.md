@@ -3152,6 +3152,24 @@ the patterns is a separate change and needs false-positive tests ("Replaced X wi
 calc.py" is a genuine completion). Afterwards, re-run with the retry on and compare against
 this table to measure what it recovers.
 
+### H-SOL56 — "GPT-5.6 Sol" in the web picker is `Gpt_5_6_Chat` / `Gpt_5_6_Reasoning` ❓
+**Reported, not re-run.** One tenant (non-premium), 2026-11-03, n=1 per cell. The picker shows
+"GPT-5.6 Sol Quick response" / "GPT-5.6 Sol Think deeper". Seven guessed tone names (`Gpt_56_Sol_*`,
+`Gpt_5_6_Sol_*`, …) were **REJECTED** (`type:3`), and the picker's menu JSON, read from the browser's
+HTTP cache, was reported to map the labels to the existing tones:
+`{"id":"Gpt_5_6_Chat","menuItemTitle":"GPT-5.6 Sol Quick response"}`,
+`{"id":"Gpt_5_6_Reasoning","menuItemTitle":"GPT-5.6 Sol Think deeper"}`. If so, "Sol" is a display
+rename of the mapped `gpt-5.6` / `gpt-5.6-think-deeper` and nothing needs adding. The captured JSON
+isn't in the repo, so this stays ❓ until the picker data is read again and the guesses are
+re-swept (E-SOL56 in `experiments.md`; the cells are in `scripts/tone-probe.mjs`).
+**Falsifier:** a `*_Sol_*` guess that serves (`DeepLeo`), or picker JSON that gives the "GPT-5.6 Sol"
+items another `id`.
+The same sweep also saw `Grok_Auto`, `Grok_Reasoning`, `Muse_Spark` and `Gpt_5_2_Auto`, named in the
+web client's tone enum, accepted, each self-identifying as "the GPT-5 chat model", and `Gpt_6_Astra`
+REJECTED (n=1). Self-ID can't tell a real model from a fallback (§18, §27 H27a), so those four are
+unconfirmed. The licence refusals that tenant also met (GPT-6 Sol, GPT-6.1 Sol, Claude) are recorded
+with later runs in §49 F146.
+
 ### Side observations (uninterpreted, n=3 each)
 
 - **Latency signatures drifted.** Rejections took 1.3–1.6s and the `BotConnection` deflection
