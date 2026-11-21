@@ -33,7 +33,7 @@ beforeAll(async () => {
   server = createServer(h3.toNodeListener(app));
   await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
   port = (server.address() as { port: number }).port;
-});
+}, 30_000); // loading the route loads the whole proxy: past the default 10 s in a full parallel run
 afterAll(() => { server.close(); });
 
 const post = (body: BodyInit, headers: Record<string, string> = {}) =>

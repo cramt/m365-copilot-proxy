@@ -7324,3 +7324,33 @@ listing (`task-observer` "ANY multi-step task", `modern-web-guidance` "MANDATORY
 skip" and it needs a search tool pi doesn't have, `graphify`, `ponytail`) with `disable-model-invocation:
 true` and call them with `/skill:name`. Don't copy `~/.agents/skills` into `~/.pi/agent/skills` (pi reads
 both; duplicate names keep the first and warn). **Not measured:** real bodies at 308; `gpt-5.5-think-deeper`.
+
+## 59. Nov 21 2026 — Windows refuses to replace an open file: the cache publication (#102) and the log window (#141)
+
+Both features of Nov 20–21 publish a file by writing a temp copy and renaming it over the old one. Run on
+Windows 11 (Node 26), neither worked.
+
+### F161 — the log window never cut on Windows, and still doesn't while another process has the log open 🟢
+`trimToWindow` read the tail through an open descriptor and renamed the trimmed copy over the log before
+closing it (in `finally`). Windows refuses that rename with `EPERM`; the error was swallowed as best
+effort, so the log was never cut, the `.tmp` copy stayed, and past the threshold (80MB by default) every
+log line re-read and re-wrote the whole 50MB window. A probe (one file, `renameSync` over it): refused
+while this process held it open, done once that descriptor was closed, refused again while another reader
+held it, as a terminal tailing the log does, and in every case a rewrite in place went through. #143 closes
+the descriptor before the rename; a tailing terminal still blocked it, so the cut now falls back to
+writing in place, and after a cut that fails the next waits for another tenth of the window. Two tests that
+fail without those on any OS (a refused rename mocked) cover them.
+
+### F162 — the cache rename meets other handles for up to 1.6 s on Windows 🟢
+`atomicWritePrivate` (MSAL cache, agent ID) renames over the cache; Windows refuses while any handle has
+it open, so its concurrent-writers test failed there (`EPERM (rename)`), and so would two processes
+refreshing one token cache. Measured with the test's load (two workers publishing a 32KB snapshot 40 times
+each), retrying each rename until it went through: with the two writers alone a rename waited at most
+19 ms; with the test's reader reopening the file about every 15 ms it waited up to 1.6 s (p90 136–361 ms,
+2 runs), far longer than the reads themselves, so likely a scanner opening the file after each close.
+A retry of about 1 s in all still failed 5 of 8 rounds. The rename is now retried on Windows for up to 5 s
+(`EPERM`, `EACCES`, `EBUSY`; backing off from 1 to 100 ms), never when a directory is in the way (the
+agent-cache tests put one there to force a failure, and a wait can't clear it): 0 of 10 rounds failed,
+each round up to 4.6 s. POSIX rename replaces an open file, so elsewhere nothing changes. The full suite
+passes on Windows (3 of 3 runs), with tests run under a temporary `USERPROFILE`: #142 stopped the
+agent-cache tests writing the real `~/.config/opencode-m365`, which they had overwritten on this machine too.

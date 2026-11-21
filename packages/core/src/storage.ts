@@ -35,12 +35,45 @@ function directorySyncUnsupported(error: unknown): boolean {
     ["EINVAL", "ENOTSUP", "EOPNOTSUPP", "ENOSYS"].includes(String(error.code));
 }
 
+/** How Windows refuses to replace a file another handle has open: a reader, a competing writer's rename, a scanner. */
+const RENAME_RETRY_CODES = new Set(["EPERM", "EACCES", "EBUSY"]);
+/** How long a refused rename is retried on Windows. Behind a reader that kept
+ *  reopening the file, a scanner held it for up to 1.6 s at a time. */
+const RENAME_RETRY_MS = 5_000;
+const RENAME_RETRY_MAX_WAIT_MS = 100;
+
+function isDirectory(path: string): boolean {
+  try { return lstatSync(path).isDirectory(); } catch { return false; }
+}
+
+/**
+ * renameSync, retried on Windows while the destination is open elsewhere. POSIX
+ * rename replaces a file whoever has it open; Windows refuses (EPERM, EACCES,
+ * EBUSY) until the other handle closes, so two processes refreshing one cache
+ * failed one of them. Elsewhere, for a directory in the way, and once
+ * RENAME_RETRY_MS is up, the failure is final.
+ */
+function renameReplacing(from: string, to: string): void {
+  const start = Date.now();
+  for (let wait = 1; ; wait = Math.min(wait * 2, RENAME_RETRY_MAX_WAIT_MS)) {
+    try {
+      renameSync(from, to);
+      return;
+    } catch (error) {
+      const code = String((error as { code?: unknown } | null)?.code);
+      if (process.platform !== "win32" || !RENAME_RETRY_CODES.has(code) || Date.now() - start >= RENAME_RETRY_MS || isDirectory(to)) throw error;
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, wait);
+    }
+  }
+}
+
 /**
  * Publish one complete snapshot. Existing shared parents are never chmodded;
  * missing parents are created 0700. The configured ancestor directories must
  * be trusted (this is not an openat-based defence against hostile directory swaps).
  * A destination symlink is replaced, not followed. A symlink as the immediate
- * parent is rejected. Concurrent writers are last-rename-wins, NOT MSAL merging.
+ * parent is rejected. Concurrent writers are last-rename-wins, NOT MSAL merging;
+ * on Windows a rename that meets another handle is retried (renameReplacing).
  */
 export function atomicWritePrivate(path: string, contents: string): void {
   const parent = dirname(path);
@@ -57,7 +90,7 @@ export function atomicWritePrivate(path: string, contents: string): void {
     const closing = fd;
     fd = undefined; // Never retry close: an interrupted close may already release the FD.
     closeSync(closing);
-    renameSync(temp, path);
+    renameReplacing(temp, path);
     owned = false;
 
     // Windows does not provide POSIX directory fsync. On other systems tolerate

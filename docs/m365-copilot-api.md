@@ -81,6 +81,10 @@ not an authentication miss: they must not trigger browser login or optional-agen
 fallback. A failure before rename leaves the previous complete cache intact;
 a directory-fsync failure after rename reports failure but leaves the new complete
 snapshot published. Directory fsync is attempted where supported, not on Windows.
+Windows refuses to rename over a file that another handle has open (a reader, a
+competing writer's rename, a scanner after either), with `EPERM`, `EACCES` or `EBUSY`;
+a scanner held the destination up to 1.6 s at a time. There the rename is retried for
+up to 5 s, unless a directory is in the way. Elsewhere a refused rename fails at once.
 Because the swap is a rename, `M365_CACHE_FILE` on a single
 bind-mounted file fails with `EBUSY`/`EXDEV`, where the earlier in-place write worked:
 mount the containing directory instead.
