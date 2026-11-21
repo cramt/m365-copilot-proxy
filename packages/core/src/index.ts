@@ -119,6 +119,7 @@ export {
 
 export {
   ModelSession,
+  ChatDispatchRefused,
   type ModelSessionOptions,
   type TurnSession,
   type TurnOptions,

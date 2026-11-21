@@ -1,5 +1,6 @@
 import {
   ModelSession,
+  ChatDispatchRefused,
   AetherSession,
   type ModelSessionOptions,
   type TurnSession,
@@ -56,6 +57,7 @@ import {
   type ParseResult,
 } from "@m365-copilot/core";
 import { ChatCompletionRequest } from "./schemas.js";
+import { activeReasoning, capResult, noteLicence, noteModelWall, noteReasoning, refusalRoute, resetTime, sharedReasoning, suggestions } from "./refusal-suggestions.js";
 import { maxTurnParts, planFullPrompt, planText, turnChunkBytes } from "./replay.js";
 import { estimateTokens, reportsUsage } from "./usage.js";
 import {
@@ -566,7 +568,18 @@ export async function handleChatCompletion(
   const { session } = conv;
   const hasTools = body.tools && body.tools.length > 0 && body.tool_choice !== "none";
   const requestedModel = route.model;
-  const turnOptions = { reasoningEffort: body.reasoning_effort };
+  let attemptScope: string | null = null;
+  let attemptRoute: string | null = null;
+  let blockedReasoning: number | null = null;
+  const turnOptions = {
+    reasoningEffort: body.reasoning_effort,
+    ...(chat ? { beforeChatDispatch(scope: string | null) {
+      attemptScope = scope;
+      attemptRoute = refusalRoute(model);
+      blockedReasoning = sharedReasoning(model) ? activeReasoning(scope) : null;
+      if (blockedReasoning) throw new ChatDispatchRefused("reasoning wall");
+    } } : {}),
+  };
 
   // Priority access (§15, §24 F55, §26, issue #18). Once a budget is used up
   // every turn on it is refused until the reset, so don't start one: serve the
@@ -580,7 +593,7 @@ export async function handleChatCompletion(
   const fallbackModel = knownExhaustion && requestedBudget ? priorityAccessFallbackModel(requestedBudget) : null;
   if (knownExhaustion && !fallbackModel) {
     log.info(`Priority access exhausted (${knownExhaustion.window}) until ${knownExhaustion.resetsAt.toISOString()} — 429 without contacting M365`);
-    return priorityAccessResponse(knownExhaustion, requestedModel);
+    return priorityAccessResponse(knownExhaustion, requestedModel, null);
   }
   let model = fallbackModel ?? requestedModel;
   if (fallbackModel) log.info(`Priority access exhausted until ${knownExhaustion!.resetsAt.toISOString()} — serving ${requestedModel} with ${fallbackModel} (${PRIORITY_ACCESS_FALLBACK_ENV[requestedBudget!]})`);
@@ -776,6 +789,7 @@ export async function handleChatCompletion(
         for await (const _ack of stream) { /* acknowledged, not forwarded */ }
       } catch (err: any) {
         session.newConversation();
+        if (err instanceof ChatDispatchRefused && blockedReasoning) return { error: reasoningResponse(blockedReasoning, attemptScope, model) };
         if (err instanceof TurnBudgetHold) return { error: turnBudgetHoldResponse(err) };
         return { error: jsonResponse(502, { error: { message: err.message, type: "upstream_error" } }) };
       }
@@ -914,6 +928,7 @@ export async function handleChatCompletion(
           // ModelSession.run / docs H8.6.
           copilotStream = await session.run(text, model, signal, useToolAgent, inputAttachments, waitForBudget, turnOptions);
         } catch (err: any) {
+          if (err instanceof ChatDispatchRefused && blockedReasoning) return { error: reasoningResponse(blockedReasoning, attemptScope, model) };
           if (err instanceof TurnBudgetHold) return { error: turnBudgetHoldResponse(err) };
           return { error: jsonResponse(502, { error: { message: err.message, type: "upstream_error" } }) };
         }
@@ -1018,6 +1033,10 @@ export async function handleChatCompletion(
         return { error: throttledResponse(copilotStream.result) };
       }
 
+      if (chat && copilotStream.result?.value === "ForbiddenRequest" &&
+          ["PremiumModelUnavailableForLicense", "ClaudeUnavailableForLicense"].includes(copilotStream.result.errorCode ?? "") && attemptRoute) {
+        noteLicence(attemptScope, attemptRoute);
+      }
       // An agent-less turn carries the Bing plugin, and on some accounts that
       // alone pushes a tone over its input limit: GPT-6 and GPT-5.5 Think Deeper
       // refuse a one-line prompt with it and serve without it (§40). Remember
@@ -1127,8 +1146,15 @@ export async function handleChatCompletion(
       // way remember it, so the next requests don't spend M365 turns on
       // refusals until the reset.
       // A part M365 refused carries its refusal text on the part's own stream.
+      if (chat && capResult(copilotStream.result)) {
+        const end = resetTime();
+        if (sharedReasoning(model)) noteReasoning(attemptScope, end);
+        noteOutcome(false, convId);
+        return { error: reasoningResponse(end, attemptScope, model) };
+      }
       const exhausted = chat && priorityAccessExhaustionOf(copilotStream.result, refused ? copilotStream.fullText : fullText);
       if (exhausted) {
+        noteModelWall(attemptScope, attemptRoute, exhausted.resetsAt.getTime());
         const budget = meteredBudgetOf(model);
         if (budget || copilotStream.result?.value === "OutOfCredits") notePriorityAccessExhausted(budget ?? model, exhausted);
         const fallback = budget && !priorityFallbackDone ? priorityAccessFallbackModel(budget) : null;
@@ -1148,7 +1174,7 @@ export async function handleChatCompletion(
         }
         noteOutcome(false, convId); // an answer, not a throttle
         log.info(`Priority access exhausted (${exhausted.window}) — resets ${exhausted.resetsAt.toISOString()}`);
-        return { error: priorityAccessResponse(exhausted, model) };
+        return { error: priorityAccessResponse(exhausted, model, attemptScope) };
       }
 
       // M365's prompt filter can answer with a canned apology instead of a
@@ -1652,6 +1678,7 @@ export async function handleChatCompletion(
           let message = "upstream error";
           let type = "upstream_error";
           let code: string | undefined;
+          let suggestedModels: string[] | undefined;
           // Carry the structured fields through, not just the prose: a streaming
           // client still has to tell a priority-access wall (back off until the
           // reset) from a transient upstream failure (retry now), and the status
@@ -1661,6 +1688,7 @@ export async function handleChatCompletion(
             if (parsed?.message) message = parsed.message;
             if (parsed?.type) type = parsed.type;
             if (parsed?.code) code = parsed.code;
+            if (Array.isArray(parsed?.suggested_models) && parsed.suggested_models.every((x: unknown) => typeof x === "string")) suggestedModels = parsed.suggested_models;
           } catch {}
           const retryAfter = p.resp.headers.get("Retry-After");
           if (errorsAsText) {
@@ -1671,7 +1699,7 @@ export async function handleChatCompletion(
             send({ ...base, choices: [{ index: 0, delta: {}, finish_reason: "stop" }], ...(includeUsage ? { usage: usage(sent + reason) } : {}) });
           } else {
             // HTTP 200 is already committed, so surface the failure as an in-stream error chunk.
-            send({ ...base, error: { message, type, ...(code ? { code } : {}), ...(retryAfter ? { retry_after: Number(retryAfter) } : {}) } });
+            send({ ...base, error: { message, type, ...(code ? { code } : {}), ...(suggestedModels ? { suggested_models: suggestedModels } : {}), ...(retryAfter ? { retry_after: Number(retryAfter) } : {}) } });
           }
         } else if (p.kind === "tools") {
           p.toolCalls.forEach((tc, i) => {
@@ -1771,9 +1799,19 @@ function jsonResponse(status: number, body: unknown, headers: Record<string, str
  *  the UTC reset instant) so a client backs off to the refill instead of
  *  retrying into a wall — and so an agent loop doesn't treat the refusal text as
  *  the model's answer. Resets at midnight UTC; the weekly budget on Monday. */
-function priorityAccessResponse(exhaustion: PriorityAccessExhaustion, model: string): Response {
+function reasoningResponse(end: number, scope: string | null, model: string): Response {
+  const choices = suggestions(scope, model);
+  const hint = choices.length ? `Other models to try: ${choices.join(", ")}; availability is not guaranteed.` : "Wait before trying again.";
+  return jsonResponse(429, { error: {
+    message: `M365 reported that reasoning turns are exhausted. The reset may be ${new Date(end).toISOString()} (estimated). ${hint}`,
+    type: "rate_limit_error", code: "reasoning_turns_exhausted", suggested_models: choices,
+  } }, { "Retry-After": String(Math.max(1, Math.ceil((end - Date.now()) / 1000))) });
+}
+
+function priorityAccessResponse(exhaustion: PriorityAccessExhaustion, model: string, scope?: string | null): Response {
+  const choices = scope == null ? [] : suggestions(scope, model);
   const retryAfter = secondsUntilReset(exhaustion);
-  const label = exhaustion.model ?? model;
+  const label = scope == null ? model : exhaustion.model ?? model;
   const when = exhaustion.window === "week" ? "this week" : "today";
   return jsonResponse(
     429,
@@ -1783,8 +1821,9 @@ function priorityAccessResponse(exhaustion: PriorityAccessExhaustion, model: str
           `M365 Copilot's priority access to ${label} is used up for ${when} ` +
           `(resets ${exhaustion.resetsAt.toISOString()}, i.e. midnight UTC` +
           `${exhaustion.window === "week" ? " on Monday" : ""}). ` +
-          `Switch to another model (e.g. claude-sonnet or gpt-5.5-think-deeper) or wait. ` +
-          `Upstream said: ${exhaustion.message}`,
+          `${choices.length ? `Other models to try: ${choices.join(", ")}; availability is not guaranteed.` : "Wait before trying again."}` +
+          (scope == null ? "" : ` Upstream said: ${exhaustion.message}`),
+        ...(choices === null ? {} : { suggested_models: choices }),
         type: "rate_limit_error",
         code: "priority_access_exhausted",
         param: exhaustion.window,

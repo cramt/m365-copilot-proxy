@@ -1,0 +1,6 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": { "noEmit": true, "types": ["node"], "typeRoots": ["./node_modules/.pnpm/node_modules/@types"] },
+  "include": ["packages/proxy-lib/tests/reasoning-identity.native.ts", "packages/proxy-lib/tests/native-test-transport.ts", "packages/proxy-lib/src/reasoning-native.test.ts"],
+  "exclude": ["**/node_modules", "**/dist", "packages/proxy"]
+}

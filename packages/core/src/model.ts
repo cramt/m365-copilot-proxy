@@ -1,4 +1,5 @@
 import { getToken } from "./auth.js";
+import { tokenScope } from "./token-scope.js";
 import { getOrCreateAgent } from "./agent.js";
 import { CopilotSession } from "./session.js";
 import { uploadImage, type ImageAnnotation } from "./image-input.js";
@@ -22,9 +23,13 @@ export interface ModelSessionOptions {
 }
 
 /** Per-turn settings a backend may use; Chat ignores them. */
+export class ChatDispatchRefused extends Error {}
+
 export interface TurnOptions {
   /** The request's `reasoning_effort` (the agent runtime's `reasoningEffort`). */
   reasoningEffort?: string;
+  /** Internal pre-dispatch hook, called for each actual Chat attempt. */
+  beforeChatDispatch?: (scope: string | null) => void;
 }
 
 /**
@@ -137,6 +142,7 @@ export class ModelSession implements TurnSession {
     useAgent: boolean = true,
     images: string[] = [],
     waitForBudget: () => Promise<{ waitedMs: number }> = () => awaitTurnBudget({ signal }),
+    turn?: TurnOptions,
   ): Promise<CopilotStream> {
     let token = await this.resolveToken();
     // Image input (#39): upload each image for this conversation; the message points at them.
@@ -186,9 +192,14 @@ export class ModelSession implements TurnSession {
     // M365_NO_IMAGE_GEN for a pure-text agent-less turn.
     const turnOpts = { generateImages: !agentForTurn && !process.env.M365_NO_IMAGE_GEN, images: annotations };
 
+    const dispatch = (credential: string) => {
+      turn?.beforeChatDispatch?.(tokenScope(credential));
+      return this.copilotSession!.chat(credential, text, model, signal, turnOpts);
+    };
     try {
-      return await this.copilotSession.chat(token, text, model, signal, turnOpts);
+      return await dispatch(token);
     } catch (err: any) {
+      if (err instanceof ChatDispatchRefused) throw err;
       // Session might be stale — reconnect with same IDs
       log.info("Session error, reconnecting:", err.message);
       // The reconnect is one more upstream turn, so it waits on the budget too:
@@ -198,7 +209,7 @@ export class ModelSession implements TurnSession {
       if ((await waitForBudget()).waitedMs > 0) token = await this.resolveToken();
       this.copilotSession = this.createCopilotSession(agentForTurn);
       this.currentAgentId = agentForTurn;
-      return await this.copilotSession.chat(token, text, model, signal, turnOpts);
+      return await dispatch(token);
     }
   }
 
