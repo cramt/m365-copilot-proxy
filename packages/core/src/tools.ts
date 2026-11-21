@@ -341,6 +341,15 @@ const CONFABULATION_PATTERNS: RegExp[] = [
   // patterns because it says the session "does not expose" the filesystem.
   /(?:session|environment|runtime)\s+(?:does\s+not|doesn.?t|cannot)\s+(?:expose|mount|provide)\s+(?:the\s+)?(?:local\s+)?(?:repository\s+)?filesystem/i,
   /(?:my|the)\s+filesystem\s+(?:only\s+)?(?:contained|contains|has)[\s\S]{0,80}\/mnt\/data/i,
+  // GPT-5.6's English give-ups, measured on Windows / pi (it answers a Turkish
+  // prompt in English now and then, give-ups included): "because no execution
+  // tool is enabled in this turn", "file tools aren't enabled in this chat", "I
+  // wasn't able to complete and verify the code change in this run". The last
+  // is scoped to the whole task or run: "I couldn't complete the integration
+  // tests because they need Docker" is an honest partial report, not a give-up.
+  /\bno\s+(?:[\w-]+\s+){0,4}tools?\s+(?:is|are)\s+(?:currently\s+)?enabled\b/i,
+  /\btools?\s+(?:aren.?t|isn.?t|are\s+not|is\s+not)\s+(?:currently\s+)?enabled\s+(?:in\s+this|for\s+this|here|(?:to|for)\s+me)/i,
+  /\bI\s+(?:wasn.?t\s+able\s+to|was\s+not\s+able\s+to|was\s+unable\s+to|couldn.?t|could\s+not)\s+(?:complete|finish)\b[^.\n]{0,80}\b(?:in\s+this\s+(?:run|session|turn|chat|conversation|environment)|(?:the|this|your)\s+(?:task|request))/i,
   // Turkish. The model answers in the user's language, so every pattern above was
   // blind to a Turkish-speaking user's give-ups: "Bu oturumda ... dosya yazma aracı
   // etkin değil", "dosya oluşturma özelliğim devre dışı ... kaydedemiyorum" both
@@ -351,12 +360,23 @@ const CONFABULATION_PATTERNS: RegExp[] = [
   // -amam, -amadım), so third-person "okuyamıyorsa"/"çalıştıramaz" don't match.
   // Spans allow a dot not followed by whitespace — `ozet.md` is a filename, not a
   // sentence end — and avoid \w, which is ASCII-only and stops at ı/ş/ğ.
-  /bu\s+oturumda(?:[^.\n]|\.(?=\S)){0,80}(?:devre\s*dışı|etkin\s+değil|kullanılamıyor|mevcut\s+değil)/i,
-  /(?:özelliğim|yeteneğim|aracım|araçlarım|erişimim|yetkim|iznim)(?:[^.\n]|\.(?=\S)){0,30}(?:devre\s*dışı|etkin\s+değil|yok|bulunmuyor)/i,
-  /(?:oluştur|üret|hazırla|dönüştür|tamamla|kur|güncelle|kayded|eriş|çalıştır|oku|yaz|düzenle|incele|listele|aç)y?[ae]m(?:ıyorum|iyorum|am|em|adım|edim|adığım|ediğim)/i,
+  /bu\s+oturumda(?:[^.\n]|\.(?=\S)){0,80}(?:devre\s*dışı|etkin\s+değil|kullanılamıyor|mevcut\s+değil|erişilebilir\s+değil)/i,
+  /(?:özelliğim|yeteneğim|aracım|araçlarım|erişimim|yetkim|iznim)(?:[^.\n]|\.(?=\S)){0,30}(?:devre\s*dışı|etkin\s+değil|yok|bulunmuyor|kullanılamıyor)/i,
+  /(?:oluştur|üret|hazırla|dönüştür|tamamla|kur|güncelle|kayded|eriş|çalıştır|oku|yaz|düzenle|incele|listele|aç|ed)y?[ae]m(?:ıyorum|iyorum|am|em|adım|edim|adığım|ediğim)/i,
   /araç\s+çağrısı\s+yapama/i,
   /(?:dosya|araç)\s+erişimi\s+(?:olan|etkin)(?:[^.\n]|\.(?=\S)){0,40}oturum/i,                      // "dosya erişimi etkin bir kodlama oturumunda yeniden çalıştırın"
   /kopyala(?:[^.\n]|\.(?=\S)){0,80}kayde[dt]/i,                                                   // "kopyalayıp ozet.md olarak kaydedebilirsin" — hands the write back (kaydet → kayded- before a vowel) (kaydet/kayded-: consonant softening)
+  // Passive "could not be completed/created", as a whole sentence about the task:
+  // "PDF oluşturma işlemi tamamlanamadı." after one missing library (Oct 5,
+  // baseline, no file). The lookahead keeps suffixed forms out: "tamamlanamadıysa"
+  // (if it couldn't) and "oluşturulamadığında" (when it can't) describe code.
+  /(?:tamamlan|oluşturul|dönüştürül|kaydedil|üretil)[ae]m[ae]d[ıi](?![a-zçğıöşü])/i,
+  // Asking the user to hand over what is already on disk: "data.csv dosyasının
+  // içeriğine erişmem gerekiyor. Dosyayı buraya yüklediğinizde…" (Oct 5, after
+  // reading one skill, with 308 listed). "erişmem" is first person; "erişmesi
+  // gerekir" (third person) describes code and stays out.
+  /erişmem\s+gerek/i,
+  /(?:buraya|sohbete)\s+(?:yükle|yapıştır)/i,
 ];
 
 // M365 sometimes creates a real patch in its Teams-hosted remote artifact

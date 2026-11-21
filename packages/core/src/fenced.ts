@@ -644,6 +644,20 @@ export function currentFramingVariant(toneDefault?: string): string {
  *  its sandbox: under relay_batch it never went in (0 of 80 bench tasks and pi
  *  runs, GPT-6 Sol 25 of 100), under honest 3 of 40 (GPT-6 Sol 17 of 20; docs §29).
  *
+ *  `Gpt_5_6_Reasoning` (gpt-5.6-think-deeper) defaults to `relay_batch` (docs §58 F159).
+ *  It serves with the agent, and M365's own instructions there tell it file
+ *  generation is disabled; baseline's `<system>` block, which the model calls
+ *  "the user's embedded system", tells it to create files. Its chain of thought
+ *  names the conflict and resolves it either way, so file-producing turns gave up
+ *  ("Dosya oluşturma özelliğim devre dışı") at random. Real pi, PDF + .docx,
+ *  interleaved: runs with any give-up turn baseline 12/14, relay 0/14 (0 of 89
+ *  turns), p ≈ 10⁻⁵; a note explaining the restriction's scope fixed .docx but
+ *  not PDF (7/14). Relay asks for commands the user runs — the model still notices
+ *  the restriction but resolves it toward the harness. relay_batch keeps that and
+ *  costs what baseline does: bench 20/20 each, 2.30 turns per task vs relay's 2.85
+ *  (−19%, p = 7·10⁻⁴) and baseline's 2.15 (19/20; p = 0.42); the same PDF + .docx
+ *  pi runs 8/8 with no give-up, 3.4 calls per run vs relay's 5.6.
+ *
  *  `Gpt_62_Sol_Reasoning`, `Gpt_62_Astra_Reasoning`, `Gpt_6_Astra_Reasoning` and
  *  `Claude_Fable` default to `relay_batch` too, unbenched: every GPT-6.x sibling
  *  benched best on it, and the harness runs used it — Codex on GPT-6.2 Sol 3/3,
@@ -657,6 +671,7 @@ export function defaultFramingForTone(tone?: string): string | undefined {
   if (tone === "Gpt_6_Reasoning") return "relay_batch";
   if (tone === "Gpt_6_Sol_Reasoning") return "relay_batch";
   if (tone === "Gpt_61_Sol_Reasoning") return "relay_batch";
+  if (tone === "Gpt_5_6_Reasoning") return "relay_batch";
   if (tone === "Gpt_62_Sol_Reasoning") return "relay_batch";
   if (tone === "Gpt_62_Astra_Reasoning") return "relay_batch";
   if (tone === "Gpt_6_Astra_Reasoning") return "relay_batch";
