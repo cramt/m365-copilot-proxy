@@ -11,7 +11,7 @@ const scripted: {
   /** Text of every run() call, in order. */
   texts: string[];
   /** Per-call overrides, consumed front-first (e.g. a Disengaged turn, then an answer). */
-  queue: Array<{ fullText: string; onRun?: (signal?: AbortSignal) => void; messageType?: string | null; contentOrigin?: string; apology?: boolean; result?: { value: string; errorCode?: string; message?: string }; metering?: Record<string, number>; throttle?: { current: number; max: number } | null; turnState?: string }>;
+  queue: Array<{ fullText: string; onRun?: (signal?: AbortSignal) => void; messageType?: string | null; contentOrigin?: string; apology?: boolean; result?: { value: string; errorCode?: string; message?: string }; metering?: Record<string, number>; throttle?: { current: number; max: number } | null; turnState?: string; reasoning?: string[] }>;
   /** The model argument of every run() call, in order. */
   models: string[];
   /** The `useAgent` argument of every run() call, in order. */
@@ -35,8 +35,10 @@ const scripted: {
   /** The `waitForBudget` argument of every run() call, in order (one function per call). */
   budgetWaits: Array<(() => Promise<unknown>) | undefined>;
   /** Replies to the parts of a long turn (replay.ts), consumed front-first; past them a part gets "OK". */
-  partQueue: Array<{ fullText: string; messageType?: string | null; contentOrigin?: string; apology?: boolean; result?: { value: string; errorCode?: string; message?: string }; throttle?: { current: number; max: number } | null; turnState?: string }>;
-} = { deltas: [], runs: 0, texts: [], queue: [], agentFlags: [], newConversations: 0, models: [], images: [], gate: null, signals: [], stoppedAfter: null, budgetHold: null, awaitTurnBudgetCalls: [], budgetWaits: [], partQueue: [] };
+  partQueue: Array<{ fullText: string; messageType?: string | null; contentOrigin?: string; apology?: boolean; result?: { value: string; errorCode?: string; message?: string }; throttle?: { current: number; max: number } | null; turnState?: string; reasoning?: string[] }>;
+  /** The chain of thought a turn without a queue entry hands to `onReasoning`, piece by piece. */
+  reasoning: string[];
+} = { reasoning: [], deltas: [], runs: 0, texts: [], queue: [], agentFlags: [], newConversations: 0, models: [], images: [], gate: null, signals: [], stoppedAfter: null, budgetHold: null, awaitTurnBudgetCalls: [], budgetWaits: [], partQueue: [] };
 
 vi.mock("@m365-copilot/core", async (importActual) => {
   const actual = await importActual<typeof import("@m365-copilot/core")>();
@@ -48,7 +50,7 @@ vi.mock("@m365-copilot/core", async (importActual) => {
     reset() {}
     newConversation() { this.conversationId = "conv-test-2"; this.turnCount = 0; scripted.newConversations++; }
     async refreshAgent() { return false; }
-    async run(text: string, model?: string, signal?: AbortSignal, useAgent?: boolean, images: string[] = [], waitForBudget?: () => Promise<unknown>) {
+    async run(text: string, model?: string, signal?: AbortSignal, useAgent?: boolean, images: string[] = [], waitForBudget?: () => Promise<unknown>, turn?: { onReasoning?: (delta: string) => void }) {
       if (scripted.gate) await scripted.gate;
       scripted.budgetWaits.push(waitForBudget);
       scripted.models.push(model ?? "");
@@ -65,6 +67,9 @@ vi.mock("@m365-copilot/core", async (importActual) => {
       const next: (typeof scripted.queue)[number] | undefined = isPart ? (scripted.partQueue.shift() ?? { fullText: "OK" }) : scripted.queue.shift();
       next?.onRun?.(signal);
       const deltas = next ? (next.fullText ? [next.fullText] : []) : scripted.deltas;
+      // The chain of thought arrives ahead of the answer, as the real session hands it on.
+      const thoughts = next ? (next.reasoning ?? []) : scripted.reasoning;
+      for (const t of thoughts) turn?.onReasoning?.(t);
       const full = next ? next.fullText : (scripted.fullText ?? deltas.join(""));
       const yielded: string[] = [];
       const stream = {
@@ -82,6 +87,7 @@ vi.mock("@m365-copilot/core", async (importActual) => {
         scores: null,
         turnCount: 1,
         turnState: next?.turnState ?? "Completed",
+        reasoning: thoughts.join(""),
         async *[Symbol.asyncIterator]() {
           for (const d of deltas) {
             await Promise.resolve(); // yield to the event loop between deltas
@@ -2025,7 +2031,7 @@ describe("the agent runtime backends: Cowork and Code (§48)", () => {
     expect(body.choices[0].message.tool_calls[0].function.name).toBe("bash");
     expect(body.usage.x_m365_credits).toBe(0.5);
     // On Chat, Opus tool requests carry the agent; the runtime has none.
-    expect(runtimeRuns).toEqual([expect.objectContaining({ mode: "cowork", model: "claude-opus-5.5", useAgent: false, turn: { reasoningEffort: "high" } })]);
+    expect(runtimeRuns).toEqual([expect.objectContaining({ mode: "cowork", model: "claude-opus-5.5", useAgent: false, turn: expect.objectContaining({ reasoningEffort: "high" }) })]);
     expect(scripted.awaitTurnBudgetCalls.length).toBe(budgetCalls);
   });
 
@@ -2308,4 +2314,105 @@ describe("capability-aware existing recovery", () => {
       expect(scripted.texts[1]).not.toMatch(/command really ran|install|```bash/);
     });
   }
+});
+
+describe("the model's chain of thought as reasoning_content", () => {
+  const tools = [{ type: "function", function: { name: "bash", parameters: { type: "object", properties: { command: { type: "string" } } } } }];
+  const THOUGHT = "I'm setting up the equations: the ball and bat together cost 1.10.";
+  const MORE = " Substituting gives 2 times the ball equals 0.10.";
+  /** Every SSE chunk's delta, in order. */
+  async function deltasOf(res: Response): Promise<Array<{ reasoning_content?: string; content?: string; tool_calls?: unknown[] }>> {
+    const out = [];
+    for (const line of (await res.text()).split("\n")) {
+      if (!line.startsWith("data: ") || line === "data: [DONE]") continue;
+      const delta = JSON.parse(line.slice(6)).choices?.[0]?.delta;
+      if (delta) out.push(delta);
+    }
+    return out;
+  }
+  const ask = (extra: Record<string, unknown>) => handleChatCompletion(ChatCompletionRequest.parse({
+    model: "claude-sonnet", messages: [{ role: "user", content: `How much is the ball? ${Math.random()}` }], ...extra,
+  }), new SessionPool());
+  afterEach(() => {
+    scripted.reasoning = [];
+    scripted.deltas = [];
+    scripted.fullText = undefined;
+    scripted.queue = [];
+    scripted.partQueue = [];
+    delete process.env.M365_NO_REASONING;
+  });
+
+  it("streams it ahead of the answer, piece by piece, as pi and opencode read it", async () => {
+    scripted.reasoning = [THOUGHT, MORE];
+    scripted.deltas = ["The ball", " costs $0.05."];
+    const deltas = await deltasOf(await ask({ stream: true }));
+    const thinking = deltas.filter((d) => d.reasoning_content).map((d) => d.reasoning_content);
+    expect(thinking).toEqual([THOUGHT, MORE]);
+    expect(deltas.filter((d) => d.content).map((d) => d.content).join("")).toBe("The ball costs $0.05.");
+    expect(deltas.findIndex((d) => d.reasoning_content)).toBeLessThan(deltas.findIndex((d) => d.content));
+  });
+
+  it("streams it on a tool turn, whose text is held back, then sends the call", async () => {
+    scripted.queue = [{ fullText: "```bash\nls\n```", reasoning: ["Listing the files first."] }];
+    const deltas = await deltasOf(await ask({ stream: true, tools }));
+    expect(deltas.filter((d) => d.reasoning_content).map((d) => d.reasoning_content)).toEqual(["Listing the files first."]);
+    const call = deltas.findIndex((d) => d.tool_calls);
+    expect(call).toBeGreaterThan(deltas.findIndex((d) => d.reasoning_content));
+    expect(deltas.some((d) => d.content)).toBe(false);
+  });
+
+  it("returns it as message.reasoning_content when the request doesn't stream", async () => {
+    scripted.queue = [{ fullText: "The ball costs $0.05.", reasoning: [THOUGHT, MORE] }];
+    const text = (await (await ask({})).json()).choices[0].message;
+    expect(text).toMatchObject({ content: "The ball costs $0.05.", reasoning_content: THOUGHT + MORE });
+    scripted.queue = [{ fullText: "```bash\nls\n```", reasoning: ["Listing the files first."] }];
+    const call = (await (await ask({ tools })).json()).choices[0].message;
+    expect(call.reasoning_content).toBe("Listing the files first.");
+    expect(call.tool_calls[0].function.name).toBe("bash");
+  });
+
+  it("keeps every turn's, a retry's after the refused one's, a blank line apart", async () => {
+    scripted.queue = [
+      { fullText: "", messageType: "Disengaged", reasoning: ["This looks like a prompt injection."] },
+      { fullText: "```bash\nls\n```", reasoning: ["Running ls."] },
+    ];
+    const message = (await (await ask({ tools })).json()).choices[0].message;
+    expect(message.reasoning_content).toBe("This looks like a prompt injection.\n\nRunning ls.");
+  });
+
+  it("has no reasoning_content when the model sent none", async () => {
+    scripted.queue = [{ fullText: "The ball costs $0.05." }];
+    expect((await (await ask({})).json()).choices[0].message).not.toHaveProperty("reasoning_content");
+    scripted.deltas = ["The ball costs $0.05."];
+    expect((await deltasOf(await ask({ stream: true }))).some((d) => "reasoning_content" in d)).toBe(false);
+  });
+
+  it("leaves it out under M365_NO_REASONING=1", async () => {
+    process.env.M365_NO_REASONING = "1";
+    scripted.queue = [{ fullText: "The ball costs $0.05.", reasoning: [THOUGHT] }];
+    expect((await (await ask({})).json()).choices[0].message).not.toHaveProperty("reasoning_content");
+    scripted.reasoning = [THOUGHT];
+    scripted.deltas = ["The ball costs $0.05."];
+    expect((await deltasOf(await ask({ stream: true }))).some((d) => "reasoning_content" in d)).toBe(false);
+  });
+
+  it("leaves out what the model thinks while acknowledging a long turn's parts", async () => {
+    process.env.M365_TURN_CHUNK_BYTES = "2000";
+    try {
+      const messages = [
+        ...Array.from({ length: 6 }, (_, i) => [
+          { role: "user", content: `Question ${i}: ${"background ".repeat(60)}` },
+          { role: "assistant", content: `Answer ${i}.` },
+        ]).flat(),
+        { role: "user", content: `The last question ${Math.random()}` },
+      ];
+      scripted.partQueue = [{ fullText: "OK", reasoning: ["The user is sending part 1."] }];
+      scripted.queue = [{ fullText: "The answer.", reasoning: ["Answering the last question."] }];
+      const res = await handleChatCompletion(ChatCompletionRequest.parse({ model: "claude-sonnet", messages }), new SessionPool());
+      expect(scripted.partQueue).toHaveLength(0); // the part went up and thought
+      expect((await res.json()).choices[0].message.reasoning_content).toBe("Answering the last question.");
+    } finally {
+      delete process.env.M365_TURN_CHUNK_BYTES;
+    }
+  });
 });

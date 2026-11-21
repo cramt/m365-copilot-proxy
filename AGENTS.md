@@ -259,7 +259,8 @@ pnpm test:live      # M365_LIVE=1; live tests that hit real M365 (uses quota)
   `proxy-verify --tools` is shell-less. Don't move `Claude_Sonnet` back to a `<system>`-tagged variant, and don't wrap the note
   in `<user>` tags either: tags are just text to it, and the variant that did (`relay_inline`,
   removed) scored 1/20 (§21 F43).
-  **Read its `ChainOfThoughtSummary` frames** (`M365_DUMP_FRAMES=1`) — they say why it refused.
+  **Read its chain of thought** (the debug log's `Chain of thought` lines, or the `ChainOfThoughtSummary`
+  frames under `M365_DUMP_FRAMES=1`) — it says why it refused.
 - **Not every tone serves with the tool agent — `toneUsesToolAgent()` decides, per exact tone**
   (`M365_FORCE_AGENT=1`/`0` overrides it either way).
   Claude tones (except `Claude_Opus`, see above) and `Gpt_6_Reasoning` go agent-less even with tools.
@@ -302,6 +303,12 @@ pnpm test:live      # M365_LIVE=1; live tests that hit real M365 (uses quota)
 - **A turn can hold several bot messages; assemble text per message.** Each new message's head
   arrives only as a snapshot with a `cursor`; folding everything into one string drops it (it ate
   a fence's backticks). `TurnTextComposer` in `session.ts` — don't "simplify" it away. #29.
+- **The model's chain of thought goes to the client as `reasoning_content`, and only the
+  `ChainOfThoughtSummary` messages are it.** They arrive as growing full-text snapshots, on both transports
+  (`ChainOfThoughtComposer`, `session.ts`). The other `Progress` messages come from a fixed list
+  (EarlyProgress's "Gathering details…") or report the model's own sandbox actions; don't add them. pi
+  sends the thinking back on its assistant messages; the request schema drops it, so it never reaches M365.
+  See docs/hypotheses.md §50.
 - **A conversation is keyed on the first user message *and* the tool names** (`SessionPool.fingerprint`).
   opencode's title request shares the task's opener but has no tools; keyed on the opener alone it ran in
   the task's M365 conversation, concurrently (#83). Don't add the system prompt or tool descriptions to

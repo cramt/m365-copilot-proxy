@@ -1,5 +1,5 @@
 import { describe, it, expect, afterEach } from "vitest";
-import { buildCopilotWebSocketHeaders, buildCopilotWebSocketUrl, cursorMessageId, foldStreamText, restoreStrippedBrackets, TurnTextComposer } from "./session.js";
+import { buildCopilotWebSocketHeaders, buildCopilotWebSocketUrl, ChainOfThoughtComposer, cursorMessageId, foldStreamText, restoreStrippedBrackets, TurnTextComposer } from "./session.js";
 import { MessageUpdate } from "./schemas.js";
 
 /** Replay a sequence of raw M365 frames (deltas as {d}, snapshots as {s}) through
@@ -245,5 +245,49 @@ describe("restoreStrippedBrackets (M365 deletes `[word]:` from the final text, Â
     c.snapshot("m", "$u = :Replace($c, 'a', 'b')\nSet-Content f $u");
     expect(c.text).toBe("$u = :Replace($c, 'a', 'b')\nSet-Content f $u");
     expect(c.finalText).toBe(raw + "Set-Content f $u");
+  });
+});
+
+describe("ChainOfThoughtComposer", () => {
+  // Live 2026-11-20, StreamHub, Claude_Sonnet_5: one message, re-sent a sentence longer each time.
+  const s1 = "I'm setting up the equations: the ball and bat together cost 1.10, and the bat costs 1.00 more than the ball.";
+  const s2 = `${s1} Substituting gives 2 times the ball equals 0.10, so the ball is 0.05.`;
+  const s3 = `${s2} I'm checking that: the bat would be 1.05, the total 1.10, and the difference 1.00, so it holds.`;
+
+  it("streams each snapshot's growth once (the StreamHub shape)", () => {
+    const c = new ChainOfThoughtComposer();
+    const out = [s1, s2, s3].map((s) => c.add("t1", s));
+    expect(out).toEqual([s1, s2.slice(s1.length), s3.slice(s2.length)]);
+    expect(out.join("")).toBe(s3);
+    expect(c.text).toBe(s3);
+  });
+
+  it("adds nothing for the final item's restatement (the Chathub shape)", () => {
+    const c = new ChainOfThoughtComposer();
+    expect(c.add("t1", s3)).toBe(s3);
+    expect(c.add("t1", s3)).toBe("");
+    expect(c.add("t1", "")).toBe("");
+    expect(c.text).toBe(s3);
+  });
+
+  it("puts a blank line between messages, in order of first appearance", () => {
+    const c = new ChainOfThoughtComposer();
+    const out = [c.add("a", "First thought."), c.add("b", "Second"), c.add("a", "First thought. More."), c.add("b", "Second thought.")];
+    expect(out).toEqual(["First thought.", "\n\nSecond", " More.", " thought."]);
+    expect(c.text).toBe("First thought. More.\n\nSecond thought.");
+  });
+
+  it("keeps a rewritten message for the text but streams nothing of it", () => {
+    const c = new ChainOfThoughtComposer();
+    expect(c.add("a", "Checking the file.")).toBe("Checking the file.");
+    expect(c.add("a", "Reading the whole file now.")).toBe("");
+    expect(c.text).toBe("Reading the whole file now.");
+    expect(c.add("a", "Checking the file. Then more.")).toBe(" Then more.");
+  });
+
+  it("starts empty", () => {
+    const c = new ChainOfThoughtComposer();
+    expect(c.add("a", "")).toBe("");
+    expect(c.text).toBe("");
   });
 });

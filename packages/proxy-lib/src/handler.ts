@@ -754,6 +754,24 @@ export async function handleChatCompletion(
   // The live stream's gate (set by the streaming render): whether any text has
   // reached the client, and a way to drop what it still holds back.
   let liveGate: { released: () => boolean; discard: () => void } | null = null;
+  // The model's chain of thought, returned as `reasoning_content`: every turn's
+  // in this request, in order, a retry's and a forcing turn's included (a long
+  // turn's parts are only acknowledged, so not theirs). The streaming render
+  // sets `liveReasoning` to send each piece as it arrives, tool turns included,
+  // whose text is held back. M365_NO_REASONING=1 leaves it out.
+  let reasoning = "";
+  let liveReasoning: ((delta: string) => void) | null = null;
+  const reasoningSink = (): ((delta: string) => void) | undefined => {
+    if (process.env.M365_NO_REASONING) return undefined;
+    let first = true;
+    return (delta: string) => {
+      if (!delta) return;
+      if (first && reasoning) delta = `\n\n${delta}`;
+      first = false;
+      reasoning += delta;
+      liveReasoning?.(delta);
+    };
+  };
   // M365_AVOID_THROTTLING=1: wait until the account's turn bucket can afford a
   // turn (turn-budget.ts, hypotheses §37). A pi session is one long thread, but
   // every turn in it draws on the same bucket as a bench sweep (F58), so a busy
@@ -939,7 +957,7 @@ export async function handleChatCompletion(
           // The agent overrides `tone` (forces GPT-5), so tool-less requests must
           // skip it to reach the model the tone selects (e.g. Claude). See
           // ModelSession.run / docs H8.6.
-          copilotStream = await session.run(text, model, signal, useToolAgent, inputAttachments, waitForBudget, turnOptions);
+          copilotStream = await session.run(text, model, signal, useToolAgent, inputAttachments, waitForBudget, { ...turnOptions, onReasoning: reasoningSink() });
         } catch (err: any) {
           if (err instanceof TurnBudgetHold) return { error: turnBudgetHoldResponse(err) };
           return { error: jsonResponse(502, { error: { message: err.message, type: "upstream_error" } }) };
@@ -1012,6 +1030,10 @@ export async function handleChatCompletion(
       // which a gateway drops; experiments read them from the debug log instead.
       if (lastScores && Object.keys(lastScores).length > 0) {
         log.info(`Turn scores: ${Object.entries(lastScores).map(([k, v]) => `${k}=${v}`).join(" ")}${lastMessageType ? ` (${lastMessageType})` : ""}, cid=${session.conversationId}`);
+      }
+      // The chain of thought says why a model refused a framing (API doc §6).
+      if (!refused && copilotStream.reasoning) {
+        log.info(`Chain of thought (${copilotStream.reasoning.length} chars): ${JSON.stringify(trunc(copilotStream.reasoning, 400))}`);
       }
 
       // No text at all: the dead agent route's signature (below), unlike a failed
@@ -1604,16 +1626,17 @@ export async function handleChatCompletion(
   if (!body.stream) {
     const p = await produceTurn();
     if (p.kind === "error") return p.resp;
+    const thought = reasoning ? { reasoning_content: reasoning } : {};
     if (p.kind === "tools") {
       return jsonResponse(200, {
         id: completionId, object: "chat.completion", created, model: responseModel(),
-        choices: [{ index: 0, message: { role: "assistant", content: null, tool_calls: p.toolCalls }, finish_reason: "tool_calls" }],
+        choices: [{ index: 0, message: { role: "assistant", content: null, ...thought, tool_calls: p.toolCalls }, finish_reason: "tool_calls" }],
         usage: usage(callsText(p.toolCalls)),
       });
     }
     return jsonResponse(200, {
       id: completionId, object: "chat.completion", created, model: responseModel(),
-      choices: [{ index: 0, message: { role: "assistant", content: p.text }, finish_reason: outputFinishReason(p.text, chat) }],
+      choices: [{ index: 0, message: { role: "assistant", content: p.text, ...thought }, finish_reason: outputFinishReason(p.text, chat) }],
       usage: usage(p.text),
     });
   }
@@ -1640,6 +1663,11 @@ export async function handleChatCompletion(
       const hb = setInterval(() => {
         try { send({ ...base, choices: [{ index: 0, delta: {}, finish_reason: null }] }); } catch {}
       }, 15000);
+      // The chain of thought goes out as it arrives (pi and opencode read
+      // `reasoning_content` as thinking), on tool turns too.
+      liveReasoning = (delta: string) => {
+        try { send({ ...base, choices: [{ index: 0, delta: { reasoning_content: delta }, finish_reason: null }] }); } catch {}
+      };
 
       // Live token passthrough (non-tool only). Track exactly what we've sent so the
       // final render emits only the not-yet-streamed remainder. session.ts guarantees

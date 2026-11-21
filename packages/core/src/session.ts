@@ -324,6 +324,47 @@ export class TurnTextComposer {
 }
 
 /**
+ * Assemble one turn's chain of thought: the `Progress` messages whose
+ * `contentOrigin` is `ChainOfThoughtSummary`, the reasoning text the first-party
+ * clients show in their chain-of-thought card (summaries for Sonnet 5.5, Opus 5.5
+ * and GPT-5.5 Think Deeper; Opus 4.8's reads like its own thinking). A message
+ * arrives as full-text snapshots that grow as the model thinks, on both
+ * transports, and Chathub restates it in the final item. `add` returns what a
+ * snapshot adds to what was handed out, with a blank line before each new
+ * message, so streaming it reproduces `text`. A snapshot that rewrites a
+ * message rather than extending it updates `text` but adds nothing to the
+ * stream: what was streamed can't be taken back.
+ *
+ * The other `Progress` messages are left out: EarlyProgress's "Gathering
+ * details…" comes from a fixed list, and "Coding and executing" or "Creating
+ * file …" report the model's actions in its own sandbox, not its reasoning.
+ */
+export class ChainOfThoughtComposer {
+  private texts = new Map<string, string>();
+  private streamed = new Map<string, string>();
+
+  /** Fold a snapshot of chain-of-thought message `id`; returns the text to stream ("" for none). */
+  add(id: string, text: string): string {
+    const prev = this.texts.get(id) ?? "";
+    if (text.length <= prev.length) return "";
+    this.texts.set(id, text);
+    const sent = this.streamed.get(id);
+    if (sent === undefined) {
+      const sep = this.streamed.size > 0 ? "\n\n" : "";
+      this.streamed.set(id, text);
+      return sep + text;
+    }
+    if (!text.startsWith(sent)) return "";
+    this.streamed.set(id, text);
+    return text.slice(sent.length);
+  }
+
+  get text(): string {
+    return [...this.texts.values()].join("\n\n");
+  }
+}
+
+/**
  * Attach a native custom action/plugin to a conversation and drive the confirm→invoke
  * round-trip over the WS (docs/hypotheses.md §12.6, H-NATIVE-6/7). All fields are
  * best-effort passthroughs modelled on the decompiled client; the exact inline-def
@@ -350,6 +391,9 @@ export interface ChatTurnOptions {
   /** Uploaded images and documents this turn's message points at (image-input.ts,
    *  file-upload.ts). */
   images?: (ImageAnnotation | FileAnnotation)[];
+  /** Called with each piece of the model's chain of thought as it arrives
+   *  (ChainOfThoughtComposer); the whole of it is `stream.reasoning`. */
+  onReasoning?: (delta: string) => void;
 }
 
 export interface CopilotSessionOptions {
@@ -500,6 +544,7 @@ export class CopilotSession {
     this._turnCount++;
     const wantImages = opts?.generateImages ?? false;
     const images = opts?.images ?? [];
+    const onReasoning = opts?.onReasoning;
 
     log.info(`Chat turn ${this._turnCount - 1}: model=${model}, isFirst=${isFirst}, text=${JSON.stringify(trunc(text, 200))}`);
     recordTurn(); // the throttle-avoidance bucket counts what that line counts (turn-budget.ts)
@@ -566,6 +611,8 @@ export class CopilotSession {
       // the composed whole folded into this string. See `advance`.
       let answer = "";
       const composer = new TurnTextComposer();
+      // The model's chain of thought, kept apart from the answer.
+      const thoughts = new ChainOfThoughtComposer();
       let receivedContent = false;
       let throttleInfo: { current: number; max: number } | null = null;
       let contentOrigin: string | null = null;
@@ -716,6 +763,9 @@ export class CopilotSession {
         },
         get sawAction() {
           return sawAction;
+        },
+        get reasoning() {
+          return thoughts.text;
         },
 
         [Symbol.asyncIterator]() {
@@ -1121,6 +1171,14 @@ export class CopilotSession {
         }
       };
 
+      // A chain-of-thought snapshot (an update's, or the final item's restatement).
+      const noteThought = (m: { contentOrigin?: unknown; messageId?: unknown; text?: unknown }) => {
+        if (m.contentOrigin !== "ChainOfThoughtSummary" || typeof m.text !== "string") return;
+        const piece = thoughts.add(typeof m.messageId === "string" ? m.messageId : "", m.text);
+        if (!piece || !onReasoning) return;
+        try { onReasoning(piece); } catch (e) { log.error("onReasoning failed:", (e as Error).message); }
+      };
+
       const noteResult = (value: string, errorCode?: string, message?: string) => {
         serverResult = {
           value,
@@ -1177,6 +1235,7 @@ export class CopilotSession {
               // messageType'd bot frame (which the plain-chat path drops). Detect
               // it and auto-approve on the same socket (H-NATIVE-6).
               maybeResumeAction(m);
+              noteThought(m);
             }
             if (m.author !== "bot" || m.messageType || typeof m.text !== "string") continue;
             if (streamHub && cursorId && m.messageId === cursorId) {
@@ -1304,6 +1363,7 @@ export class CopilotSession {
                 }
               }
               if (maybeResumeAction(m)) resumedHere = true;
+              noteThought(m);
             }
             // If the model just triggered a custom action, this "final" item isn't
             // final — we sent a ResumeInvokeAction and must keep the socket open to

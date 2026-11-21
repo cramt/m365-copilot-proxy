@@ -45,6 +45,16 @@ On first use, the system creates a **Copilot Studio agent** with tool-calling in
 
 Each agent session reuses the same M365 conversation (same `sessionId` + `conversationId`). The WebSocket reconnects per turn but M365 maintains server-side context. This saves quota — the 600 message limit applies per-conversation.
 
+### Chain of thought (`reasoning_content`)
+
+Some models send M365 their reasoning as they work, which the web client shows in its chain-of-thought
+card: Claude Sonnet 5.5, Sonnet 5, Opus 5.5 and Opus 4.8, and GPT-5.5 Think Deeper. Not on every turn: an
+easy step usually has none. The proxy returns it as `reasoning_content`. A streamed reply carries it in
+`delta.reasoning_content` chunks as it arrives, ahead of the answer, on tool turns too, while their text
+is held back to be parsed. An unstreamed reply has it in `message.reasoning_content`. pi and opencode show
+it as thinking with no configuration. It never goes back to M365: pi sends it back on its assistant
+messages, and the proxy drops it there. `M365_NO_REASONING=1` leaves it out.
+
 ## Packages
 
 ```
@@ -814,6 +824,7 @@ not an exemption from your organization's Conditional Access policy.
 | `M365_TURN_CHUNK_BYTES` | The longest turn the proxy sends M365 whole, in UTF-8 bytes (default `400000`, at least `1024`; `0` sends every turn whole). M365 answers a turn of about 500k characters but doesn't keep it in the conversation, so a longer one goes up in parts: a replayed history as earlier-conversation parts the model acknowledges, then the request with the system prompt and tool framing; a long follow-up as numbered parts ([hypotheses §46, §47](docs/hypotheses.md)). |
 | `M365_MAX_TURN_PARTS` | The most M365 turns a long turn may take, its parts and the answered one (default `12`, at least `2`). Each part is a turn on the account's turn budget and, on a metered model, a unit of its allowance. A request that needs more gets a 400 `context_length_exceeded`, so the client compacts. |
 | `M365_REPORT_USAGE` | Set to `0` for zero token counts in `usage`. By default they are estimates (see below). |
+| `M365_NO_REASONING` | Set to `1` to leave the model's chain of thought out of replies. By default it goes out as `reasoning_content` (see [Chain of thought](#chain-of-thought-reasoning_content)). |
 | `M365_CACHE_FILE` | Override MSAL token cache location. The cache is replaced by renaming a temporary file in the same directory, so the path must be an ordinary file in a writable directory: a single file bind-mounted into a container (or on another filesystem from its directory) fails with `EBUSY`/`EXDEV` and the proxy reports a cache write error instead of carrying on. Mount the cache's directory instead. The error's `cause` carries the OS error code. |
 | `M365_SECRETS_FILE` | Override credentials file location |
 | `CHROMIUM_PATH` | Path to Chromium binary for automated login |
