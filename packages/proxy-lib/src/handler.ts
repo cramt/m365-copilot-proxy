@@ -42,6 +42,8 @@ import {
   fabricatedToolResponseAt,
   textAfterFirstToolCall,
   longHeredocAsWrite,
+  isExplicitShellTool,
+  hasEarlierUnselectedAction,
   strippedTypeMember,
   formatToolResponse,
   isProseDocument,
@@ -495,8 +497,8 @@ const MAX_PARTS_SENDS = 2;
  *  opening paragraph: a give-up announces itself there, and everything after
  *  is document content ("if you can't access the API…") that must not trip a
  *  forcing retry. */
-function parseReply(text: string, tools: Parameters<typeof parseToolCalls>[1]): { parsed: ParseResult; judged: string | null } {
-  const parsed = parseToolCalls(text, tools);
+function parseReply(text: string, tools: Parameters<typeof parseToolCalls>[1], options?: Parameters<typeof parseToolCalls>[2]): { parsed: ParseResult; judged: string | null } {
+  const parsed = parseToolCalls(text, tools, options);
   if (isProseDocument(parsed, text, tools)) {
     log.info(`Response is a prose document (${parsed.toolCalls.length} embedded fences), returning as text instead of executing`);
     const opening = text.split("```")[0].trim().split(/\n\s*\n/)[0];
@@ -552,6 +554,17 @@ export async function handleChatCompletion(
     messages: promptMode === "off" ? tipless : cleanHarnessMessages(tipless),
     tools: promptMode === "lean" ? leanHarnessTools(request.tools) : request.tools,
   };
+  const selectedName = typeof body.tool_choice === "object" ? body.tool_choice.function.name : undefined;
+  const selected = selectedName === undefined ? undefined : body.tools?.filter(t => t.function.name === selectedName);
+  if (selectedName !== undefined && selected?.length !== 1) {
+    return jsonResponse(400, { error: { message: "tool_choice must name exactly one supplied tool", type: "invalid_request_error", param: "tool_choice" } });
+  }
+  const parseTools = selected ?? body.tools;
+  const parseOptions = selected ? {
+    strictShell: true,
+    rejectJsonAliases: true,
+    reservedNames: new Set(body.tools?.filter(t => t.function.name !== selectedName).map(t => t.function.name)),
+  } : undefined;
   if (promptMode !== "off") log.debug(`Harness prompt: ${promptMode}`);
   // The model ID names a backend: Chat, or the agent runtime's Cowork / Code (core backends.ts).
   const route = resolveModelRoute(request.model);
@@ -1369,7 +1382,7 @@ export async function handleChatCompletion(
     let fullText = stopAtFabricatedResult(result.fullText);
 
     log.debug("Raw response (tool mode):", trunc(fullText, 1000));
-    let { parsed, judged } = parseReply(fullText, body.tools);
+    let { parsed, judged } = parseReply(fullText, parseTools, parseOptions);
     log.info(`Parse result: hasToolCalls=${parsed.hasToolCalls}, count=${parsed.toolCalls.length}`);
 
     // Salvage stochastic turn-1 confabulation: M365's chat model sometimes claims it
@@ -1400,7 +1413,7 @@ export async function handleChatCompletion(
       if ("error" in retry) return { kind: "error", resp: retry.error };
       conv.sentMessageCount = body.messages.length;
       fullText = stopAtFabricatedResult(retry.fullText);
-      ({ parsed, judged } = parseReply(fullText, body.tools));
+      ({ parsed, judged } = parseReply(fullText, parseTools, parseOptions));
       log.info(`After forcing retry: hasToolCalls=${parsed.hasToolCalls}, count=${parsed.toolCalls.length}`);
     }
 
@@ -1425,6 +1438,11 @@ export async function handleChatCompletion(
       };
     }
 
+    // JSON fallback can name undeclared tools; never let it bypass a named choice.
+    const invalidChoiceCall = () => ({ kind: "error" as const, resp: jsonResponse(502, { error: { message: "M365 returned a tool call outside the selected tool or with invalid arguments", type: "invalid_tool_call" } }) });
+    if (selectedName !== undefined && parsed.toolCalls.some(c => c.function.name !== selectedName)) return invalidChoiceCall();
+    if (selected && parsed.hasToolCalls && hasEarlierUnselectedAction(fullText, selected, body.tools!, parseOptions!)) return invalidChoiceCall();
+
     // M365's post-processing can strip a `[Type]:` out of a PowerShell command
     // that the deltas couldn't restore (a short reply arrives only as its final
     // snapshot): `$new = :Replace($old, …)` sets `$new` to nothing and the
@@ -1440,7 +1458,8 @@ export async function handleChatCompletion(
       if ("error" in retry) return { kind: "error", resp: retry.error };
       conv.sentMessageCount = body.messages.length;
       fullText = stopAtFabricatedResult(retry.fullText);
-      ({ parsed, judged } = parseReply(fullText, body.tools));
+      ({ parsed, judged } = parseReply(fullText, parseTools, parseOptions));
+      if (selected && parsed.hasToolCalls && hasEarlierUnselectedAction(fullText, selected, body.tools!, parseOptions!)) return invalidChoiceCall();
       const still = parsed.hasToolCalls ? strippedTypeMember(parsed.toolCalls[0], body.tools) : null;
       log.info(`After the damaged-command retry: hasToolCalls=${parsed.hasToolCalls}, damaged=${still ?? "no"}`);
       if (still) {
@@ -1448,7 +1467,7 @@ export async function handleChatCompletion(
           kind: "error",
           resp: jsonResponse(502, {
             error: {
-              message: `M365 Copilot stripped a .NET type name from the PowerShell command twice (it arrived as \`${still}\`), so it was not run: run as written it would have done nothing, or emptied a file. Retry; asking for full type names such as [System.Text.RegularExpressions.Regex]::Replace usually avoids it.`,
+              message: "M365 Copilot stripped a .NET type name from the PowerShell command twice, so it was not run: run as written it could have done nothing or emptied a file. Retry and ask for full type names such as [System.Text.RegularExpressions.Regex]::Replace.",
               type: "damaged_tool_call",
             },
           }),
@@ -1471,8 +1490,8 @@ export async function handleChatCompletion(
 
     // Handle "reply" tool calls — convert to plain text
     if (parsed.hasToolCalls) {
-      const replyCall = parsed.toolCalls.find(tc => tc.function.name === "reply");
-      const realToolCalls = parsed.toolCalls.filter(tc => tc.function.name !== "reply");
+      const replyCall = selectedName === "reply" ? undefined : parsed.toolCalls.find(tc => tc.function.name === "reply");
+      const realToolCalls = selectedName === "reply" ? parsed.toolCalls : parsed.toolCalls.filter(tc => tc.function.name !== "reply");
 
       if (replyCall && realToolCalls.length === 0) {
         let replyText: string;
@@ -1516,9 +1535,24 @@ export async function handleChatCompletion(
       // The model's server-side history holds more than what runs; say so on
       // the turn that carries the real result (executedOnlyFirstNote).
       const notes = [rewriteNote, executedOnlyFirstNote(cutFabricated, droppedCalls, textAfterFirstToolCall(fullText, body.tools).length)].filter(Boolean);
-      conv.pendingNote = notes.length ? notes.join("\n") : null;
       const fixed = parsed.toolCalls.map((c) => millisecondArgsFixed(c, body.tools));
       if (fixed.some((c, i) => c !== parsed.toolCalls[i])) log.info("A millisecond argument under 1000 read as seconds (e.g. Bash timeout: 30)");
+      if (selectedName !== undefined) {
+        const props = selected![0].function.parameters?.properties ?? {};
+        for (const call of fixed) {
+          if (call.function.name !== selectedName) return invalidChoiceCall();
+          let args: unknown;
+          try { args = JSON.parse(call.function.arguments); } catch { return invalidChoiceCall(); }
+          if (!args || typeof args !== "object" || Array.isArray(args)) return invalidChoiceCall();
+          const required = selected![0].function.parameters?.required ?? [];
+          for (const key of Object.keys(props)) {
+            const mustBeString = required.includes(key) || (isExplicitShellTool(selected![0]) && /^(command|cmd|script|input)$/i.test(key));
+            if (mustBeString && props[key]?.type === "string" &&
+                typeof (args as Record<string, unknown>)[key] !== "string") return invalidChoiceCall();
+          }
+        }
+      }
+      conv.pendingNote = notes.length ? notes.join("\n") : null;
       return { kind: "tools", toolCalls: fixed };
     }
     return { kind: "text", text: fullText };

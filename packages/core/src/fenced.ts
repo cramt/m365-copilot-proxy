@@ -205,18 +205,23 @@ export function strippedTypeMember(
   return null;
 }
 
+/** True for a named shell or Codex Code Mode, without the single-input heuristic. */
+export function isExplicitShellTool(tool: ToolDef): boolean {
+  return SHELL_TOOL_NAME.test(tool.function.name) || isCodeModeExecTool(tool);
+}
+
 /** The harness tool (if any) that runs a shell command — the target for ```bash routing.
- *  Codex's Code Mode `exec` is the last resort: shell fences reach it wrapped as a
- *  nested `exec_command` call (codeModeShellScript). */
+ *  Named shells take priority, then Codex's Code Mode executor, then a heuristic
+ *  single-parameter tool. */
 export function findShellTool(tools: ToolDef[]): ToolDef | undefined {
   const shells = tools.filter((t) => !isCodeModeExecTool(t));
   return shells.find((t) => SHELL_TOOL_NAME.test(t.function.name)) ??
-    // fallback: a single-string-param tool whose param is command-ish
+    // A known Code Mode executor is less ambiguous than an arbitrary input tool.
+    tools.find(isCodeModeExecTool) ??
     shells.find((t) => {
       const props = Object.keys(t.function.parameters?.properties ?? {});
       return props.length === 1 && /^(command|cmd|script|input)$/i.test(props[0]);
-    }) ??
-    tools.find(isCodeModeExecTool);
+    });
 }
 
 // Claude Code on Windows offers a `PowerShell` tool next to `Bash`, which runs Git
@@ -348,7 +353,7 @@ export function deriveFencedSpec(tool: ToolDef): FencedToolSpec {
   };
 }
 
-export function buildSpecMap(tools: ToolDef[]): Map<string, FencedToolSpec> {
+export function buildSpecMap(tools: ToolDef[], options?: { reservedNames?: Set<string>; strictShell?: boolean }): Map<string, FencedToolSpec> {
   const m = new Map<string, FencedToolSpec>();
   for (const t of tools) m.set(t.function.name, deriveFencedSpec(t));
 
@@ -356,7 +361,9 @@ export function buildSpecMap(tools: ToolDef[]): Map<string, FencedToolSpec> {
   // to the harness's shell tool even when it's named `run`/`run_command`/etc., so
   // the model can "just write bash" (the behavior M365 reliably permits) and the
   // harness still receives a structured tool_call under its own tool's name.
-  const shell = findShellTool(tools);
+  const shell = options?.strictShell
+    ? tools.find(isExplicitShellTool)
+    : findShellTool(tools);
   if (shell) {
     const own = m.get(shell.function.name)!;
     // A ```bash fence is a shell command by definition: Code Mode always wraps it.
@@ -365,7 +372,7 @@ export function buildSpecMap(tools: ToolDef[]): Map<string, FencedToolSpec> {
     const pwsh = findPowerShellTool(tools);
     const pwshSpec = pwsh && pwsh !== shell ? m.get(pwsh.function.name) : undefined;
     for (const lang of SHELL_LANGS) {
-      if (!m.has(lang)) m.set(lang, pwshSpec && POWERSHELL_LANGS.has(lang) ? pwshSpec : shellSpec);
+      if (!m.has(lang) && !options?.reservedNames?.has(lang)) m.set(lang, pwshSpec && POWERSHELL_LANGS.has(lang) ? pwshSpec : shellSpec);
     }
   }
   return m;
@@ -1146,6 +1153,71 @@ function scanFences(text: string): FenceBlock[] {
     offset = lineEnd + 1;
   }
   return blocks;
+}
+
+/** Compare recognizable top-level actions in order before emitting a named call.
+ * Standalone JSON objects may span lines; nested code fences remain opaque. */
+export function hasEarlierUnselectedAction(text: string, selected: ToolDef[], all: ToolDef[], options: { reservedNames?: Set<string>; strictShell?: boolean }): boolean {
+  const selectedName = selected[0]?.function.name;
+  const declared = new Set(all.map(t => t.function.name));
+  const allSpecs = buildSpecMap(all);
+  const selectedSpecs = buildSpecMap(selected, options);
+  const selectedFence = findFirstToolFence(text, selectedSpecs);
+  const classify = (name: unknown): number => {
+    if (typeof name !== "string") return 0;
+    if (name === selectedName) return 1;
+    if (declared.has(name)) return -1;
+    return allSpecs.has(name) ? -1 : 0;
+  };
+  // Scan only JSON objects starting at the beginning of a line. Quoted/prose
+  // examples and objects embedded in another fenced block are not actions here.
+  const jsonActions = (begin: number, end: number): number => {
+    let start = -1, depth = 0, inString = false, escaped = false, lineStart = true;
+    for (let i = begin; i < end; i++) {
+      const c = text[i];
+      if (start < 0) {
+        if (lineStart && (c === " " || c === "\t" || c === "\r")) continue;
+        if (lineStart && c === "{") { start = i; depth = 1; lineStart = false; continue; }
+        lineStart = c === "\n";
+        continue;
+      }
+      if (inString) {
+        if (escaped) escaped = false;
+        else if (c === "\\") escaped = true;
+        else if (c === '"') inString = false;
+      } else if (c === '"') inString = true;
+      else if (c === "{") depth++;
+      else if (c === "}" && --depth === 0) {
+        try {
+          const obj = JSON.parse(text.slice(start, i + 1));
+          if (obj && typeof obj === "object" && !Array.isArray(obj) &&
+              (typeof obj.arguments === "string" || (obj.arguments && typeof obj.arguments === "object" && !Array.isArray(obj.arguments)))) {
+            const action = classify(obj.tool);
+            // The parser prefers any fence over JSON. Never let a later fence
+            // silently overtake this earlier selected call: refuse the ambiguity.
+            if (action === 1 && selectedFence && i < selectedFence.start) return -1;
+            if (action) return action;
+          }
+        } catch { /* not a valid legacy call */ }
+        start = -1;
+      }
+      lineStart = c === "\n";
+    }
+    return 0;
+  };
+  let pos = 0;
+  for (const block of scanFences(text)) {
+    const before = jsonActions(pos, block.start);
+    if (before) return before < 0;
+    // Exact declared names take priority; otherwise honor an authorized alias
+    // before consulting the full-tool routing map.
+    const resolved = declared.has(block.info) ? block.info : (selectedSpecs.get(block.info)?.name ?? allSpecs.get(block.info)?.name);
+    const action = classify(resolved);
+    if (action < 0) return true;
+    if (selectedSpecs.has(block.info) && resolved === selectedName) return false;
+    pos = block.end;
+  }
+  return jsonActions(pos, text.length) < 0;
 }
 
 // A fence opening with a tool-like info-string, for findUnclosedToolFence.
