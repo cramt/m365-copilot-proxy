@@ -8,6 +8,8 @@ export {
   forceReauth,
 } from "./auth.js";
 
+export { CachePersistenceError } from "./storage.js";
+
 export {
   generateImage,
   fetchImageBytes,

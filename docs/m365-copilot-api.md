@@ -71,6 +71,24 @@ wss://substrate.office.com/m365Copilot/Chathub/{oid}@{tid}?{query}
 ### Flow: MSAL PKCE
 We use `@azure/msal-node` `PublicClientApplication` with PKCE. The token cache is persisted to `~/.config/opencode-m365/msal-cache.json` and refreshed silently when possible.
 
+MSAL and agent-ID cache snapshots are published through exclusive same-directory
+0600 temporary files: write the full snapshot, fsync and close it, then rename.
+New parent directories are 0700; existing shared parents are not chmodded. Replacing
+an old cache also replaces its permissions. Local publication failures throw
+`CachePersistenceError` (message without paths or cache bytes, with a recognized OS errno;
+its `cause` holds only that code and syscall, e.g. `EBUSY (rename)`),
+not an authentication miss: they must not trigger browser login or optional-agent
+fallback. A failure before rename leaves the previous complete cache intact;
+a directory-fsync failure after rename reports failure but leaves the new complete
+snapshot published. Directory fsync is attempted where supported, not on Windows.
+Because the swap is a rename, `M365_CACHE_FILE` on a single
+bind-mounted file fails with `EBUSY`/`EXDEV`, where the earlier in-place write worked:
+mount the containing directory instead.
+This is atomic snapshot publication, **not cross-process MSAL merging or guaranteed
+power-loss durability on every OS/filesystem**. Configured ancestor directories must
+be trusted: a destination symlink is replaced rather than followed, an immediate
+symlink parent is rejected, and hostile ancestor swaps are outside this guarantee.
+
 > **The cache is disposable (tested June 2026, `scripts/token-regen-probe.mjs`).** Delete `msal-cache.json` and the next `getToken()` self-heals: silent fails → automated browser login (stored creds + TOTP) → a fresh, working token in **~12s**, no human in the loop. The regenerated token is **functionally identical** — same `aud`/`appid`/`tid`/`oid`/scopes, only `iat`/`exp`/`uti` change. Point auth at a throwaway cache with `M365_CACHE_FILE` to test this without touching the real one.
 >
 > **Re-auth does NOT clear account throttling** — the fresh token carries the same `oid`, so it lands in the same account-keyed throttle bucket. Throttling is identity-level, not token-level.
@@ -86,7 +104,10 @@ existing Microsoft client ID and Sydney scopes returned a broker token on Window
 ARM64 where browser PKCE was blocked by token protection (`530084`); a subsequent
 silent acquisition also succeeded (hypotheses §44). This does not establish that
 every account or policy supports the path. Only account-selection metadata is
-persisted by the proxy; WAM owns refresh tokens. `M365_ENABLE_INTERACTIVE_APPROVAL`
+persisted by the proxy; WAM owns refresh tokens. The separate `wam-account.json`
+metadata write is not covered by the MSAL/agent atomic-publication guarantee: it
+writes in place, and an existing file's permissions are not tightened. A failed or
+partial write can affect later account selection. `M365_ENABLE_INTERACTIVE_APPROVAL`
 and `M365_NO_INTERACTIVE` govern native prompts too, with no browser fallback.
 
 The `nativeclient` redirect URI is designed to be **intercepted by an embedded native host** (WebView2 etc.) *before the page loads*. A real browser instead follows the redirect one hop further and lands on **`https://login.microsoftonline.com/common/wrongplace`** ("This is not the right page"). So:
