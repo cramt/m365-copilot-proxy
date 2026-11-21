@@ -64,6 +64,9 @@ function trimToWindow(size: number) {
       const nl = buf.subarray(0, n).indexOf(0x0a);
       if (nl >= 0) start = nl + 1;
     }
+    // Close before the rename: Windows refuses to replace a file this process holds open (EPERM).
+    closeSync(fd);
+    fd = undefined;
     writeFileSync(tmp, buf.subarray(start, n));
     renameSync(tmp, LOG_FILE); // atomic: readers see the old or the new file
   } catch {
