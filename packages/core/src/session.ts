@@ -41,9 +41,15 @@ function isProtocolRecord(value: unknown, handshake: boolean, streamHub: boolean
   if (!object(value)) return false;
   if (handshake) return SignalRHandshakeResponse.safeParse(value).success && !("type" in value);
   if (!Number.isInteger(value.type)) return false;
+  const message = (v: unknown): boolean => {
+    if (!object(v)) return false;
+    if ("scores" in v && (!Array.isArray(v.scores) || !v.scores.every((s: unknown) => object(s) && typeof s.component === "string" && typeof s.score === "number" && Number.isFinite(s.score)))) return false;
+    if ("contentGenerationProgressList" in v && (!Array.isArray(v.contentGenerationProgressList) || !v.contentGenerationProgressList.every((p: unknown) => object(p) && (!("ImageReferenceUrls" in p) || (Array.isArray(p.ImageReferenceUrls) && p.ImageReferenceUrls.every((url: unknown) => typeof url === "string")))))) return false;
+    return true;
+  };
   const argument = (v: unknown): v is Record<string, any> => {
     if (!object(v)) return false;
-    if ("messages" in v && (!Array.isArray(v.messages) || !v.messages.every(m => m === null || object(m)))) return false;
+    if ("messages" in v && (!Array.isArray(v.messages) || !v.messages.every(message))) return false;
     if ("throttling" in v && !object(v.throttling)) return false;
     if ("cursor" in v && !object(v.cursor)) return false;
     if ("writeAtCursor" in v && typeof v.writeAtCursor !== "string") return false;
@@ -63,7 +69,7 @@ function isProtocolRecord(value: unknown, handshake: boolean, streamHub: boolean
       if (item.type === "request_end" && !StreamHubRequestEnd.safeParse(item).success) return false;
       if (item.type === "error" && !StreamHubError.safeParse(item).success) return false;
     } else {
-      if ("messages" in item && (!Array.isArray(item.messages) || !item.messages.every(object))) return false;
+      if ("messages" in item && (!Array.isArray(item.messages) || !item.messages.every(message))) return false;
       if ("throttling" in item && !object(item.throttling)) return false;
       if ("result" in item && !object(item.result)) return false;
     }

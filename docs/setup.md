@@ -43,7 +43,9 @@ A terminal result is accepted only if it is the sole terminal record observed
 before the WebSocket closes. Contradictory or missing terminal records observed
 before closure fail closed; records sent only after closure cannot be observed.
 A StreamHub error item never grants success, regardless of its category; malformed
-JSON and invalid protocol records observed before closure fail closed. In the
+JSON and invalid known protocol containers observed before closure fail closed.
+Unknown object-shaped update fields are accepted for forward compatibility, so this
+is not validation of every possible future message field. In the
 incremental default mode invalid records are ignored rather than crashing the
 socket callback. Pre-aborted or expired requests
 are checked before starting each setup operation; already-running foreign operations

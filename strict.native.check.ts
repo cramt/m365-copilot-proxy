@@ -184,6 +184,28 @@ for (const wire of ["chathub", "streamhub"]) for (const streaming of [false, tru
   vi.stubEnv("M365_STRICT_STREAM", "1"); vi.stubEnv("M365_TRANSPORT", wire); transport = wire; separateRecords = separate; rawTerminalFrames = reverse ? [invalid, "success"] : ["success", invalid];
   const pending = request(streaming); await started; release!(); const text = await (await pending).text(); expect(text).not.toContain(content); expect(text).toContain("error");
 });
+for (const wire of ["chathub", "streamhub"]) for (const streaming of [false, true]) for (const separate of [false, true]) for (const reverse of [false, true]) for (const malformed of [{ messages: [null] }, { messages: [{ author: "bot", scores: [null] }] }, { messages: [{ author: "bot", scores: {} }] }, { messages: [{ author: "bot", scores: [{ component: "x", score: "bad" }] }] }]) it(`strict rejects nested message corruption ${wire} stream=${streaming} separate=${separate} reverse=${reverse} ${JSON.stringify(malformed)}`, async () => {
+  vi.stubEnv("M365_STRICT_STREAM", "1"); vi.stubEnv("M365_TRANSPORT", wire); transport = wire; separateRecords = separate;
+  const record = wire === "streamhub" ? { type: 2, item: { type: "message_part", argument: malformed } } : { type: 1, target: "update", arguments: [malformed] };
+  const invalid = JSON.stringify(record); rawTerminalFrames = reverse ? [invalid, "success"] : ["success", invalid];
+  const pending = request(streaming); await started; release!(); const text = await (await pending).text(); expect(text).not.toContain(content); expect(text).toContain("error");
+});
+it("StreamHub accepts EndOfRequest author null and valid scores", async () => {
+  vi.stubEnv("M365_STRICT_STREAM", "1"); vi.stubEnv("M365_TRANSPORT", "streamhub"); transport = "streamhub";
+  rawTerminalFrames = [JSON.stringify({ type: 2, item: { type: "message_part", argument: { messages: [{ author: null, messageType: "EndOfRequest" }, { author: "bot", text: "", scores: [{ component: "dea_violation", score: 0.01 }] }] } } }), "success"];
+  const pending = request(true); await started; release!(); expect(await (await pending).text()).toContain(content);
+});
+for (const wire of ["chathub", "streamhub"]) for (const streaming of [false, true]) for (const separate of [false, true]) for (const invalid of [
+  '{"type":1,"target":"update","arguments":[null]}',
+  '{"type":1,"target":"update","arguments":[{"messages":[null]}]}',
+  '{"type":1,"target":"update","arguments":[{"messages":[{"author":"bot","scores":[null]}]}]}',
+  '{"type":2,"item":{"messages":[{"author":"bot","scores":[null]}],"result":{"value":"Success"}}}',
+  '{"type":2,"item":{"type":"message_part","argument":{"messages":[null]}}}',
+  '{"type":2,"item":{"type":"message_part","argument":{"messages":[{"author":"bot","scores":[null]}]}}}',
+]) it(`independent malformed record settles ${wire} stream=${streaming} separate=${separate} ${invalid}`, async () => {
+  vi.stubEnv("M365_STRICT_STREAM", "1"); vi.stubEnv("M365_TRANSPORT", wire); transport = wire; separateRecords = separate; rawTerminalFrames = [invalid, "success"];
+  const pending = request(streaming); await started; release!(); const text = await (await pending).text(); expect(text).not.toContain(content);
+}, 5000);
 for (const wire of ["chathub", "streamhub"]) it(`default ignores a non-record without crashing ${wire}`, async () => {
   vi.stubEnv("M365_TRANSPORT", wire); transport = wire; rawTerminalFrames = ["null", "success"];
   const pending = request(true); await started; release!(); expect(await (await pending).text()).toContain(content);
