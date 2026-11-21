@@ -11,7 +11,7 @@ const scripted: {
   /** Text of every run() call, in order. */
   texts: string[];
   /** Per-call overrides, consumed front-first (e.g. a Disengaged turn, then an answer). */
-  queue: Array<{ fullText: string; messageType?: string | null; contentOrigin?: string; apology?: boolean; result?: { value: string; errorCode?: string; message?: string }; metering?: Record<string, number>; throttle?: { current: number; max: number } | null; turnState?: string }>;
+  queue: Array<{ fullText: string; onRun?: (signal?: AbortSignal) => void; messageType?: string | null; contentOrigin?: string; apology?: boolean; result?: { value: string; errorCode?: string; message?: string }; metering?: Record<string, number>; throttle?: { current: number; max: number } | null; turnState?: string; reasoning?: string[] }>;
   /** The model argument of every run() call, in order. */
   models: string[];
   /** The `useAgent` argument of every run() call, in order. */
@@ -34,9 +34,14 @@ const scripted: {
   awaitTurnBudgetCalls: Array<{ maxWaitMs?: number; signal?: AbortSignal }>;
   /** The `waitForBudget` argument of every run() call, in order (one function per call). */
   budgetWaits: Array<(() => Promise<unknown>) | undefined>;
+  /** The M365 conversation id of every run() call, in order (unique per conversation). */
+  convs: string[];
+  ids: number;
   /** Replies to the parts of a long turn (replay.ts), consumed front-first; past them a part gets "OK". */
-  partQueue: Array<{ fullText: string; messageType?: string | null; contentOrigin?: string; apology?: boolean; result?: { value: string; errorCode?: string; message?: string }; throttle?: { current: number; max: number } | null; turnState?: string }>;
-} = { deltas: [], runs: 0, texts: [], queue: [], agentFlags: [], newConversations: 0, models: [], images: [], gate: null, signals: [], stoppedAfter: null, budgetHold: null, awaitTurnBudgetCalls: [], budgetWaits: [], partQueue: [] };
+  partQueue: Array<{ fullText: string; messageType?: string | null; contentOrigin?: string; apology?: boolean; result?: { value: string; errorCode?: string; message?: string }; throttle?: { current: number; max: number } | null; turnState?: string; reasoning?: string[] }>;
+  /** The chain of thought a turn without a queue entry hands to `onReasoning`, piece by piece. */
+  reasoning: string[];
+} = { reasoning: [], deltas: [], runs: 0, texts: [], queue: [], agentFlags: [], newConversations: 0, models: [], images: [], gate: null, signals: [], stoppedAfter: null, budgetHold: null, awaitTurnBudgetCalls: [], budgetWaits: [], convs: [], ids: 0, partQueue: [] };
 
 vi.mock("@m365-copilot/core", async (importActual) => {
   const actual = await importActual<typeof import("@m365-copilot/core")>();
@@ -44,11 +49,11 @@ vi.mock("@m365-copilot/core", async (importActual) => {
   class FakeModelSession {
     readonly uid = ++sessionsMade;
     turnCount = 0;
-    conversationId = "conv-test";
+    conversationId = `conv-${++scripted.ids}`;
     reset() {}
-    newConversation() { this.conversationId = "conv-test-2"; this.turnCount = 0; scripted.newConversations++; }
+    newConversation() { this.conversationId = `conv-${++scripted.ids}`; this.turnCount = 0; scripted.newConversations++; }
     async refreshAgent() { return false; }
-    async run(text: string, model?: string, signal?: AbortSignal, useAgent?: boolean, images: string[] = [], waitForBudget?: () => Promise<unknown>) {
+    async run(text: string, model?: string, signal?: AbortSignal, useAgent?: boolean, images: string[] = [], waitForBudget?: () => Promise<unknown>, turn?: { onReasoning?: (delta: string) => void }) {
       if (scripted.gate) await scripted.gate;
       scripted.budgetWaits.push(waitForBudget);
       scripted.models.push(model ?? "");
@@ -58,12 +63,17 @@ vi.mock("@m365-copilot/core", async (importActual) => {
       this.turnCount++; // like the real session: later requests go down the delta path
       scripted.runs++;
       scripted.texts.push(text);
+      scripted.convs.push(this.conversationId);
       scripted.agentFlags.push(useAgent);
       servedBy.push(this.uid);
       // A part of a long turn (replay.ts) is acknowledged, as the model does, without using up the queue.
       const isPart = /^\[(?:Earlier conversation, part|This message is too long to send at once)/.test(text);
       const next: (typeof scripted.queue)[number] | undefined = isPart ? (scripted.partQueue.shift() ?? { fullText: "OK" }) : scripted.queue.shift();
+      next?.onRun?.(signal);
       const deltas = next ? (next.fullText ? [next.fullText] : []) : scripted.deltas;
+      // The chain of thought arrives ahead of the answer, as the real session hands it on.
+      const thoughts = next ? (next.reasoning ?? []) : scripted.reasoning;
+      for (const t of thoughts) turn?.onReasoning?.(t);
       const full = next ? next.fullText : (scripted.fullText ?? deltas.join(""));
       const yielded: string[] = [];
       const stream = {
@@ -81,6 +91,7 @@ vi.mock("@m365-copilot/core", async (importActual) => {
         scores: null,
         turnCount: 1,
         turnState: next?.turnState ?? "Completed",
+        reasoning: thoughts.join(""),
         async *[Symbol.asyncIterator]() {
           for (const d of deltas) {
             await Promise.resolve(); // yield to the event loop between deltas
@@ -128,11 +139,15 @@ const runtimeClosed: string[] = [];
 const servedBy: number[] = [];
 
 const { handleChatCompletion, SessionPool, ChatCompletionRequest } = await import("./index.js");
-const { resetAgentRoutes, resetPriorityAccessState, TurnBudgetHold, noteWebSearchOverflow, toneUsesWebSearch, resetWebSearchOverflow } = await import("@m365-copilot/core");
+const { resetAgentRoutes, resetPriorityAccessState, noteRequestOutcome, TurnBudgetHold, noteWebSearchOverflow, toneUsesWebSearch, resetWebSearchOverflow } = await import("@m365-copilot/core");
 
-// The proxy remembers a priority-access wall for the process (until the reset);
-// don't let one test's refusal 429 the next test's Opus request.
-afterEach(() => resetPriorityAccessState());
+// The proxy remembers a priority-access wall and degradation backoff for the
+// process; reset both between tests so one test's refusal/throttle doesn't
+// stall or 429 the next test (the fake numbers distinct conversation ids).
+afterEach(() => {
+  resetPriorityAccessState();
+  noteRequestOutcome(false, "");
+});
 
 /** One request on a fresh pool with a fake clock: an empty upstream turn makes
  *  the handler wait 2 s before each quick retry, and that wait is the handler's
@@ -296,6 +311,75 @@ describe("priority-access exhaustion on the streaming path", () => {
   });
 });
 
+describe("a tool call the proxy can't read", () => {
+  const tools = [{ type: "function", function: { name: "bash", parameters: { type: "object", properties: { command: { type: "string" } } } } }];
+  const UNCLOSED = "Let me look at the files.\n```bash\nls -la";
+
+  async function ask(replies: string[]) {
+    scripted.result = null;
+    scripted.texts = [];
+    scripted.queue = replies.map((fullText) => ({ fullText }));
+    const body = ChatCompletionRequest.parse({ model: "gpt-5.6-think-deeper", stream: false, tools, messages: [{ role: "user", content: `list files ${Math.random()}` }] });
+    const msg = (await (await handleChatCompletion(body, new SessionPool())).json()).choices[0].message;
+    scripted.queue = [];
+    return msg;
+  }
+  afterEach(() => { delete process.env.M365_NO_FENCE_RETRY; });
+
+  it("asks for it again, saying what was wrong, and runs the call it gets", async () => {
+    const msg = await ask([UNCLOSED, "```bash\nls -la\n```"]);
+    expect(JSON.parse(msg.tool_calls[0].function.arguments)).toEqual({ command: "ls -la" });
+    expect(scripted.texts).toHaveLength(2);
+    expect(scripted.texts[1]).toContain("couldn't be read as a tool call — its closing ``` never came on a line of its own");
+  });
+
+  it("asks once: a second unreadable reply goes out as text", async () => {
+    const msg = await ask([UNCLOSED, UNCLOSED, "```bash\nls\n```"]);
+    expect(msg.tool_calls).toBeUndefined();
+    expect(scripted.texts).toHaveLength(2);
+  });
+
+  it("doesn't force a call after asking again, whatever the answer to that was", async () => {
+    // The re-ask told the model it could reply without the call; a confab retry
+    // on that reply would force the call anyway (review, #71).
+    const msg = await ask([UNCLOSED, "I don't have access to your project files or the ability to run commands here.", "```bash\nls\n```"]);
+    expect(msg.tool_calls).toBeUndefined();
+    expect(scripted.texts).toHaveLength(2);
+  });
+
+  it("doesn't ask when nothing in the reply was a tool call, or when turned off", async () => {
+    await ask(["Done. The function is:\n\n```python\ndef f():\n    return 1"]);
+    expect(scripted.texts).toHaveLength(1);
+    process.env.M365_NO_FENCE_RETRY = "1";
+    await ask([UNCLOSED, "```bash\nls\n```"]);
+    expect(scripted.texts).toHaveLength(1);
+  });
+
+  it("runs after an Apology retry and still sends the closed call through the [Type]: guard", async () => {
+    const psTools = [{ type: "function", function: { name: "exec_command", description: "Runs a PowerShell command", parameters: { type: "object", properties: { cmd: { type: "string" } }, required: ["cmd"] } } }];
+    scripted.result = null;
+    scripted.texts = [];
+    scripted.queue = [
+      { fullText: "Sorry, it looks like I can't chat about this.", contentOrigin: "DeepLeo", apology: true },
+      { fullText: "```powershell\n$u = Get-Content a.txt" },
+      { fullText: "```powershell\n$u = :Replace($c, '1', '2')\nSet-Content a.txt $u\n```" },
+      { fullText: "```powershell\n$u = [System.Text.RegularExpressions.Regex]::Replace($c, '1', '2')\nSet-Content a.txt $u\n```" },
+    ];
+    const body = ChatCompletionRequest.parse({
+      model: "gpt-6.1-sol",
+      stream: false,
+      tools: psTools,
+      messages: [{ role: "user", content: `edit a.txt ${Math.random()}` }],
+    });
+    const msg = (await (await handleChatCompletion(body, new SessionPool())).json()).choices[0].message;
+    scripted.queue = [];
+    expect(scripted.texts).toHaveLength(4);
+    expect(scripted.texts[2]).toContain("couldn't be read as a tool call");
+    expect(scripted.texts[3]).toContain("didn't run your last command");
+    expect(JSON.parse(msg.tool_calls[0].function.arguments).cmd).toContain("[System.Text.RegularExpressions.Regex]::Replace(");
+  });
+});
+
 describe("the only-the-first-call-ran note", () => {
   const tools = [{ type: "function", function: { name: "bash", parameters: { type: "object", properties: { command: { type: "string" } } } } }];
   const NOTE = "(Note: only the first tool call in your previous reply was actually run.";
@@ -364,13 +448,14 @@ describe("a command too long for the Windows command line", () => {
     scripted.texts = [];
     scripted.queue = [{ fullText: "```bash\n" + command + "\n```" }, { fullText: "Done." }];
     const pool = new SessionPool();
-    const messages: any[] = [{ role: "user", content: `long ${Math.random()}` }];
+    const messages: any[] = [{ role: "system", content: "<cwd>\nC:/work/proj\n</cwd>" }, { role: "user", content: `long ${Math.random()}` }];
     const ask = async () => (await (await handleChatCompletion(ChatCompletionRequest.parse({ model: "claude-sonnet", stream: false, tools, messages }), pool)).json()).choices[0].message;
 
     const saved = await ask();
     expect(saved.tool_calls[0].function.name).toBe("write");
     const { path, content } = JSON.parse(saved.tool_calls[0].function.arguments);
     expect(content).toBe(`${command}\n`);
+    expect(path).toMatch(/^C:\/work\/proj\/m365-cmd-[0-9a-f]{8}\.sh$/); // under the harness's cwd, not the proxy's temp dir
     messages.push({ role: "assistant", content: null, tool_calls: saved.tool_calls });
     messages.push({ role: "tool", tool_call_id: saved.tool_calls[0].id, content: `Successfully wrote ${content.length} bytes to ${path}` });
 
@@ -791,7 +876,11 @@ describe("GPT-6 Sol: agent on premium, learned fallback on non-premium (#23)", (
     expect(scripted.newConversations).toBe(1);
     expect(scripted.agentFlags).toEqual([true, true]);
     expect(scripted.texts[1]).not.toBe("Please continue.");
-    expect(scripted.texts[1]).toBe(scripted.texts[0].replace("conv-test<", "conv-test-2<"));
+    // The same request, in another conversation (the fake numbers its ids).
+    const id = (t: string) => /<conversation_id>([^<]*)</.exec(t)?.[1];
+    const sameRequest = (t: string) => t.replace(/<conversation_id>[^<]*</, "<conversation_id><");
+    expect(id(scripted.texts[1])).not.toBe(id(scripted.texts[0]));
+    expect(sameRequest(scripted.texts[1])).toBe(sameRequest(scripted.texts[0]));
     scripted.queue = [CALL];
     await send();
     expect(scripted.agentFlags).toEqual([true]);
@@ -882,6 +971,259 @@ describe("follow-up turns and give-ups (Windows / pi, measured)", () => {
     scripted.queue = [];
   });
 
+  describe("a single call after a long written answer (M365_LONG_ANSWER_GUARD)", () => {
+    const doc = `# Recommendations\n${"Consider a local development improvement. ".repeat(45)}\n\n\`\`\`bash\nprintf example\n\`\`\``;
+    // The maintainer's repro: an explanation with a python block whose comments start
+    // with "# ", then the call that applies the fix.
+    const fix = [
+      "The date parser treats %d as zero padded everywhere, so single digit days fail. ".repeat(8),
+      "",
+      "```python",
+      ...Array.from({ length: 14 }, (_, i) => `# case ${i}: a single digit day parses like its padded form\nassert parse("2026-11-${i + 1}") == parse("2026-11-${String(i + 1).padStart(2, "0")}")`),
+      "```",
+      "",
+      "```bash\nsed -i 's/%d/%e/' src/date.py && pytest -q\n```",
+    ].join("\n");
+
+    afterEach(() => { delete process.env.M365_LONG_ANSWER_GUARD; });
+
+    const reply = async (fullText: string) => {
+      scripted.result = null;
+      scripted.texts = [];
+      scripted.queue = [{ fullText }];
+      const m = await ask([{ role: "user", content: `recommendations ${Math.random()}` }], new SessionPool());
+      scripted.queue = [];
+      return m;
+    };
+
+    it.each([["long structured answer", doc], ["python block then sed && pytest", fix]])(
+      "runs the call by default (%s)", async (_name, text) => {
+        const m = await reply(text);
+        expect(m.tool_calls).toHaveLength(1);
+        expect(scripted.texts).toHaveLength(1);
+      });
+
+    it("returns the long structured answer as prose when the guard is on", async () => {
+      process.env.M365_LONG_ANSWER_GUARD = "1";
+      const m = await reply(doc);
+      expect(scripted.texts).toHaveLength(1);
+      expect(m.tool_calls).toBeUndefined();
+      expect(m.content).toBe(doc);
+    });
+
+    it.each([
+      ["mid-line python", "Example: ```python\n# comment\nx = 1\n```"],
+      ["nested markdown", "```markdown\n```python\nx = 1\n```\n# comment\n```"],
+      ["mid-line table", "Example: ```text\n| a | b |\n```"],
+    ])("replay_7124b7e_fences: handler runs action after %s with guard on and off", async (_name, block) => {
+      const text = `${"A detailed explanation of the fix without document structure. ".repeat(30)}\n${block}\n\`\`\`bash\nsed -i 's/a/b/' file && pytest -q\n\`\`\``;
+      for (const enabled of [false, true]) {
+        if (enabled) process.env.M365_LONG_ANSWER_GUARD = "1";
+        else delete process.env.M365_LONG_ANSWER_GUARD;
+        const m = await reply(text);
+        expect(m.tool_calls).toHaveLength(1);
+        expect(JSON.parse(m.tool_calls[0].function.arguments).command).toContain("sed -i");
+      }
+    });
+
+    it.each([
+      ["tilde python", "~~~python\n# comment\nx=1\n~~~\n```bash\nsed -i s/a/b/ file && pytest\n```"],
+      ["four-backtick python", "````python\n# comment\nx=1\n````\n```bash\nsed -i s/a/b/ file && pytest\n```"],
+    ])("replay_8d5a8dd_ambiguous: handler retains %s action", async (_name, suffix) => {
+      const text = `${"Detailed explanation of the change and why it is needed. ".repeat(32)}\n${suffix}`;
+      for (const enabled of [false, true]) {
+        if (enabled) process.env.M365_LONG_ANSWER_GUARD = "1";
+        else delete process.env.M365_LONG_ANSWER_GUARD;
+        const m = await reply(text);
+        expect(m.tool_calls).toHaveLength(1);
+        expect(JSON.parse(m.tool_calls[0].function.arguments).command).toContain("sed -i");
+      }
+    });
+
+    // #139: since the CommonMark scanner (#71) these read as no call and no re-ask.
+    it.fails.each([
+      ["unclosed python before native closer", "```python\n# comment\nx=1\n```bash\nsed -i s/a/b/ file && pytest\n</invoke>"],
+    ])("replay_8d5a8dd_ambiguous: handler retains %s action", async (_name, suffix) => {
+      const text = `${"Detailed explanation of the change and why it is needed. ".repeat(32)}\n${suffix}`;
+      for (const enabled of [false, true]) {
+        if (enabled) process.env.M365_LONG_ANSWER_GUARD = "1";
+        else delete process.env.M365_LONG_ANSWER_GUARD;
+        const m = await reply(text);
+        expect(m.tool_calls).toHaveLength(1);
+        expect(JSON.parse(m.tool_calls[0].function.arguments).command).toContain("sed -i");
+      }
+    });
+
+    it.each(["# comment", "| table row |"])("replay_ea83f49_mixed_fences: handler retains action after four-backtick block containing %s", async (structure) => {
+      const text = `${"Detailed explanation of the change and why it is needed. ".repeat(32)}\n${"`".repeat(4)}python\n\`\`\`\n${structure}\n\`\`\`python\n${"`".repeat(4)}\n\`\`\`bash\nsed -i s/a/b/ file && pytest\n\`\`\``;
+      for (const enabled of [false, true]) {
+        if (enabled) process.env.M365_LONG_ANSWER_GUARD = "1";
+        else delete process.env.M365_LONG_ANSWER_GUARD;
+        const m = await reply(text);
+        expect(m.tool_calls).toHaveLength(1);
+        expect(JSON.parse(m.tool_calls[0].function.arguments).command).toBe("sed -i s/a/b/ file && pytest");
+      }
+    });
+
+    it.each(["~~~", "~~~~"])("conservatively retains a call when %s appears inside a closed native fence", async (marker) => {
+      const text = `# Heading\n${"Detailed explanation of the change. ".repeat(50)}\n\`\`\`python\n${marker}python\nx=1\n${marker}\n\`\`\`\n\`\`\`bash\nprintf example\n\`\`\``;
+      for (const enabled of [false, true]) {
+        if (enabled) process.env.M365_LONG_ANSWER_GUARD = "1";
+        else delete process.env.M365_LONG_ANSWER_GUARD;
+        const m = await reply(text);
+        expect(m.tool_calls).toHaveLength(1);
+        expect(JSON.parse(m.tool_calls[0].function.arguments).command).toBe("printf example");
+      }
+    });
+
+    // #139: since the CommonMark scanner (#71) these read as no call and no re-ask.
+    it.fails.each(["````", "`````"])("conservatively retains a call when %s appears inside a closed native fence", async (marker) => {
+      const text = `# Heading\n${"Detailed explanation of the change. ".repeat(50)}\n\`\`\`python\n${marker}python\nx=1\n${marker}\n\`\`\`\n\`\`\`bash\nprintf example\n\`\`\``;
+      for (const enabled of [false, true]) {
+        if (enabled) process.env.M365_LONG_ANSWER_GUARD = "1";
+        else delete process.env.M365_LONG_ANSWER_GUARD;
+        const m = await reply(text);
+        expect(m.tool_calls).toHaveLength(1);
+        expect(JSON.parse(m.tool_calls[0].function.arguments).command).toBe("printf example");
+      }
+    });
+
+    it.each(["# Heading", "| Area | Value |"])("conservatively keeps action with %s and a nested fence", async (structure) => {
+      const text = `${structure}\n${"Useful explanation. ".repeat(90)}\nExample: \`\`\`markdown\n\`\`\`python\n# comment\n\`\`\`\n\`\`\`\n\`\`\`bash\nprintf example\n\`\`\``;
+      delete process.env.M365_LONG_ANSWER_GUARD;
+      expect((await reply(text)).tool_calls).toHaveLength(1);
+      process.env.M365_LONG_ANSWER_GUARD = "1";
+      const m = await reply(text);
+      expect(m.tool_calls).toHaveLength(1);
+    });
+
+    it.each(["    | a | b |", "     | a | b |", "\t| a | b |", " \t| a | b |", "    # comment", "\t# comment"])("replay_f2d1258_indented: handler keeps action after code line %j", async (line) => {
+      const text = `${"Detailed explanation of the change and why it is needed. ".repeat(32)}\n\n${line}\n\n\`\`\`bash\nsed -i s/a/b/ file && pytest\n\`\`\``;
+      for (const enabled of [false, true]) {
+        if (enabled) process.env.M365_LONG_ANSWER_GUARD = "1";
+        else delete process.env.M365_LONG_ANSWER_GUARD;
+        const m = await reply(text);
+        expect(m.tool_calls).toHaveLength(1);
+        expect(JSON.parse(m.tool_calls[0].function.arguments).command).toBe("sed -i s/a/b/ file && pytest");
+      }
+    });
+
+    it.each(["", " ", "  ", "   "])("handler recognizes real heading and table with %j indentation", async (indent) => {
+      for (const structure of ["| a | b |\n" + indent + "| --- | --- |", "# Heading"]) {
+        const text = `${"Detailed explanation of the change and why it is needed. ".repeat(32)}\n\n${indent}${structure}\n\`\`\`bash\nprintf example\n\`\`\``;
+        delete process.env.M365_LONG_ANSWER_GUARD;
+        expect((await reply(text)).tool_calls).toHaveLength(1);
+        process.env.M365_LONG_ANSWER_GUARD = "1";
+        const m = await reply(text);
+        expect(m.tool_calls).toBeUndefined();
+        expect(m.content).toBe(text);
+      }
+    });
+
+    it.each([
+      ["HTML comment heading", "<!--\n# internal implementation note\n-->"],
+      ["HTML comment table", "<!--\n| a | b |\n-->"],
+      ["HTML pre", "<pre>\n# code comment\n</pre>"],
+      ["multiline inline code", "Here is the snippet: `first line\n# this is code, not a heading\nlast line`"],
+      ["indented code with real heading", "# Plan\n    x = 1"],
+      ["inline code with real heading", "# Plan\nUse `example` here."],
+      ["list with real heading", "# Plan\n- item"],
+      ["link with real heading", "# Plan\n[reference](example)"],
+    ])("replay_a804b53_markup: handler retains action with %s", async (_name, block) => {
+      const text = `${"Detailed explanation of the change and why it is needed. ".repeat(32)}\n\n${block}\n\n\`\`\`bash\nsed -i s/a/b/ file && pytest\n\`\`\``;
+      for (const enabled of [false, true]) {
+        if (enabled) process.env.M365_LONG_ANSWER_GUARD = "1";
+        else delete process.env.M365_LONG_ANSWER_GUARD;
+        const m = await reply(text);
+        expect(m.tool_calls).toHaveLength(1);
+        expect(JSON.parse(m.tool_calls[0].function.arguments).command).toBe("sed -i s/a/b/ file && pytest");
+      }
+    });
+
+    describe.each([false, true])("table handler stream=%s", (stream) => {
+    it.each([
+      ["empty", "||", false], ["space", "| |", false], ["separator", "|---|---|", false],
+      ["one row", "| a | b |", false], ["blank header", "| | |\n|---|---|", false],
+      ["punctuation header", "| ... | --- |\n|---|---|", false],
+      ["valid table", "| a | b |\n|---|---|\n| x | y |", true],
+      ["escaped pipe", "| a \\| b | c |\n| --- | :---: |", true],
+      ["mismatched columns", "| a | b |\n| --- |", false],
+      ["CRLF spaced", "   | a | b |\r\n   | --- | --- |", true],
+      ["four spaces", "    | a | b |\n    | --- | --- |", false],
+      ["tab", "\t| a | b |\n\t| --- | --- |", false], ["heading", "# Heading", true],
+    ])("replay_34e3a2d_table: handler JSON and SSE %s", async (_name, structure, expected) => {
+      const text = `${"Detailed explanation of the change and why it is needed. ".repeat(32)}\n\n${structure}\n\`\`\`bash\nsed -i s/a/b/ file && pytest\n\`\`\``;
+      for (const enabled of [false, true]) {
+        if (enabled) process.env.M365_LONG_ANSWER_GUARD = "1"; else delete process.env.M365_LONG_ANSWER_GUARD;
+        scripted.result = null; scripted.texts = []; scripted.queue = [{ fullText: text }];
+        const body = ChatCompletionRequest.parse({ model: "gpt-5.6-think-deeper", stream, tools, messages: [{ role: "user", content: `check ${Math.random()}` }] });
+        const res = await handleChatCompletion(body, new SessionPool());
+        expect(res.status).toBe(200);
+        const prose = enabled && expected;
+        if (!stream) {
+          const m = (await res.json()).choices[0].message;
+          if (prose) { expect(m.tool_calls).toBeUndefined(); expect(m.content).toBe(text); }
+          else { expect(m.tool_calls).toHaveLength(1); expect(JSON.parse(m.tool_calls[0].function.arguments).command).toBe("sed -i s/a/b/ file && pytest"); }
+        } else {
+          const raw = await res.text();
+          expect(raw).toContain("data: [DONE]");
+          const chunks = raw.split("\n").filter(l => l.startsWith("data: ") && l !== "data: [DONE]").map(l => JSON.parse(l.slice(6)));
+          const deltas = chunks.map(c => c.choices?.[0]?.delta).filter(Boolean);
+          const calls = deltas.flatMap(d => d.tool_calls ?? []);
+          if (prose) { expect(calls).toHaveLength(0); expect(deltas.map(d => d.content ?? "").join("")).toBe(text); }
+          else { expect(calls.length).toBeGreaterThan(0); expect(JSON.parse(calls.map(c => c.function?.arguments ?? "").join("")).command).toBe("sed -i s/a/b/ file && pytest"); }
+        }
+      }
+    });
+
+    });
+
+    describe.each([false, true])("heading handler stream=%s", (stream) => {
+      it.each([
+        ["#  ", false], ["##    ", false], ["# ---", false], ["#", false], ["### !!!", false], ["#### ###", false],
+        ["# Heading", true], ["## 123", true], ["### Café", true], ["  # 東京", true],
+        ["| --- | ... |\n| --- | --- |", false], ["| 東京 | ... |\n| --- | --- |", true],
+      ])("replay_84edab9_heading: meaningful structure %j", async (row, expected) => {
+        const text = `${"Detailed explanation of the change and why it is needed. ".repeat(32)}\n\n${row}\n\n\`\`\`bash\nsed -i s/a/b/ file && pytest\n\`\`\``;
+        for (const enabled of [false, true]) {
+          if (enabled) process.env.M365_LONG_ANSWER_GUARD = "1"; else delete process.env.M365_LONG_ANSWER_GUARD;
+          scripted.result = null; scripted.texts = []; scripted.queue = [{ fullText: text }];
+          const body = ChatCompletionRequest.parse({ model: "gpt-5.6-think-deeper", stream, tools, messages: [{ role: "user", content: `check ${Math.random()}` }] });
+          const res = await handleChatCompletion(body, new SessionPool());
+          expect(res.status).toBe(200);
+          if (!stream) {
+            const m = (await res.json()).choices[0].message;
+            if (enabled && expected) { expect(m.tool_calls).toBeUndefined(); expect(m.content).toBe(text); }
+            else { expect(m.tool_calls).toHaveLength(1); expect(JSON.parse(m.tool_calls[0].function.arguments).command).toBe("sed -i s/a/b/ file && pytest"); }
+          } else {
+            const raw = await res.text(); expect(raw).toContain("data: [DONE]");
+            const deltas = raw.split("\n").filter(l => l.startsWith("data: ") && l !== "data: [DONE]").map(l => JSON.parse(l.slice(6)).choices?.[0]?.delta).filter(Boolean);
+            const calls = deltas.flatMap(d => d.tool_calls ?? []);
+            if (enabled && expected) { expect(calls).toHaveLength(0); expect(deltas.map(d => d.content ?? "").join("")).toBe(text); }
+            else { expect(calls.length).toBeGreaterThan(0); expect(JSON.parse(calls.map(c => c.function?.arguments ?? "").join("")).command).toBe("sed -i s/a/b/ file && pytest"); }
+          }
+        }
+      });
+    });
+
+    it("returns a structured answer with a native-closer example only when enabled", async () => {
+      const text = `# Recommendations\n${"Useful explanation. ".repeat(90)}\n\`\`\`bash\nprintf example\n</invoke>`;
+      delete process.env.M365_LONG_ANSWER_GUARD;
+      expect((await reply(text)).tool_calls).toHaveLength(1);
+      process.env.M365_LONG_ANSWER_GUARD = "1";
+      const m = await reply(text);
+      expect(m.tool_calls).toBeUndefined();
+      expect(m.content).toBe(text);
+    });
+
+    it("still runs the python-block-then-sed call when the guard is on", async () => {
+      process.env.M365_LONG_ANSWER_GUARD = "1";
+      const m = await reply(fix);
+      expect(m.tool_calls).toHaveLength(1);
+      expect(JSON.parse(m.tool_calls[0].function.arguments).command).toContain("sed -i");
+    });
+  });
+
   it("leaves a real document alone even if its body sounds like a give-up", async () => {
     scripted.result = null;
     scripted.texts = [];
@@ -906,7 +1248,7 @@ describe("a new harness session that shares the first user message", () => {
   it("gets a fresh M365 conversation after a longer earlier session", async () => {
     scripted.result = null;
     scripted.texts = [];
-    scripted.newConversations = 0;
+    scripted.convs = [];
     scripted.queue = [{ fullText: "```bash\nls\n```" }, { fullText: "Done." }, { fullText: "```bash\nls\n```" }];
     const pool = new SessionPool();
     const prompt = `make a pdf ${Math.random()}`;
@@ -916,7 +1258,7 @@ describe("a new harness session that shares the first user message", () => {
     first.push({ role: "tool", tool_call_id: m1.tool_calls[0].id, content: "notlar.md" });
     await ask(first, pool);
     await ask([{ role: "user", content: prompt }], pool); // a new session, same opener
-    expect(scripted.newConversations).toBe(1);
+    expect(scripted.convs[2]).not.toBe(scripted.convs[0]);
     expect(scripted.texts[2]).toContain(prompt); // the full prompt, not a delta
     scripted.queue = [];
   });
@@ -924,13 +1266,13 @@ describe("a new harness session that shares the first user message", () => {
   it("gets one after a single-turn session too (equal length used to send 'Please continue.')", async () => {
     scripted.result = null;
     scripted.texts = [];
-    scripted.newConversations = 0;
+    scripted.convs = [];
     scripted.queue = [{ fullText: "I can't do that." }, { fullText: "```bash\nls\n```" }];
     const pool = new SessionPool();
     const prompt = `make a docx ${Math.random()}`;
     await ask([{ role: "user", content: prompt }], pool);
     await ask([{ role: "user", content: prompt }], pool);
-    expect(scripted.newConversations).toBe(1);
+    expect(scripted.convs[1]).not.toBe(scripted.convs[0]);
     expect(scripted.texts[scripted.texts.length - 1]).not.toBe("Please continue.");
     expect(scripted.texts[scripted.texts.length - 1]).toContain(prompt);
     scripted.queue = [];
@@ -939,7 +1281,7 @@ describe("a new harness session that shares the first user message", () => {
   it("still continues a real continuation in the same conversation", async () => {
     scripted.result = null;
     scripted.texts = [];
-    scripted.newConversations = 0;
+    scripted.convs = [];
     scripted.queue = [{ fullText: "```bash\nls\n```" }, { fullText: "Done." }];
     const pool = new SessionPool();
     const msgs: any[] = [{ role: "user", content: `go ${Math.random()}` }];
@@ -947,8 +1289,92 @@ describe("a new harness session that shares the first user message", () => {
     msgs.push({ role: "assistant", content: null, tool_calls: m1.tool_calls });
     msgs.push({ role: "tool", tool_call_id: m1.tool_calls[0].id, content: "a.txt" });
     await ask(msgs, pool);
-    expect(scripted.newConversations).toBe(0);
+    expect(scripted.convs[1]).toBe(scripted.convs[0]);
     expect(scripted.texts[1]).toContain('<tool_response tool="bash"'); // a delta
+    scripted.queue = [];
+  });
+
+  // §52 F153: the fresh conversation used to REPLACE the earlier session's, so a
+  // session still running (two measurement jobs at once) lost its thread each
+  // time the other one moved, and its next delta landed in the other's.
+  it("leaves the earlier session's conversation alone: each continues in its own", async () => {
+    scripted.result = null;
+    scripted.texts = [];
+    scripted.convs = [];
+    scripted.queue = [{ fullText: "```bash\nls\n```" }, { fullText: "```bash\npwd\n```" }, { fullText: "X done." }, { fullText: "Y done." }];
+    const pool = new SessionPool();
+    const prompt = `merhaba ${Math.random()}`;
+    const x: any[] = [{ role: "user", content: prompt }];
+    const y: any[] = [{ role: "user", content: prompt }];
+    const mx = await ask(x, pool);
+    const my = await ask(y, pool);
+    x.push({ role: "assistant", content: null, tool_calls: mx.tool_calls }, { role: "tool", tool_call_id: mx.tool_calls[0].id, content: "x.txt" });
+    y.push({ role: "assistant", content: null, tool_calls: my.tool_calls }, { role: "tool", tool_call_id: my.tool_calls[0].id, content: "/y" });
+    await ask(x, pool);
+    await ask(y, pool);
+    expect(scripted.convs[1]).not.toBe(scripted.convs[0]);
+    expect(scripted.convs[2]).toBe(scripted.convs[0]);
+    expect(scripted.convs[3]).toBe(scripted.convs[1]);
+    expect(scripted.texts[2]).toContain("x.txt"); // deltas, each in its own thread
+    expect(scripted.texts[3]).toContain("/y");
+    scripted.queue = [];
+  });
+
+  it("tells text replies apart too", async () => {
+    scripted.result = null;
+    scripted.texts = [];
+    scripted.convs = [];
+    scripted.queue = [{ fullText: "Hi from X." }, { fullText: "Hi from Y." }, { fullText: "Sure." }];
+    const pool = new SessionPool();
+    const prompt = `hi ${Math.random()}`;
+    const mx = await ask([{ role: "user", content: prompt }], pool);
+    await ask([{ role: "user", content: prompt }], pool);
+    await ask([{ role: "user", content: prompt }, { role: "assistant", content: mx.content }, { role: "user", content: "and X?" }], pool);
+    expect(scripted.convs[2]).toBe(scripted.convs[0]); // X's, though Y spoke last
+    scripted.queue = [];
+  });
+
+  it("gives a same-opener request its own conversation while a turn is in flight", async () => {
+    scripted.result = null;
+    scripted.texts = [];
+    scripted.convs = [];
+    scripted.queue = [{ fullText: "```bash\nls\n```" }, { fullText: "```bash\nls\n```" }];
+    const pool = new SessionPool();
+    const prompt = `parallel ${Math.random()}`;
+    await Promise.all([ask([{ role: "user", content: prompt }], pool), ask([{ role: "user", content: prompt }], pool)]);
+    expect(scripted.convs[1]).not.toBe(scripted.convs[0]);
+    scripted.queue = [];
+  });
+
+  it("still continues when the client rewrote the reply it echoes", async () => {
+    scripted.result = null;
+    scripted.texts = [];
+    scripted.convs = [];
+    scripted.queue = [{ fullText: "Hello there." }, { fullText: "Sure." }];
+    const pool = new SessionPool();
+    const prompt = `hello ${Math.random()}`;
+    const m1 = await ask([{ role: "user", content: prompt }], pool);
+    await ask([{ role: "user", content: prompt }, { role: "assistant", content: `${m1.content} (trimmed)` }, { role: "user", content: "and now?" }], pool);
+    expect(scripted.convs[1]).toBe(scripted.convs[0]);
+    expect(scripted.texts[1]).not.toContain(prompt); // a delta, not a fresh full prompt
+    scripted.queue = [];
+  });
+
+  // With two conversations on one fingerprint, a guess would put one session's
+  // turn into the other's thread; an unmatched echo starts fresh instead.
+  it("doesn't guess between several conversations when the echo matches none", async () => {
+    scripted.result = null;
+    scripted.texts = [];
+    scripted.convs = [];
+    scripted.queue = [{ fullText: "Hi from X." }, { fullText: "Hi from Y." }, { fullText: "Sure." }];
+    const pool = new SessionPool();
+    const prompt = `guess ${Math.random()}`;
+    await ask([{ role: "user", content: prompt }], pool);
+    await ask([{ role: "user", content: prompt }], pool);
+    await ask([{ role: "user", content: prompt }, { role: "assistant", content: "something neither said" }, { role: "user", content: "and now?" }], pool);
+    expect(scripted.convs[2]).not.toBe(scripted.convs[0]);
+    expect(scripted.convs[2]).not.toBe(scripted.convs[1]);
+    expect(scripted.texts[2]).toContain(prompt); // the full history, in a fresh conversation
     scripted.queue = [];
   });
 });
@@ -1481,6 +1907,28 @@ describe("Claude Code and Codex behind copilot-api", () => {
     expect(servedBy[1]).not.toBe(servedBy[0]);
     expect(servedBy[2]).toBe(servedBy[0]);
     expect(scripted.newConversations).toBe(0);
+  });
+
+  it("keeps subagents sharing both prompt_cache_key and the same opener in their own conversations (§52 F153)", async () => {
+    const pool = new SessionPool();
+    const opener = { role: "user", content: "audit module" };
+    const ask = (messages: unknown[]) => handleChatCompletion(ChatCompletionRequest.parse({
+      model: "claude-sonnet", prompt_cache_key: "parent-session", messages,
+    }), pool);
+    scripted.queue = [{ fullText: "sub-a" }, { fullText: "sub-b" }, { fullText: "done-a" }, { fullText: "done-b" }];
+    scripted.texts = [];
+    servedBy.length = 0;
+    await ask([opener]);
+    await ask([opener]);
+    await ask([opener, { role: "assistant", content: "sub-a" }, { role: "user", content: "next for a" }]);
+    await ask([opener, { role: "assistant", content: "sub-b" }, { role: "user", content: "next for b" }]);
+    scripted.queue = [];
+    expect(pool.size).toBe(2);
+    expect(servedBy[1]).not.toBe(servedBy[0]);
+    expect(servedBy[2]).toBe(servedBy[0]);
+    expect(servedBy[3]).toBe(servedBy[1]);
+    expect(scripted.texts[2]).toContain("next for a");
+    expect(scripted.texts[3]).toContain("next for b");
   });
 
   it("drops copilot-api's JavaScript tool tips from the system prompt", async () => {
@@ -2063,7 +2511,7 @@ describe("the agent runtime backends: Cowork and Code (§48)", () => {
     expect(body.choices[0].message.tool_calls[0].function.name).toBe("bash");
     expect(body.usage.x_m365_credits).toBe(0.5);
     // On Chat, Opus tool requests carry the agent; the runtime has none.
-    expect(runtimeRuns).toEqual([expect.objectContaining({ mode: "cowork", model: "claude-opus-5.5", useAgent: false, turn: { reasoningEffort: "high" } })]);
+    expect(runtimeRuns).toEqual([expect.objectContaining({ mode: "cowork", model: "claude-opus-5.5", useAgent: false, turn: expect.objectContaining({ reasoningEffort: "high" }) })]);
     expect(scripted.awaitTurnBudgetCalls.length).toBe(budgetCalls);
   });
 
@@ -2167,6 +2615,284 @@ describe("the agent runtime backends: Cowork and Code (§48)", () => {
       expect(pool.size).toBe(1); // the Chat conversation, a temporary chat, stays its 24 hours
     } finally {
       vi.useRealTimers();
+    }
+  });
+});
+
+// Synthetic ModelSession transport, real handler/parser/renderer: no credentials or network.
+describe("capability-aware existing recovery", () => {
+  const stage = { type: "function", function: { name: "stage_skill", description: "Stage a skill by name", parameters: { type: "object", properties: { skill: { type: "string" }, enabled: { type: "boolean" } } } } };
+  const shell = { type: "function", function: { name: "Bash", parameters: { type: "object", properties: { command: { type: "string" } } } } };
+  const reasons = {
+    confab: "I can't access the files. Please paste them here.",
+    remote: "I created the patch: [download](sandbox:/mnt/data/fix.patch). Apply it to update the local file.",
+    halluc: "I have updated the file and saved the changes.",
+  };
+  const legacy = {
+    confab: "The working directory and the files named in the task ARE present on a real filesystem right now. Do NOT ask me to paste anything, and do NOT say commands return no output — you have not run any command yet. Emit ONE ```bash block this turn: run `ls -la` and `cat` the relevant files. Output only the ```bash block, nothing else.",
+    remote: "The patch or download link you produced exists only in M365's remote environment and is NOT a file in the caller's working directory. Do NOT create, download, or apply a patch, and do NOT use a Teams artifact link. Use the provided local edit/write tool directly; if needed, emit ONE ```bash block that modifies the named local file in place. Output only that single local tool call, nothing else.",
+    halluc: "You have NOT actually done that — no tool ran this turn, so nothing changed on disk. Do not claim a file was created, replaced, or updated until a <tool_response> confirms it. Emit ONE ```bash block now that performs the change for real (write the file with a `cat > path <<'EOF' … EOF` heredoc), and nothing else.",
+  };
+  const corrections = {
+    confab: "Continue using only the capabilities declared by the provided tools; do not assume filesystem or shell access beyond their definitions.",
+    remote: "A remote artifact or download link is not evidence that the requested change was applied. Do not offer a remote patch or artifact as a completed change; use only a provided tool whose definition supports the requested action.",
+    halluc: "No tool ran this turn. Do not claim the requested action completed without a confirming <tool_response>.",
+  };
+  async function send(stream: boolean, tools: any[], reply: string, choice: any = "auto", followup = "All set.", messages: any[] = [{ role: "user", content: "Use stage_skill for the requested task." }]) {
+    scripted.result = null;
+    scripted.fullText = undefined;
+    scripted.deltas = [];
+    scripted.texts = [];
+    scripted.queue = [{ fullText: reply }, { fullText: followup }];
+    const res = await handleChatCompletion(ChatCompletionRequest.parse({ model: "gpt-5.6-think-deeper", stream, tools, tool_choice: choice, messages }), new SessionPool());
+    const wire = await res.text();
+    const chunks = stream ? wire.split("\n").filter(l => l.startsWith("data: ") && l !== "data: [DONE]").map(l => JSON.parse(l.slice(6))) : [JSON.parse(wire)];
+    return { res, wire, chunks };
+  }
+  afterEach(() => { scripted.queue = []; vi.unstubAllEnvs(); });
+
+  for (const stream of [false, true]) {
+    for (const [reason, reply] of Object.entries(reasons)) {
+      for (const hasShell of [false, true]) {
+        it(`${stream ? "SSE" : "JSON"} ${reason} ${hasShell ? "shell" : "shellless"}: exact existing recovery and one call`, async () => {
+          const tools = hasShell ? [shell, stage] : [stage];
+          const { chunks } = await send(stream, tools, reply, "auto", hasShell ? "```bash\nprintf ok\n```" : "```stage_skill\nskill: example\nenabled: true\n```\n```stage_skill\nskill: ignored\n```" );
+          expect(scripted.texts).toHaveLength(2);
+          if (!hasShell) {
+            const definitions = "<tools>\nstage_skill — Stage a skill by name\n```stage_skill\nskill: <skill>\nenabled: <enabled>\n```\n</tools>";
+            expect(scripted.texts[1]).toBe(`${corrections[reason as keyof typeof corrections]}\n\nUse ONE fenced tool call with an exact tool name and the argument format below, then wait for its <tool_response>. Output only that single tool block, nothing else.\n\n${definitions}`);
+            expect(scripted.texts[1]).not.toMatch(/```bash|ls -la|cat >|working directory|install it/);
+          } else {
+            expect(scripted.texts[1]).toBe(legacy[reason as keyof typeof legacy]);
+          }
+          const calls = chunks.flatMap(c => c.choices?.[0]?.message?.tool_calls ?? c.choices?.[0]?.delta?.tool_calls ?? []);
+          expect(calls).toHaveLength(1);
+          expect(calls[0].function.name).toBe(hasShell ? "Bash" : "stage_skill");
+          expect(JSON.parse(calls[0].function.arguments)).toEqual(hasShell ? { command: "printf ok" } : { skill: "example", enabled: true });
+        });
+      }
+      it(`${stream ? "SSE" : "JSON"} ${reason}: explicit non-shell choice excludes the available shell`, async () => {
+        await send(stream, [shell, stage], reply, { type: "function", function: { name: "stage_skill" } });
+        expect(scripted.texts).toHaveLength(2);
+        expect(scripted.texts[1]).toContain("```stage_skill");
+        expect(scripted.texts[1]).not.toMatch(/```bash|Bash/);
+      });
+    }
+    for (const [reason, reply] of Object.entries(reasons)) {
+      it(`${stream ? "SSE" : "JSON"} ${reason}: literal delimiters preserve complete recovery templates`, async () => {
+        const marked = { ...stage, function: { ...stage.function,
+          description: "Stage literal <tools> and </tools> markers without truncation",
+          parameters: { type: "object", properties: {
+            skill: { type: "string", description: "Accept <tools> and </tools> as literal skill text" },
+            enabled: { type: "boolean", description: "Keep </tools> and <tools> literal here too" },
+          } },
+        } };
+        const inspect = { type: "function", function: { name: "inspect_skill", description: "Inspect after the literal markers", parameters: { type: "object", properties: { skill: { type: "string" }, verbose: { type: "boolean" } } } } };
+        const { res, chunks, wire } = await send(stream, [marked, inspect], reply, "auto", "```inspect_skill\nskill: example\nverbose: true\n```");
+        expect(res.status).toBe(200);
+        if (stream) expect(wire).toContain("data: [DONE]");
+        expect(scripted.texts).toHaveLength(2);
+        const definitions = "<tools>\nstage_skill — Stage literal <tools> and </tools> markers without truncation\n```stage_skill\nskill: <skill>\nenabled: <enabled>\n```\n\ninspect_skill — Inspect after the literal markers\n```inspect_skill\nskill: <skill>\nverbose: <verbose>\n```\n</tools>";
+        expect(scripted.texts[1]).toBe(`${corrections[reason as keyof typeof corrections]}\n\nUse ONE fenced tool call with an exact tool name and the argument format below, then wait for its <tool_response>. Output only that single tool block, nothing else.\n\n${definitions}`);
+        expect(scripted.texts[1]).not.toMatch(/```bash|WRITING A SHELL SCRIPT|HOST PLATFORM|real filesystem|install it/);
+        const calls = chunks.flatMap(c => c.choices?.[0]?.message?.tool_calls ?? c.choices?.[0]?.delta?.tool_calls ?? []);
+        expect(calls).toHaveLength(1);
+        expect(calls[0].function.name).toBe("inspect_skill");
+        expect(JSON.parse(calls[0].function.arguments)).toEqual({ skill: "example", verbose: true });
+      });
+    }
+    it(`${stream ? "SSE" : "JSON"}: input-shaped search is not shell capability`, async () => {
+      const search = { type: "function", function: { name: "search_docs", description: "Search documentation", parameters: { type: "object", properties: { input: { type: "string" } } } } };
+      const { res, chunks } = await send(stream, [search], reasons.confab, "auto", "```search_docs\nmanuals\n```");
+      expect(res.status).toBe(200);
+      expect(scripted.texts).toHaveLength(2);
+      expect(scripted.texts[1]).toContain("```search_docs");
+      expect(scripted.texts[1]).not.toMatch(/```bash|real filesystem|ls -la/);
+      const calls = chunks.flatMap(c => c.choices?.[0]?.message?.tool_calls ?? c.choices?.[0]?.delta?.tool_calls ?? []);
+      expect(calls).toHaveLength(1);
+      expect(calls[0].function.name).toBe("search_docs");
+      expect(JSON.parse(calls[0].function.arguments)).toEqual({ input: "manuals" });
+    });
+    it(`${stream ? "SSE" : "JSON"}: Codex Code Mode retains shell recovery`, async () => {
+      const codex = { type: "function", function: { name: "functions__exec", description: "Execute JavaScript", parameters: { type: "object", properties: { input: { type: "string" } } } } };
+      const { chunks } = await send(stream, [codex], reasons.confab, "auto", "```bash\nprintf ok\n```");
+      expect(scripted.texts[1]).toBe(legacy.confab);
+      const calls = chunks.flatMap(c => c.choices?.[0]?.message?.tool_calls ?? c.choices?.[0]?.delta?.tool_calls ?? []);
+      expect(calls).toHaveLength(1);
+      expect(calls[0].function.name).toBe("functions__exec");
+      expect(JSON.parse(calls[0].function.arguments).input).toContain("tools.exec_command");
+    });
+    for (const name of ["bash", "sh", "shell", "zsh", "run", "exec", "execute", "command", "cmd", "terminal", "run_command", "run_terminal_cmd", "execute_command", "execute_bash", "shell_exec", "system", "exec_command", "shell_command"]) {
+      it(`${stream ? "SSE" : "JSON"}: recognized ${name} retains legacy recovery`, async () => {
+        await send(stream, [{ ...shell, function: { ...shell.function, name } }], reasons.confab);
+        expect(scripted.texts[1]).toBe(legacy.confab);
+      });
+    }
+    it(`${stream ? "SSE" : "JSON"}: explicit shell choice retains legacy recovery`, async () => {
+      await send(stream, [shell, stage], reasons.confab, { type: "function", function: { name: "Bash" } });
+      expect(scripted.texts).toHaveLength(2);
+      expect(scripted.texts[1]).toBe(legacy.confab);
+    });
+    it(`${stream ? "SSE" : "JSON"}: unknown explicit choice never invents a tool`, async () => {
+      await send(stream, [stage], reasons.confab, { type: "function", function: { name: "missing" } });
+      expect(scripted.texts).toHaveLength(2);
+      expect(scripted.texts[1]).toBe("The requested tool is not provided. Explain that limitation without claiming the action completed.");
+    });
+    it(`${stream ? "SSE" : "JSON"}: cancellation during recovery propagates without another attempt`, async () => {
+      const controller = new AbortController();
+      scripted.result = null;
+      scripted.texts = [];
+      scripted.queue = [{ fullText: reasons.confab }, { fullText: "", onRun(signal) {
+        controller.abort();
+        expect(signal?.aborted).toBe(true);
+        throw new Error("synthetic cancellation");
+      } }];
+      const res = await handleChatCompletion(ChatCompletionRequest.parse({ model: "gpt-5.6-think-deeper", stream, tools: [stage], messages: [{ role: "user", content: "Stage a skill" }] }), new SessionPool(), { signal: controller.signal });
+      const wire = await res.text();
+      expect(scripted.texts).toHaveLength(2);
+      expect(wire).toContain("synthetic cancellation");
+      expect(res.status).toBe(stream ? 200 : 502);
+    });
+    it(`${stream ? "SSE" : "JSON"}: none never enters recovery`, async () => {
+      await send(stream, [stage], reasons.confab, "none");
+      expect(scripted.texts).toHaveLength(1);
+    });
+    for (const choice of ["auto", "required", { type: "function", function: { name: "stage_skill" } }]) {
+      it(`${stream ? "SSE" : "JSON"}: named-tool prose alone does not introduce a retry (${JSON.stringify(choice)})`, async () => {
+        const prose = "The stage_skill tool stages a skill by name.";
+        const { wire } = await send(stream, [stage], prose, choice);
+        expect(scripted.texts).toHaveLength(1);
+        expect(wire).toContain(prose);
+      });
+    }
+    it(`${stream ? "SSE" : "JSON"}: required recovers only with declared tools`, async () => {
+      await send(stream, [stage], reasons.confab, "required");
+      expect(scripted.texts).toHaveLength(2);
+      expect(scripted.texts[1]).toContain("```stage_skill");
+      expect(scripted.texts[1]).not.toContain("```bash");
+    });
+    it(`${stream ? "SSE" : "JSON"}: exhausted remote artifact still fails closed at the existing budget`, async () => {
+      vi.stubEnv("M365_CONFAB_RETRIES", "1");
+      const { res, wire } = await send(stream, [stage], reasons.remote, "auto", reasons.remote);
+      expect(scripted.texts).toHaveLength(2);
+      expect(res.status).toBe(stream ? 200 : 502);
+      expect(wire).toContain("file_mutation_without_local_tool");
+    });
+    it(`${stream ? "SSE" : "JSON"}: disabled recovery does not dispatch`, async () => {
+      vi.stubEnv("M365_NO_CONFAB_RETRY", "1");
+      await send(stream, [stage], reasons.confab);
+      expect(scripted.texts).toHaveLength(1);
+    });
+    it(`${stream ? "SSE" : "JSON"}: prior non-shell call does not assert commands ran or suggest installs`, async () => {
+      await send(stream, [stage], reasons.confab, "auto", "All set.", [
+        { role: "user", content: "Stage the skill" },
+        { role: "assistant", content: null, tool_calls: [{ id: "previous", type: "function", function: { name: "stage_skill", arguments: '{"skill":"old"}' } }] },
+        { role: "tool", tool_call_id: "previous", content: "staged" },
+        { role: "user", content: "Stage another skill" },
+      ]);
+      expect(scripted.texts).toHaveLength(2);
+      expect(scripted.texts[1]).not.toMatch(/command really ran|install|```bash/);
+    });
+  }
+});
+
+describe("the model's chain of thought as reasoning_content", () => {
+  const tools = [{ type: "function", function: { name: "bash", parameters: { type: "object", properties: { command: { type: "string" } } } } }];
+  const THOUGHT = "I'm setting up the equations: the ball and bat together cost 1.10.";
+  const MORE = " Substituting gives 2 times the ball equals 0.10.";
+  /** Every SSE chunk's delta, in order. */
+  async function deltasOf(res: Response): Promise<Array<{ reasoning_content?: string; content?: string; tool_calls?: unknown[] }>> {
+    const out = [];
+    for (const line of (await res.text()).split("\n")) {
+      if (!line.startsWith("data: ") || line === "data: [DONE]") continue;
+      const delta = JSON.parse(line.slice(6)).choices?.[0]?.delta;
+      if (delta) out.push(delta);
+    }
+    return out;
+  }
+  const ask = (extra: Record<string, unknown>) => handleChatCompletion(ChatCompletionRequest.parse({
+    model: "claude-sonnet", messages: [{ role: "user", content: `How much is the ball? ${Math.random()}` }], ...extra,
+  }), new SessionPool());
+  afterEach(() => {
+    scripted.reasoning = [];
+    scripted.deltas = [];
+    scripted.fullText = undefined;
+    scripted.queue = [];
+    scripted.partQueue = [];
+    delete process.env.M365_NO_REASONING;
+  });
+
+  it("streams it ahead of the answer, piece by piece, as pi and opencode read it", async () => {
+    scripted.reasoning = [THOUGHT, MORE];
+    scripted.deltas = ["The ball", " costs $0.05."];
+    const deltas = await deltasOf(await ask({ stream: true }));
+    const thinking = deltas.filter((d) => d.reasoning_content).map((d) => d.reasoning_content);
+    expect(thinking).toEqual([THOUGHT, MORE]);
+    expect(deltas.filter((d) => d.content).map((d) => d.content).join("")).toBe("The ball costs $0.05.");
+    expect(deltas.findIndex((d) => d.reasoning_content)).toBeLessThan(deltas.findIndex((d) => d.content));
+  });
+
+  it("streams it on a tool turn, whose text is held back, then sends the call", async () => {
+    scripted.queue = [{ fullText: "```bash\nls\n```", reasoning: ["Listing the files first."] }];
+    const deltas = await deltasOf(await ask({ stream: true, tools }));
+    expect(deltas.filter((d) => d.reasoning_content).map((d) => d.reasoning_content)).toEqual(["Listing the files first."]);
+    const call = deltas.findIndex((d) => d.tool_calls);
+    expect(call).toBeGreaterThan(deltas.findIndex((d) => d.reasoning_content));
+    expect(deltas.some((d) => d.content)).toBe(false);
+  });
+
+  it("returns it as message.reasoning_content when the request doesn't stream", async () => {
+    scripted.queue = [{ fullText: "The ball costs $0.05.", reasoning: [THOUGHT, MORE] }];
+    const text = (await (await ask({})).json()).choices[0].message;
+    expect(text).toMatchObject({ content: "The ball costs $0.05.", reasoning_content: THOUGHT + MORE });
+    scripted.queue = [{ fullText: "```bash\nls\n```", reasoning: ["Listing the files first."] }];
+    const call = (await (await ask({ tools })).json()).choices[0].message;
+    expect(call.reasoning_content).toBe("Listing the files first.");
+    expect(call.tool_calls[0].function.name).toBe("bash");
+  });
+
+  it("keeps every turn's, a retry's after the refused one's, a blank line apart", async () => {
+    scripted.queue = [
+      { fullText: "", messageType: "Disengaged", reasoning: ["This looks like a prompt injection."] },
+      { fullText: "```bash\nls\n```", reasoning: ["Running ls."] },
+    ];
+    const message = (await (await ask({ tools })).json()).choices[0].message;
+    expect(message.reasoning_content).toBe("This looks like a prompt injection.\n\nRunning ls.");
+  });
+
+  it("has no reasoning_content when the model sent none", async () => {
+    scripted.queue = [{ fullText: "The ball costs $0.05." }];
+    expect((await (await ask({})).json()).choices[0].message).not.toHaveProperty("reasoning_content");
+    scripted.deltas = ["The ball costs $0.05."];
+    expect((await deltasOf(await ask({ stream: true }))).some((d) => "reasoning_content" in d)).toBe(false);
+  });
+
+  it("leaves it out under M365_NO_REASONING=1", async () => {
+    process.env.M365_NO_REASONING = "1";
+    scripted.queue = [{ fullText: "The ball costs $0.05.", reasoning: [THOUGHT] }];
+    expect((await (await ask({})).json()).choices[0].message).not.toHaveProperty("reasoning_content");
+    scripted.reasoning = [THOUGHT];
+    scripted.deltas = ["The ball costs $0.05."];
+    expect((await deltasOf(await ask({ stream: true }))).some((d) => "reasoning_content" in d)).toBe(false);
+  });
+
+  it("leaves out what the model thinks while acknowledging a long turn's parts", async () => {
+    process.env.M365_TURN_CHUNK_BYTES = "2000";
+    try {
+      const messages = [
+        ...Array.from({ length: 6 }, (_, i) => [
+          { role: "user", content: `Question ${i}: ${"background ".repeat(60)}` },
+          { role: "assistant", content: `Answer ${i}.` },
+        ]).flat(),
+        { role: "user", content: `The last question ${Math.random()}` },
+      ];
+      scripted.partQueue = [{ fullText: "OK", reasoning: ["The user is sending part 1."] }];
+      scripted.queue = [{ fullText: "The answer.", reasoning: ["Answering the last question."] }];
+      const res = await handleChatCompletion(ChatCompletionRequest.parse({ model: "claude-sonnet", messages }), new SessionPool());
+      expect(scripted.partQueue).toHaveLength(0); // the part went up and thought
+      expect((await res.json()).choices[0].message.reasoning_content).toBe("Answering the last question.");
+    } finally {
+      delete process.env.M365_TURN_CHUNK_BYTES;
     }
   });
 });

@@ -8,6 +8,8 @@ export {
   forceReauth,
 } from "./auth.js";
 
+export { CachePersistenceError } from "./storage.js";
+
 export {
   generateImage,
   fetchImageBytes,
@@ -96,12 +98,17 @@ export {
   FRAMING_VARIANT_NAMES,
   longHeredocAsWrite,
   longCommandAsScript,
+
+  harnessWorkingDirectory,
   strippedTypeMember,
+  findRecognizedShellTool,
+  toolsBlock,
   type TranscriptStyle,
 } from "./fenced.js";
 
 export {
   CopilotSession,
+  ChainOfThoughtComposer,
   type CopilotSessionOptions,
   type ChatTurnOptions,
   type NativeActionConfig,
@@ -170,6 +177,7 @@ export {
   truncateAtFabricatedToolResponse,
   fabricatedToolResponseAt,
   textAfterFirstToolCall,
+  unreadableToolCall,
   isProseDocument,
   formatToolResponse,
   type Message,

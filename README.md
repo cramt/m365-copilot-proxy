@@ -45,6 +45,16 @@ On first use, the system creates a **Copilot Studio agent** with tool-calling in
 
 Each agent session reuses the same M365 conversation (same `sessionId` + `conversationId`). The WebSocket reconnects per turn but M365 maintains server-side context. This saves quota — the 600 message limit applies per-conversation.
 
+### Chain of thought (`reasoning_content`)
+
+Some models send M365 their reasoning as they work, which the web client shows in its chain-of-thought
+card: Claude Sonnet 5.5, Sonnet 5, Opus 5.5 and Opus 4.8, and GPT-5.5 Think Deeper. Not on every turn: an
+easy step usually has none. The proxy returns it as `reasoning_content`. A streamed reply carries it in
+`delta.reasoning_content` chunks as it arrives, ahead of the answer, on tool turns too, while their text
+is held back to be parsed. An unstreamed reply has it in `message.reasoning_content`. pi and opencode show
+it as thinking with no configuration. It never goes back to M365: pi sends it back on its assistant
+messages, and the proxy drops it there. `M365_NO_REASONING=1` leaves it out.
+
 ## Packages
 
 ```
@@ -166,6 +176,38 @@ Contributed by [@EatonWu](https://github.com/EatonWu). Two honest caveats:
 > Microsoft's own Copilot client as confidential for that grant and demands a
 > `client_secret` only Microsoft holds. No tenant admin can grant it. Measured, with the
 > sign-in actually completed, in [§13 H13.2](docs/hypotheses.md).
+
+#### On WSL: sign in through Windows Edge
+
+With Windows Edge installed, you can use its existing profile for sign-in instead
+of storing credentials in `secrets.json`. Set `M365_EDGE_LOGIN=1` to explicitly
+opt in to opening Edge. This is the only switch: `M365_ENABLE_INTERACTIVE_APPROVAL=1`,
+a WSL host, an installed Edge or an existing `secrets.json` do not turn it on, so without
+`M365_EDGE_LOGIN=1` the existing headless/automated login policy is unchanged.
+`M365_NO_INTERACTIVE=1` always vetoes it. With `M365_EDGE_LOGIN=1`, Edge is tried
+instead of `secrets.json` and the Playwright logins, once silent sign-in has failed.
+Edge may ask you to choose an account or complete MFA; silent sign-in depends on your
+tenant and session.
+
+This path requires Node.js 22.13 or newer with `node:sqlite` available. It copies
+the selected Edge History database and, if present, its write-ahead log into a
+temporary directory while polling for the matching OAuth redirect. The copy can
+contain your browsing history and authorization codes; it is removed after each
+read, but may remain after a crash. The redirect may also remain in Edge history.
+Access to your temporary directory and Edge profile should be restricted.
+
+| Variable | Default |
+|---|---|
+| `M365_EDGE_PROFILE` | `Default` (profile directory name, e.g. `Profile 1`) |
+| `M365_EDGE_PATH` | standard Edge install path (Linux/WSL executable path) |
+| `M365_EDGE_USER_DATA` | Windows Edge user-data root discovered from `%LOCALAPPDATA%` |
+
+Set `M365_EDGE_USER_DATA` to a **Linux/WSL filesystem path**, e.g.
+`/mnt/c/Users/Alice/AppData/Local/Microsoft/Edge/User Data`, not a Windows
+`C:\Users\...` string and not the `Default` / `Profile 1` subdirectory.
+The resolved root is used both for History lookup and, after conversion with
+`wslpath -w`, Edge's `--user-data-dir`; `M365_EDGE_PROFILE` selects the same
+profile within that root. `wslpath` and Windows interop must be available.
 
 #### First run
 
@@ -328,8 +370,8 @@ without NixOS: `nix run github:cramt/m365-copilot-proxy -- 4141`.
 | `gpt-6.2-sol` | Gpt_62_Sol_Reasoning | GPT-6.2 Sol ("GPT-6.2 Sol" in the web UI, since 2026-11-17). Serves on the included scenario. Defaults to `relay_batch`, not yet benched; Codex 3/3 over StreamHub ([hypotheses §45](docs/hypotheses.md)) |
 | `gpt-6.2-astra` | Gpt_62_Astra_Reasoning | GPT-6.2 Astra (marked "Uses credits" in the web UI): **its turns are charged to the user's Copilot credits.** Serves on the included scenario. Defaults to `relay_batch`, not yet benched |
 | `gpt-6-astra` | Gpt_6_Astra_Reasoning (paid scenario) | GPT-6 Astra, also charged to Copilot credits. **Needs a paid/premium Copilot seat**: the included scenario gives M365's canned apology. The web UI replaced it with GPT-6.2 Astra on 2026-11-17. Defaults to `relay_batch`, not yet benched |
-| `gpt-5.6-think-deeper` | Gpt_5_6_Reasoning | GPT-5.6 reasoning — 27/30 on the bench, tied with `gpt-5.5-think-deeper` |
-| `gpt-5.6` / `gpt-5.6-quick` | Gpt_5_6_Chat | GPT-5.6 fast ("GPT 5.6 Quick response" in the web UI). **Weak at tool calling** — 7/30 on the bench (see below) |
+| `gpt-5.6-think-deeper` | Gpt_5_6_Reasoning | GPT-5.6 reasoning ("GPT-5.6 Sol Think deeper" in the reported web picker; see H-SOL56 in `docs/hypotheses.md`) — 27/30 on the bench, tied with `gpt-5.5-think-deeper` |
+| `gpt-5.6` / `gpt-5.6-quick` | Gpt_5_6_Chat | GPT-5.6 fast ("GPT-5.6 Sol Quick response" in the reported web picker). **Weak at tool calling** — 7/30 on the bench (see below) |
 | `gpt-5.5-think-deeper` | Gpt_5_5_Reasoning | **Recommended default for agents/tool-calling** — 26/30 on the bench |
 | `gpt-5.5` / `gpt-5.5-quick` | Gpt_5_5_Chat | GPT-5.5 fast — 16/30 on the bench, the strongest benchmarked chat tone |
 | `m365-copilot` / `auto` | magic | Auto-routing — high-variance at tool-calling (confabulates; see below) |
@@ -746,6 +788,10 @@ The default auth flow uses Azure MSAL with PKCE:
    `M365_ENABLE_INTERACTIVE_APPROVAL=1`, and only after step 2 is unavailable or has
    actually failed. This is the path for tenants where no TOTP seed exists.
 
+On WSL, `M365_EDGE_LOGIN=1` adds a step between 1 and 2: sign in through the Windows Edge
+profile ([On WSL: sign in through Windows Edge](#on-wsl-sign-in-through-windows-edge)).
+Without the flag nothing changes.
+
 All three redeem the code against `https://login.microsoftonline.com/common/oauth2/nativeclient`
 with PKCE. That redirect isn't a stylistic choice: the client is Microsoft's own Copilot app
 (the Sydney scopes are granted to no other), so nobody can register a loopback URI — a
@@ -779,25 +825,32 @@ not an exemption from your organization's Conditional Access policy.
 | `M365_DUMP_FRAMES` | Set to `1` to write every WebSocket frame (both directions) to `~/.config/opencode-m365/frames/<requestId>.ndjson`. For offline diffing of new M365 fields. |
 | `M365_FRAME_DIR` | Frame dump directory, relative to `~/.config/opencode-m365/` (default `frames`; an absolute path is used as is). `M365_FRAME_DIR=my/frames` dumps to `~/.config/opencode-m365/my/frames/`. |
 | `M365_ALLOW_MULTI_TOOL` | Allow the model to emit multiple tool calls per turn (default: only the first is kept) |
+| `M365_LONG_ANSWER_GUARD` | Set to `1` to return a long written answer that ends in a single example command as text instead of running the command. Off by default: a single tool call is never reclassified as prose. When on, it applies only if the call is the last thing in the reply and the preamble is at least 1,500 characters of an intentionally limited plain-text subset with a heading or meaningful table header and separator; markup and code conservatively keep the action. Not benched; it can still turn a real action into text, so enable it only if you see an answer's trailing example being run ([hypotheses §53 F154](docs/hypotheses.md)). |
 | `M365_NO_EARLY_STOP` | Set to `1` to let a tool turn run to its end after the model starts writing its own `<tool_response>`. By default the proxy stops the turn once that invented tail passes `M365_EARLY_STOP_AFTER` chars (the invented part is cut either way), which saves minutes when the model invents the rest of the session (#65) |
 | `M365_EARLY_STOP_AFTER` | How many chars of a model-written `<tool_response>` tail a tool turn may run before the proxy stops it (default `2000`; `0` stops at the tag). M365 keeps a short tail in the conversation and the model seems to follow it: stopping at the tag cost Sonnet 4.6 10% more turns in real pi, the default none measurable ([hypotheses §35](docs/hypotheses.md)) |
 | `M365_STREAM_ERROR_MODE` | How a streaming request that fails after its HTTP 200 is reported: `chunk` (an OpenAI-style `error` chunk) or `text` (the reason as the assistant's message, with `finish_reason: "stop"`). Unset, Claude Code and Codex user-agents get `text` and every other client gets `chunk`. Through copilot-api, an error chunk made Claude Code retry the turn ten times, each retry opening fresh M365 conversations ([docs/claude-code-codex.md](docs/claude-code-codex.md)). |
 | `HOST` / `NITRO_HOST` | Address the standalone `m365-proxy` binds. Default `127.0.0.1`; `0.0.0.0` listens on every interface. Anyone who reaches the port spends your M365 account, so pair that with `M365_PROXY_KEY`. |
 | `M365_PROXY_KEY` / `M365_PROXY_KEY_FILE` | When set, every request except `GET /health` must send the key as `Authorization: Bearer <key>` or `x-api-key: <key>` (401 otherwise). pi and openclaw send their configured `apiKey` that way. The NixOS module's `apiKeyFile` sets the file variant. |
 | `M365_CORS_ORIGIN` | Comma-separated browser origins allowed to call the proxy, or `*` for any. Unset, no CORS headers are sent and any request with an `Origin` header gets a 403, which stops web pages (including DNS-rebinding ones) from driving your account. CLI clients send no `Origin` and are unaffected. |
+| `M365_MAX_REQUEST_BYTES` / `M365_REQUEST_BODY_TIMEOUT_MS` | Limits on a `POST /v1/chat/completions` body: the most bytes the proxy reads (default `33554432`, 32 MiB) and the most time it waits for all of it (default `30000` ms). A longer or slower body gets a 413 or 408; invalid UTF-8 or JSON gets a 400. |
 | `M365_HARNESS_PROMPT` | For Claude Code and Codex user-agents only: `off` (default) sends their prompts as they are; `clean` drops what M365's models read as an injection — Anthropic's billing header, the "You are Claude Code / a Claude agent, built on Anthropic's Claude Agent SDK / a coding agent running in the Codex CLI" lines, and `<system-reminder>` blocks (model ID, token budget, git attribution; the environment and date ones are unwrapped); `lean` also cuts each tool description to ~700 characters. Sonnet 5 in Claude Code went from 0/3 to 3/3 with `lean` ([docs/claude-code-codex.md](docs/claude-code-codex.md), [hypotheses §39](docs/hypotheses.md)). |
 | `M365_INJECT_REPLY_TOOL` | Set to `1` to inject a synthetic `reply(text)` tool. Forces every turn to be a tool call, including pure-prose answers. Cleaner contract for the model, +1 tool to the prompt (watch the Disengaged threshold). Confirmed 5/5 compliance on June 9 2026 ([hypotheses §1.1](docs/hypotheses.md)). |
 | `M365_NO_CONFAB_RETRY` / `M365_CONFAB_RETRIES` | M365's chat model sometimes produces prose instead of a tool call when it should act — either confabulating an inability ("I can't access the files, please paste them") **or** claiming a completion it never did ("I've replaced the README", with no tool call). By default the proxy detects both and re-prompts forcefully **in the same conversation** (`M365_CONFAB_RETRIES`, default `1`) to force a real action. Set `M365_NO_CONFAB_RETRY=1` to disable. |
+| `M365_NO_FENCE_RETRY` | When a tool turn has a tool block the parser can't read (a fence that never closed, an edit without its markers), the proxy asks once, in the same conversation, saying what was wrong and that the model may reply without it. That costs an upstream turn, and the forcing retry above is skipped after it. Set `M365_NO_FENCE_RETRY=1` to disable ([hypotheses §51](docs/hypotheses.md)). |
 | `M365_NO_BACKOFF` (alias `M365_NO_AUTO_REAUTH`) | Set to `1` to disable degradation backoff. By default, when empty/throttled responses span several **distinct conversations** in a short window (the thread-rate-throttle signature, [F13](docs/hypotheses.md)), the proxy **paces subsequent turns** (a jittered delay before starting new backend conversations) to let the account self-heal. This replaced the old auto-reauth: a fresh login does **not** clear this throttle (it's `oid`-keyed — [§11 H-R1](docs/hypotheses.md)) and raised our detection profile. A single long pi thread never trips the trigger. |
 | `M365_BACKOFF_THRESHOLD` / `M365_BACKOFF_WINDOW_MS` / `M365_BACKOFF_BASE_MS` / `M365_BACKOFF_MAX_MS` | Tune backoff: distinct-conversation empties to trigger (default `3`), the window they must fall in (default `120000`), the initial pacing window (default `90000`), and its escalation cap (default `600000`). |
 | `M365_AVOID_THROTTLING` | Set to `1` to keep the account clear of M365's `PerUserThrottled` throttle. A long pi session or a bench sweep trips it by running the account's turn budget dry (~100 turns, refilled at ~1.6 a minute, [hypotheses §24 F58](docs/hypotheses.md)), and it then refuses every turn for about an hour. With this set, the proxy waits before each upstream turn until the budget holds that turn plus a reserve of 20. A streamed request waits on its keepalive chunks, so pi doesn't time out, and the session runs at ~1.6 turns a minute once the budget is low. After a throttled turn the proxy holds new turns for 75 minutes and answers them with a 429 (`m365_throttle_hold`, with `Retry-After`) instead of sending them: each one would keep the throttle alive. The budget is read from the debug logs under `~/.config/opencode-m365`, so with `M365_DEBUG=1` it also counts the bench's and other proxies' turns and survives a restart. Without it, only this process's turns since it started count. The bench uses the same variable ([scripts/bench/README.md](scripts/bench/README.md)). Off by default. [Hypotheses §37](docs/hypotheses.md). |
 | `M365_BUDGET_MAX_WAIT_MIN` | The longest `M365_AVOID_THROTTLING` holds a streamed request (default `15`, enough to refill an empty budget). A longer wait, usually a throttle hold, gets the 429 instead. A request that isn't streamed waits at most 2 minutes, since it sends nothing until the answer and clients give up on it after 5. Both limits count the time a request spends behind others waiting their turn. A larger value (e.g. `90`) lets a streamed request sit out a throttle hold instead of failing: pi has no time limit on a stream that keeps sending data. |
 | `M365_BUDGET_CAPACITY` / `M365_BUDGET_REFILL` / `M365_BUDGET_RESERVE` / `M365_BUDGET_HOLD_MIN` / `M365_BUDGET_LOGS` | Tune `M365_AVOID_THROTTLING`'s budget model: its size (default `100` turns), refill rate (`1.6` a minute), the reserve kept back (`20`), the hold after a throttled turn (`75` minutes), and more log files or directories to read (`:`-separated). |
-| `M365_BROWSER_PROFILE` / `M365_LOGIN_UA` | Override the persistent browser-profile dir and the login User-Agent used for the (rare) automated interactive login. The persistent profile keeps AAD SSO/device cookies so repeat logins are silent and look like a familiar device ([§11 H-R3](docs/hypotheses.md)). |
+| `M365_BROWSER_PROFILE` / `M365_LOGIN_UA` | Override the persistent browser-profile dir and the login User-Agent used for browser authentication (**Playwright only**; the Selenium path never uses a profile). The persistent profile keeps AAD SSO/device cookies so repeat logins are silent and look like a familiar device ([§11 H-R3](docs/hypotheses.md)). |
+| `M365_BROWSER_PROVIDER` | Browser driver for automated and interactive login: `playwright` (default) or `selenium`. Selenium requires a reachable Grid and `selenium-webdriver` installed next to the built `.output` (the proxy keeps it external to avoid shipping selenium-manager binaries for every platform). |
+| `M365_SELENIUM_URL` | Selenium WebDriver/Grid endpoint (default `http://localhost:4444`); used only with `M365_BROWSER_PROVIDER=selenium`. |
+| `M365_SELENIUM_BROWSER` | Browser name requested from Selenium Grid (default `chrome`). Only `chrome` is supported — the code capture reads Chrome performance logs. |
 | `M365_AUTH_MODE` | Set to `wam` for native Windows broker authentication (optional `@azure/msal-node-extensions` dependency required). Unset, browser PKCE remains the default. WAM never falls back to browser auth. |
 | `M365_LOGIN_HINT` | In WAM mode, select a broker account by its sign-in name; otherwise the saved selection or a single available account is used. Multiple accounts without a selection require the interactive account picker. |
 | `M365_WAM_WINDOW_HANDLE` | Optional positive decimal native parent-window handle for the Windows account picker. Used only when WAM interaction is enabled. |
-| `M365_ENABLE_INTERACTIVE_APPROVAL` | Set to `1` to allow a **visible** browser window for sign-in when the automated login can't work or fails — the fallback for tenants with no TOTP option (push-only MFA, FIDO2, Okta/Ping/Duo). In WAM mode, allows the native Windows account picker instead. You complete SSO/MFA by hand once; tokens refresh silently afterwards. Off by default so headless hosts fail loudly rather than hang. See [If your tenant has no TOTP option](#if-your-tenant-has-no-totp-option). |
+| `M365_ENABLE_INTERACTIVE_APPROVAL` | Set to `1` to allow a **visible** browser window for sign-in when the automated login can't work or fails — the fallback for tenants with no TOTP option (push-only MFA, FIDO2, Okta/Ping/Duo). With Playwright, a visible local browser opens; with Selenium, complete sign-in/MFA through the Grid's VNC/noVNC session; in WAM mode, the native Windows account picker opens instead. You complete SSO/MFA by hand once; tokens refresh silently afterwards. Off by default so headless hosts fail loudly rather than hang. See [If your tenant has no TOTP option](#if-your-tenant-has-no-totp-option). |
+| `M365_EDGE_LOGIN` | Set to `1` on WSL to sign in through the Windows Edge profile instead of stored credentials, after silent refresh fails. The only switch for it; `M365_NO_INTERACTIVE=1` vetoes it. `M365_EDGE_PROFILE`, `M365_EDGE_PATH` and `M365_EDGE_USER_DATA` are in [On WSL: sign in through Windows Edge](#on-wsl-sign-in-through-windows-edge). |
 | `M365_NO_INTERACTIVE` | Set to `1` to hard-disable any visible browser login or WAM account picker, overriding the flag above. For systemd/CI hosts where a window must never open. |
 | `M365_INTERACTIVE_TIMEOUT_MS` | How long to wait for you to finish the interactive sign-in (default `600000`, i.e. 10 minutes). |
 | `M365_LOGIN_LOCALE` / `M365_LOGIN_TIMEZONE` | Browser locale and timezone presented during login (defaults `en-GB` / `Europe/Copenhagen`). These are part of the anti-bot-scoring fingerprint ([§11 F25](docs/hypotheses.md)) — set them to match your own machine if AAD starts treating your automated login as a bot. |
@@ -814,7 +867,10 @@ not an exemption from your organization's Conditional Access policy.
 | `M365_TURN_CHUNK_BYTES` | The longest turn the proxy sends M365 whole, in UTF-8 bytes (default `400000`, at least `1024`; `0` sends every turn whole). M365 answers a turn of about 500k characters but doesn't keep it in the conversation, so a longer one goes up in parts: a replayed history as earlier-conversation parts the model acknowledges, then the request with the system prompt and tool framing; a long follow-up as numbered parts ([hypotheses §46, §47](docs/hypotheses.md)). |
 | `M365_MAX_TURN_PARTS` | The most M365 turns a long turn may take, its parts and the answered one (default `12`, at least `2`). Each part is a turn on the account's turn budget and, on a metered model, a unit of its allowance. A request that needs more gets a 400 `context_length_exceeded`, so the client compacts. |
 | `M365_REPORT_USAGE` | Set to `0` for zero token counts in `usage`. By default they are estimates (see below). |
-| `M365_CACHE_FILE` | Override MSAL token cache location |
+| `M365_NO_REASONING` | Set to `1` to leave the model's chain of thought out of replies. By default it goes out as `reasoning_content` (see [Chain of thought](#chain-of-thought-reasoning_content)). |
+| `M365_TURN_IDLE_MS` | Maximum silence between received frames, including before handshake (default `120000` ms); invalid, nonpositive or timer-overflow values fall back to the default. |
+| `M365_RECONNECT_DELAY_MS` | Delay before retrying a recognized network error (default `5000` ms; `0` disables the delay). Invalid, negative or timer-overflow values fall back to the default. |
+| `M365_CACHE_FILE` | Override MSAL token cache location. The cache is replaced by renaming a temporary file in the same directory, so the path must be an ordinary file in a writable directory: a single file bind-mounted into a container (or on another filesystem from its directory) fails with `EBUSY`/`EXDEV` and the proxy reports a cache write error instead of carrying on. Mount the cache's directory instead. The error's `cause` carries the OS error code. |
 | `M365_SECRETS_FILE` | Override credentials file location |
 | `CHROMIUM_PATH` | Path to Chromium binary for automated login |
 
