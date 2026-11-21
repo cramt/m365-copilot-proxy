@@ -1895,6 +1895,7 @@ export async function handleChatCompletion(
           let code: string | undefined;
           let param: string | undefined;
           let retryable: boolean | undefined;
+          let m365ErrorCode: string | undefined;
           // Carry the structured fields through, not just the prose: a streaming
           // client still has to tell a priority-access wall (back off until the
           // reset) from a transient upstream failure (retry now), and the status
@@ -1906,6 +1907,7 @@ export async function handleChatCompletion(
             if (parsed?.code) code = parsed.code;
             if (typeof parsed?.param === "string") param = parsed.param;
             if (typeof parsed?.retryable === "boolean") retryable = parsed.retryable;
+            m365ErrorCode = publicForbiddenCode(parsed?.m365_error_code);
           } catch {}
           const retryAfter = p.resp.headers.get("Retry-After");
           if (errorsAsText) {
@@ -1916,7 +1918,7 @@ export async function handleChatCompletion(
             send({ ...base, choices: [{ index: 0, delta: {}, finish_reason: "stop" }], ...(includeUsage ? { usage: usage(sent + reason) } : {}) });
           } else {
             // HTTP 200 is already committed, so surface the failure as an in-stream error chunk.
-            send({ ...base, error: { message, type, ...(code ? { code } : {}), ...(param ? { param } : {}), ...(retryable === undefined ? {} : { retryable }), ...(retryAfter ? { retry_after: Number(retryAfter) } : {}) } });
+            send({ ...base, error: { message, type, ...(code ? { code } : {}), ...(param ? { param } : {}), ...(retryable === undefined ? {} : { retryable }), ...(m365ErrorCode ? { m365_error_code: m365ErrorCode } : {}), ...(retryAfter ? { retry_after: Number(retryAfter) } : {}) } });
           }
         } else if (p.kind === "tools") {
           if (p.narration) send({ ...base, choices: [{ index: 0, delta: { content: p.narration }, finish_reason: null }] });
@@ -2067,13 +2069,18 @@ function terminalErrorResponse(status: number, body: { error: Record<string, unk
 }
 
 const MODEL_LICENCE_CODES = new Set(["PremiumModelUnavailableForLicense", "ClaudeUnavailableForLicense"]);
+const FORBIDDEN_CODES = new Set([...MODEL_LICENCE_CODES, "InvalidCopilotLicense"]);
+
+function publicForbiddenCode(code: unknown): string | undefined {
+  return typeof code === "string" && FORBIDDEN_CODES.has(code) ? code : undefined;
+}
 
 /** M365 refused the request as forbidden (`result.value: "ForbiddenRequest"`). A 403, in
  *  three kinds, by the result's `errorCode`: the model isn't licensed for this
  *  account (`param` names it), the account holds no licence at all, or a code we
- *  don't know. M365's own prose isn't repeated; only a well-formed code is. */
+ *  don't know. M365's own prose is not repeated; only documented codes are. */
 function forbiddenResponse(model: string, result: { errorCode?: string }): Response {
-  const upstreamCode = result.errorCode && /^[A-Za-z][A-Za-z0-9_]{0,127}$/.test(result.errorCode) ? result.errorCode : undefined;
+  const upstreamCode = publicForbiddenCode(result.errorCode);
   const modelDenied = upstreamCode !== undefined && MODEL_LICENCE_CODES.has(upstreamCode);
   const accountDenied = upstreamCode === "InvalidCopilotLicense";
   return terminalErrorResponse(403, {
