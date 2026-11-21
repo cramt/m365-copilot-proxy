@@ -484,6 +484,8 @@ const MAX_PARTS_SENDS = 2;
  *  simplified README") would get its own answer executed as shell. That shape
  *  (multiple fences + prose) comes back as plain text instead — unless the reply
  *  OPENS with a tool call, which makes it an action with a speculative tail (#33).
+ *  A single call is never reclassified, unless M365_LONG_ANSWER_GUARD=1 (off by
+ *  default): then a long structured answer that ENDS in one example call is text.
  *
  *  This runs BEFORE the give-up checks, because a document runs nothing. It used
  *  to run after them, so a refusal that came with "run these yourself" fences —
@@ -497,7 +499,7 @@ const MAX_PARTS_SENDS = 2;
  *  forcing retry. */
 function parseReply(text: string, tools: Parameters<typeof parseToolCalls>[1]): { parsed: ParseResult; judged: string | null } {
   const parsed = parseToolCalls(text, tools);
-  if (isProseDocument(parsed, text, tools)) {
+  if (isProseDocument(parsed, text, tools, { longAnswers: process.env.M365_LONG_ANSWER_GUARD === "1" })) {
     log.info(`Response is a prose document (${parsed.toolCalls.length} embedded fences), returning as text instead of executing`);
     const opening = text.split("```")[0].trim().split(/\n\s*\n/)[0];
     return { parsed: { hasToolCalls: false, toolCalls: [], textContent: text }, judged: opening };
