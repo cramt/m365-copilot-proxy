@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { RequestBodyError, readRequestJson } from "./request-body.js";
 
 const enc = (s: string) => new TextEncoder().encode(s);
@@ -11,6 +11,7 @@ const fails = (p: Promise<unknown>, status: number) =>
   });
 
 afterEach(() => {
+  vi.restoreAllMocks();
   delete process.env.M365_MAX_REQUEST_BYTES;
   delete process.env.M365_REQUEST_BODY_TIMEOUT_MS;
 });
@@ -40,6 +41,46 @@ describe("readRequestJson", () => {
   it("gives up on a body that stops arriving", async () => {
     process.env.M365_REQUEST_BODY_TIMEOUT_MS = "50";
     await fails(readRequestJson(stalled()), 408);
+  });
+
+  it("replay_e903b53 rejects ready native stream reads and EOF past the absolute deadline", async () => {
+    process.env.M365_REQUEST_BODY_TIMEOUT_MS = "5";
+    let now = 0;
+    vi.spyOn(performance, "now").mockImplementation(() => now);
+    const stream = new ReadableStream<Uint8Array>({
+      pull(controller) {
+        now += 3;
+        if (now <= 6) controller.enqueue(enc(now === 3 ? "{" : "}"));
+        else controller.close();
+      },
+    });
+    await fails(readRequestJson(stream), 408);
+  });
+
+  it("rejects EOF after the deadline and accepts EOF before it", async () => {
+    process.env.M365_REQUEST_BODY_TIMEOUT_MS = "5";
+    let now = 0;
+    vi.spyOn(performance, "now").mockImplementation(() => now);
+    const stream = (late: boolean) => new ReadableStream<Uint8Array>({
+      start(controller) { controller.enqueue(enc("{}")); },
+      pull(controller) { now = late ? 6 : 4; controller.close(); },
+    });
+    await fails(readRequestJson(stream(true)), 408);
+    now = 0;
+    expect(await readRequestJson(stream(false))).toEqual({});
+  });
+
+  it("enforces real elapsed time even while ready native reads starve timers", async () => {
+    process.env.M365_REQUEST_BODY_TIMEOUT_MS = "5";
+    const start = performance.now();
+    const stream = new ReadableStream<Uint8Array>({
+      pull(controller) {
+        if (performance.now() - start < 30) controller.enqueue(enc(" "));
+        else { controller.enqueue(enc("{}")); controller.close(); }
+      },
+    });
+    await fails(readRequestJson(stream), 408);
+    expect(await readRequestJson(chunks(enc("{}")))).toEqual({});
   });
 
   it("rejects invalid UTF-8 and invalid JSON with a 400", async () => {
