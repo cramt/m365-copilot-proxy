@@ -194,9 +194,10 @@ export const isLicenceRefusal = (result) => /^(InvalidCopilotLicense|\w+Unavaila
 
 /** Turn-level outcome, before any question of identity. */
 export function outcome(t) {
+  if (t.attempted === false) return "SKIPPED";
+  if (t.result?.value === "Throttled" || t.result?.errorCode === "PerUserThrottled") return "THROTTLED";
   if (t.error === "timeout") return "TIMEOUT";
   if (t.error) return "REJECTED";
-  if (t.result?.value === "Throttled") return "THROTTLED";
   // Before the BotConnection check: the licence refusal ALSO comes from
   // BotConnection, but it's about the account, not the route (§22).
   if (isLicenceRefusal(t.result)) return "UNLICENSED";
@@ -384,7 +385,8 @@ async function probeTurn({ oneTurn, token, claims, agentId, cell, framesFile, pr
     agentHandled: acc.agentNames.has("3PDeclarativeAgent") || acc.origins.has("3PDeclarativeAgent"),
     // The helper reads the outcome on either transport; StreamHub frames carry no
     // `result` for scanFrame to find (a turn ends with request_end's `outcome`).
-    result: r.result?.value ? { value: r.result.value, errorCode: r.result.errorCode ?? null } : acc.result,
+    attempted: r.attempted,
+    result: r.result ?? acc.result,
     disengaged: r.disengaged,
     messageTypes: r.messageTypes,
     error: r.error,
@@ -443,7 +445,7 @@ async function main(argv) {
     const agent = await probeTurn({ oneTurn, token, claims, agentId, cell, prompt, maxAttempts, framesFile: join(OUT, `${slug}.agent.jsonl`) });
 
     let baseline = null;
-    if (BASELINE && agent.result?.value !== "Throttled") {
+    if (BASELINE && !["THROTTLED", "SKIPPED"].includes(outcome(agent))) {
       await sleep(COOLDOWN_MS);
       baseline = await probeTurn({ oneTurn, token, claims, agentId: null, cell, prompt, maxAttempts, framesFile: join(OUT, `${slug}.agentless.jsonl`) });
     }
@@ -451,8 +453,9 @@ async function main(argv) {
     const row = classifyRow(cell, agent, baseline);
     results.push(row);
     for (const line of cellLines(row)) console.log(line);
-    if ([agent, baseline].some((t) => t?.result?.value === "Throttled")) {
-      console.log(`\n[agent-tone] THROTTLED (${agent.result?.errorCode ?? baseline?.result?.errorCode}) — stopping; later cells would read as failures. Wait it out: a fresh login doesn't clear it (the throttle is keyed on the account's oid, AGENTS.md).`);
+    const stop = [agent, baseline].find((t) => t && ["THROTTLED", "SKIPPED"].includes(outcome(t)));
+    if (stop) {
+      console.log(`\n[agent-tone] ${outcome(stop)} — stopping; later cells would not provide observations.`);
       stoppedEarly = true;
       break;
     }

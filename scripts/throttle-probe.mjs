@@ -46,6 +46,7 @@ export function turnLimits({ max, recover }) {
 }
 
 export function classify(r) {
+  if (r.attempted === false) return "skipped";
   if (r.error) return "error";
   if (r.disengaged) return "disengaged";
   return (r.fullText || "").trim().length ? "ok" : "empty";
@@ -63,12 +64,15 @@ export async function sweep({ oneTurn, token, claims, agentId, rpm, max, recover
   const t0 = Date.now();
   // Fire all requests on a fixed schedule (concurrently) so we actually hit the RPM.
   const jobs = [];
+  let locallyStopped = false;
   for (let i = 0; i < max; i++) {
     jobs.push((async () => {
       await sleep(Math.round(i * interval));
+      if (locallyStopped) return { i, cls: "skipped", transport: null };
       const s = Date.now();
       const r = await oneTurn({ token, claims, agentId, text: "Reply with exactly the single word: pong", timeoutMs: 60000, ...limits });
       const cls = classify(r);
+      if (cls === "skipped") locallyStopped = true;
       const row = { i, startMs: s - t0, cls, latencyMs: Date.now() - s, transport: r.transport, throttle: r.throttle };
       log(`  #${String(i).padStart(2)} @${String(Math.round(row.startMs / 1000)).padStart(3)}s  ${cls.padEnd(11)} ${row.latencyMs}ms transport=${r.transport} throttle=${JSON.stringify(r.throttle)}`);
       return row;
@@ -77,11 +81,13 @@ export async function sweep({ oneTurn, token, claims, agentId, rpm, max, recover
   const results = (await Promise.all(jobs)).sort((a, b) => a.i - b.i);
 
   const counts = results.reduce((m, r) => ((m[r.cls] = (m[r.cls] || 0) + 1), m), {});
-  const onset = results.find((r) => r.cls !== "ok");
-  const okRate = Math.round((counts.ok || 0) / results.length * 100);
+  const onset = results.find((r) => r.cls !== "ok" && r.cls !== "skipped");
+  const observed = results.length - (counts.skipped || 0);
+  const okRate = observed ? Math.round((counts.ok || 0) / observed * 100) : null;
 
   // Recovery: if it degraded, poll a single request every 30s until it recovers.
   let recoveryMin = null;
+  let recoverySkipped = false;
   if (recover && onset) {
     log(`[throttle] degraded — polling recovery every ${RECOVERY_GAP_MS / 1000}s (max ${RECOVERY_POLLS * RECOVERY_GAP_MS / 60000} min)...`);
     for (let k = 1; k <= RECOVERY_POLLS; k++) {
@@ -89,10 +95,11 @@ export async function sweep({ oneTurn, token, claims, agentId, rpm, max, recover
       const r = await oneTurn({ token, claims, agentId, text: "Reply with exactly: pong", timeoutMs: 60000, ...limits });
       const cls = classify(r);
       log(`  recovery probe @${k * RECOVERY_GAP_MS / 1000}s: ${cls} transport=${r.transport}`);
+      if (cls === "skipped") { recoverySkipped = true; break; }
       if (cls === "ok") { recoveryMin = (k * RECOVERY_GAP_MS) / 60000; break; }
     }
   }
-  return { results, counts, onset, okRate, recoveryMin };
+  return { results, counts, onset, okRate, recoveryMin, recoverySkipped };
 }
 
 async function main(argv) {
@@ -109,14 +116,15 @@ async function main(argv) {
 
   console.log(`[throttle] rpm=${RPM} max=${MAX} interval=${Math.round(INTERVAL)}ms agent=${USE_AGENT} recover=${RECOVER}`);
 
-  const { results, counts, onset, okRate, recoveryMin } = await sweep({ oneTurn, token, claims, agentId, rpm: RPM, max: MAX, recover: RECOVER });
+  const { results, counts, onset, okRate, recoveryMin, recoverySkipped } = await sweep({ oneTurn, token, claims, agentId, rpm: RPM, max: MAX, recover: RECOVER });
+  const skipped = counts.skipped || 0;
 
-  writeFileSync(join(OUT, "results.json"), JSON.stringify({ rpm: RPM, max: MAX, useAgent: USE_AGENT, counts, okRate, onsetIndex: onset?.i ?? null, onsetAtSec: onset ? Math.round(onset.startMs / 1000) : null, recoveryMin, results }, null, 2));
+  writeFileSync(join(OUT, "results.json"), JSON.stringify({ rpm: RPM, max: MAX, useAgent: USE_AGENT, counts, okRate, onsetIndex: onset?.i ?? null, onsetAtSec: onset ? Math.round(onset.startMs / 1000) : null, recoveryMin, recoverySkipped, results }, null, 2));
 
   console.log(`\n[throttle] === RESULT (rpm=${RPM}, transport=${[...new Set(results.map((r) => r.transport))].join("+")}) ===`);
-  console.log(`[throttle] ok ${counts.ok || 0}/${results.length} (${okRate}%)  | ${Object.entries(counts).map(([k, v]) => `${k}=${v}`).join(" ")}`);
-  console.log(`[throttle] degradation onset: ${onset ? `request #${onset.i} at ~${Math.round(onset.startMs / 1000)}s (${onset.cls})` : "NONE — sustained this RPM cleanly"}`);
-  if (RECOVER && onset) console.log(`[throttle] recovery: ${recoveryMin != null ? `~${recoveryMin} min` : ">10 min (not recovered in window)"}`);
+  console.log(`[throttle] ok ${counts.ok || 0}/${results.length - skipped} (${okRate === null ? "no observations" : `${okRate}%`})  | ${Object.entries(counts).map(([k, v]) => `${k}=${v}`).join(" ")}`);
+  console.log(`[throttle] degradation onset: ${onset ? `request #${onset.i} at ~${Math.round(onset.startMs / 1000)}s (${onset.cls})` : skipped ? "unknown — local refusals" : "NONE — sustained this RPM cleanly"}`);
+  if (RECOVER && onset) console.log(`[throttle] recovery: ${recoveryMin != null ? `~${recoveryMin} min` : recoverySkipped ? "unknown — local refusal" : ">10 min (not recovered in window)"}`);
   console.log(`[throttle] → ${join(OUT, "results.json")}`);
 }
 
