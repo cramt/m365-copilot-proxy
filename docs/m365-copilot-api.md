@@ -81,7 +81,8 @@ no userinfo, controls, whitespace or backslashes) **before attaching the bearer*
 It requires an explicit path with no fragment and rejects locators whose native
 WHATWG serialization would alter the signed path/query (including literal or
 encoded dot segments and characters requiring percent-encoding) and a trailing
-empty query (`/path?`), which some fetch implementations drop. Query dot data,
+empty query (`/path?`), which some fetch implementations drop. A `?` within a
+nonempty query remains signed data, including at its end. Query dot data,
 ordinary encoded slashes/percent signs, plus signs and duplicate query keys remain
 opaque; no decoding or rewriting is performed. Accepted locators pass unchanged
 to Fetch. It rejects redirects and limits each download to an absolute monotonic

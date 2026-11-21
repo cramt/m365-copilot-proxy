@@ -34,6 +34,9 @@ it.each([
   "/a/.../x%2ey/%252e%252e/signed?path=/a/../%2E%2e&sig=+%25%2F",
   "/a/%2f/%2F?sig=%2e%2E&k=2&k=1",
   "/signed?sig=x??/../signed",
+  "/signed?sig=x?",
+  "/signed??",
+  "/signed?sig=%3F&other=+?",
 ])("native peer receives the exact signed request target: %s", async (target) => {
   const p = await peer((response) => response.end(Buffer.from([1, 2, 3])));
   try {
