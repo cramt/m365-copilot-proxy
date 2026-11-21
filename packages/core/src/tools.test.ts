@@ -745,6 +745,63 @@ describe("tool-result labelling", () => {
     );
     expect(out).toContain('<tool_response tool="tool">');
   });
+
+  // GPT-5.6's CoT in a long pi session: "the tool is responding with an unexpected
+  // label" — an edit labelled command="todo.mjs", a command shown re-quoted.
+  it("labels a file tool by its path, not as a command", async () => {
+    const { formatToolResponse } = await import("./tools.js");
+    const history = [{ role: "assistant", tool_calls: [{ id: "e1", function: { name: "edit", arguments: '{"path":"todo.mjs","edits":[]}' } }] }];
+    const out = formatToolResponse({ role: "tool", tool_call_id: "e1", content: "Successfully replaced 1 block(s) in todo.mjs." }, history);
+    expect(out).toContain('<tool_response tool="edit" path="todo.mjs">');
+    expect(out).not.toContain("command=");
+  });
+
+  it("keeps Windows backslashes verbatim instead of doubling them", async () => {
+    const { formatToolResponse } = await import("./tools.js");
+    const history = [{ role: "assistant", tool_calls: [{ id: "r1", function: { name: "read", arguments: JSON.stringify({ path: "C:\\Users\\alice\\todo.mjs" }) } }] }];
+    const out = formatToolResponse({ role: "tool", tool_call_id: "r1", content: "ok" }, history);
+    expect(out).toContain('<tool_response tool="read" path="C:\\Users\\alice\\todo.mjs">');
+    expect(out).not.toContain("\\\\");
+  });
+
+  it("keeps double quotes verbatim inside single-quoted attributes when no single quote is present", async () => {
+    const { formatToolResponse } = await import("./tools.js");
+    const history = [{ role: "assistant", tool_calls: [{ id: "dq1", function: { name: "bash", arguments: JSON.stringify({ command: 'echo "$f"' }) } }] }];
+    const out = formatToolResponse({ role: "tool", tool_call_id: "dq1", content: "hi" }, history);
+    expect(out).toContain(`<tool_response tool="bash" command='echo "$f"'>`);
+  });
+
+  it("preserves both quote styles and backslashes when both quote types appear", async () => {
+    const { formatToolResponse } = await import("./tools.js");
+    const cmd = `for f in a.mjs; do printf '%s\\n' "$f"; done`;
+    const history = [{ role: "assistant", tool_calls: [{ id: "b1", function: { name: "bash", arguments: JSON.stringify({ command: cmd }) } }] }];
+    const out = formatToolResponse({ role: "tool", tool_call_id: "b1", content: "a.mjs" }, history);
+    expect(out).toContain(`<tool_response tool="bash" command="for f in a.mjs; do printf '%s\\n' &quot;$f&quot;; done">`);
+    expect(out).toContain("printf '%s\\n'");
+    expect(out).not.toContain("\\\\n");
+    expect(out).not.toContain("'$f'"); // "$f" and '$f' are different shell commands
+  });
+
+  // Live (GPT-5.6, relay_batch, a PDF task): a label cut silently at 100 chars,
+  // `command="… margin: 22m"`, was read as the command itself cut there.
+  it("marks a long command it shortens, so the label doesn't read as a cut command", async () => {
+    const { formatToolResponse } = await import("./tools.js");
+    const cmd = `set -eu\ncss=".notlar-pdf.css"\nprintf '%s\\n' '@page { size: A4; margin: 22mm 20mm; }' 'body { font-family: "Segoe UI", Arial }' > "$css"`;
+    const history = [{ role: "assistant", tool_calls: [{ id: "b2", function: { name: "bash", arguments: JSON.stringify({ command: cmd }) } }] }];
+    const label = formatToolResponse({ role: "tool", tool_call_id: "b2", content: "(no output)" }, history).split("\n")[0];
+    expect(label).toMatch(/…">$/);
+    const short = [{ role: "assistant", tool_calls: [{ id: "b3", function: { name: "bash", arguments: '{"command":"ls -la"}' } }] }];
+    expect(formatToolResponse({ role: "tool", tool_call_id: "b3", content: "x" }, short)).toContain('command="ls -la">');
+  });
+
+  it("unwraps a Codex Code Mode script and labels it as command with quotes preserved", async () => {
+    const { formatToolResponse } = await import("./tools.js");
+    const { codeModeShellScript } = await import("./fenced.js");
+    const cmd = 'echo "$HOME"';
+    const history = [{ role: "assistant", tool_calls: [{ id: "cm1", function: { name: "functions__exec", arguments: JSON.stringify({ input: codeModeShellScript(cmd) }) } }] }];
+    const out = formatToolResponse({ role: "tool", tool_call_id: "cm1", content: "/home/u" }, history);
+    expect(out).toContain(`<tool_response tool="functions__exec" command='echo "$HOME"'>`);
+  });
 });
 
 describe("fenced tool format (the only format)", () => {

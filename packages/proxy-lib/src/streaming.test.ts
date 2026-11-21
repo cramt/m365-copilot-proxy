@@ -1337,6 +1337,18 @@ describe("a new harness session that shares the first user message", () => {
     expect(scripted.texts[2]).toContain(prompt); // the full history, in a fresh conversation
     scripted.queue = [];
   });
+
+  it("returns M365's file markup as the bare file name, outside code blocks", async () => {
+    scripted.result = null;
+    scripted.queue = [{ fullText: "<File>notlar.docx</File> oluşturuldu; < File>ozet.md</File> da hazır. Etiket: `<File>a.txt</File>`.\n\n```xml\n<File>keep.xml</File>\n```\n\n~~~xml\n<File>tilde.xml</File>\n~~~\n\n```xml\n<File>unclosed.xml</File>" }];
+    const m = await ask([
+      { role: "user", content: `docx ${Math.random()}` },
+      { role: "assistant", content: null, tool_calls: [{ id: "c1", type: "function", function: { name: "bash", arguments: '{"command":"ls"}' } }] },
+      { role: "tool", tool_call_id: "c1", content: "notlar.md" },
+    ], new SessionPool());
+    expect(m.content).toBe("notlar.docx oluşturuldu; ozet.md da hazır. Etiket: `<File>a.txt</File>`.\n\n```xml\n<File>keep.xml</File>\n```\n\n~~~xml\n<File>tilde.xml</File>\n~~~\n\n```xml\n<File>unclosed.xml</File>");
+    scripted.queue = [];
+  });
 });
 
 describe("a side request that shares the session's first user message (#83)", () => {

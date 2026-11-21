@@ -581,6 +581,36 @@ function parseReply(text: string, tools: Parameters<typeof parseToolCalls>[1]): 
   return { parsed, judged: parsed.textContent };
 }
 
+/** M365's web client renders `<File>notlar.docx</File>` as a file chip, and its
+ *  models write that markup into answers: 58 times in the 245 distinct final
+ *  answers of the pi transcripts (Oct 2–5), plus `<document>`, `<Files>`,
+ *  `<file>`, `<FILE>` and "< File>". An API client shows the raw tags, so a prose
+ *  answer gets the bare name. Code is left as it is: closed and unclosed
+ *  backtick/tilde fenced blocks, and inline code (`<file>a.txt</file>` written
+ *  as an example of the markup). */
+export function plainFileNames(text: string): string {
+  const parts = text.split(/(\r?\n)/);
+  let fence: { ch: "`" | "~"; len: number } | null = null;
+  for (let i = 0; i < parts.length; i += 2) {
+    const line = parts[i];
+    if (fence) {
+      const close = line.match(/^ {0,3}(`{3,}|~{3,})[ \t]*$/);
+      if (close && close[1][0] === fence.ch && close[1].length >= fence.len) fence = null;
+      continue;
+    }
+    const open = line.match(/^ {0,3}(`{3,}|~{3,})(.*)$/);
+    if (open && (open[1][0] === "~" || !open[2].includes("`"))) {
+      fence = { ch: open[1][0] as "`" | "~", len: open[1].length };
+      continue;
+    }
+    parts[i] = line.replace(
+      /(`+)[^\n]*?\1|<\s*(file|files|document)\s*>([^<>\n]{1,200}?)<\/\s*\2\s*>/gi,
+      (m, code, _tag, name) => (code ? m : name),
+    );
+  }
+  return parts.join("");
+}
+
 // --- Delta message formatting ---
 
 /** Format the messages new since the last turn. `history` is the whole request:
@@ -1641,7 +1671,7 @@ export async function handleChatCompletion(
       if (fixed.some((c, i) => c !== parsed.toolCalls[i])) log.info("A millisecond argument under 1000 read as seconds (e.g. Bash timeout: 30)");
       return { kind: "tools", toolCalls: fixed };
     }
-    return { kind: "text", text: fullText };
+    return { kind: "text", text: plainFileNames(fullText) };
   } else {
     // No tools — stream deltas live (onDelta) while buffering for the retry logic.
     const result = await runBuffered(onDelta);

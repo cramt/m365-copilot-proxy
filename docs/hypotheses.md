@@ -131,6 +131,8 @@ than "we eyeballed one run." See §M (Methods) for the experimental rig.
 - §52 — concurrent sessions sharing a first user message (or `prompt_cache_key` + opener): `SessionPool` keeps a bucket per fingerprint and matches continuations by the echoed reply (F153)
 - §53 — a long written answer ending in one example command was run as a tool call; opt-in `M365_LONG_ANSWER_GUARD=1` (F154, not benched)
 - §54 — `ECONNRESET` mid-conversation then a hung request; the idle watchdog and reconnect delay (H54a, n=1, open)
+- §55 — tool-result labels that misdescribed calls or cut silently (F155), and M365 file-chip markup
+  in answers (F156)
 
 ---
 
@@ -7080,3 +7082,34 @@ then the client's next resend succeeded. The original question remains falsifiab
 the same response text in a fresh conversation against the existing conversation, with local
 DNS/connectivity observed independently. No causal verdict is inferred from this one session.
 
+---
+
+## 55. Oct 4–14 2026 — Tool-result labels (`formatToolResponse`) and file-chip markup (`plainFileNames`)
+
+Follow-up from the Oct 4–14 real-pi runs on Windows (#70 split into standalone PRs).
+
+### F155 — tool-result labels that misdescribed calls or cut silently 🟢
+`formatToolResponse` labelled file tools `command="todo.mjs"` and swapped `"` for `'` (`"$f"` shown as
+`'$f'`, a different shell command). The model's chain of thought flagged it twice: "the tool is
+responding with an unexpected label", "the command tool response that indicates a mislabeling issue".
+Labels now say `command=`, `path=`, `query=` or `input=` (while still unwrapping Codex Code Mode
+scripts to `command=`). Backslashes are left untouched (so Windows paths and `\n` stay verbatim): values
+without `"` stay double-quoted, values with `"` and no `'` use single-quoted attributes, and values with
+both encode `"` as `&quot;`. The `…` cut marker has before/after evidence (the 7/8 -> 8/8 `relay_batch` PDF
+rerun in #70 below); the `path=`/`query=`/`input=` key split is motivated by the two CoT observations above
+and does not have a controlled A/B measurement.
+
+**A cut label read as a cut command (Oct 14).** The label shortens a long value to 100 characters,
+silently. In one `relay_batch` PDF run the last label read `command="set -eu css=… printf '%s\n' \
+'@page { size: A4; margin: 22m"`, and the model answered "You're right. The recorded command was
+truncated at `margin: 22m` … I can't generate files in the current session"; the task failed. The command
+had run whole. A shortened summary now ends in "…", and the same eight runs then passed 8/8.
+
+### F156 — M365's file-chip markup reached the client 🟢
+The web client renders `<File>notlar.docx</File>` as a file chip, and the GPT models write it into
+their answers; pi showed the raw tags ("<File>notlar.docx</File> başarıyla oluşturuldu"). In the 245
+distinct final answers of the pi transcripts (Oct 2–5): `<File>` 58 times, plus `<document>`,
+`<Files>`, `<file>`, `<FILE>` and "< File>". **Fixed:** a prose answer in tool mode gets the bare
+file name (`plainFileNames`); closed and unclosed backtick/tilde fenced blocks and inline code are left
+alone, and a bare `<name.ext>` is not touched (`#include <stdio.h>`). Not applied to a tool-less streamed
+answer, which goes to the client delta by delta before the markup is complete.
