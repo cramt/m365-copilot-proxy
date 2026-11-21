@@ -1237,7 +1237,12 @@ export class CopilotSession {
         if (type === "error") {
           const err = StreamHubError.safeParse(item);
           const e: { errorCategory?: string; errorCode?: string; message?: string; detail?: string } = err.success ? err.data : {};
-          log.info(`StreamHub error item: ${e.errorCategory ?? "?"} ${e.errorCode ?? ""} ${trunc(e.detail ?? e.message ?? "", 300)}`);
+          if (e.errorCategory === "ForbiddenRequest") {
+            const code = publicForbiddenCode(e.errorCode);
+            log.info(`StreamHub error item: ForbiddenRequest${code ? ` ${code}` : ""}`);
+          } else {
+            log.info(`StreamHub error item: ${e.errorCategory ?? "?"} ${e.errorCode ?? ""} ${trunc(e.detail ?? e.message ?? "", 300)}`);
+          }
           noteResult(e.errorCategory ?? "InternalError", e.errorCode, e.message);
           ws.close();
         }
