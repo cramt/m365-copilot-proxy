@@ -2,8 +2,10 @@ import { type ModelSessionOptions, enabledBackends, formatModelId, getAvailableM
 import { ChatCompletionRequest } from "./schemas.js";
 import { SessionPool, handleChatCompletion } from "./handler.js";
 import { checkAccess, corsHeaders, corsPolicy } from "./access.js";
+import { RequestBodyError, readRequestText } from "./request-body.js";
 
 export { SessionPool, handleChatCompletion } from "./handler.js";
+export { RequestBodyError, readRequestJson } from "./request-body.js";
 export { ChatCompletionRequest, ChatMessage, ToolCall, ToolDefinition } from "./schemas.js";
 export {
   isAgentHarnessUserAgent,
@@ -143,10 +145,26 @@ export function createApp(sessionOptions: ModelSessionOptions = {}): FetchApp {
     if (method === "POST" && pathname === "/v1/chat/completions") {
       let body: ReturnType<typeof ChatCompletionRequest.parse>;
       try {
-        body = ChatCompletionRequest.parse(await req.json());
+        // Fetch JSON uses replacement decoding and native JSON.parse errors.
+        const reader = req.body?.getReader();
+        let text: string;
+        if (reader) {
+          try {
+            text = await readRequestText({ [Symbol.asyncIterator]: () => ({ next: () => reader.read() }) }, req.headers.get("content-length"), false);
+          } catch (err) {
+            // Cancellation must not delay a refusal if the producer never settles.
+            void reader.cancel().catch(() => {});
+            reader.releaseLock();
+            throw err;
+          }
+          reader.releaseLock();
+        } else {
+          text = "";
+        }
+        body = ChatCompletionRequest.parse(JSON.parse(text));
       } catch (err: any) {
         return withCors(
-          json(400, { error: { message: err.message, type: "invalid_request_error" } }),
+          json(err instanceof RequestBodyError ? err.status : 400, { error: { message: err.message, type: "invalid_request_error" } }),
         );
       }
       // req.signal aborts when the client disconnects → cancels the M365 turn.
