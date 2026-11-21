@@ -987,6 +987,11 @@ export async function handleChatCompletion(
       const retryRefusal = !turnSignal?.aborted && resultValue === "Success" && hasTools && !disengageRetried && !process.env.M365_NO_DISENGAGE_RETRY &&
         ((copilotStream.messageType === "Disengaged" && !fullText) || copilotStream.apology || copilotStream.contentOrigin === "Apology");
       const classifiedFailure = resultValue === "Throttled" || resultValue === "InvalidRequest" || resultValue === "OutOfCredits";
+      if (strict && resultValue === "Success" && copilotStream.turnState === "Failed") {
+        session.newConversation();
+        conv.sentMessageCount = 0;
+        return { error: jsonResponse(502, { error: { message: "Upstream turn did not complete successfully", type: "upstream_error" } }) };
+      }
       if (strictExpired() || (strict && turnSignal?.aborted && !retryRefusal) || (strict && resultValue !== "Success" && !retryRefusal && !classifiedFailure)) {
         session.newConversation();
         conv.sentMessageCount = 0;

@@ -7,6 +7,7 @@ import {
   SignalRHandshakeResponse,
   DeltaUpdate,
   MessageUpdate,
+  BotMessage,
   ThrottlingUpdate,
   CompletionFrame,
   CloseFrame,
@@ -34,6 +35,11 @@ import { createLogger, trunc, FRAME_DIR } from "./log.js";
 import { recordThrottle, recordTurn } from "./turn-budget.js";
 import { parseMetering, meteredAllowance, METERED_BUDGETS, type MeteredBudget } from "./priority-access.js";
 
+// A partial message can omit author; only StreamHub's EndOfRequest control has
+// a documented null author. Validate every other known field with the same schema
+// used by MessageUpdate so one bad sibling cannot erase a valid denial.
+const StrictMessage = BotMessage.partial().extend({ author: BotMessage.shape.text.optional() });
+
 // Validate the structures consumed directly by the protocol dispatcher. Unknown
 // object-shaped updates remain forward-compatible; known container fields do not.
 function isProtocolRecord(value: unknown, handshake: boolean, streamHub: boolean): boolean {
@@ -43,13 +49,29 @@ function isProtocolRecord(value: unknown, handshake: boolean, streamHub: boolean
   if (!Number.isInteger(value.type)) return false;
   const message = (v: unknown): boolean => {
     if (!object(v)) return false;
+    // An authorless message cannot safely be attributed to the bot, but these
+    // explicit outcomes cannot be discarded as neutral partial metadata either.
+    // The documented null-author EndOfRequest control remains admissible unless
+    // it also carries an independent refusal or failure signal.
+    if (v.author == null && (v.contentOrigin === "Apology" || v.messageType === "Disengaged" || v.turnState === "Failed")) return false;
+    if (v.author === null) {
+      if (!streamHub || v.messageType !== "EndOfRequest") return false;
+      const { author: _author, ...control } = v;
+      if (!StrictMessage.safeParse(control).success) return false;
+    } else if (!StrictMessage.safeParse(v).success) return false;
     if ("scores" in v && (!Array.isArray(v.scores) || !v.scores.every((s: unknown) => object(s) && typeof s.component === "string" && typeof s.score === "number" && Number.isFinite(s.score)))) return false;
     if ("contentGenerationProgressList" in v && (!Array.isArray(v.contentGenerationProgressList) || !v.contentGenerationProgressList.every((p: unknown) => object(p) && (!("ImageReferenceUrls" in p) || (Array.isArray(p.ImageReferenceUrls) && p.ImageReferenceUrls.every((url: unknown) => typeof url === "string")))))) return false;
     return true;
   };
   const argument = (v: unknown): v is Record<string, any> => {
     if (!object(v)) return false;
-    if ("messages" in v && (!Array.isArray(v.messages) || !v.messages.every(message))) return false;
+    if ("messages" in v) {
+      if (!Array.isArray(v.messages) || !v.messages.every(message)) return false;
+      // Check update-level fields too: an invalid cursor or nonce also makes
+      // MessageUpdate discard all otherwise valid sibling messages.
+      const messages = v.messages.filter((m: Record<string, unknown>) => m.author !== undefined && m.author !== null);
+      if (!MessageUpdate.safeParse({ ...v, messages }).success) return false;
+    }
     if ("throttling" in v && !object(v.throttling)) return false;
     if ("cursor" in v && !object(v.cursor)) return false;
     if ("writeAtCursor" in v && typeof v.writeAtCursor !== "string") return false;
@@ -915,7 +937,10 @@ export class CopilotSession {
             }
             continue;
           }
-          if (!isProtocolRecord(parsed, !handshakeDone, streamHub)) {
+          const valid = strict
+            ? isProtocolRecord(parsed, !handshakeDone, streamHub)
+            : parsed !== null && typeof parsed === "object" && !Array.isArray(parsed);
+          if (!valid) {
             if (strict) {
               serverResult = { value: "InvalidTerminal" };
               const error = new Error("Invalid upstream protocol record");
@@ -1239,19 +1264,19 @@ export class CopilotSession {
         if (delta.success) {
           composer.delta(delta.data.writeAtCursor);
           advance(composer.text);
-          return;
+          if (!strict || !(arg && typeof arg === "object" && "messages" in arg)) return;
         }
-        if (streamHub) {
+        if (streamHub && !delta.success) {
           const w = StreamHubDelta.safeParse(arg);
           if (w.success) {
             composer.delta(w.data.w);
             advance(composer.text);
-            return;
+            if (!strict || !(arg && typeof arg === "object" && "messages" in arg)) return;
           }
         }
 
-        const normalized = streamHub && arg && typeof arg === "object" && Array.isArray((arg as { messages?: unknown }).messages)
-          ? { ...(arg as Record<string, unknown>), messages: ((arg as { messages: any[] }).messages).filter(m => !(m?.author === null && m?.messageType === "EndOfRequest")) }
+        const normalized = arg && typeof arg === "object" && Array.isArray((arg as { messages?: unknown }).messages)
+          ? { ...(arg as Record<string, unknown>), messages: ((arg as { messages: any[] }).messages).filter(m => !(streamHub && m?.author === null && m?.messageType === "EndOfRequest")).filter(m => !(strict && m?.author === undefined)) }
           : arg;
         const msgUpdate = MessageUpdate.safeParse(normalized);
         if (msgUpdate.success) {
@@ -1276,7 +1301,7 @@ export class CopilotSession {
                 }
               }
               if (typeof m.turnCount === "number") turnCountServer = m.turnCount;
-              if (m.turnState) turnState = m.turnState;
+              if (m.turnState && (!strict || turnState !== "Failed")) turnState = m.turnState;
               // A confirmation TRIGGER for a native action arrives here as a
               // messageType'd bot frame (which the plain-chat path drops). Detect
               // it and auto-approve on the same socket (H-NATIVE-6).
@@ -1400,7 +1425,7 @@ export class CopilotSession {
                 typeof item.result.message === "string" ? item.result.message : undefined,
               );
             }
-            if (item.turnState) turnState = item.turnState;
+            if (item.turnState && (!strict || turnState !== "Failed")) turnState = item.turnState;
             if (item.throttling) noteThrottling(item.throttling);
             let resumedHere = false;
             for (const m of item.messages ?? []) {
@@ -1410,6 +1435,7 @@ export class CopilotSession {
               if (m.contentOrigin === "Apology") sawApology = true;
               if (m.messageType) messageType = m.messageType;
               if (m.messageId) messageId = m.messageId;
+              if (strict && m.turnState === "Failed") turnState = "Failed";
               if (typeof m.turnCount === "number") turnCountServer = m.turnCount;
               if (Array.isArray(m.scores)) {
                 for (const s of m.scores) {

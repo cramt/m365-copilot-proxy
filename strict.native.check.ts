@@ -198,6 +198,13 @@ for (const wire of ["chathub", "streamhub"]) for (const streaming of [false, tru
   vi.stubEnv("M365_TRANSPORT", wire); transport = wire; terminal = "ForbiddenRequest"; terminalCode = "InvalidCopilotLicense";
   const pending = request(streaming); await started; release!(); const response = await pending; const text = await response.text(); expect(response.status).toBe(200); expect(text).toContain(content); expect(attempts).toBe(1);
 });
+for (const source of ["chathub", "streamhub-end", "streamhub-error"]) for (const streaming of [false, true]) it(`standalone strict ForbiddenRequest is generic ${source} stream=${streaming}`, async () => {
+  vi.stubEnv("M365_STRICT_STREAM", "1"); transport = source === "chathub" ? "chathub" : "streamhub"; vi.stubEnv("M365_TRANSPORT", transport);
+  terminal = "ForbiddenRequest"; terminalCode = "InvalidCopilotLicense"; terminalMessage = "PRIVATE_REFUSAL";
+  if (source === "streamhub-error") rawTerminalFrames = [JSON.stringify({ type: 2, item: { type: "error", errorCategory: "ForbiddenRequest", errorCode: "InvalidCopilotLicense", message: "PRIVATE_REFUSAL" } })];
+  const pending = request(streaming); await started; release!(); const response = await pending; const text = await response.text();
+  expect(response.status).toBe(streaming ? 200 : 502); expect(text).toContain("upstream_error"); expect(text).not.toContain(content); expect(text).not.toContain("PRIVATE_REFUSAL"); expect(text).not.toContain("InvalidCopilotLicense"); expect(text).not.toContain("m365_account_not_licensed"); expect(attempts).toBe(1);
+});
 for (const wire of ["chathub", "streamhub"]) for (const streaming of [false, true]) it(`strict input-limit Bing fallback succeeds ${wire} stream=${streaming}`, async () => {
   const core = await import("./packages/core/src/copilot.js"); core.resetWebSearchOverflow();
   vi.stubEnv("M365_STRICT_STREAM", "1"); vi.stubEnv("M365_TRANSPORT", wire); transport = wire; automaticBingFallback = true;
