@@ -42,8 +42,10 @@ existing configured error-chunk or compatibility-text policy after HTTP 200.
 A terminal result is accepted only if it is the sole terminal record observed
 before the WebSocket closes. Contradictory or missing terminal records observed
 before closure fail closed; records sent only after closure cannot be observed.
-Setup waits honor the deadline, but third-party token, agent or upload operations
-that ignore cancellation may continue independently after the request fails.
+A StreamHub error item never grants success, regardless of its category; malformed
+JSON records observed before closure fail closed. Pre-aborted or expired requests
+are checked before starting each setup operation; already-running foreign operations
+cannot necessarily be cancelled.
 This is a per-request wire-byte limit, not a 2 MiB process-memory limit: the receiver,
 composer, queue and response encoding may keep multiple copies. Concurrent requests
 multiply memory use. SSE

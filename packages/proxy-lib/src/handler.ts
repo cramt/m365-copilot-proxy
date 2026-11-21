@@ -573,7 +573,7 @@ export async function handleChatCompletion(
   const { session } = conv;
   const hasTools = body.tools && body.tools.length > 0 && body.tool_choice !== "none";
   const requestedModel = route.model;
-  const turnOptions = { reasoningEffort: body.reasoning_effort, ...(strict ? { responseBudget: { remaining: 2 * 1024 * 1024 } } : {}) };
+  const turnOptions = { reasoningEffort: body.reasoning_effort, ...(strict ? { responseBudget: { remaining: 2 * 1024 * 1024 }, isExpired: strictExpired } : {}) };
 
   // Priority access (§15, §24 F55, §26, issue #18). Once a budget is used up
   // every turn on it is refused until the reset, so don't start one: serve the
@@ -1334,7 +1334,13 @@ export async function handleChatCompletion(
         // self-heals from the deleted-agent trap instead of looping on empties.
         if (!agentRefreshed) {
           agentRefreshed = true;
-          const agentChanged = await session.refreshAgent();
+          let agentChanged: boolean;
+          try { agentChanged = await session.refreshAgent(opts.signal, turnOptions); }
+          catch (err: any) {
+            if (!strict) throw err;
+            session.newConversation(); conv.sentMessageCount = 0;
+            return { error: jsonResponse(502, { error: { message: "Upstream turn failed", type: "upstream_error" } }) };
+          }
           if (agentChanged) {
             // The cached agent was stale/deleted and has been re-resolved.
             // Resend the original prompt to the fresh agent — a bare "continue"

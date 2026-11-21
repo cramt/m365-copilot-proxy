@@ -857,6 +857,13 @@ export class CopilotSession {
           try {
             parsed = JSON.parse(frame);
           } catch {
+            if (strict) {
+              serverResult = { value: "InvalidTerminal" };
+              const error = new Error("Malformed upstream record");
+              if (!handshakeDone) reject(error); else onError(error);
+              try { ws.close(); } catch {}
+              return;
+            }
             if (!handshakeDone) {
               handshakeDone = true;
               sendChat();
@@ -1272,9 +1279,13 @@ export class CopilotSession {
         if (type === "error") {
           const err = StreamHubError.safeParse(item);
           const e: { errorCategory?: string; errorCode?: string; message?: string; detail?: string } = err.success ? err.data : {};
-          log.info(`StreamHub error item: ${e.errorCategory ?? "?"} ${e.errorCode ?? ""} ${trunc(e.detail ?? e.message ?? "", 300)}`);
-          if (strict) strictResult(e.errorCategory ?? "InternalError", e.errorCode, e.message);
-          else noteResult(e.errorCategory ?? "InternalError", e.errorCode, e.message);
+          if (strict) {
+            log.info("StreamHub error item received");
+            strictResult("UpstreamError");
+          } else {
+            log.info(`StreamHub error item: ${e.errorCategory ?? "?"} ${e.errorCode ?? ""} ${trunc(e.detail ?? e.message ?? "", 300)}`);
+            noteResult(e.errorCategory ?? "InternalError", e.errorCode, e.message);
+          }
           ws.close();
         }
       };

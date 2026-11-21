@@ -27,6 +27,8 @@ export interface TurnOptions {
   reasoningEffort?: string;
   /** Internal shared response wire-byte allowance for all turns of a request. */
   responseBudget?: { remaining: number };
+  /** Strict request's monotonic expiry check, shared across setup stages. */
+  isExpired?: () => boolean;
 }
 
 /**
@@ -51,7 +53,7 @@ export interface TurnSession {
   /** Continue in a fresh upstream conversation. */
   newConversation(): void;
   /** Re-resolve the tool agent; true when it changed (Chat only). */
-  refreshAgent(): Promise<boolean>;
+  refreshAgent(signal?: AbortSignal, turn?: TurnOptions): Promise<boolean>;
   reset(): void;
   /** The pool drops this conversation for good. */
   close?(): void;
@@ -66,14 +68,21 @@ export interface TurnSession {
  * reconnections so M365 finds the existing server-side conversation
  * instead of creating a new one.
  */
-async function awaitSetup<T>(operation: Promise<T>, signal?: AbortSignal): Promise<T> {
-  if (!signal) return operation;
-  if (signal.aborted) { void operation.catch(() => {}); throw new Error("Request aborted"); }
+async function awaitSetup<T>(factory: () => Promise<T>, signal?: AbortSignal, expired?: () => boolean): Promise<T> {
+  if (signal?.aborted || expired?.()) throw new Error("Request aborted");
+  if (!signal) return factory();
   return new Promise<T>((resolve, reject) => {
     const abort = () => reject(new Error("Request aborted"));
     signal.addEventListener("abort", abort, { once: true });
+    let operation: Promise<T>;
+    try {
+      if (signal.aborted || expired?.()) throw new Error("Request aborted");
+      operation = factory();
+    } catch (error) {
+      signal.removeEventListener("abort", abort); reject(error); return;
+    }
     operation.then(
-      value => { signal.removeEventListener("abort", abort); if (signal.aborted) reject(new Error("Request aborted")); else resolve(value); },
+      value => { signal.removeEventListener("abort", abort); if (signal.aborted || expired?.()) reject(new Error("Request aborted")); else resolve(value); },
       error => { signal.removeEventListener("abort", abort); reject(error); },
     );
   });
@@ -155,8 +164,8 @@ export class ModelSession implements TurnSession {
     turn?: TurnOptions,
   ): Promise<CopilotStream> {
     const strictSignal = turn?.responseBudget ? signal : undefined;
-    const setup = <T>(operation: Promise<T>) => awaitSetup(operation, strictSignal);
-    let token = await setup(this.resolveToken());
+    const setup = <T>(factory: () => Promise<T>) => awaitSetup(factory, strictSignal, turn?.isExpired);
+    let token = await setup(() => this.resolveToken());
     // Image input (#39): upload each image for this conversation; the message points at them.
     // Any other data URL is a document, which goes to OneDrive like the web client's (file-upload.ts).
     // A failed upload is said in the text, so the model doesn't answer about a file it never got.
@@ -164,9 +173,9 @@ export class ModelSession implements TurnSession {
     for (const url of images) {
       const isImage = !/^data:(?!image\/)/i.test(url);
       try {
-        annotations.push(await setup<ImageAnnotation | FileAnnotation>(isImage ? uploadImage(token, this.conversationId, url) : uploadFile(url)));
+        annotations.push(await setup<ImageAnnotation | FileAnnotation>(() => isImage ? uploadImage(token, this.conversationId, url) : uploadFile(url)));
       } catch (err: any) {
-        if (strictSignal?.aborted) throw err;
+        if (strictSignal?.aborted || turn?.isExpired?.()) throw err;
         const what = isImage ? "image" : "file";
         log.info(`${isImage ? "Image" : "File"} upload failed: ${err.message}`);
         text += `
@@ -179,14 +188,15 @@ export class ModelSession implements TurnSession {
     // Resolve agent ID lazily (persists across resets), only when wanted.
     if (wantAgent && this.cachedAgentId === undefined) {
       try {
-        this.cachedAgentId = await setup(getOrCreateAgent());
+        this.cachedAgentId = await setup(() => getOrCreateAgent());
         if (this.cachedAgentId) log.info(`Using agent: ${this.cachedAgentId}`);
         else log.info("No agent available");
       } catch (err) {
-        if (strictSignal?.aborted) throw err;
+        if (strictSignal?.aborted || turn?.isExpired?.()) throw err;
         this.cachedAgentId = null;
       }
     }
+    if (strictSignal?.aborted || turn?.isExpired?.()) throw new Error("Request aborted");
     const agentForTurn = wantAgent ? (this.cachedAgentId ?? undefined) : undefined;
 
     // Create (or recreate) the session when missing or when this turn's
@@ -209,15 +219,15 @@ export class ModelSession implements TurnSession {
     try {
       return await this.copilotSession.chat(token, text, model, signal, turnOpts);
     } catch (err: any) {
-      if (strictSignal?.aborted) throw err;
+      if (strictSignal?.aborted || turn?.isExpired?.()) throw err;
       // Session might be stale — reconnect with same IDs
       log.info("Session error, reconnecting:", err.message);
       // The reconnect is one more upstream turn, so it waits on the budget too:
       // otherwise it skips the wait and its recordTurn takes the grant of a turn
       // another request was let through for (#77). A token held through a long
       // wait may be near its end, so fetch it again.
-      if ((await setup(waitForBudget())).waitedMs > 0) token = await setup(this.resolveToken());
-      if (strictSignal?.aborted) throw new Error("Request aborted");
+      if ((await setup(() => waitForBudget())).waitedMs > 0) token = await setup(() => this.resolveToken());
+      if (strictSignal?.aborted || turn?.isExpired?.()) throw new Error("Request aborted");
       this.copilotSession = this.createCopilotSession(agentForTurn);
       this.currentAgentId = agentForTurn;
       return await this.copilotSession.chat(token, text, model, signal, turnOpts);
@@ -235,10 +245,10 @@ export class ModelSession implements TurnSession {
    * the session was dropped to reconnect), so the caller can resend the original
    * prompt to the fresh agent.
    */
-  async refreshAgent(): Promise<boolean> {
+  async refreshAgent(signal?: AbortSignal, turn?: TurnOptions): Promise<boolean> {
     if (!this.useAgent) return false;
     try {
-      const fresh = await getOrCreateAgent({ forceRefresh: true });
+      const fresh = await awaitSetup(() => getOrCreateAgent({ forceRefresh: true }), turn?.responseBudget ? signal : undefined, turn?.isExpired);
       if (fresh !== this.cachedAgentId) {
         log.info(`Agent refreshed: ${this.cachedAgentId ?? "none"} -> ${fresh ?? "none"}`);
         this.cachedAgentId = fresh;
@@ -247,6 +257,7 @@ export class ModelSession implements TurnSession {
         return true;
       }
     } catch (err: any) {
+      if (turn?.responseBudget && (signal?.aborted || turn.isExpired?.())) throw err;
       log.info(`Agent refresh failed: ${err.message}`);
     }
     return false;

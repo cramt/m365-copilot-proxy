@@ -1,7 +1,10 @@
 import { afterAll, afterEach, expect, it, vi } from "vitest";
 import { createServer } from "node:http";
 
-const setupMocks = vi.hoisted(() => ({ agent: null as null | (() => Promise<any>), image: null as null | (() => Promise<any>) }));
+const setupMocks = vi.hoisted(() => ({ agent: null as null | (() => Promise<any>), image: null as null | (() => Promise<any>), file: null as null | (() => Promise<any>) }));
+vi.mock("./packages/core/src/file-upload.js", async original => {
+  const real = await original<any>(); return { ...real, uploadFile: (...args: any[]) => setupMocks.file ? setupMocks.file() : real.uploadFile(...args) };
+});
 vi.mock("./packages/core/src/agent.js", async original => {
   const real = await original<any>(); return { ...real, getOrCreateAgent: (...args: any[]) => setupMocks.agent ? setupMocks.agent() : real.getOrCreateAgent(...args) };
 });
@@ -45,6 +48,7 @@ let completionError = false;
 let contradictoryTerminal = false;
 let terminalRecords: string[] | null = null;
 let separateRecords = false;
+let rawTerminalFrames: string[] | null = null;
 let repeatedFrames = 1;
 let attempts = 0;
 let multipartSize = 0;
@@ -107,6 +111,11 @@ server.on("connection", (ws: any) => { ws.on("close", () => closed?.()); ws.on("
       }
       release = () => {
         if (terminal === "disconnect") { ws.terminate(); return; }
+        if (rawTerminalFrames) {
+          const frames = rawTerminalFrames.map(x => x === "success" ? JSON.stringify(transport === "streamhub" ? { type: 2, item: { type: "request_end", requestId: id, outcome: { category: "Success" } } } : { type: 2, item: { result: { value: "Success" } } }) : x);
+          if (separateRecords) for (const frame of frames) ws.send(frame + "\x1e"); else ws.send(frames.map(frame => frame + "\x1e").join(""));
+          return;
+        }
         if (terminalRecords) {
           const frames = terminalRecords.map(value => transport === "streamhub"
             ? { type: 2, item: { type: "request_end", requestId: id, ...(value === "missing" ? {} : { outcome: { category: value } }) } }
@@ -137,7 +146,7 @@ async function request(stream: boolean, tools = false, options: { signal?: Abort
   const body = ChatCompletionRequest.parse({ model: "claude-sonnet", stream, messages: [{ role: "user", content: "hello" }], ...(tools ? { tools: [{ type: "function", function: { name: "bash", description: "shell", parameters: { type: "object", properties: {} } } }] } : {}) });
   return handleChatCompletion(body, new SessionPool({ getToken: options.getToken ?? (async () => token), useAgent: false }), { signal: options.signal });
 }
-afterEach(() => { vi.unstubAllEnvs(); for (const c of server.clients) c.terminate(); release = undefined; payload = content; chunks = null; closed = undefined; retryApology = false; retrySequence = false; firstPadding = 0; f22Sequence = false; confabSequence = false; graphics = false; completionError = false; contradictoryTerminal = false; terminalRecords = null; separateRecords = false; repeatedFrames = 1; attempts = 0; multipartSize = 0; multipartSent = []; multipartPrompts = []; });
+afterEach(() => { vi.unstubAllEnvs(); for (const c of server.clients) c.terminate(); release = undefined; payload = content; chunks = null; closed = undefined; retryApology = false; retrySequence = false; firstPadding = 0; f22Sequence = false; confabSequence = false; graphics = false; completionError = false; contradictoryTerminal = false; terminalRecords = null; separateRecords = false; rawTerminalFrames = null; repeatedFrames = 1; attempts = 0; multipartSize = 0; multipartSent = []; multipartPrompts = []; });
 afterAll(async () => { for (const c of server.clients) c.terminate(); await new Promise<void>(r => server.close(r)); await new Promise<void>(r => http.close(() => r())); });
 for (const wire of ["chathub", "streamhub"]) for (const streaming of [false, true]) for (const tools of [false, true]) {
   it(`strict refuses pending content: ${wire} stream=${streaming} tools=${tools}`, async () => {
@@ -165,6 +174,19 @@ for (const wire of ["chathub", "streamhub"]) for (const streaming of [false, tru
   chunks = ["prefix ", "middle ", "suffix "]; chunks[where] = content;
   const pending = request(streaming, tools); await started; release!();
   const text = await (await pending).text(); expect(text).not.toContain(content); expect(text).not.toContain("prefix "); expect(text).toContain("error");
+});
+for (const wire of ["chathub", "streamhub"]) it(`default keeps malformed-record compatibility ${wire}`, async () => {
+  vi.stubEnv("M365_TRANSPORT", wire); transport = wire; rawTerminalFrames = ["{invalid", "success"];
+  const pending = request(true); await started; release!(); const text = await (await pending).text(); expect(text).toContain(content);
+});
+for (const wire of ["chathub", "streamhub"]) for (const streaming of [false, true]) for (const separate of [false, true]) for (const reverse of [false, true]) it(`strict rejects malformed record ${wire} s=${streaming} separate=${separate} reverse=${reverse}`, async () => {
+  vi.stubEnv("M365_STRICT_STREAM", "1"); vi.stubEnv("M365_TRANSPORT", wire); transport = wire; separateRecords = separate; rawTerminalFrames = reverse ? ["{invalid", "success"] : ["success", "{invalid"];
+  const pending = request(streaming); await started; release!(); const text = await (await pending).text(); expect(text).not.toContain(content); expect(text).toContain("error");
+});
+for (const streaming of [false, true]) for (const detail of [false, true]) it(`strict StreamHub error category Success cannot authorize content s=${streaming} detail=${detail}`, async () => {
+  vi.stubEnv("M365_STRICT_STREAM", "1"); vi.stubEnv("M365_TRANSPORT", "streamhub"); transport = "streamhub";
+  rawTerminalFrames = [JSON.stringify({ type: 2, item: { type: "error", errorCategory: "Success", ...(detail ? { detail: content, message: content } : {}) } })];
+  const pending = request(streaming); await started; release!(); const text = await (await pending).text(); expect(text).not.toContain(content); expect(text).toContain("error");
 });
 for (const wire of ["chathub", "streamhub"]) for (const records of [["Success", "ForbiddenRequest"], ["ForbiddenRequest", "Success"], ["Success", "missing"]]) it(`separate WebSocket messages ${wire} ${records.join(",")}`, async () => {
   vi.stubEnv("M365_STRICT_STREAM", "1"); vi.stubEnv("M365_TRANSPORT", wire); transport = wire; terminalRecords = records; separateRecords = true;
@@ -357,6 +379,35 @@ for (const stage of ["agent", "image"] as const) it(`strict deadline bounds an u
     releaseStage(null); await new Promise<void>(r => setTimeout(r, 30)); expect(attempts).toBe(0); expect(server.clients.size).toBe(0);
   } finally { setupMocks[stage] = null; releaseStage(null); shorten.mockRestore(); }
 }, 2000);
+for (const stage of ["agent", "image", "file"] as const) for (const streaming of [false, true]) for (const failure of ["abort", "expire"] as const) it(`strict setup admission ${stage} stream=${streaming} ${failure}`, async () => {
+  vi.stubEnv("M365_STRICT_STREAM", "1"); vi.stubEnv("M365_TRANSPORT", "chathub"); transport = "chathub"; vi.stubEnv("M365_FORCE_AGENT", "1");
+  let now = 0; const time = vi.spyOn(performance, "now").mockImplementation(() => now); const abort = new AbortController();
+  let tokenCalls = 0; let stageCalls = 0; let enter!: () => void; let releaseToken!: (s: string) => void;
+  const ready = new Promise<void>(r => { enter = r; }); const gate = new Promise<string>(r => { releaseToken = r; });
+  setupMocks[stage] = () => { stageCalls++; throw new Error("unexpected setup"); };
+  const url = stage === "file" ? "data:application/pdf;base64,AA==" : "data:image/png;base64,AA==";
+  const body = ChatCompletionRequest.parse({ model: "claude-sonnet", stream: streaming, messages: [{ role: "user", content: stage === "agent" ? "hi" : [{ type: "text", text: "hi" }, { type: "image_url", image_url: { url } }] }],
+    ...(stage === "agent" ? { tools: [{ type: "function", function: { name: "bash", description: "shell", parameters: { type: "object", properties: {} } } }] } : {}) });
+  try {
+    const pending = handleChatCompletion(body, new SessionPool({ getToken: () => { tokenCalls++; enter(); return gate; }, useAgent: true }), { signal: abort.signal });
+    await ready; if (failure === "abort") abort.abort(); else now = 180_001; releaseToken(token);
+    const text = await (await pending).text(); expect(text).toContain("error"); expect(tokenCalls).toBe(1); expect(stageCalls).toBe(0); expect(attempts).toBe(0); expect(server.clients.size).toBe(0);
+  } finally { setupMocks[stage] = null; releaseToken(token); time.mockRestore(); }
+});
+for (const streaming of [false, true]) for (const failure of ["abort", "expire"] as const) it(`strict initial token admission stream=${streaming} ${failure}`, async () => {
+  vi.stubEnv("M365_STRICT_STREAM", "1"); const abort = new AbortController(); let calls = 0; let clockCalls = 0;
+  if (failure === "abort") abort.abort();
+  const clock = vi.spyOn(performance, "now").mockImplementation(() => failure === "expire" && ++clockCalls > 1 ? 180_001 : 0);
+  try {
+    const response = await request(streaming, false, { signal: abort.signal, getToken: () => { calls++; throw new Error("unexpected call"); } });
+    const text = await response.text(); expect(text).toContain("error"); expect(calls).toBe(0); expect(attempts).toBe(0);
+  } finally { clock.mockRestore(); }
+});
+it("pre-aborted strict handler never invokes a synchronously throwing token provider", async () => {
+  vi.stubEnv("M365_STRICT_STREAM", "1"); const abort = new AbortController(); abort.abort(); let calls = 0;
+  const response = await request(false, false, { signal: abort.signal, getToken: () => { calls++; throw new Error("unexpected call"); } });
+  expect(response.status).toBeGreaterThanOrEqual(400); expect(calls).toBe(0); expect(attempts).toBe(0);
+});
 it("strict deadline bounds an uncooperative token resolver", async () => {
   vi.stubEnv("M365_STRICT_STREAM", "1"); vi.stubEnv("M365_TRANSPORT", "chathub");
   const original = AbortSignal.timeout;
