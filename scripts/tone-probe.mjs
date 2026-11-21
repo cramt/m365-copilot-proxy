@@ -24,9 +24,11 @@
 // one scenario pair, so there each tone is probed once, under that pair.
 //
 // Usage: M365_NO_INTERACTIVE=1 CHROMIUM_PATH=$(which chromium) node scripts/tone-probe.mjs
-// Cost: 1 message per cell. Opus and Sonnet 5.5 cells spend their scarce
-// priority-access budgets (see docs §15, §26) — drop them from the list when
-// sweeping something else.
+// Cost: 1 message per cell. A full sweep includes priority-metered Opus and
+// Sonnet and credit-billed Astra and Fable; other/unknown tones may also cost.
+// Obtain spending approval and check current pricing before any live probe.
+// Use --only=TONE --included --dry-run to inspect one selection offline.
+// The full sweep has no throttle-stop; 1.5s spacing is not a safe cadence.
 
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
