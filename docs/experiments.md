@@ -209,8 +209,8 @@ All run with `scripts/_probe-chat.mjs` overrides; no license needed.
 - **Read:** `REJECTED` is a validator error, `REGISTERED_BUT_DEAD` a BotConnection deflection,
   `UNLICENSED` a refusal by licence, and `LIVE` only says a model answered, not which one. Settle
   the labels against the web client's own picker data, not a self-ID (§27 H27a).
-- **Cost:** one message per cell. Run it sequentially, as the sweep does; a fresh conversation per
-  cell is what the thread-rate throttle counts (F13).
+- **Cost:** zero messages for the dry run; one message per live cell after explicit approval. Each
+  live cell starts a fresh conversation, which counts toward the thread-rate throttle (F13).
 
 ---
 
