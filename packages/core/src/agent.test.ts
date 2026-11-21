@@ -1,4 +1,7 @@
 import { beforeEach, afterEach, describe, it, expect, vi } from "vitest";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
 vi.mock("./auth.js", () => ({ getTokenForScope: vi.fn().mockResolvedValue("synthetic-token") }));
 vi.mock("node:fs", async (importOriginal) => ({
@@ -36,8 +39,18 @@ describe("environmentUrlFromName", () => {
 });
 
 describe("agent provisioning policy", () => {
-  beforeEach(() => { vi.resetModules(); vi.clearAllMocks(); });
-  afterEach(() => { vi.unstubAllGlobals(); });
+  let root: string;
+  beforeEach(() => {
+    vi.resetModules(); vi.clearAllMocks();
+    // The cache write (openSync + rename) is real even with writeFileSync mocked: keep it off the real ~/.config.
+    root = mkdtempSync(join(tmpdir(), "m365-agent-"));
+    vi.stubEnv("HOME", root);
+    vi.stubEnv("USERPROFILE", root);
+  });
+  afterEach(() => {
+    vi.unstubAllGlobals(); vi.unstubAllEnvs();
+    rmSync(root, { recursive: true, force: true });
+  });
 
   function setup(failAt: "create" | "publish" | "retry-publish" | "ordinary") {
     const calls: string[] = [];
