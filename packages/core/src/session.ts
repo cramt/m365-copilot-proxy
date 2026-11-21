@@ -744,6 +744,15 @@ export class CopilotSession {
 
       let handshakeDone = false;
       let stopped = false;
+      let finished = false;
+      let idleTimer: ReturnType<typeof setTimeout> | undefined;
+      let stopTimer: ReturnType<typeof setTimeout> | undefined;
+      // Safety net for a StreamHub turn whose `request_end` never comes (see
+      // STREAMHUB_VARIANTS): finish shortly after its `EndOfRequest` message.
+      let endGrace: ReturnType<typeof setTimeout> | undefined;
+      const rawIdle = process.env.M365_TURN_IDLE_MS;
+      const parsedIdle = rawIdle === undefined || rawIdle.trim() === "" ? NaN : Number(rawIdle);
+      const idleMs = Number.isFinite(parsedIdle) && parsedIdle > 0 && parsedIdle <= 2_147_483_647 ? parsedIdle : 120_000;
 
       // StreamHub frames go up as stream items of the client stream ("0").
       const sendItem = (item: Record<string, unknown>) => {
@@ -771,14 +780,43 @@ export class CopilotSession {
         }
       };
 
-      // Safety net for a StreamHub turn whose `request_end` never comes (see
-      // STREAMHUB_VARIANTS): close shortly after its `EndOfRequest` message.
-      let endGrace: ReturnType<typeof setTimeout> | null = null;
+      const cleanup = () => {
+        if (idleTimer) clearTimeout(idleTimer);
+        if (stopTimer) clearTimeout(stopTimer);
+        if (endGrace) clearTimeout(endGrace);
+        signal?.removeEventListener("abort", onAbort);
+      };
+      // The one way a turn ends, whichever frame, timer or socket event ends
+      // it: Chathub's type 2/3/7 frames, StreamHub's `request_end` and `error`
+      // items and its EndOfRequest grace timer, the idle watchdog, a socket
+      // error and the transport's own close. The protocol's end owns the
+      // result; the transport's close handshake can lag behind it. Before the
+      // handshake finishes there is no stream yet, so the chat() promise fails.
+      const finish = (error?: Error, closeBy: "close" | "terminate" | "none" = "close") => {
+        if (finished) return;
+        finished = true;
+        cleanup();
+        if (!handshakeDone) {
+          reject(error ?? new Error("WebSocket closed before handshake"));
+        } else {
+          settleAnswer();
+          if (error) onError(error); else onDone();
+        }
+        try {
+          if (closeBy === "close") ws.close();
+          else if (closeBy === "terminate") ws.terminate();
+        } catch {}
+      };
+      const armIdle = () => {
+        if (finished || stopped) return;
+        if (idleTimer) clearTimeout(idleTimer);
+        idleTimer = setTimeout(() => finish(new Error(`No response from M365 for ${idleMs}ms`), "terminate"), idleMs);
+      };
       const armEndGrace = () => {
         if (endGrace) return;
         endGrace = setTimeout(() => {
-          log.info(`StreamHub: no request_end ${STREAMHUB_END_GRACE_MS} ms after EndOfRequest — closing`);
-          try { ws.close(); } catch {}
+          log.info(`StreamHub: no request_end ${STREAMHUB_END_GRACE_MS} ms after EndOfRequest — ending the turn`);
+          finish();
         }, STREAMHUB_END_GRACE_MS);
       };
 
@@ -788,8 +826,9 @@ export class CopilotSession {
       // hard-close fallback). Before the handshake completes there's nothing to
       // stop, so just close. StreamHub's stop is a `stop` item naming the turn.
       const onAbort = () => {
-        if (stopped) return;
+        if (finished || stopped) return;
         stopped = true;
+        if (idleTimer) clearTimeout(idleTimer);
         try {
           if (ws.readyState === WebSocket.OPEN && handshakeDone) {
             log.info("Aborted — sending Stop frame to cancel the turn");
@@ -805,31 +844,35 @@ export class CopilotSession {
               dumpFrame(requestId, { target: "stop", type: 1 }, "send");
               ws.send(STOP_FRAME);
             }
-            setTimeout(() => { try { ws.close(); } catch {} }, 2_000);
+            stopTimer = setTimeout(() => { try { ws.close(); } catch {} }, 2_000);
           } else {
-            try { ws.close(); } catch {}
+            finish();
           }
         } catch {
-          try { ws.close(); } catch {}
+          finish();
         }
       };
       if (signal) {
-        if (signal.aborted) onAbort();
+        if (signal.aborted) queueMicrotask(onAbort);
         else signal.addEventListener("abort", onAbort, { once: true });
       }
-      const clearAbort = () => signal?.removeEventListener("abort", onAbort);
+      armIdle();
 
       ws.on("open", () => {
+        if (finished || stopped) return;
         log.debug("WS connected, sending handshake");
         ws.send(JSON.stringify({ protocol: "json", version: 1 }) + RS);
       });
 
       ws.on("message", (data: WebSocket.RawData) => {
+        if (finished) return;
+        armIdle();
         const raw = data.toString();
         log.debug("WS recv:", trunc(raw, 500));
         const frames = raw.split(RS).filter((f) => f.length > 0);
 
         for (const frame of frames) {
+          if (finished) break;
           let parsed: unknown;
           try {
             parsed = JSON.parse(frame);
@@ -843,13 +886,12 @@ export class CopilotSession {
           dumpFrame(requestId, parsed, "recv");
 
           if (!handshakeDone) {
-            handshakeDone = true;
             const hs = SignalRHandshakeResponse.safeParse(parsed);
             if (hs.success && hs.data.error) {
-              ws.close();
-              reject(new Error(`Handshake error: ${hs.data.error}`));
+              finish(new Error(`Handshake error: ${hs.data.error}`));
               return;
             }
+            handshakeDone = true;
             sendChat();
             continue;
           }
@@ -859,22 +901,16 @@ export class CopilotSession {
       });
 
       ws.on("error", (err: Error) => {
+        if (finished) return;
         const msg = err.message || "connection failed";
         log.error("WS error:", msg);
-        if (!handshakeDone) {
-          reject(new Error(`WebSocket error: ${msg}`));
-        } else {
-          onError(new Error(`WebSocket error: ${msg}`));
-        }
+        finish(new Error(`WebSocket error: ${msg}`), "none");
       });
 
       ws.on("close", () => {
-        clearAbort();
-        if (endGrace) clearTimeout(endGrace);
-        settleAnswer();
+        finish(undefined, "none");
         log.info("WS closed, answer length:", answer.length);
         log.debug("Final response:", trunc(answer, 1000));
-        onDone();
       });
 
       const sendChat = () => {
@@ -1229,7 +1265,7 @@ export class CopilotSession {
           const end = StreamHubRequestEnd.safeParse(item);
           const outcome = end.success ? end.data.outcome : undefined;
           if (outcome && !serverResult) noteResult(outcome.category, outcome.errorCode ?? outcome.code, outcome.message);
-          ws.close();
+          finish();
           return;
         }
         if (type === "error") {
@@ -1237,7 +1273,7 @@ export class CopilotSession {
           const e: { errorCategory?: string; errorCode?: string; message?: string; detail?: string } = err.success ? err.data : {};
           log.info(`StreamHub error item: ${e.errorCategory ?? "?"} ${e.errorCode ?? ""} ${trunc(e.detail ?? e.message ?? "", 300)}`);
           noteResult(e.errorCategory ?? "InternalError", e.errorCode, e.message);
-          ws.close();
+          finish();
         }
       };
 
@@ -1256,19 +1292,15 @@ export class CopilotSession {
 
         if (base.type === 7) {
           const frame = CloseFrame.safeParse(raw);
-          if (frame.success && frame.data.error) {
-            onError(new Error(`Server close: ${frame.data.error}`));
-          }
-          ws.close();
+          finish(frame.success && frame.data.error
+            ? new Error(`Server close: ${frame.data.error}`) : undefined);
           return;
         }
 
         if (base.type === 3) {
           const frame = CompletionFrame.safeParse(raw);
-          if (frame.success && frame.data.error) {
-            onError(new Error(`Completion error: ${frame.data.error}`));
-          }
-          ws.close();
+          finish(frame.success && frame.data.error
+            ? new Error(`Completion error: ${frame.data.error}`) : undefined);
           return;
         }
 
@@ -1310,7 +1342,7 @@ export class CopilotSession {
             // receive the action's result (H-NATIVE-6).
             if (resumedHere) return;
           }
-          ws.close();
+          finish();
           return;
         }
 
