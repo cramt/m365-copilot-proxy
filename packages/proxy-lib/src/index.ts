@@ -4,6 +4,7 @@ import { SessionPool, handleChatCompletion } from "./handler.js";
 import { checkAccess, corsHeaders, corsPolicy } from "./access.js";
 
 export { SessionPool, handleChatCompletion } from "./handler.js";
+export { RequestBodyError, readRequestJson } from "./request-body.js";
 export { ChatCompletionRequest, ChatMessage, ToolCall, ToolDefinition } from "./schemas.js";
 export {
   isAgentHarnessUserAgent,
