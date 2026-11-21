@@ -10,6 +10,20 @@ import type { CopilotStream } from "./copilot.js";
 
 const log = createLogger("model");
 
+function reconnectDelay(signal?: AbortSignal): Promise<void> {
+  const raw = process.env.M365_RECONNECT_DELAY_MS;
+  const value = raw === undefined || raw.trim() === "" ? NaN : Number(raw);
+  const ms = Number.isFinite(value) && value >= 0 && value <= 2_147_483_647 ? value : 5000;
+  if (signal?.aborted) return Promise.reject(new DOMException("Aborted", "AbortError"));
+  if (ms === 0) return Promise.resolve();
+  return new Promise((resolve, reject) => {
+    const done = () => { signal?.removeEventListener("abort", abort); resolve(); };
+    const timer = setTimeout(done, ms);
+    const abort = () => { clearTimeout(timer); signal?.removeEventListener("abort", abort); reject(new DOMException("Aborted", "AbortError")); };
+    signal?.addEventListener("abort", abort, { once: true });
+  });
+}
+
 export interface ModelSessionOptions {
   /** Pre-resolved auth token. If not provided, getToken() is called. */
   getToken?: () => Promise<string>;
@@ -199,11 +213,16 @@ export class ModelSession implements TurnSession {
     } catch (err: any) {
       // Session might be stale — reconnect with same IDs
       log.info("Session error, reconnecting:", err.message);
+      if (signal?.aborted) throw new DOMException("Aborted", "AbortError");
+      if (/EAI_AGAIN|ENOTFOUND|ECONNRESET|ECONNREFUSED|ETIMEDOUT|ENETUNREACH/.test(String(err?.message))) {
+        await reconnectDelay(signal);
+      }
       // The reconnect is one more upstream turn, so it waits on the budget too:
       // otherwise it skips the wait and its recordTurn takes the grant of a turn
       // another request was let through for (#77). A token held through a long
       // wait may be near its end, so fetch it again.
       if ((await waitForBudget()).waitedMs > 0) token = await this.resolveToken();
+      if (signal?.aborted) throw new DOMException("Aborted", "AbortError");
       this.copilotSession = this.createCopilotSession(agentForTurn);
       this.currentAgentId = agentForTurn;
       return await this.copilotSession.chat(token, text, model, signal, turnOpts);

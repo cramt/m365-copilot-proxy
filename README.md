@@ -865,6 +865,8 @@ not an exemption from your organization's Conditional Access policy.
 | `M365_MAX_TURN_PARTS` | The most M365 turns a long turn may take, its parts and the answered one (default `12`, at least `2`). Each part is a turn on the account's turn budget and, on a metered model, a unit of its allowance. A request that needs more gets a 400 `context_length_exceeded`, so the client compacts. |
 | `M365_REPORT_USAGE` | Set to `0` for zero token counts in `usage`. By default they are estimates (see below). |
 | `M365_NO_REASONING` | Set to `1` to leave the model's chain of thought out of replies. By default it goes out as `reasoning_content` (see [Chain of thought](#chain-of-thought-reasoning_content)). |
+| `M365_TURN_IDLE_MS` | Maximum silence between received frames, including before handshake (default `120000` ms); invalid, nonpositive or timer-overflow values fall back to the default. |
+| `M365_RECONNECT_DELAY_MS` | Delay before retrying a recognized network error (default `5000` ms; `0` disables the delay). Invalid, negative or timer-overflow values fall back to the default. |
 | `M365_CACHE_FILE` | Override MSAL token cache location. The cache is replaced by renaming a temporary file in the same directory, so the path must be an ordinary file in a writable directory: a single file bind-mounted into a container (or on another filesystem from its directory) fails with `EBUSY`/`EXDEV` and the proxy reports a cache write error instead of carrying on. Mount the cache's directory instead. The error's `cause` carries the OS error code. |
 | `M365_SECRETS_FILE` | Override credentials file location |
 | `CHROMIUM_PATH` | Path to Chromium binary for automated login |
