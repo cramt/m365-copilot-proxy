@@ -1,4 +1,17 @@
-import { describe, it, expect, vi, afterEach, beforeEach } from "vitest";
+import { describe, it, expect, vi, afterEach, beforeEach, afterAll } from "vitest";
+import { rmSync } from "node:fs";
+
+const logging = await vi.hoisted(async () => {
+  const { mkdtempSync } = await import("node:fs");
+  const { tmpdir } = await import("node:os");
+  const { join } = await import("node:path");
+  const dir = mkdtempSync(join(tmpdir(), "m365-forbidden-"));
+  process.env.M365_DEBUG = "1";
+  process.env.M365_LOG_STDOUT = "1";
+  process.env.M365_LOG_FILE = join(dir, "debug.log");
+  return { dir };
+});
+afterAll(() => { rmSync(logging.dir, { recursive: true, force: true }); });
 
 // Replace core's ModelSession with a scripted fake so we can exercise the handler's
 // streaming path with no auth/WebSocket. Everything else in core stays real.
@@ -483,12 +496,50 @@ describe("a ForbiddenRequest turn (a licence refusal) is a 403, never an answer"
     });
   }
 
-  it("keeps a well-formed upstream code for the generic 403, and drops a malformed one", async () => {
-    noScript();
-    scripted.queue = [forbidden("SomethingElse")];
-    expect((await (await ask(false)).json()).error.m365_error_code).toBe("SomethingElse");
-    scripted.queue = [forbidden("not an identifier!")];
-    expect(await (await ask(false)).json()).not.toHaveProperty("error.m365_error_code");
+  it("does not reflect or log unknown identifier-shaped codes in JSON or SSE", async () => {
+    const secret = "syntheticSecretToken_123456789";
+    const output: string[] = [];
+    const spy = vi.spyOn(process.stdout, "write").mockImplementation(((chunk: unknown) => { output.push(String(chunk)); return true; }) as typeof process.stdout.write);
+    try {
+      for (const streaming of [false, true]) {
+        noScript();
+        scripted.queue = [{ ...forbidden(secret), fullText: "" }];
+        const res = await ask(streaming);
+        const text = await res.text();
+        expect(text).not.toContain(secret);
+        expect(text).not.toContain(UPSTREAM_PROSE);
+        expect(text).not.toContain("m365_error_code");
+      }
+      expect(output.join("")).toContain("Upstream ForbiddenRequest");
+      expect(output.join("")).not.toContain(secret);
+      expect(output.join("")).not.toContain(UPSTREAM_PROSE);
+      noScript();
+      scripted.queue = [{ ...forbidden("InvalidCopilotLicense"), fullText: "" }];
+      await (await ask(false)).text();
+      expect(output.join("")).toContain("Upstream ForbiddenRequest (InvalidCopilotLicense)");
+    } finally { spy.mockRestore(); }
+  });
+
+  it("preserves documented codes in JSON and structured SSE", async () => {
+    for (const code of ["PremiumModelUnavailableForLicense", "ClaudeUnavailableForLicense", "InvalidCopilotLicense"]) {
+      noScript(); scripted.queue = [{ ...forbidden(code), fullText: "" }];
+      expect((await (await ask(false)).json()).error.m365_error_code).toBe(code);
+      noScript(); scripted.queue = [{ ...forbidden(code), fullText: "" }];
+      const text = await (await ask(true)).text();
+      const chunks = text.split("\n").filter(l => l.startsWith("data: ") && l !== "data: [DONE]").map(l => JSON.parse(l.slice(6)));
+      expect(chunks.find(c => c.error)?.error.m365_error_code).toBe(code);
+    }
+  });
+
+  it("Claude CLI text mode ends the forbidden refusal with assistant text and stop", async () => {
+    noScript(); scripted.queue = [{ ...forbidden("InvalidCopilotLicense"), fullText: "" }];
+    const body = ChatCompletionRequest.parse({ model: "claude-sonnet", stream: true, messages: [{ role: "user", content: "forbidden CLI" }] });
+    const text = await (await handleChatCompletion(body, new SessionPool(), { userAgent: "claude-cli/2.1" })).text();
+    const chunks = text.split("\n").filter(l => l.startsWith("data: ") && l !== "data: [DONE]").map(l => JSON.parse(l.slice(6)));
+    expect(chunks.some(c => c.error)).toBe(false);
+    expect(chunks.map(c => c.choices?.[0]?.delta?.content ?? "").join("")).toContain("m365_account_not_licensed");
+    expect(chunks.some(c => c.choices?.[0]?.finish_reason === "stop")).toBe(true);
+    expect(text).not.toContain(UPSTREAM_PROSE);
   });
 
   it("is a 403 on the tool path too, without a softened-framing retry", async () => {
