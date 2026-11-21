@@ -71,6 +71,24 @@ wss://substrate.office.com/m365Copilot/Chathub/{oid}@{tid}?{query}
 ### Flow: MSAL PKCE
 We use `@azure/msal-node` `PublicClientApplication` with PKCE. The token cache is persisted to `~/.config/opencode-m365/msal-cache.json` and refreshed silently when possible.
 
+MSAL and agent-ID cache snapshots are published through exclusive same-directory
+0600 temporary files: write the full snapshot, fsync and close it, then rename.
+New parent directories are 0700; existing shared parents are not chmodded. Replacing
+an old cache also replaces its permissions. Local publication failures throw
+`CachePersistenceError` (message without paths or cache bytes, with a recognized OS errno;
+its `cause` holds only that code and syscall, e.g. `EBUSY (rename)`),
+not an authentication miss: they must not trigger browser login or optional-agent
+fallback. A failure before rename leaves the previous complete cache intact;
+a directory-fsync failure after rename reports failure but leaves the new complete
+snapshot published. Directory fsync is attempted where supported, not on Windows.
+Because the swap is a rename, `M365_CACHE_FILE` on a single
+bind-mounted file fails with `EBUSY`/`EXDEV`, where the earlier in-place write worked:
+mount the containing directory instead.
+This is atomic snapshot publication, **not cross-process MSAL merging or guaranteed
+power-loss durability on every OS/filesystem**. Configured ancestor directories must
+be trusted: a destination symlink is replaced rather than followed, an immediate
+symlink parent is rejected, and hostile ancestor swaps are outside this guarantee.
+
 > **The cache is disposable (tested June 2026, `scripts/token-regen-probe.mjs`).** Delete `msal-cache.json` and the next `getToken()` self-heals: silent fails → automated browser login (stored creds + TOTP) → a fresh, working token in **~12s**, no human in the loop. The regenerated token is **functionally identical** — same `aud`/`appid`/`tid`/`oid`/scopes, only `iat`/`exp`/`uti` change. Point auth at a throwaway cache with `M365_CACHE_FILE` to test this without touching the real one.
 >
 > **Re-auth does NOT clear account throttling** — the fresh token carries the same `oid`, so it lands in the same account-keyed throttle bucket. Throttling is identity-level, not token-level.
@@ -86,13 +104,31 @@ existing Microsoft client ID and Sydney scopes returned a broker token on Window
 ARM64 where browser PKCE was blocked by token protection (`530084`); a subsequent
 silent acquisition also succeeded (hypotheses §44). This does not establish that
 every account or policy supports the path. Only account-selection metadata is
-persisted by the proxy; WAM owns refresh tokens. `M365_ENABLE_INTERACTIVE_APPROVAL`
+persisted by the proxy; WAM owns refresh tokens. The separate `wam-account.json`
+metadata write is not covered by the MSAL/agent atomic-publication guarantee: it
+writes in place, and an existing file's permissions are not tightened. A failed or
+partial write can affect later account selection. `M365_ENABLE_INTERACTIVE_APPROVAL`
 and `M365_NO_INTERACTIVE` govern native prompts too, with no browser fallback.
 
 The `nativeclient` redirect URI is designed to be **intercepted by an embedded native host** (WebView2 etc.) *before the page loads*. A real browser instead follows the redirect one hop further and lands on **`https://login.microsoftonline.com/common/wrongplace`** ("This is not the right page"). So:
 
 - `page.waitForURL("**/oauth2/nativeclient**")` **misses** the auth code — the `?code=` URL exists only transiently before the bounce.
 - **Fix:** attach a `page.on("request")` listener and pull `code` out of the *navigation request* to `…/oauth2/nativeclient?code=…`. See `runBrowserLogin()` in `auth.ts`.
+
+### WSL Edge login (opt-in)
+The optional WSL Edge path bypasses Playwright and stored credentials after silent MSAL
+acquisition fails. Only `M365_EDGE_LOGIN=1` enables it: `M365_ENABLE_INTERACTIVE_APPROVAL=1`,
+WSL detection and an existing `secrets.json` do not, so every other login path is unchanged.
+`M365_NO_INTERACTIVE=1` vetoes it. The proxy copies the selected profile's History database
+and optional WAL into a private temporary directory, accepts only the exact `nativeclient`
+redirect origin/path with the generated OAuth state, and exchanges its code with PKCE.
+History lookup and Edge's `--user-data-dir` share one resolved user-data root;
+`M365_EDGE_USER_DATA` takes a Linux/WSL path (not Windows syntax or a profile
+subdirectory), converted with `wslpath -w` for the Windows browser launch.
+Copies are removed after each read; a crash may leave one behind, and the redirect may remain
+in Edge history. Node.js 22.13+ with `node:sqlite` is required for this path. See the README's
+WSL sign-in section for profile/path overrides and privacy considerations. Offline synthetic
+history tests do not establish compatibility with every live Edge profile or tenant policy.
 
 ### Automated login quirks (Playwright)
 - The converged AAD login page keeps **hidden duplicate `<input type=password>` nodes**; a naive `fill()` can target a stale hidden one and submit an empty password. Fill the **visible** `name=`-selected field and verify the value landed (`fillVerified()`).
@@ -232,8 +268,8 @@ There is no `model` parameter. The `tone` string on the chat message picks the m
 | `claude-fable` / `claude-fable-5.1` | `Claude_Fable` | **Claude Fable 5.1** ("Fable 5.1" in the web client, marked "Uses credits"), mapped since 2026-11-18 — see the `Claude_Fable` note below. Serves on the included scenario; agent-less like every Claude tone but Opus. Its StreamHub turns are charged to the user's Copilot credits. Default framing `relay_batch`, unbenched (hypotheses §45) |
 | `gpt-5.5` / `gpt-5.5-quick` | `Gpt_5_5_Chat` | current GPT generation |
 | `gpt-5.5-think-deeper` | `Gpt_5_5_Reasoning` | |
-| `gpt-5.6-think-deeper` | `Gpt_5_6_Reasoning` | confirmed live 2026-08-06; GPT-5.6 Think deeper |
-| `gpt-5.6` / `gpt-5.6-quick` | `Gpt_5_6_Chat` | "GPT 5.6 Quick response" in the web UI. Live on the **included** scenario since 2026-09-24 — it was entitlement-gated before that (§18), which §12.15 misread as dead |
+| `gpt-5.6-think-deeper` | `Gpt_5_6_Reasoning` | confirmed live 2026-08-06; reported picker label "GPT-5.6 Sol Think deeper" (hypotheses H-SOL56) |
+| `gpt-5.6` / `gpt-5.6-quick` | `Gpt_5_6_Chat` | reported picker label "GPT-5.6 Sol Quick response" (hypotheses H-SOL56). Live on the **included** scenario since 2026-09-24 — it was entitlement-gated before that (§18), which §12.15 misread as dead |
 | `gpt-6-think-deeper` | `Gpt_6_Reasoning` | GPT-6 Think deeper. Reachable ONLY under `scenario=OfficeWebPaidCopilot` (see below), like Opus — but **not** separately metered. No chat variant: `Gpt_6_Chat` is rejected. Doesn't serve with the tool agent, so its tool requests go agent-less with a user-voice relay framing, `relay_batch` since hypotheses §25 (§22, #41) |
 | `gpt-6-sol` | `Gpt_6_Sol_Reasoning` | "GPT 6.0 Sol" in the web client (not called Think Deeper). Self-IDs as the GPT-6 reasoning model. **Not** gated on a premium account: serves on the included scenario there. A non-premium account is refused it by licence (`PremiumModelUnavailableForLicense`, hypotheses §49 F146), where it served on 2026-10-07 (§29). Takes the tool agent only on a **premium** account (non-premium: dead route, before the licence refusal), which the proxy learns at runtime; agent-less it has a sandbox of its own. Default framing `relay_batch` on both paths (hypotheses §23, §28, #23). `Gpt_6_Sol_Chat` is accepted but serves the GPT-5 chat model, so it isn't mapped |
 | `gpt-6.1-sol` | `Gpt_61_Sol_Reasoning` | "GPT-6.1 Sol" in the web client. Self-IDs as the GPT-6 reasoning model. Serves on the included scenario on a premium account (a non-premium account is refused it by licence, `PremiumModelUnavailableForLicense`, hypotheses §49 F146); the paid scenario serves it too but spends the `GPT61Sol*` budget (40/day, 75/week), so the proxy stays on the included one. Like `gpt-6-sol`, it serves with the tool agent attached only on a **premium** account (non-premium: dead route, so the proxy goes agent-less there), and agent-less it has the same kind of sandbox, though unlike `gpt-6-sol` it stays out of it under the user-voice framings (hypotheses §29). Default framing `relay_batch` on both paths (hypotheses §27). Every sibling (`Gpt_61_Sol`, `Gpt_61_Sol_Chat`, `Gpt_61_Reasoning`, `Gpt_61_Chat`, `Gpt_61`) is rejected |
@@ -353,6 +389,102 @@ Prompt size doesn't matter to this budget — it counts turns (above). So the pr
 >
 > **GPT-6.1 Sol (2026-10-06, hypotheses §27) splits exactly like GPT-6 Sol:** with the agent, `Gpt_61_Sol_Reasoning` serves on a premium account (8/8 across both scenarios) and is the dead route on both non-premium accounts (3/3, included and paid); agent-less it serves on the included scenario everywhere. It is in `PREMIUM_ONLY_AGENT_TONES` too, and the learned fallback is per tone.
 
+### Reading the picker's model list from the browser's HTTP cache (no quota)
+
+When the web client's model picker shows a label that matches no known tone, the cheapest first
+check is the picker's own data, which costs no chat turn and no quota. The client fetches a menu
+JSON whose items pair a tone `id` with a `menuItemTitle`, for example
+`{"id":"Gpt_5_6_Chat","menuItemTitle":"GPT-5.6 Sol Quick response"}` (a reported reading, Nov 2026).
+In that reading, the browser cache contained a gzip-encoded response body; the following scans for
+that format without capturing traffic:
+
+1. Open the picker once in the signed-in web client, so the menu has been fetched.
+2. Find the cache directory: for Edge on Windows, usually
+   `%LOCALAPPDATA%\Microsoft\Edge\User Data\<profile>\Cache\Cache_Data`. The one reported
+   reading found the bodies in `data_2` there; larger bodies may sit in the `f_*` files, so scan them all.
+3. Save the following as `scan-picker.mjs` and run `node scan-picker.mjs <Cache_Data dir>`.
+   It reads only regular files up to 8 MiB, tries at most 256 gzip signatures per file, and caps
+   each decompressed body at 1 MiB. Skipped files/members and unsupported cache layouts can hide
+   the menu. The cache is sensitive: run locally and review output before sharing it. Only `id`
+   and `menuItemTitle` strings are projected; those values themselves are untrusted and could
+   contain sensitive data. The scan never prints raw objects or error contents.
+
+```js
+// node scan-picker.mjs <Cache_Data dir>
+import { readdirSync, openSync, fstatSync, readSync, closeSync, constants } from "node:fs";
+import { gunzipSync, inflateRawSync } from "node:zlib";
+import { join } from "node:path";
+
+const MAX_FILE = 8 * 1024 * 1024, MAX_BODY = 1024 * 1024, MAX_HITS = 256;
+const found = new Set();
+function headerEnd(b, start) {
+  if (start + 10 > b.length || (b[start + 3] & 0xe0)) throw Error();
+  const flags = b[start + 3];
+  let p = start + 10;
+  if (flags & 4) {
+    if (p + 2 > b.length) throw Error();
+    const n = b.readUInt16LE(p); p += 2 + n;
+    if (p > b.length) throw Error();
+  }
+  for (const flag of [8, 16]) if (flags & flag) {
+    p = b.indexOf(0, p);
+    if (p < 0) throw Error();
+    p++;
+  }
+  if (flags & 2) p += 2;
+  if (p > b.length) throw Error();
+  return p;
+}
+function collect(root) {
+  const todo = [root];
+  while (todo.length) {
+    const v = todo.pop();
+    if (!v || typeof v !== "object") continue;
+    if (typeof v.id === "string" && typeof v.menuItemTitle === "string" &&
+        v.id.length <= 256 && v.menuItemTitle.length <= 256) {
+      found.add(JSON.stringify({ id: v.id, menuItemTitle: v.menuItemTitle }));
+    }
+    for (const child of Object.values(v)) if (child && typeof child === "object") todo.push(child);
+  }
+}
+for (const name of readdirSync(process.argv[2])) {
+  const path = join(process.argv[2], name);
+  try {
+    const fd = openSync(path, constants.O_RDONLY | (constants.O_NOFOLLOW || 0));
+    let b;
+    try {
+      const stat = fstatSync(fd);
+      if (!stat.isFile() || stat.size > MAX_FILE) continue;
+      b = Buffer.alloc(MAX_FILE + 1);
+      let n = 0, got;
+      while (n < b.length && (got = readSync(fd, b, n, b.length - n, null)) > 0) n += got;
+      if (n > MAX_FILE) continue;
+      b = b.subarray(0, n);
+    } finally { closeSync(fd); }
+    let hits = 0;
+    for (let i = b.indexOf(Buffer.from([31, 139, 8])); i >= 0 && hits++ < MAX_HITS;
+         i = b.indexOf(Buffer.from([31, 139, 8]), i + 1)) {
+      try {
+        const p = headerEnd(b, i);
+        const inflated = inflateRawSync(b.subarray(p), { info: true, maxOutputLength: MAX_BODY });
+        const end = p + inflated.engine.bytesWritten + 8;
+        if (end > b.length) continue;
+        // Full member validation checks gzip header, CRC32 and ISIZE, unlike raw inflate.
+        const body = gunzipSync(b.subarray(i, end), { maxOutputLength: MAX_BODY });
+        collect(JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(body)));
+      } catch { /* invalid, incomplete, unsupported or over limit */ }
+    }
+  } catch { /* unreadable file */ }
+}
+for (const item of found) console.log(item);
+```
+
+This scans embedded complete single gzip members, including optional gzip headers; it does not
+understand every browser cache format, concatenated members, other encodings, or bodies exceeding
+its limits. No output is inconclusive, not evidence the menu is absent. The scan has only been
+exercised against synthetic files, not a real browser cache; the location above is one reported
+reading. Capture the picker's requests as in hypotheses §45 F120 if needed.
+
 ### Code interpreter — a real server-side Python sandbox
 
 Enabling these `optionsSets` on the chat turn unlocks M365's actual Python execution environment (the engine behind the "Analyst" experience):
@@ -414,7 +546,10 @@ See §7.
 `Disengaged` (see §9), `ReferencesListComplete`, `Progress`, `InternalSearchQuery`, `RenderCardRequest`, `EndOfRequest`, … — none of these carry the answer text.
 
 Two `Progress` shapes are worth reading rather than skipping, both first seen on Claude Sonnet 5 (paid scenario, §5):
-- `contentOrigin: "ChainOfThoughtSummary"`, `addToChainOfThought: true` — a summary of the model's reasoning, streamed as it goes. It is the best RE instrument this API has: it says in plain words *why* the model refused a framing ("this looks like a prompt injection…").
+- `contentOrigin: "ChainOfThoughtSummary"`, `addToChainOfThought: true` — the model's reasoning, as it goes. It is the best RE instrument this API has: it says in plain words *why* the model refused a framing ("this looks like a prompt injection…"). The proxy returns it as `reasoning_content` (hypotheses §50).
+  - **Who sends it** (a premium account, agent-less, 2026-11-20, n=1 per tone and prompt): `Claude_Sonnet` @ paid (Sonnet 5.5) and over StreamHub, `Claude_Sonnet_5` over StreamHub, `Claude_Opus` @ included (Opus 4.8) and over StreamHub, and `Gpt_5_5_Reasoning` on both transports; in the Chathub frame dumps from Sep 28 to Nov 9, `Claude_Sonnet_5` @ paid (Sonnet 5) on 21 of 39 turns. Not on every turn: an easy step usually has none. For a puzzle those tones reasoned about, `Claude_Sonnet` @ included (Sonnet 4.6) and `Claude_Fable` over StreamHub sent none and used the code interpreter, and so did `Gpt_62_Sol_Reasoning` over StreamHub; @ included it answered with neither. None of the 34 GPT-6.x turns in the frame dumps carried one.
+  - **What it says:** `Claude_Sonnet`, `Claude_Sonnet_5` and `Claude_Opus` over StreamHub send summaries ("I'm setting up the equations: …"); `Gpt_5_5_Reasoning`'s open with a bold title line (`**Validating Pell sequence calculations** \n…`); `Claude_Opus` @ included (Opus 4.8) sends text that reads like its own thinking ("This is a Pell equation! … Wait, let me check: (1, 0) is also a solution but y must be positive.").
+  - **How it arrives:** one `messageId` per message, a turn can hold several, all of them so far before the answer's first text. A message comes as full-text snapshots, each the last one plus a sentence or so; no cursor names it and no delta extends it. Chathub restates each message unchanged in the final item; StreamHub doesn't restate it. Of 87 such messages in those Chathub dumps, 21 grew over two or more snapshots, and no snapshot rewrote the text before it.
 - `contentType: "Code"` (text "Coding and executing", the command in `hiddenText`) and `contentOrigin: "CreateFileExecutor"` — the model calling its **own** server-side tools. They are declare-to-receive: drop `Progress` from `allowedMessageTypes` and the frames vanish, but the reply still reports `/home/claude` after a tool-call-length pause (10.7 s), so hiding the frames doesn't stop the sandbox (n=1).
 
 ### End of turn
@@ -493,6 +628,7 @@ conversation at `1/600`). Characterised behaviour:
 
 - A "conversation" = a stable `ConversationId` (+ `X-SessionId`). M365 keeps **server-side context** for it.
 - Each **turn opens a fresh WebSocket** (with `invocationId:"0"`), but reuses the same `ConversationId`/`sessionId`, so the server threads them together. `isStartOfSession:true` only on turn 0.
+- An idle watchdog starts before handshake and restarts on every received frame. It fails the handshake promise or, after handshake, the stream after `M365_TURN_IDLE_MS` of silence (default 120 seconds). However a turn ends — Chathub's type 2/3/7 frames, StreamHub's `request_end` or `error` item or its EndOfRequest grace timer, the watchdog, a socket error or the transport's close — it ends through one path that settles the turn's text (restoring the `[word]:` tokens M365 strips from the final snapshot) before the stream completes. Recognized pre-stream network failures wait `M365_RECONNECT_DELAY_MS` (default 5 seconds, 0 disables the delay) before the existing budget-gated retry; abort cancels that delay and prevents the resend. These are client-side safeguards, not proof of why a server was silent.
 - **Send `X-RoutingParameter-SessionKey: <ConversationId>` as a header on every upgrade.** Without it the front end spreads a conversation's connections over backends in two regions (`x-calculatedbetarget` in the upgrade response names the one you got), which keep separate copies of the conversation: the turns fork, the server's `turnCount` steps back (1,2,3,2,4,…), and the model answers from a partial history. The query-string form does not pin. See hypotheses §32 F85 and `scripts/fork-probe.mjs`.
 - Because the server remembers prior turns, follow-ups should send **only the new messages** (the delta), not the whole history. Re-sending the full history confuses it and burns quota. See `ModelSession`/`CopilotSession` and `SessionPool` (`handler.ts`).
 - **M365 doesn't keep an opening prompt of about 500k characters.** It answers the turn, but the conversation's next turn finds nothing there: its `numUserMessagesInConversation` reads 1 and the model answers without context (420k kept, 540k not; every turn on one backend, with or without the routing header; hypotheses §46 F125). Claude too: a 900k opening on Sonnet 5 wasn't kept (§47 F129). So a follow-up turn whose count is 1 has lost its history, and that is how the proxy notices: it stops that turn and re-sends the whole request in a fresh conversation (`handler.ts`). And it never sends a turn over 400,000 UTF-8 bytes (`M365_TURN_CHUNK_BYTES`): a longer history goes up as parts the model acknowledges, then the request (`replay.ts`, F131). The conversation itself lasts: one idle for 21 h still had its history (F126).
@@ -815,7 +951,8 @@ Headers: `Origin: https://copilot.cloud.microsoft` and a browser `User-Agent`.
 
 `message_part.argument` shapes:
 - `{messages}`: Progress messages, the user echo, the final snapshot of a short answer
-  (`isLastUpdate`), and an `EndOfRequest` message whose `author` is `null`.
+  (`isLastUpdate`), and an `EndOfRequest` message whose `author` is `null`. A chain-of-thought message
+  (§6) comes this way, its whole text again each time it grows, and isn't restated at the end of the turn.
 - `{throttling}`: the message cap. It carried no `metering` in any observed turn (the web client
   also asks for `MeteringInfo` messages; not tried), so the proxy can't see priority-access
   allowances on StreamHub.

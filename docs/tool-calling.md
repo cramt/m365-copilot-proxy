@@ -90,10 +90,22 @@ prompt is tuned. The layers, in handler order:
   a tool call — so a model that ANSWERS with a markdown document full of code fences (e.g.
   "here's a simplified README") would get its own answer executed as shell. A response that
   looks like a document (≥2 fences AND ≥120 chars surrounding prose, OR ≥4 fences) is returned
-  as **text**, not executed. A single action is never reclassified. (hypotheses §9 F15.) A reply
+  as **text**, not executed. A single action is never reclassified by default. (hypotheses §9 F15.) A reply
   that **opens** with a tool call (a preamble under 200 chars, no heading, no code fence before
   it) is always an action: its tail was written before the call's result existed. Judged by
   the whole text, that tail made 34 of 42 guard verdicts in one day's bench runs. (#33.)
+  **Opt-in, off by default: `M365_LONG_ANSWER_GUARD=1`** also returns a long written answer
+  that ends in ONE example call as text (hypotheses §53 F154). The call must be trailing;
+  the preamble must contain at least 1,500 trimmed characters and consist solely of
+  simple plain-text lines and 0–3-space headings or pipe tables, with at least one
+  heading containing a Unicode letter or number, or a table header containing one
+  immediately followed by a matching separator.
+  The table subset accepts escaped pipes. Unsupported syntax keeps the action. The
+  admission subset allows letters, numbers, spaces and
+  limited punctuation; backticks, HTML, links, lists, tabs, indented code and other
+  unrecognized markup keep the action. It is not a Markdown parser. **Not benched:**
+  a genuine long headed plan followed by a real action can still be returned as text,
+  ending the coding turn; leave this off unless you accept that risk.
 - **Only-the-first-call-ran note** (`executedOnlyFirstNote`): when the proxy runs less than the
   model wrote (a cut invented result, dropped batched calls, or a tail after the call), the
   next tool result is prefixed with a one-line note saying so. M365 keeps the whole reply in
@@ -106,6 +118,20 @@ prompt is tuned. The layers, in handler order:
 - **Hallucinated-completion retry** (`looksLikeHallucinatedCompletion`): if the model CLAIMS
   a file mutation ("I've replaced the README") with **no tool call all conversation**, force a
   real write. Gated on "never acted," so it won't misfire on a genuine post-write summary.
+- **Capability-aware recovery prompts:** the existing confabulation,
+  hallucinated-completion, and remote-artifact retries use only the request's
+  permitted tool definitions. Without a permitted shell, the follow-up names the
+  actual tools and reuses their canonical fenced argument templates; it does not
+  assert filesystem access, suggest package installation, or request shell commands.
+  An explicit named choice limits the follow-up to that provided tool (including
+  when another tool is a shell); `none` bypasses tool recovery. Shell-enabled
+  requests with a recognized shell tool name or Codex Code Mode `exec` retain the
+  existing shell follow-ups unchanged. A single input-like parameter alone is not
+  evidence of shell capability (legacy fence routing is unchanged). A tool name appearing
+  in ordinary prose is **not** a new retry trigger. Retry counts, existing detectors,
+  the remote-artifact fail-closed check, and one-call-per-turn are unchanged.
+  This is covered by offline synthetic-handler JSON/SSE tests, not a new live
+  model-compliance measurement.
 - **Tool-result labelling:** each `<tool_response>` is tagged with the command that produced
   it (`<tool_response tool="bash" command="ls -la">`) by correlating `tool_call_id` back to
   the call — so the model reads output in context (a listing vs file contents vs stdout)

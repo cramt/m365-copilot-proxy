@@ -688,4 +688,7 @@ export interface CopilotStream {
   credits?: number | null;
   /** Tool calls the agent runtime's own agent made in its cloud workspace (`rl.tc`). */
   agentToolCalls?: number;
+  /** The model's chain of thought this turn (`ChainOfThoughtSummary` messages,
+   *  joined by blank lines); empty when the model sent none. */
+  reasoning?: string;
 }

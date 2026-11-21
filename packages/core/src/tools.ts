@@ -4,6 +4,7 @@ import {
   currentFramingVariant,
   deriveFencedSpec,
   findFirstToolFence,
+  unreadableToolFence,
   formatFencedToolDefinitions,
   parseFencedToolCalls,
   renderFencedCall,
@@ -114,7 +115,7 @@ export function getMessageContent(msg: Message): string {
  *  `command="todo.mjs"`, or re-quoting a command (`"$f"` shown as `'$f'`, a
  *  different shell command), reads to the model as a mislabelled result — GPT-5.6's
  *  chain of thought said so twice in one long-session test ("the tool is responding
- *  with an unexpected label"). Quotes are escaped, not swapped. */
+ *  with an unexpected label"). */
 function toolCallSummary(rawArgs: string): { key: string; value: string } | null {
   let args: Record<string, unknown> = {};
   try {
@@ -134,10 +135,17 @@ function toolCallSummary(rawArgs: string): { key: string; value: string } | null
   // A long value is cut, and says so: cut silently, the label reads as the call
   // itself cut short. GPT-5.6 took `command="… margin: 22m"` for its command
   // truncated there, and gave up ("I can't generate files in the current
-  // session", §50 F149).
+  // session", §55 F155).
   const flat = (unwrapped ?? (hit[1] as string)).replace(/\s+/g, " ").trim();
-  const value = (flat.length > 100 ? `${flat.slice(0, 100)}…` : flat).replace(/\\/g, "\\\\").replace(/"/g, '\\"');
+  const value = flat.length > 100 ? `${flat.slice(0, 100)}…` : flat;
   return { key: unwrapped !== null ? "command" : hit[0], value };
+}
+
+/** Format an attribute without rewriting quotes or escaping backslashes (`C:\…`, `\n`). */
+function formatAttr(key: string, value: string): string {
+  if (!value.includes('"')) return `${key}="${value}"`;
+  if (!value.includes("'")) return `${key}='${value}'`;
+  return `${key}="${value.replace(/"/g, "&quot;")}"`;
 }
 
 /** One tool result as the model is meant to read it: named for the call that
@@ -161,7 +169,7 @@ export function formatToolResponse(m: Message, history: Message[]): string {
   const name = m.name || meta?.name || "tool";
   // Show the command/args that produced this output so the model reads it in
   // context (a directory listing vs file contents vs a command's stdout).
-  const argAttr = meta?.summary ? ` ${meta.summary.key}="${meta.summary.value}"` : "";
+  const argAttr = meta?.summary ? ` ${formatAttr(meta.summary.key, meta.summary.value)}` : "";
   return `<tool_response tool="${name}"${argAttr}>\n${getMessageContent(m)}\n</tool_response>`;
 }
 
@@ -479,7 +487,10 @@ export function fabricatedToolResponseAt(text: string, tools?: ToolDef[]): numbe
  *
  * Chosen empirically (scripts guard-experiment, README-about-bash fixture):
  * ≥2 fences AND (≥120 chars of surrounding prose OR ≥4 fences). A SINGLE action
- * is never reclassified regardless of prose, so the coding loop is untouched.
+ * is never reclassified regardless of prose, so the coding loop is untouched —
+ * unless `options.longAnswers` is set (M365_LONG_ANSWER_GUARD, off by default),
+ * which also returns a long, structured answer that ends in one example call
+ * as prose (see isAnswerWithTrailingExample).
  *
  * With `text` + `tools`, one more rule runs first: a reply that OPENS with a
  * tool call is an action, whatever follows it. A tool-calling model stops at
@@ -491,8 +502,14 @@ export function fabricatedToolResponseAt(text: string, tools?: ToolDef[]): numbe
  * before their first fence (a title, an intro, example code), so the preamble
  * decides.
  */
-export function isProseDocument(parsed: ParseResult, text?: string, tools?: ToolDef[]): boolean {
-  if (!parsed.hasToolCalls || parsed.toolCalls.length < 2) return false;
+export function isProseDocument(
+  parsed: ParseResult,
+  text?: string,
+  tools?: ToolDef[],
+  options: { longAnswers?: boolean } = {},
+): boolean {
+  if (!parsed.hasToolCalls) return false;
+  if (parsed.toolCalls.length === 1) return options.longAnswers === true && isAnswerWithTrailingExample(text, tools);
   if (text !== undefined && tools && tools.length > 0) {
     const first = findFirstToolFence(text, buildSpecMap(tools));
     if (first && !looksLikeDocumentPreamble(text.slice(0, first.start))) return false;
@@ -510,11 +527,89 @@ export function isProseDocument(parsed: ParseResult, text?: string, tools?: Tool
   return parsed.toolCalls.length >= 4 || hasMarkdownHeaders || prose.length >= 300;
 }
 
+/** Opt-in (M365_LONG_ANSWER_GUARD). A single call that ENDS the reply, after a
+ *  document-length written answer, is an example that closes the answer rather
+ *  than an action. The answer's structure — a Markdown heading or a table row —
+ *  is a possible example, but cannot be distinguished from an action by shape.
+ *  Only a conservative subset of plain prose and headings/table rows is admitted;
+ *  markup, code, and text following the call keep it an action. */
+function isAnswerWithTrailingExample(text?: string, tools?: ToolDef[]): boolean {
+  if (text === undefined || !tools || tools.length === 0) return false;
+  const first = findFirstToolFence(text, buildSpecMap(tools));
+  if (!first) return false;
+  if (text.slice(first.end).trim() !== "") return false;
+  const preamble = text.slice(0, first.start);
+  if (preamble.trim().length < 1500) return false;
+  // Closed admission: no Markdown parsing is attempted. Admit only simple
+  // prose and standalone headings/table rows, rejecting all other punctuation
+  // and indentation rather than guessing what hidden markup means.
+  let structured = false;
+  let previousTable: string[] | null = null;
+  for (const raw of preamble.split("\n")) {
+    const line = raw.endsWith("\r") ? raw.slice(0, -1) : raw;
+    if (/^ *$/.test(line)) { previousTable = null; continue; }
+    const match = /^( {0,3})(.*)$/.exec(line);
+    if (!match) return false;
+    const body = match[2];
+    if (/^(?:- |[0-9]+[.)] )/.test(body)) return false;
+    if (/^#{1,6} +[\p{L}\p{N} .,!?;:'’“”\-]+ *$/u.test(body)) {
+      if (hasMeaningfulText(body)) structured = true;
+      previousTable = null;
+    } else if (body.startsWith("|")) {
+      const cells = simpleTableCells(body);
+      if (!cells) return false;
+      const separator = cells.every(cell => /^:?-{3,}:?$/.test(cell));
+      if (separator && previousTable && cells.length === previousTable.length &&
+          previousTable.some(hasMeaningfulText)) structured = true;
+      previousTable = separator ? null : cells;
+    } else if (/^[\p{L}\p{N} .,!?;:'’“”\-]+$/u.test(body)) {
+      previousTable = null;
+    } else {
+      return false;
+    }
+  }
+  return structured;
+}
+
+function hasMeaningfulText(text: string): boolean {
+  return /[\p{L}\p{N}]/u.test(text);
+}
+
+/** A deliberately narrow pipe row; only backslash-escaped pipes are admitted. */
+function simpleTableCells(body: string): string[] | null {
+  const row = body.trimEnd();
+  if (!row.startsWith("|") || !row.endsWith("|")) return null;
+  const cells: string[] = [];
+  let cell = "";
+  for (let i = 1; i < row.length; i++) {
+    const ch = row[i];
+    if (ch === "\\") {
+      if (row[i + 1] !== "|") return null;
+      cell += "|";
+      i++;
+    } else if (ch === "|") {
+      cells.push(cell.trim());
+      cell = "";
+    } else if (/[\p{L}\p{N} .,!?;:'’“”\-]/u.test(ch)) {
+      cell += ch;
+    } else {
+      return null;
+    }
+  }
+  return cell === "" && cells.length > 0 ? cells : null;
+}
+
 /** Is the text before a reply's first tool call the opening of a written
  *  document (a heading, example code, or a long intro) rather than a one-line
  *  lead-in like "I'll inspect the files first."? */
 function looksLikeDocumentPreamble(preamble: string): boolean {
   return /^#{1,6}\s/m.test(preamble) || preamble.includes("```") || preamble.trim().length >= 200;
+}
+
+/** Why a reply that tried to call one of these tools produced no call, or null
+ *  (see unreadableToolFence). */
+export function unreadableToolCall(text: string, tools?: ToolDef[]): { name: string; reason: string } | null {
+  return tools && tools.length > 0 ? unreadableToolFence(text, buildSpecMap(tools)) : null;
 }
 
 /** The text a reply carries after its first tool call (trimmed), or "" —
