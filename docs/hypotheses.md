@@ -131,8 +131,8 @@ than "we eyeballed one run." See §M (Methods) for the experimental rig.
 - §52 — concurrent sessions sharing a first user message (or `prompt_cache_key` + opener): `SessionPool` keeps a bucket per fingerprint and matches continuations by the echoed reply (F153)
 - §53 — a long written answer ending in one example command was run as a tool call; opt-in `M365_LONG_ANSWER_GUARD=1` (F154, not benched)
 - §54 — `ECONNRESET` mid-conversation then a hung request; the idle watchdog and reconnect delay (H54a, n=1, open)
-- §55 — cursor deltas extend the adaptive card text rather than `m.text` (fixing doubled `<`, `(`, `[(`), and
-  StreamHub's final character can arrive only in `patches` (`#134`, F155)
+- §56 — cursor deltas extend the adaptive card text rather than `m.text` (fixing doubled `<`, `(`, `[(`), and
+  StreamHub's final character can arrive only in `patches` (`#134`, F157)
 
 ---
 
@@ -7084,13 +7084,13 @@ DNS/connectivity observed independently. No causal verdict is inferred from this
 
 ---
 
-## 55. Oct 5 / Nov 20 2026 — Cursor deltas extend adaptive card text (`#134`)
+## 56. Oct 5 / Nov 20 2026 — Cursor deltas extend adaptive card text (`#134`)
 
 Follow-up from the Oct 5 real-pi sweep (#70 split into standalone PRs), reworked after `#134` showed the
 doubled `<` was one case of a broader cursor-base mismatch alongside `(`, `[(` and missing final characters
 in StreamHub `patches`.
 
-### F155 — cursor deltas extend the card text rather than `m.text`, and StreamHub `patches` carry the last char (#134) 🟢
+### F157 — cursor deltas extend the card text rather than `m.text`, and StreamHub `patches` carry the last char (#134) 🟢
 In the Oct 5 sweep three baseline answers began `<<notlar.pdf>`, `<<notlar.docx>`,
 `<<document>notlar.docx</document>`, and Nov 20 captures (`scripts/cot-probe.mjs`, `#134`) reproduced the
 same doubling with `(` (`(3, 2)` → `((3, 2)`) and `[(` (`[(3, 2)` → `[((3, 2)`), plus StreamHub answers
@@ -7101,8 +7101,13 @@ missing their trailing `]`.
    `"<"`, `"("` or `"("` in `"[("` that the card didn't have, so starting deltas from `m.text` doubled it.
    Cursor frames now read the card path when present (falling back to `m.text` otherwise), and the
    narrower `current === "<"` special case was removed so a genuine `<` already in the card isn't dropped.
-   Note: the Oct 2–5 Windows raw dumps were not re-checked on disk here to verify whether `adaptiveCards` was
-   empty on those 9 `<` frames.
+   Checked on the Oct 2–14 Windows debug logs (frames cut at 500 chars, which still reach the card's first
+   TextBlock): all 10 restated heads (the 9 from Oct 5 and one from Oct 14) had card text `""` under
+   `m.text` `"<"`. 48 more cursor frames had an empty card under `"<"` or `"<File"` (M365 holding back
+   file-chip markup) with deltas going on with the file name: with `m.text` as the base the stream read
+   `<notlar.docx…` or `<Filenotlar.docx…` until the final snapshot replaced it; the card base streams
+   `notlar.docx…`. The other 2,137 cursor frames, and all 146 in full frame dumps, had card text equal to
+   `m.text`, so nothing else changes.
 2. **StreamHub `patches` (`cardReplacePatches`):** StreamHub turns whose deltas stop one character short
    deliver the complete card text in a final `message_part` `patches` item (`op: "replace"`,
    `path: "/<messageId>/adaptiveCards"` or `…/adaptiveCards/0/body/0/text`). Known non-Progress answer
