@@ -1100,7 +1100,7 @@ export async function handleChatCompletion(
           conv.sentMessageCount = 0;
         }
         log.info(`Upstream InvalidRequest (${copilotStream.result.errorCode ?? "no errorCode"}), prompt ${text.length} chars — 400, no retry`);
-        const failureResult = strict ? { errorCode: ["InputTokenLimitExceeded", "ModelNotInCatalog"].includes(copilotStream.result.errorCode ?? "") ? copilotStream.result.errorCode : undefined } : copilotStream.result;
+        const failureResult = strict ? { errorCode: ["InputTokenLimitExceeded", "ModelNotInCatalog", "InvalidNote"].includes(copilotStream.result.errorCode ?? "") ? copilotStream.result.errorCode : undefined } : copilotStream.result;
         return { error: invalidRequestResponse(failureResult, model, text.length) };
       }
 

@@ -50,6 +50,10 @@ before the WebSocket closes. Contradictory or missing terminal records observed
 before closure fail closed; records sent only after closure cannot be observed.
 A StreamHub error item never grants success, regardless of its category; malformed
 JSON and invalid known protocol containers observed before closure fail closed.
+Recognized StreamHub error categories use the same failure classification as a
+terminal outcome. A documented null-author EndOfRequest control is ignored when
+composing other messages in the same update; the mixed shape is synthetic, not a
+claimed live capture.
 Unknown object-shaped update fields are accepted for forward compatibility, so this
 is not validation of every possible future message field. In the
 incremental default mode invalid records are ignored rather than crashing the

@@ -169,6 +169,31 @@ async function request(stream: boolean, tools = false, options: { signal?: Abort
 beforeEach(() => { vi.stubEnv("M365_NO_BACKOFF", "1"); });
 afterEach(() => { vi.unstubAllEnvs(); for (const c of server.clients) c.terminate(); release = undefined; payload = content; chunks = null; closed = undefined; retryApology = false; retrySequence = false; firstPadding = 0; f22Sequence = false; confabSequence = false; graphics = false; completionError = false; contradictoryTerminal = false; terminalRecords = null; separateRecords = false; rawTerminalFrames = null; repeatedFrames = 1; attempts = 0; multipartSize = 0; handshakeReply = "{}"; terminalCode = undefined; terminalMessage = undefined; terminalApology = false; automaticFallback = false; automaticBingFallback = false; multipartSent = []; multipartPrompts = []; });
 afterAll(async () => { for (const c of server.clients) c.terminate(); await new Promise<void>(r => server.close(r)); await new Promise<void>(r => http.close(() => r())); });
+for (const streaming of [false, true]) for (const strictMode of [false, true]) for (const entry of [
+  { category: "InvalidRequest", code: "InvalidNote", status: 400, result: "m365_invalid_request" },
+  { category: "Throttled", code: "PerUserThrottled", status: 429, result: "m365_throttled" },
+  { category: "OutOfCredits", code: undefined, status: 429, result: "priority_access_exhausted" },
+]) it(`StreamHub error item classification ${entry.category} stream=${streaming} strict=${strictMode}`, async () => {
+  resetPriorityAccessState(); if (strictMode) vi.stubEnv("M365_STRICT_STREAM", "1"); vi.stubEnv("M365_TRANSPORT", "streamhub"); transport = "streamhub"; payload = strictMode ? content : "";
+  rawTerminalFrames = [JSON.stringify({ type: 2, item: { type: "error", errorCategory: entry.category, ...(entry.code ? { errorCode: entry.code } : {}), message: "PRIVATE_CANARY_MESSAGE", detail: "PRIVATE_CANARY_DETAIL" } })];
+  const body = ChatCompletionRequest.parse({ model: "claude-sonnet-5.5", stream: streaming, messages: [{ role: "user", content: "hello" }] });
+  try { started = new Promise(r => { seen = r; }); const pending = handleChatCompletion(body, new SessionPool({ getToken: async () => token, useAgent: false })); await started; release!(); const response = await pending; const text = await response.text();
+    expect(response.status).toBe(streaming ? 200 : entry.status); expect(text).toContain(entry.result); expect(attempts).toBe(1);
+    if (strictMode) { expect(text).not.toContain(content); expect(text).not.toContain("PRIVATE_CANARY"); }
+    if (entry.code && !streaming) expect(JSON.parse(text).error.param).toBe(entry.code);
+    if (entry.category === "OutOfCredits") { expect(activePriorityAccessExhaustion("sonnet-5.5")).not.toBeNull(); if (streaming) expect(text).toContain("retry_after"); else expect(Number(response.headers.get("Retry-After"))).toBeGreaterThan(0); }
+  } finally { resetPriorityAccessState(); }
+});
+for (const streaming of [false, true]) for (const category of [undefined, "Success", "unknown"]) it(`strict StreamHub error category cannot authorize ${category ?? "missing"} stream=${streaming}`, async () => {
+  vi.stubEnv("M365_STRICT_STREAM", "1"); vi.stubEnv("M365_TRANSPORT", "streamhub"); transport = "streamhub";
+  rawTerminalFrames = [JSON.stringify({ type: 2, item: { type: "error", ...(category ? { errorCategory: category } : {}), errorCode: "PRIVATE_CANARY_CODE", message: content } })];
+  const pending = request(streaming); await started; release!(); const response = await pending; const text = await response.text(); expect(response.status).toBe(streaming ? 200 : 502); expect(text).not.toContain(content); expect(text).not.toContain("PRIVATE_CANARY"); expect(attempts).toBe(1);
+});
+for (const streaming of [false, true]) it(`StreamHub retains bot text beside null-author control stream=${streaming}`, async () => {
+  vi.stubEnv("M365_STRICT_STREAM", "1"); vi.stubEnv("M365_TRANSPORT", "streamhub"); transport = "streamhub"; payload = "";
+  rawTerminalFrames = [JSON.stringify({ type: 2, item: { type: "message_part", argument: { messages: [{ author: null, messageType: "EndOfRequest" }, { author: "bot", messageId: "m", text: "synthetic mixed answer" }] } } }), "success"];
+  const pending = request(streaming); await started; release!(); const response = await pending; const text = await response.text(); expect(text).toContain("synthetic mixed answer"); expect(attempts).toBe(1);
+});
 for (const wire of ["chathub", "streamhub"]) for (const streaming of [false, true]) it(`default ForbiddenRequest with content remains ordinary answer ${wire} stream=${streaming}`, async () => {
   vi.stubEnv("M365_TRANSPORT", wire); transport = wire; terminal = "ForbiddenRequest"; terminalCode = "InvalidCopilotLicense";
   const pending = request(streaming); await started; release!(); const response = await pending; const text = await response.text(); expect(response.status).toBe(200); expect(text).toContain(content); expect(attempts).toBe(1);

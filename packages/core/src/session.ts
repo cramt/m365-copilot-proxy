@@ -1250,7 +1250,10 @@ export class CopilotSession {
           }
         }
 
-        const msgUpdate = MessageUpdate.safeParse(arg);
+        const normalized = streamHub && arg && typeof arg === "object" && Array.isArray((arg as { messages?: unknown }).messages)
+          ? { ...(arg as Record<string, unknown>), messages: ((arg as { messages: any[] }).messages).filter(m => !(m?.author === null && m?.messageType === "EndOfRequest")) }
+          : arg;
+        const msgUpdate = MessageUpdate.safeParse(normalized);
         if (msgUpdate.success) {
           // A cursor names the message that the following deltas extend.
           const cursorId = cursorMessageId(msgUpdate.data.cursor?.j);
@@ -1339,7 +1342,8 @@ export class CopilotSession {
           const e: { errorCategory?: string; errorCode?: string; message?: string; detail?: string } = err.success ? err.data : {};
           if (strict) {
             log.info("StreamHub error item received");
-            strictResult("UpstreamError");
+            const category = ["InvalidRequest", "Throttled", "OutOfCredits"].includes(e.errorCategory ?? "") ? e.errorCategory! : "UpstreamError";
+            strictResult(category, e.errorCode, e.message);
           } else {
             log.info(`StreamHub error item: ${e.errorCategory ?? "?"} ${e.errorCode ?? ""} ${trunc(e.detail ?? e.message ?? "", 300)}`);
             noteResult(e.errorCategory ?? "InternalError", e.errorCode, e.message);
