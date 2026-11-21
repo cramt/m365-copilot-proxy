@@ -128,6 +128,7 @@ than "we eyeballed one run." See §M (Methods) for the experimental rig.
 - §51 — dropped tool calls: eight fence shapes the scanner dropped or changed, and a ninth in real replies
   (a closer with the next sentence glued on: 3 dropped calls in 1,153); CommonMark fences, and asking
   again for a call that still can't be read (F152)
+- §52 — concurrent sessions sharing a first user message (or `prompt_cache_key` + opener): `SessionPool` keeps a bucket per fingerprint and matches continuations by the echoed reply (F153)
 
 ---
 
@@ -7001,3 +7002,30 @@ flagged.
 **Review (Nov 17).** Aliased shell fences (`stripNativeCloser`) now match both the resolved tool name and the
 fence's own info word case-insensitively (`</bash>` inside a ```` ```bash ```` block routed to Codex's
 `functions__exec` or Claude Code's `Bash`).
+## 52. Oct 4–8 2026 — Concurrent sessions sharing a first message (`SessionPool` bucket per fingerprint + `replyKey`)
+
+Follow-up from the Oct 4–5 real-pi sweeps on Windows (#70 split into standalone PRs).
+
+### F153 — sessions that share a first message: keeping each in its own conversation 🟢
+A sleeping measurement job was taken for dead (its log had stopped because it was sleeping) and a second
+one was started; both woke and ran against the same two proxies. Every session opened with the same first
+message, so `SessionPool` mapped both sweeps' sessions to one `ConversationState`, and under F84 each
+kept resetting the other's conversation — replies like "What would you like me to do with this CLI code?"
+and "this is just the same erroneous command's real output being passed again". All data from that hour is
+discarded.
+
+In real use the same collision happens whenever concurrent sessions open with the same message, e.g.
+parallel subagents given one prompt (even when they inherit the parent's `prompt_cache_key` / `user`),
+and sequentially too: open a second pi session with "merhaba", go back to the first, and the first one's
+next turn went into the second one's thread.
+
+**Fixed** without client cooperation: under the fingerprint (`prompt_cache_key` / `user` + first user
+message + sorted tool names), `SessionPool` keeps a bucket of every conversation sharing that fingerprint,
+and a request continues the non-busy conversation whose last reply it echoes back at position
+`sentMessageCount` (`replyKey` = joined tool-call ids, else trimmed text). A conversation with a turn in
+flight (`activeRequests > 0`) can't be joined, and F84's fresh conversation no longer replaces an earlier one.
+Without an echo match it falls back only when the fingerprint has a single conversation, so a client that
+rewrites old replies still continues; with several, a guess could put one session's turn into another's
+thread, so it starts fresh (changed on merge from "the most recent candidate"). Regression tests in `packages/proxy-lib/src/streaming.test.ts` cover two sessions continuing in
+their own threads by tool-call ids and by text, a same-opener request alongside an in-flight turn,
+subagents sharing `prompt_cache_key` and opener, and rewritten-reply fallback.

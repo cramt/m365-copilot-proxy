@@ -216,6 +216,8 @@ interface ConversationState {
    *  Opus fallback, #18) can't continue the M365 conversation — it may need
    *  another scenario — so it starts a fresh one with the full history. */
   servedModel?: string;
+  /** replyKey of the last reply this conversation gave the client. */
+  lastReply: string | null;
   /** Characters in the turn that last sent this M365 conversation the whole
    *  history (its opening, or a replay into it; the first part, when the
    *  history went in parts). */
@@ -230,6 +232,13 @@ interface ConversationState {
   runtime: boolean;
   /** Requests running in it now: the pool doesn't drop it for idleness meanwhile. */
   activeRequests: number;
+}
+
+/** What a client echoes back of a reply in its next request: the tool-call ids
+ *  (they pair the results, so they come back verbatim), else the text. */
+function replyKey(m: ParsedMessage | undefined): string | null {
+  if (m?.role !== "assistant") return null;
+  return m.tool_calls?.length ? m.tool_calls.map((c) => c.id).join(" ") : getMessageContent(m).trim();
 }
 
 /**
@@ -298,7 +307,11 @@ const MAX_CONVERSATIONS = 1000;
 const UNKEPT_OPENING_MIN_CHARS = 200_000;
 
 export class SessionPool {
-  private conversations = new Map<string, ConversationState>();
+  /** Keyed by fingerprint (first user message + tool names, scoped to
+   *  sessionKey when given). Several can share one: two pi sessions opened with
+   *  "merhaba", parallel subagents given one prompt, a session resumed after
+   *  another started the same way. */
+  private conversations = new Map<string, ConversationState[]>();
   private sessionOptions: ModelSessionOptions;
   /** Runs evictStale while the pool holds runtime conversations (RUNTIME_SWEEP_MS). */
   private runtimeSweep: ReturnType<typeof setInterval> | null = null;
@@ -339,48 +352,54 @@ export class SessionPool {
   /**
    * Resolve the conversation state for an incoming request.
    * Fingerprint is the hash of the first user message and the request's tool
-   * names — same opener and same tool set = same conversation — scoped to the
-   * client's session key when it sends one (prompt_cache_key / user), and to
-   * the backend: a conversation on Chat can't continue on the agent runtime.
+   * names — same opener and same tool set = same conversation family — scoped
+   * to the client's session key when it sends one (prompt_cache_key / user),
+   * and to the backend: a conversation on Chat can't continue on the agent
+   * runtime.
+   *
+   * A harness re-sends the whole history and only ever appends, so a
+   * continuation carries more messages than its conversation has sent, and at
+   * that position it echoes the conversation's last reply (replyKey). The echo
+   * tells apart conversations that share a fingerprint. Without a match it
+   * falls back only when the fingerprint has a single conversation, so a client
+   * that rewrites old replies still continues; with several, guessing would put
+   * one session's turn into another's thread.
    */
   resolve(messages: ParsedMessage[], tools?: ChatBody["tools"], sessionKey?: string, backend: Backend = "chat"): ConversationState {
     this.evictStale();
 
     const fingerprint = this.fingerprint(messages, tools, sessionKey, backend);
-    const existing = this.conversations.get(fingerprint);
-
-    if (existing) {
-      // A request that carries no more messages than this conversation already
-      // sent is not its continuation (a harness re-sends the whole history and
-      // only ever appends). It's a new session that shares the first user message
-      // — two pi sessions opened with the same prompt, even in different
-      // directories — or a re-sent request. Either way it needs a FRESH M365
-      // conversation: reset() kept the conversationId, so the full prompt went
-      // into the old thread, and at equal length nothing reset at all and
-      // "Please continue." went there. Measured (Windows / pi, 30 runs of 2
-      // prompts): later sessions answered from earlier ones — "notlar.docx was
-      // already created and verified" in an empty directory — and the pass rate
-      // fell 7/10 → 4/10 → 3/10 over the sweep. The full prompt re-sends the
-      // whole history, so nothing the harness holds is lost.
-      if (messages.length <= existing.sentMessageCount) {
-        log.info(`Conversation ${fingerprint}: not a continuation (${messages.length} <= ${existing.sentMessageCount} sent), starting a fresh M365 conversation`);
-        existing.session.newConversation();
-        existing.sentMessageCount = 0;
-        existing.pendingNote = null;
-        existing.replayNext = false;
-      }
-      existing.lastAccessedAt = Date.now();
-      return existing;
+    const bucket = this.conversations.get(fingerprint) ?? [];
+    const candidates = bucket.filter((s) => s.activeRequests === 0 && messages.length > s.sentMessageCount);
+    const own = candidates.find((s) => s.lastReply !== null && s.lastReply === replyKey(messages[s.sentMessageCount]))
+      ?? (bucket.length === 1 ? candidates[0] : undefined);
+    if (own) {
+      own.lastAccessedAt = Date.now();
+      return own;
     }
 
-    // New conversation
+    // Not a continuation of any of them: a new session that shares the first
+    // user message — two pi sessions opened with the same prompt, even in
+    // different directories — or a re-sent request. Either way it needs a FRESH
+    // M365 conversation, and the others stay as they are, because their sessions
+    // may still be running. Measured (Windows / pi, 30 runs of 2 prompts): joined
+    // to an earlier session's thread, later sessions answered from it —
+    // "notlar.docx was already created and verified" in an empty directory — and
+    // the pass rate fell 7/10 → 4/10 → 3/10 over the sweep. Resetting that thread
+    // instead (F84) broke the earlier session when it was still alive: two
+    // measurement jobs that ran at once threw each other's conversations away
+    // every turn (§52 F153). The full prompt re-sends the whole history, so nothing
+    // the harness holds is lost.
     this.evictOverflow();
-    log.info(`New conversation ${fingerprint}, ${this.conversations.size} active`);
+    const current = this.conversations.get(fingerprint) ?? [];
+    if (current.length) log.info(`Conversation ${fingerprint}: not a continuation of the ${current.length} on this first message, starting a fresh M365 conversation`);
+    else log.info(`New conversation ${fingerprint}, ${this.size} active`);
     const runtime = backend !== "chat";
     const state: ConversationState = {
       session: runtime ? new AetherSession({ mode: backend }) : new ModelSession(this.sessionOptions),
       sentMessageCount: 0,
       pendingNote: null,
+      lastReply: null,
       lastAccessedAt: Date.now(),
       openingChars: 0,
       openingAnswered: false,
@@ -388,7 +407,8 @@ export class SessionPool {
       runtime,
       activeRequests: 0,
     };
-    this.conversations.set(fingerprint, state);
+    current.push(state);
+    this.conversations.set(fingerprint, current);
     this.scheduleRuntimeSweep();
     return state;
   }
@@ -422,13 +442,18 @@ export class SessionPool {
     const now = Date.now();
     const ttl = conversationTtlMs();
     const runtimeTtl = runtimeConversationTtlMs();
-    for (const [key, state] of this.conversations) {
-      if (state.activeRequests > 0) continue;
-      if (now - state.lastAccessedAt > (state.runtime ? runtimeTtl : ttl)) {
-        log.info(`Evicting idle conversation ${key}`);
-        this.conversations.delete(key);
-        state.session.close?.();
+    for (const [key, bucket] of this.conversations) {
+      const live: ConversationState[] = [];
+      for (const s of bucket) {
+        if (s.activeRequests > 0 || now - s.lastAccessedAt <= (s.runtime ? runtimeTtl : ttl)) {
+          live.push(s);
+        } else {
+          s.session.close?.();
+        }
       }
+      if (live.length < bucket.length) log.info(`Evicting ${bucket.length - live.length} idle conversation(s) ${key}`);
+      if (live.length) this.conversations.set(key, live);
+      else this.conversations.delete(key);
     }
     this.scheduleRuntimeSweep();
   }
@@ -436,7 +461,7 @@ export class SessionPool {
   /** Sweeps for idle runtime conversations while there are any, so they're
    *  deleted on time even when no request comes (runtimeConversationTtlMs). */
   private scheduleRuntimeSweep() {
-    const any = [...this.conversations.values()].some((s) => s.runtime);
+    const any = [...this.conversations.values()].some((bucket) => bucket.some((s) => s.runtime));
     if (any && !this.runtimeSweep) {
       this.runtimeSweep = setInterval(() => this.evictStale(), RUNTIME_SWEEP_MS);
       this.runtimeSweep.unref?.();
@@ -448,17 +473,30 @@ export class SessionPool {
 
   /** Makes room for a new conversation; a request for a pooled one never evicts. */
   private evictOverflow() {
-    if (this.conversations.size < MAX_CONVERSATIONS) return;
-    const byAge = [...this.conversations].sort((a, b) => a[1].lastAccessedAt - b[1].lastAccessedAt);
-    for (const [key, state] of byAge.slice(0, this.conversations.size - MAX_CONVERSATIONS + 1)) {
+    const total = this.size;
+    if (total < MAX_CONVERSATIONS) return;
+    const all: Array<{ key: string; state: ConversationState }> = [];
+    for (const [key, bucket] of this.conversations) {
+      for (const state of bucket) {
+        if (state.activeRequests === 0) all.push({ key, state });
+      }
+    }
+    all.sort((a, b) => a.state.lastAccessedAt - b.state.lastAccessedAt);
+    for (const { key, state } of all.slice(0, total - MAX_CONVERSATIONS + 1)) {
       log.info(`Evicting conversation ${key} (pool full)`);
-      this.conversations.delete(key);
+      const bucket = this.conversations.get(key);
+      if (!bucket) continue;
+      const next = bucket.filter((s) => s !== state);
+      if (next.length) this.conversations.set(key, next);
+      else this.conversations.delete(key);
       state.session.close?.();
     }
   }
 
   get size(): number {
-    return this.conversations.size;
+    let n = 0;
+    for (const bucket of this.conversations.values()) n += bucket.length;
+    return n;
   }
 }
 
@@ -626,6 +664,7 @@ export async function handleChatCompletion(
     log.info(`Conversation switches model ${conv.servedModel} → ${model}: fresh conversation, full history`);
     session.newConversation();
     conv.sentMessageCount = 0;
+    conv.lastReply = null;
   }
 
   // A follow-up that M365 can't have context for: the reply to the last request
@@ -641,6 +680,7 @@ export async function handleChatCompletion(
     session.newConversation();
     conv.sentMessageCount = 0;
     conv.replayNext = false;
+    conv.lastReply = null;
   }
 
   // Which requests carry the declarative tool agent. GPT-the-chat-model won't
@@ -1109,6 +1149,7 @@ export async function handleChatCompletion(
         if (!chat) {
           session.newConversation();
           conv.sentMessageCount = 0;
+          conv.lastReply = null;
         }
         log.info(`Upstream InvalidRequest (${copilotStream.result.errorCode ?? "no errorCode"}), prompt ${text.length} chars — 400, no retry`);
         return { error: invalidRequestResponse(copilotStream.result, model, text.length) };
@@ -1405,6 +1446,7 @@ export async function handleChatCompletion(
     if (partsWentUp) {
       session.newConversation();
       conv.sentMessageCount = 0;
+      conv.lastReply = null;
     }
     return { kind: "error", resp };
   };
@@ -1607,6 +1649,10 @@ export async function handleChatCompletion(
   }
   } // end produce()
 
+  // The turn holds its conversation until it ends, so a request from another
+  // session that opened with the same message can't join it mid-turn (resolve).
+  // Both renders below call this synchronously after resolve(): nothing slips in.
+  //
   // On the agent runtime a message stays in its conversation once it's posted,
   // answered or not, so the client's retry of a failed request (the same history
   // again) went in on top of it: Codex re-sent one 537,804-character request into
@@ -1620,6 +1666,7 @@ export async function handleChatCompletion(
     try {
       const p = await produce(onDelta);
       failed = p.kind === "error";
+      if (p.kind !== "error") conv.lastReply = p.kind === "tools" ? p.toolCalls.map((c) => c.id).join(" ") : p.text.trim();
       return p;
     } finally {
       conv.activeRequests--;
@@ -1628,6 +1675,7 @@ export async function handleChatCompletion(
         log.info(`Agent runtime (${route.backend}) request failed: the next one starts a fresh conversation`);
         session.newConversation();
         conv.sentMessageCount = 0;
+        conv.lastReply = null;
       }
     }
   }
