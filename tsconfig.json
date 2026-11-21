@@ -15,6 +15,9 @@
     "**/dist",
     "**/.output",
     "**/.nitro",
-    "packages/proxy"
+    "packages/proxy",
+    // vitest/config pulls vite's @types/node 25 next to the workspace's 22, and the
+    // two ChildProcess/Worker shapes clash; vitest type-checks its own config anyway
+    "vitest.config.ts"
   ]
 }
