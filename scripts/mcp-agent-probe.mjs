@@ -15,7 +15,11 @@
 
 import { readFileSync } from "node:fs";
 import { getToken, decodeJwt, getTokenForScope, getEnvironmentUrl } from "../packages/core/dist/index.mjs";
-import { oneTurn } from "./_probe-chat.mjs";
+import { oneTurn as defaultOneTurn } from "./_probe-chat.mjs";
+import { resolve } from "node:path";
+import { pathToFileURL } from "node:url";
+
+export async function main({ oneTurn = defaultOneTurn, fetcher = fetch } = {}) {
 
 const TUNNEL = (process.argv[2] || readFileSync("/tmp/tunnel_url.txt", "utf8")).trim().replace(/\/$/, "");
 const SHAPE = (() => { const i = process.argv.indexOf("--shape"); return i >= 0 ? process.argv[i + 1] : "bareurl"; })();
@@ -37,7 +41,7 @@ if (!ppToken || !bapToken) { console.error("missing PP/BAP token"); process.exit
 const envUrl = await getEnvironmentUrl(bapToken);
 console.log(`[mcp] env=${envUrl}`);
 
-const ppFetch = (url, opts = {}) => fetch(url, { ...opts, headers: { "Content-Type": "application/json", Authorization: `Bearer ${ppToken}`, "x-ms-user-agent": "PVA-Portal/1.0.0 (Web; ReactNative: false)", ...(opts.headers || {}) } });
+const ppFetch = (url, opts = {}) => fetcher(url, { ...opts, headers: { "Content-Type": "application/json", Authorization: `Bearer ${ppToken}`, "x-ms-user-agent": "PVA-Portal/1.0.0 (Web; ReactNative: false)", ...(opts.headers || {}) } });
 const API = `${envUrl}/copilotstudio/minimalBots/api?api-version=2022-03-01-preview`;
 
 // --- the tool DialogComponent (try shapes) ---
@@ -96,8 +100,14 @@ if (!createRes.ok) {
 }
 const created = JSON.parse(createText);
 const botId = created.bot?.schemaName || created.bot?.cdsBotId;
+if (!botId) throw new Error("Created agent response has no bot ID; cannot clean up safely");
 console.log(`[mcp] created botId=${botId}`);
 
+async function cleanup() {
+  try { const d = await ppFetch(`${envUrl}/copilotstudio/minimalBots/api/${botId}?api-version=2022-03-01-preview`, { method: "DELETE" }); console.log(`[mcp] cleanup delete → ${d.status}`); } catch (e) { console.log(`[mcp] cleanup err ${e.message}`); }
+}
+
+try {
 // publish
 const pubRes = await ppFetch(`${envUrl}/copilotstudio/minimalBots/api/${botId}/publish?api-version=2022-03-01-preview`, { method: "POST" });
 const pubText = await pubRes.text();
@@ -107,11 +117,7 @@ let titleId = null;
 try { titleId = JSON.parse(pubText).TitleId; } catch {}
 console.log(`[mcp] titleId=${titleId}`);
 
-async function cleanup() {
-  try { const d = await ppFetch(`${envUrl}/copilotstudio/minimalBots/api/${botId}?api-version=2022-03-01-preview`, { method: "DELETE" }); console.log(`[mcp] cleanup delete → ${d.status}`); } catch (e) { console.log(`[mcp] cleanup err ${e.message}`); }
-}
-
-if (!titleId) { console.log("[mcp] no titleId — cannot chat-test"); await cleanup(); process.exit(1); }
+if (!titleId) throw new Error("[mcp] no titleId — cannot chat-test");
 
 const agentId = `${titleId}.${botId}.gpt.default`;
 console.log(`[mcp] agentId=${agentId}`);
@@ -126,7 +132,7 @@ const r = await oneTurn({
   extraAllowed: ["TriggerPlugin", "Progress", "InternalLoaderMessage"],
   timeoutMs: 90000,
 });
-if (r.attempted === false) { await cleanup(); throw new Error(`Probe not attempted: ${r.error}`); }
+if (r.attempted === false) throw new Error(`Probe not attempted: ${r.error}`);
 const got = (r.fullText || "");
 const calledTool = readFileSync("scripts/sentinel-hits.log", "utf8").includes("tools/call");
 const leaked = got.includes(SENTINEL);
@@ -135,4 +141,9 @@ console.log(`[mcp] reply: ${JSON.stringify(got.slice(0, 300))}`);
 console.log(`[mcp] transport=${r.transport} msgTypes: ${r.messageTypes.join(",")} disengaged=${r.disengaged} ${r.elapsedMs}ms`);
 console.log(`[mcp] OUR MCP SERVER GOT A tools/call: ${calledTool}  ${calledTool ? "🎉 COPILOT CALLED OUR TOOL" : "❌ not called"}`);
 console.log(`[mcp] sentinel value present in reply: ${leaked}  ${leaked ? "🎉🎉 END-TO-END TOOL EXECUTION" : ""}`);
-await cleanup();
+} finally {
+  await cleanup();
+}
+
+}
+if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) await main();
