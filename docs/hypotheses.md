@@ -129,6 +129,8 @@ than "we eyeballed one run." See §M (Methods) for the experimental rig.
   (a closer with the next sentence glued on: 3 dropped calls in 1,153); CommonMark fences, and asking
   again for a call that still can't be read (F152)
 - §52 — concurrent sessions sharing a first user message (or `prompt_cache_key` + opener): `SessionPool` keeps a bucket per fingerprint and matches continuations by the echoed reply (F153)
+- §53 — a long written answer ending in one example command was run as a tool call; opt-in `M365_LONG_ANSWER_GUARD=1` (F154, not benched)
+- §54 — `ECONNRESET` mid-conversation then a hung request; the idle watchdog and reconnect delay (H54a, n=1, open)
 
 ---
 
@@ -927,27 +929,6 @@ unit-tested, validated offline against the real README (6 fences → text).
 **Confidence.** High on the classifier (deterministic, real fixtures + units). The live
 README task remains stochastically flaky for *other* reasons (turn-1 confab, a model
 misreading `ls` output as file content) — orthogonal to this fix.
-
-### F-MIX — a long written answer ending in an example command was run as a tool call
-
-**Contributor report, 2026-11-03:** n=1 in 104 opencode turns (`gpt-5.6-think-deeper`,
-agent-less, relay_batch). Asked "what else could we add for local dev?", the model wrote
-7.7k chars of headed recommendations and a trailing example:
-```` ```bash docker compose --profile observability up -d ````.
-The single-call path executed the example rather than returning the answer; it failed in
-the wrong working directory, after which the agent started the stack unasked. The
-contributor reports replaying 78 real calls: none flagged; two long final answers were
-flagged when an example was appended. This replay was not independently rerun here.
-Maintainer review (#96): the first version of the single-call heuristic reclassified every
-single call after a ≥1,500-character preamble with a Markdown heading or table row, and so
-returned as prose a ~1.8k reply that explained a fix with a ```` ```python ```` block (comments
-start with `# `, which read as headings) and then ran it with a ```` ```bash ```` `sed … && pytest`
-call — a real edit, which on pi ends the loop. It is now opt-in (`M365_LONG_ANSWER_GUARD=1`, off
-by default, so default behaviour is unchanged), admits only a narrow plain-text preamble with headings or tables, refusing markup and code,
-and applies only when the call is the last thing in the reply. Multi-call
-rules are unchanged. Offline parser and handler regressions cover both settings, including that
-repro. **Not benched**: no A/B for the action-vs-answer decision exists, so the pass-rate effect
-is unknown (❓); a heuristic here can still misread an action as an answer.
 
 ### F16 — Behavioural reliability fixes (from the live pi README run) 🟢
 
@@ -5182,25 +5163,6 @@ conversations; the run did not trip the throttle.
 partial history. A/B comparisons stay fair (their arms forked alike), but absolute numbers — turns per
 task, give-up rates, follow-ups that drift back to the first request — are worth re-measuring.
 
-### H-RST — mid-conversation `WS error: read ECONNRESET`, then a hung request 🟡
-**Contributor report, 2026-11-03, n=1 session; not rerun live for this handoff.** In an agent-less
-`gpt-5.6-think-deeper` thread, the contributor reported repeated `ECONNRESET` errors 15–17 seconds
-after sending a 5.4k-character tool response, followed by a silent attempt. Later they reported
-`EAI_AGAIN` / `ENOTFOUND` alongside resets, and that a subsequent resend succeeded after an idle
-timeout. These observations suggest a possible local network contribution, but do not establish
-the cause of each reset or exclude content, conversation, or upstream factors. The client now
-has an idle timeout and delays recognized network-error retries. A controlled comparison of the
-same text in a fresh conversation remains open.
-
-The supplied chronology names opencode turn 9, with four sends (two proxy reconnect attempts
-and two client attempts), no bot frame before the resets, and an `npm install` response in
-`<tool_response>`. The contributor observed a DigiCert TLS issuer; that alone does not prove
-all network intermediaries absent. At 19:59–20:08Z the resets recurred alongside DNS errors
-for `substrate.office.com`. The contributed timeout logged "No response from M365 for 120s",
-then the client's next resend succeeded. The original question remains falsifiable: compare
-the same response text in a fresh conversation against the existing conversation, with local
-DNS/connectivity observed independently. No causal verdict is inferred from this one session.
-
 ---
 
 ## 33. Oct 8 2026 — image input (#39)
@@ -7069,3 +7031,52 @@ rewrites old replies still continues; with several, a guess could put one sessio
 thread, so it starts fresh (changed on merge from "the most recent candidate"). Regression tests in `packages/proxy-lib/src/streaming.test.ts` cover two sessions continuing in
 their own threads by tool-call ids and by text, a same-opener request alongside an in-flight turn,
 subagents sharing `prompt_cache_key` and opener, and rewritten-reply fallback.
+
+---
+
+## 53. Nov 3 2026 — a long written answer that ends in an example command (#96)
+
+### F154 — a long written answer ending in an example command was run as a tool call ❓
+
+**Contributor report, 2026-11-03:** n=1 in 104 opencode turns (`gpt-5.6-think-deeper`,
+agent-less, relay_batch). Asked "what else could we add for local dev?", the model wrote
+7.7k chars of headed recommendations and a trailing example:
+```` ```bash docker compose --profile observability up -d ````.
+The single-call path executed the example rather than returning the answer; it failed in
+the wrong working directory, after which the agent started the stack unasked. The
+contributor reports replaying 78 real calls: none flagged; two long final answers were
+flagged when an example was appended. This replay was not independently rerun here.
+Maintainer review (#96): the first version of the single-call heuristic reclassified every
+single call after a ≥1,500-character preamble with a Markdown heading or table row, and so
+returned as prose a ~1.8k reply that explained a fix with a ```` ```python ```` block (comments
+start with `# `, which read as headings) and then ran it with a ```` ```bash ```` `sed … && pytest`
+call — a real edit, which on pi ends the loop. It is now opt-in (`M365_LONG_ANSWER_GUARD=1`, off
+by default, so default behaviour is unchanged), admits only a narrow plain-text preamble with headings or tables, refusing markup and code,
+and applies only when the call is the last thing in the reply. Multi-call
+rules are unchanged. Offline parser and handler regressions cover both settings, including that
+repro. **Not benched**: no A/B for the action-vs-answer decision exists, so the pass-rate effect
+is unknown (❓); a heuristic here can still misread an action as an answer.
+
+---
+
+## 54. Nov 3 2026 — `ECONNRESET` mid-conversation, an idle watchdog and a reconnect delay (#98)
+
+### H54a — mid-conversation `WS error: read ECONNRESET`, then a hung request 🟡
+**Contributor report, 2026-11-03, n=1 session; not rerun live for this handoff.** In an agent-less
+`gpt-5.6-think-deeper` thread, the contributor reported repeated `ECONNRESET` errors 15–17 seconds
+after sending a 5.4k-character tool response, followed by a silent attempt. Later they reported
+`EAI_AGAIN` / `ENOTFOUND` alongside resets, and that a subsequent resend succeeded after an idle
+timeout. These observations suggest a possible local network contribution, but do not establish
+the cause of each reset or exclude content, conversation, or upstream factors. The client now
+has an idle timeout and delays recognized network-error retries. A controlled comparison of the
+same text in a fresh conversation remains open.
+
+The supplied chronology names opencode turn 9, with four sends (two proxy reconnect attempts
+and two client attempts), no bot frame before the resets, and an `npm install` response in
+`<tool_response>`. The contributor observed a DigiCert TLS issuer; that alone does not prove
+all network intermediaries absent. At 19:59–20:08Z the resets recurred alongside DNS errors
+for `substrate.office.com`. The contributed timeout logged "No response from M365 for 120s",
+then the client's next resend succeeded. The original question remains falsifiable: compare
+the same response text in a fresh conversation against the existing conversation, with local
+DNS/connectivity observed independently. No causal verdict is inferred from this one session.
+

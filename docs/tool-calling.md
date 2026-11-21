@@ -95,7 +95,7 @@ prompt is tuned. The layers, in handler order:
   it) is always an action: its tail was written before the call's result existed. Judged by
   the whole text, that tail made 34 of 42 guard verdicts in one day's bench runs. (#33.)
   **Opt-in, off by default: `M365_LONG_ANSWER_GUARD=1`** also returns a long written answer
-  that ends in ONE example call as text (hypotheses F-MIX). The call must be trailing;
+  that ends in ONE example call as text (hypotheses §53 F154). The call must be trailing;
   the preamble must contain at least 1,500 trimmed characters and consist solely of
   simple plain-text lines and 0–3-space headings or pipe tables, with at least one
   heading containing a Unicode letter or number, or a table header containing one
