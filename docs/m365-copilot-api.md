@@ -374,6 +374,102 @@ Prompt size doesn't matter to this budget — it counts turns (above). So the pr
 >
 > **GPT-6.1 Sol (2026-10-06, hypotheses §27) splits exactly like GPT-6 Sol:** with the agent, `Gpt_61_Sol_Reasoning` serves on a premium account (8/8 across both scenarios) and is the dead route on both non-premium accounts (3/3, included and paid); agent-less it serves on the included scenario everywhere. It is in `PREMIUM_ONLY_AGENT_TONES` too, and the learned fallback is per tone.
 
+### Reading the picker's model list from the browser's HTTP cache (no quota)
+
+When the web client's model picker shows a label that matches no known tone, the cheapest first
+check is the picker's own data, which costs no chat turn and no quota. The client fetches a menu
+JSON whose items pair a tone `id` with a `menuItemTitle`, for example
+`{"id":"Gpt_5_6_Chat","menuItemTitle":"GPT-5.6 Sol Quick response"}` (a reported reading, Nov 2026).
+In that reading, the browser cache contained a gzip-encoded response body; the following scans for
+that format without capturing traffic:
+
+1. Open the picker once in the signed-in web client, so the menu has been fetched.
+2. Find the cache directory: for Edge on Windows, usually
+   `%LOCALAPPDATA%\Microsoft\Edge\User Data\<profile>\Cache\Cache_Data`. The one reported
+   reading found the bodies in `data_2` there; larger bodies may sit in the `f_*` files, so scan them all.
+3. Save the following as `scan-picker.mjs` and run `node scan-picker.mjs <Cache_Data dir>`.
+   It reads only regular files up to 8 MiB, tries at most 256 gzip signatures per file, and caps
+   each decompressed body at 1 MiB. Skipped files/members and unsupported cache layouts can hide
+   the menu. The cache is sensitive: run locally and review output before sharing it. Only `id`
+   and `menuItemTitle` strings are projected; those values themselves are untrusted and could
+   contain sensitive data. The scan never prints raw objects or error contents.
+
+```js
+// node scan-picker.mjs <Cache_Data dir>
+import { readdirSync, openSync, fstatSync, readSync, closeSync, constants } from "node:fs";
+import { gunzipSync, inflateRawSync } from "node:zlib";
+import { join } from "node:path";
+
+const MAX_FILE = 8 * 1024 * 1024, MAX_BODY = 1024 * 1024, MAX_HITS = 256;
+const found = new Set();
+function headerEnd(b, start) {
+  if (start + 10 > b.length || (b[start + 3] & 0xe0)) throw Error();
+  const flags = b[start + 3];
+  let p = start + 10;
+  if (flags & 4) {
+    if (p + 2 > b.length) throw Error();
+    const n = b.readUInt16LE(p); p += 2 + n;
+    if (p > b.length) throw Error();
+  }
+  for (const flag of [8, 16]) if (flags & flag) {
+    p = b.indexOf(0, p);
+    if (p < 0) throw Error();
+    p++;
+  }
+  if (flags & 2) p += 2;
+  if (p > b.length) throw Error();
+  return p;
+}
+function collect(root) {
+  const todo = [root];
+  while (todo.length) {
+    const v = todo.pop();
+    if (!v || typeof v !== "object") continue;
+    if (typeof v.id === "string" && typeof v.menuItemTitle === "string" &&
+        v.id.length <= 256 && v.menuItemTitle.length <= 256) {
+      found.add(JSON.stringify({ id: v.id, menuItemTitle: v.menuItemTitle }));
+    }
+    for (const child of Object.values(v)) if (child && typeof child === "object") todo.push(child);
+  }
+}
+for (const name of readdirSync(process.argv[2])) {
+  const path = join(process.argv[2], name);
+  try {
+    const fd = openSync(path, constants.O_RDONLY | (constants.O_NOFOLLOW || 0));
+    let b;
+    try {
+      const stat = fstatSync(fd);
+      if (!stat.isFile() || stat.size > MAX_FILE) continue;
+      b = Buffer.alloc(MAX_FILE + 1);
+      let n = 0, got;
+      while (n < b.length && (got = readSync(fd, b, n, b.length - n, null)) > 0) n += got;
+      if (n > MAX_FILE) continue;
+      b = b.subarray(0, n);
+    } finally { closeSync(fd); }
+    let hits = 0;
+    for (let i = b.indexOf(Buffer.from([31, 139, 8])); i >= 0 && hits++ < MAX_HITS;
+         i = b.indexOf(Buffer.from([31, 139, 8]), i + 1)) {
+      try {
+        const p = headerEnd(b, i);
+        const inflated = inflateRawSync(b.subarray(p), { info: true, maxOutputLength: MAX_BODY });
+        const end = p + inflated.engine.bytesWritten + 8;
+        if (end > b.length) continue;
+        // Full member validation checks gzip header, CRC32 and ISIZE, unlike raw inflate.
+        const body = gunzipSync(b.subarray(i, end), { maxOutputLength: MAX_BODY });
+        collect(JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(body)));
+      } catch { /* invalid, incomplete, unsupported or over limit */ }
+    }
+  } catch { /* unreadable file */ }
+}
+for (const item of found) console.log(item);
+```
+
+This scans embedded complete single gzip members, including optional gzip headers; it does not
+understand every browser cache format, concatenated members, other encodings, or bodies exceeding
+its limits. No output is inconclusive, not evidence the menu is absent. The scan has only been
+exercised against synthetic files, not a real browser cache; the location above is one reported
+reading. Capture the picker's requests as in hypotheses §45 F120 if needed.
+
 ### Code interpreter — a real server-side Python sandbox
 
 Enabling these `optionsSets` on the chat turn unlocks M365's actual Python execution environment (the engine behind the "Analyst" experience):
