@@ -2,7 +2,8 @@ import { beforeEach, afterEach, expect, it, vi } from "vitest";
 import { wire } from "./native-test-transport.js";
 import { SessionPool, handleChatCompletion } from "../src/handler.js";
 import { ChatCompletionRequest } from "../src/schemas.js";
-import { resetPriorityAccessState, ModelSession } from "@m365-copilot/core";
+import { resetPriorityAccessState, ModelSession, LOG_PATH } from "@m365-copilot/core";
+import { existsSync, readFileSync } from "node:fs";
 
 vi.mock("../../core/src/image-input.js", () => ({ uploadImage: async () => { setupEvents.push("upload"); return {}; } }));
 vi.mock("../../core/src/agent.js", () => ({ getOrCreateAgent: async () => { setupEvents.push("agent"); return null; } }));
@@ -22,7 +23,7 @@ const pool = (oid: string) => new SessionPool({ useAgent: false, getToken: async
 async function ask(p: SessionPool, model: string, stream: boolean, text = "hello") {
   const res = await handleChatCompletion(ChatCompletionRequest.parse({ model, stream, messages: [{ role: "user", content: text }] }), p);
   const raw = await res.text();
-  return { status: res.status, raw };
+  return { status: res.status, raw, retryAfter: res.headers.get("retry-after") };
 }
 beforeEach(async () => {
   setupEvents.length = 0;
@@ -271,6 +272,29 @@ for (const stream of [false, true]) {
     expect(cached.message).toContain("Wait");
     expect(firstBody.suggested_models).toEqual(["gpt-5.6"]);
   });
+  for (const [from, to] of [[A, B], [B, A]]) for (const known of [false, true]) {
+    it(`unscoped cached priority preflight hides upstream data, known=${known}, stream=${stream}, direction=${from === A ? "A-B" : "B-A"}`, async () => {
+      const secret = "SYNTHETIC_PRIVATE_CANARY";
+      wire.answer = "";
+      wire.result = { value: "OutOfCredits", message: known ? `You've used your available priority access to the ${secret} model for today.` : secret };
+      const first = await ask(pool(from), "gpt-5.5", stream);
+      expect(first.raw).toContain(secret);
+      wire.result = undefined;
+      const turns = wire.texts.length;
+      const logBefore = existsSync(LOG_PATH) ? readFileSync(LOG_PATH, "utf8").length : 0;
+      const cached = await ask(pool(to), "gpt-5.5", stream);
+      const logAfter = existsSync(LOG_PATH) ? readFileSync(LOG_PATH, "utf8").slice(logBefore) : "";
+      if (process.env.M365_DEBUG) expect(logAfter).toContain("429 without contacting M365");
+      expect(logAfter).not.toContain(secret);
+      expect(cached.status).toBe(429);
+      expect(wire.texts.length).toBe(turns);
+      expect(cached.raw).not.toContain(secret);
+      expect(cached.raw).toContain("priority_access_exhausted");
+      expect(JSON.parse(cached.raw).error.param).toBe("day");
+      expect(Number(cached.retryAfter)).toBeGreaterThan(0);
+      expect(Number(cached.retryAfter)).toBeLessThanOrEqual(86400);
+    });
+  }
   it(`ordinary credits keep existing priority classification, stream=${stream}`, async () => {
     wire.result = { value: "OutOfCredits", errorCode: "Other", message: "No credits" };
     const response = await ask(pool(A), "gpt-5.5-think-deeper", stream);

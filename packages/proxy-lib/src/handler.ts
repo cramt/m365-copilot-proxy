@@ -1811,7 +1811,7 @@ function reasoningResponse(end: number, scope: string | null, model: string): Re
 function priorityAccessResponse(exhaustion: PriorityAccessExhaustion, model: string, scope?: string | null): Response {
   const choices = scope == null ? [] : suggestions(scope, model);
   const retryAfter = secondsUntilReset(exhaustion);
-  const label = exhaustion.model ?? model;
+  const label = scope == null ? model : exhaustion.model ?? model;
   const when = exhaustion.window === "week" ? "this week" : "today";
   return jsonResponse(
     429,
@@ -1821,8 +1821,8 @@ function priorityAccessResponse(exhaustion: PriorityAccessExhaustion, model: str
           `M365 Copilot's priority access to ${label} is used up for ${when} ` +
           `(resets ${exhaustion.resetsAt.toISOString()}, i.e. midnight UTC` +
           `${exhaustion.window === "week" ? " on Monday" : ""}). ` +
-          `${choices === null ? "Wait before trying again." : choices.length ? `Other models to try: ${choices.join(", ")}; availability is not guaranteed.` : "Wait before trying again."} ` +
-          `Upstream said: ${exhaustion.message}`,
+          `${choices.length ? `Other models to try: ${choices.join(", ")}; availability is not guaranteed.` : "Wait before trying again."}` +
+          (scope == null ? "" : ` Upstream said: ${exhaustion.message}`),
         ...(choices === null ? {} : { suggested_models: choices }),
         type: "rate_limit_error",
         code: "priority_access_exhausted",
