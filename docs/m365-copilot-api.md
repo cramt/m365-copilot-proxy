@@ -358,9 +358,9 @@ Prompt size doesn't matter to this budget — it counts turns (above). So the pr
 When the web client's model picker shows a label that matches no known tone, the cheapest first
 check is the picker's own data, which costs no chat turn and no quota. The client fetches a menu
 JSON whose items pair a tone `id` with a `menuItemTitle`, for example
-`{"id":"Gpt_5_6_Chat","menuItemTitle":"GPT-5.6 Sol Quick response"}` (a reported reading, Nov 2026). A
-Chromium browser keeps response bodies in its HTTP cache still gzip-encoded, so the menu can be read
-back from disk without capturing traffic:
+`{"id":"Gpt_5_6_Chat","menuItemTitle":"GPT-5.6 Sol Quick response"}` (a reported reading, Nov 2026).
+In that reading, the browser cache contained a gzip-encoded response body; the following scans for
+that format without capturing traffic:
 
 1. Open the picker once in the signed-in web client, so the menu has been fetched.
 2. Find the cache directory: for Edge on Windows, usually
