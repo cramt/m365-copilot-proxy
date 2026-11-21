@@ -253,6 +253,39 @@ async function isVisibleSoon(page: any, selector: string, timeout: number): Prom
   }
 }
 
+/** Click an AAD picker tile by its exact label if it shows within `timeout` ms. */
+async function clickTextIfVisibleSoon(page: any, text: string, timeout: number): Promise<boolean> {
+  const loc = page.getByText(text, { exact: true }).locator("visible=true").first();
+  try {
+    await loc.waitFor({ state: "visible", timeout });
+  } catch {
+    return false;
+  }
+  await loc.click();
+  return true;
+}
+
+/**
+ * Give the page a WebAuthn authenticator holding no credentials. Without one,
+ * AAD sends a passkey-registered account to /bridge/fido, which waits on a
+ * security window headless Chromium never shows and offers no other way in.
+ * With one present AAD shows its credential picker, where "Use my password"
+ * leads back to the password + TOTP route.
+ */
+async function addEmptyAuthenticator(context: any, page: any): Promise<void> {
+  const cdp = await context.newCDPSession(page);
+  await cdp.send("WebAuthn.enable");
+  await cdp.send("WebAuthn.addVirtualAuthenticator", {
+    options: {
+      protocol: "ctap2",
+      transport: "internal",
+      hasResidentKey: true,
+      hasUserVerification: true,
+      isUserVerified: true,
+    },
+  });
+}
+
 /**
  * Handle the "Pick an account" picker. A persistent-profile SSO login (H-R3) lands on
  * an account-tile list instead of the email form; we must CLICK our account's tile to
@@ -313,6 +346,14 @@ async function driveAzureLogin(page: any, creds: Credentials): Promise<void> {
     log.info(`Step: email skipped (${picked ? "picked account tile" : "SSO — no email prompt"})`);
   }
 
+  // Once the account has a passkey, AAD leads with it. Headless Chromium has no
+  // authenticator UI, so the WebAuthn prompt would hang until our timeout; the
+  // empty virtual authenticator (addEmptyAuthenticator) makes AAD offer this
+  // credential picker instead, and the password route is still allowed.
+  if (await clickTextIfVisibleSoon(page, "Use my password", 8000)) {
+    log.info("Step: credential picker — chose password over passkey");
+  }
+
   if (await isVisibleSoon(page, 'input[name="passwd"]', 8000)) {
     log.info("Step: password");
     await fillVerified(page, 'input[name="passwd"]', creds.password, "password");
@@ -320,6 +361,12 @@ async function driveAzureLogin(page: any, creds: Credentials): Promise<void> {
     await capture(page, "step2-after-password");
   } else {
     log.info("Step: password skipped (SSO — no password prompt)");
+  }
+
+  // With a passkey registered, MFA becomes a method picker (passkey, code, SMS,
+  // call) instead of going straight to the TOTP field.
+  if (await clickTextIfVisibleSoon(page, "Use a verification code", 8000)) {
+    log.info("Step: MFA picker — chose verification code");
   }
 
   if (await isVisibleSoon(page, 'input[name="otc"]', 8000)) {
@@ -508,6 +555,7 @@ async function runBrowserLogin(
       Object.defineProperty(navigator, "webdriver", { get: () => undefined });
     });
     const page = context.pages()[0] ?? (await context.newPage());
+    await addEmptyAuthenticator(context, page);
 
     // The nativeclient redirect URI is meant for embedded native hosts to
     // intercept; a real browser follows it one hop further to /common/wrongplace,
