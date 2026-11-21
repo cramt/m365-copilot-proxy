@@ -20,7 +20,7 @@ import { oneTurn as defaultOneTurn } from "./_probe-chat.mjs";
 import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 
-export async function main({ oneTurn = defaultOneTurn, fetcher = fetch, ownershipTimeoutMs = 3000, ownershipRetryMs = 200 } = {}) {
+export async function main({ oneTurn = defaultOneTurn, fetcher = fetch, createTimeoutMs = 10000, ownershipTimeoutMs = 3000, ownershipRetryMs = 200 } = {}) {
 
 const TUNNEL = (process.argv[2] || readFileSync("/tmp/tunnel_url.txt", "utf8")).trim().replace(/\/$/, "");
 const SHAPE = (() => { const i = process.argv.indexOf("--shape"); return i >= 0 ? process.argv[i + 1] : "bareurl"; })();
@@ -92,20 +92,29 @@ const createBody = {
 };
 
 console.log(`[mcp] creating temporary agent`);
-let createRes;
-try { createRes = await ppFetch(API, { method: "POST", body: JSON.stringify(createBody) }); }
-catch { throw new Error("[mcp] create outcome unknown; temporary agent may remain. Inspect the probe-named agents in Copilot Studio; do not delete without verification."); }
-let createText;
-try { createText = await createRes.text(); } catch {
-  throw new Error("[mcp] create response unavailable; temporary agent may remain. Inspect the probe-named agents in Copilot Studio; do not delete without verification.");
-}
-console.log(`[mcp] create → ${createRes.status}`);
-if (!createRes.ok) throw new Error(`[mcp] create failed (HTTP ${createRes.status})`);
+const createController = new AbortController();
+let createTimer;
+const createDeadline = new Promise((resolve) => { createTimer = setTimeout(() => { createController.abort(); resolve(null); }, createTimeoutMs); });
+const createOperation = (async () => {
+  try {
+    const response = await ppFetch(API, { method: "POST", body: JSON.stringify(createBody), signal: createController.signal });
+    if (!response.ok) return null;
+    const text = await response.text();
+    return { text };
+  } catch { return null; }
+})();
+let createResult;
+try { createResult = await Promise.race([createOperation, createDeadline]); }
+finally { clearTimeout(createTimer); createController.abort(); }
+if (!createResult) throw new Error("[mcp] create outcome unknown; temporary agent may remain. Inspect the probe-named agents in Copilot Studio; do not delete without verification.");
 let created;
-try { created = JSON.parse(createText); } catch {
+try { created = JSON.parse(createResult.text); } catch {
   throw new Error("[mcp] invalid create response; temporary agent may remain. Inspect the probe-named agents in Copilot Studio; do not delete without verification.");
 }
-const schema = created.bot?.schemaName;
+if (!created || typeof created !== "object" || Array.isArray(created) || !created.bot || typeof created.bot !== "object" || Array.isArray(created.bot)) {
+  throw new Error("[mcp] invalid create response; temporary agent may remain. Inspect the probe-named agents in Copilot Studio; do not delete without verification.");
+}
+const schema = created.bot.schemaName;
 const cds = created.bot?.cdsBotId;
 const botId = schema ?? cds;
 // Existing code accepts either field, but does not establish equivalence between them.
