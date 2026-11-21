@@ -120,8 +120,9 @@ const TONES = [
   { tone: "Gpt_5_2_Auto", note: "unmapped: in the web client's tone enum", ...INCLUDED },
   { tone: "Chat", note: "unversioned guess (`Gpt_Chat` is REJECTED, §19 F34)", ...INCLUDED },
   { tone: "Reasoning", note: "unversioned guess (`Gpt_Reasoning` is REJECTED, §19 F34)", ...INCLUDED },
-  // Guessed names for the picker's "GPT-5.6 Sol" items, which map to Gpt_5_6_Chat /
-  // Gpt_5_6_Reasoning (H-SOL56). A guess that comes back LIVE would be news.
+  // Guessed names for the picker's "GPT-5.6 Sol" items, reported in one
+  // reading to map to Gpt_5_6_Chat / Gpt_5_6_Reasoning (H-SOL56), not re-read.
+  // A guess that comes back LIVE would be news.
   { tone: "Gpt_56_Sol_Chat", note: "guess for GPT-5.6 Sol Quick response: expect REJECTED", ...INCLUDED },
   { tone: "Gpt_56_Sol_Reasoning", note: "guess for GPT-5.6 Sol Think deeper: expect REJECTED", ...INCLUDED },
   { tone: "Gpt_5_6_Sol_Chat", note: "guess for GPT-5.6 Sol Quick response: expect REJECTED", ...INCLUDED },
@@ -138,8 +139,23 @@ const TONES = [
 // one pair (getStreamHubScenario: `officeweb` + `Premium`, hypotheses §40 F108;
 // M365_SCENARIO / M365_LICENSE_TYPE change it, as for the proxy), so there each
 // tone is one cell, under that pair, with the notes of its cells.
+const args = process.argv.slice(2);
+const only = args.find((arg) => arg.startsWith("--only="))?.slice(7);
+if (args.length && (!only || !args.includes("--included") || args.some((arg) => !arg.startsWith("--only=") && arg !== "--included" && arg !== "--dry-run") || args.filter((arg) => arg.startsWith("--only=")).length !== 1)) {
+  throw new Error("Use --only=TONE --included [--dry-run]");
+}
 const TRANSPORT = getTransport();
-const CELLS = TRANSPORT === "streamhub" ? oneCellPerTone(TONES, getStreamHubScenario()) : TONES;
+if (only && TRANSPORT === "streamhub") throw new Error("Selected included cell requires Chathub; unset M365_TRANSPORT");
+let CELLS = TRANSPORT === "streamhub" ? oneCellPerTone(TONES, getStreamHubScenario()) : TONES;
+if (only) {
+  CELLS = CELLS.filter((cell) => cell.tone === only && (cell.scenario ?? INCLUDED.scenario) === INCLUDED.scenario)
+    .map((cell) => ({ ...cell, ...INCLUDED }));
+  if (CELLS.length !== 1) throw new Error("Expected exactly one included cell");
+}
+if (args.includes("--dry-run")) {
+  console.log(JSON.stringify(CELLS, null, 2));
+  process.exit(0);
+}
 
 function oneCellPerTone(cells, route) {
   const byTone = new Map();

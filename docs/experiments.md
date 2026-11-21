@@ -198,10 +198,14 @@ All run with `scripts/_probe-chat.mjs` overrides; no license needed.
 ### E-SOL56 — do the picker's "GPT-5.6 Sol" labels need a tone of their own? (H-SOL56)
 - **Hypothesis:** the reported "GPT-5.6 Sol" labels use the existing `Gpt_5_6_Chat` /
   `Gpt_5_6_Reasoning` tones, not a new `*_Sol_*` tone.
-- **Run:** `M365_NO_INTERACTIVE=1 CHROMIUM_PATH=$(which chromium) node scripts/tone-probe.mjs`.
-  The cells before the invalid-tone control are the guessed `Gpt_56_Sol_*` / `Gpt_5_6_Sol_*` names
-  and the tones found in the web client's tone enum; drop the Opus and Sonnet cells to spare their
-  budgets.
+- **Inspect offline:** `env -u M365_TRANSPORT node scripts/tone-probe.mjs --only=Gpt_56_Sol_Chat --included --dry-run`.
+  This prints one selected included-scenario cell without signing in. Change the exact tone to inspect
+  another cell. Do not run a full sweep: it includes priority-metered and credit-billed Astra and
+  Fable cells. Even an included or unknown tone may incur charges; billing and routing can change.
+- **Only after explicit spending approval**, and checking current billing, remove `--dry-run` to run
+  that one cell. Each invocation starts a conversation; manually stop on throttling or unexpected
+  charges. The script has no throttle-stop and its 1.5-second spacing is not a safe sweep cadence.
+  Space separately approved runs generously; do not automate a sequence.
 - **Read:** `REJECTED` is a validator error, `REGISTERED_BUT_DEAD` a BotConnection deflection,
   `UNLICENSED` a refusal by licence, and `LIVE` only says a model answered, not which one. Settle
   the labels against the web client's own picker data, not a self-ID (§27 H27a).
