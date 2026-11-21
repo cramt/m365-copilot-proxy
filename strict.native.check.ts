@@ -48,6 +48,7 @@ let retryApology = false;
 let retrySequence = false;
 let firstPadding = 0;
 let f22Sequence = false;
+let f22Progress = false;
 let confabSequence = false;
 let graphics = false;
 let completionError = false;
@@ -103,7 +104,8 @@ server.on("connection", (ws: any) => { ws.on("close", () => closed?.()); ws.on("
         continue;
       }
       if (f22Sequence && attempts === 1) {
-        const msg = { messages: [{ author: "bot", messageType: "Disengaged", messageId: "m1" }] };
+        if (f22Progress) send(transport === "streamhub" ? { type: 2, item: { type: "message_part", requestId: id, argument: { w: "F22_PRIVATE_PREFIX" } } } : { type: 1, target: "update", arguments: [{ writeAtCursor: "F22_PRIVATE_PREFIX" }] });
+        const msg = { messages: [{ author: "bot", messageType: "Disengaged", messageId: "m1" }, ...(f22Progress ? [{ author: "bot", messageType: "Progress", messageId: "m2" }] : [])] };
         send(transport === "streamhub" ? { type: 2, item: { type: "message_part", requestId: id, argument: msg } } : { type: 1, target: "update", arguments: [msg] });
         send(transport === "streamhub" ? { type: 2, item: { type: "request_end", requestId: id, outcome: { category: "Success" } } } : { type: 2, item: { result: { value: "Success" } } });
         continue;
@@ -167,7 +169,7 @@ async function request(stream: boolean, tools = false, options: { signal?: Abort
   return handleChatCompletion(body, new SessionPool({ getToken: options.getToken ?? (async () => token), useAgent: false }), { signal: options.signal });
 }
 beforeEach(() => { vi.stubEnv("M365_NO_BACKOFF", "1"); });
-afterEach(() => { vi.unstubAllEnvs(); for (const c of server.clients) c.terminate(); release = undefined; payload = content; chunks = null; closed = undefined; retryApology = false; retrySequence = false; firstPadding = 0; f22Sequence = false; confabSequence = false; graphics = false; completionError = false; contradictoryTerminal = false; terminalRecords = null; separateRecords = false; rawTerminalFrames = null; repeatedFrames = 1; attempts = 0; multipartSize = 0; handshakeReply = "{}"; terminalCode = undefined; terminalMessage = undefined; terminalApology = false; automaticFallback = false; automaticBingFallback = false; multipartSent = []; multipartPrompts = []; });
+afterEach(() => { vi.unstubAllEnvs(); for (const c of server.clients) c.terminate(); release = undefined; payload = content; chunks = null; closed = undefined; retryApology = false; retrySequence = false; firstPadding = 0; f22Sequence = false; f22Progress = false; confabSequence = false; graphics = false; completionError = false; contradictoryTerminal = false; terminalRecords = null; separateRecords = false; rawTerminalFrames = null; repeatedFrames = 1; attempts = 0; multipartSize = 0; handshakeReply = "{}"; terminalCode = undefined; terminalMessage = undefined; terminalApology = false; automaticFallback = false; automaticBingFallback = false; multipartSent = []; multipartPrompts = []; });
 afterAll(async () => { for (const c of server.clients) c.terminate(); await new Promise<void>(r => server.close(r)); await new Promise<void>(r => http.close(() => r())); });
 for (const streaming of [false, true]) for (const strictMode of [false, true]) for (const entry of [
   { category: "InvalidRequest", code: "InvalidNote", status: 400, result: "m365_invalid_request" },
@@ -193,6 +195,13 @@ for (const streaming of [false, true]) it(`StreamHub retains bot text beside nul
   vi.stubEnv("M365_STRICT_STREAM", "1"); vi.stubEnv("M365_TRANSPORT", "streamhub"); transport = "streamhub"; payload = "";
   rawTerminalFrames = [JSON.stringify({ type: 2, item: { type: "message_part", argument: { messages: [{ author: null, messageType: "EndOfRequest" }, { author: "bot", messageId: "m", text: "synthetic mixed answer" }] } } }), "success"];
   const pending = request(streaming); await started; release!(); const response = await pending; const text = await response.text(); expect(text).toContain("synthetic mixed answer"); expect(attempts).toBe(1);
+});
+for (const streaming of [false, true]) for (const strictMode of [false, true]) for (const mixed of [false, true]) it(`mixed null control strict-only stream=${streaming} strict=${strictMode} mixed=${mixed}`, async () => {
+  if (strictMode) vi.stubEnv("M365_STRICT_STREAM", "1"); vi.stubEnv("M365_TRANSPORT", "streamhub"); transport = "streamhub";
+  const messages = [...(mixed ? [{ author: null, messageType: "EndOfRequest" }] : []), { author: "bot", messageId: "unique", text: "SYNTHETIC_BOT_REPLY" }];
+  rawTerminalFrames = [JSON.stringify({ type: 2, item: { type: "message_part", argument: { messages } } }), "success"];
+  const pending = request(streaming); await started; release!(); const response = await pending; const text = await response.text();
+  expect(response.status).toBe(200); expect(text).toContain(content); if (strictMode || !mixed) expect(text).toContain("SYNTHETIC_BOT_REPLY"); else expect(text).not.toContain("SYNTHETIC_BOT_REPLY"); expect(attempts).toBe(1);
 });
 for (const wire of ["chathub", "streamhub"]) for (const streaming of [false, true]) it(`default ForbiddenRequest with content remains ordinary answer ${wire} stream=${streaming}`, async () => {
   vi.stubEnv("M365_TRANSPORT", wire); transport = wire; terminal = "ForbiddenRequest"; terminalCode = "InvalidCopilotLicense";
@@ -338,6 +347,20 @@ for (const streaming of [false, true]) for (const signal of [{ contentOrigin: "A
   vi.stubEnv("M365_STRICT_STREAM", "1"); vi.stubEnv("M365_TRANSPORT", "streamhub"); transport = "streamhub";
   const argument = { messages: [{ author: null, messageType: "EndOfRequest", ...signal }] }; rawTerminalFrames = [JSON.stringify({ type: 2, item: { type: "message_part", argument } }), "success"];
   const pending = request(streaming); await started; release!(); const response = await pending; const text = await response.text(); expect(response.status).toBe(streaming ? 200 : 502); expect(text).not.toContain(content); expect(text).toContain("error"); expect(attempts).toBe(1);
+});
+for (const wire of ["chathub", "streamhub"]) for (const streaming of [false, true]) for (const location of ["same", "separate", ...(wire === "chathub" ? ["final"] : [])]) for (const denial of ["Disengaged", "Apology", "Failed"]) it(`sticky refusal then progress ${wire} stream=${streaming} location=${location} ${denial}`, async () => {
+  vi.stubEnv("M365_STRICT_STREAM", "1"); vi.stubEnv("M365_TRANSPORT", wire); transport = wire;
+  const signal = { author: "bot", ...(denial === "Disengaged" ? { messageType: "Disengaged" } : denial === "Apology" ? { contentOrigin: "Apology" } : { turnState: "Failed" }) };
+  const progress = { author: "bot", messageType: "Progress", contentOrigin: "Normal", turnState: "Completed" };
+  const update = (messages: object[]) => JSON.stringify(wire === "streamhub" ? { type: 2, item: { type: "message_part", argument: { messages } } } : { type: 1, target: "update", arguments: [{ messages }] });
+  rawTerminalFrames = location === "same" ? [update([signal, progress]), "success"] : location === "separate" ? [update([signal]), update([progress]), "success"] : [update([signal]), JSON.stringify({ type: 2, item: { messages: [progress], result: { value: "Success" } } })];
+  separateRecords = location === "separate";
+  const pending = request(streaming); await started; release!(); const response = await pending; const text = await response.text(); expect(response.status).toBe(streaming ? 200 : 502); expect(text).not.toContain(content); expect(text).toContain("error"); expect(attempts).toBe(1);
+});
+for (const wire of ["chathub", "streamhub"]) for (const streaming of [false, true]) it(`progress success remains usable ${wire} stream=${streaming}`, async () => {
+  vi.stubEnv("M365_STRICT_STREAM", "1"); vi.stubEnv("M365_TRANSPORT", wire); transport = wire;
+  const arg = { messages: [{ author: "bot", messageType: "Progress", contentOrigin: "Normal", turnState: "Completed" }] }; rawTerminalFrames = [JSON.stringify(wire === "streamhub" ? { type: 2, item: { type: "message_part", argument: arg } } : { type: 1, target: "update", arguments: [arg] }), "success"];
+  const pending = request(streaming); await started; release!(); const response = await pending; const text = await response.text(); expect(response.status).toBe(200); expect(text).toContain(content); expect(attempts).toBe(1);
 });
 for (const wire of ["chathub", "streamhub"]) for (const streaming of [false, true]) for (const separate of [false, true]) for (const reverse of [false, true]) for (const sibling of [
   { author: 123 }, { author: null }, { author: "bot", contentOrigin: 42 }, { author: "bot", messageType: false },
@@ -523,6 +546,10 @@ for (const wire of ["chathub", "streamhub"]) for (const streaming of [false, tru
   vi.stubEnv("M365_STRICT_STREAM", "1"); vi.stubEnv("M365_TRANSPORT", wire); transport = wire; terminal = "ForbiddenRequest"; confabSequence = true;
   const pending = request(streaming, true); await started; release!();
   const text = await (await pending).text(); expect(attempts).toBe(2); expect(text).not.toContain(content); expect(text).not.toContain("calc.py"); expect(text).toContain("error");
+});
+for (const wire of ["chathub", "streamhub"]) for (const streaming of [false, true]) it(`strict F22 progress retry fences first attempt ${wire} stream=${streaming}`, async () => {
+  vi.stubEnv("M365_STRICT_STREAM", "1"); vi.stubEnv("M365_TRANSPORT", wire); transport = wire; terminal = "Success"; f22Sequence = true; f22Progress = true;
+  const pending = request(streaming, true); await started; release!(); const response = await pending; const text = await response.text(); expect(response.status).toBe(200); expect(attempts).toBe(2); expect(text).not.toContain("F22_PRIVATE_PREFIX"); expect(text.split(content)).toHaveLength(2);
 });
 for (const wire of ["chathub", "streamhub"]) for (const final of ["Success", "ForbiddenRequest"]) it(`strict fences F22 retry ${wire} final=${final}`, async () => {
   vi.stubEnv("M365_STRICT_STREAM", "1"); vi.stubEnv("M365_TRANSPORT", wire); transport = wire; terminal = final; f22Sequence = true;

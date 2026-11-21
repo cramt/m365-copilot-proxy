@@ -647,6 +647,7 @@ export class CopilotSession {
       let contentOrigin: string | null = null;
       let sawApology = false;
       let messageType: string | null = null;
+      let sawDisengaged = false;
       let messageId: string | null = null;
       // Highest per-component score across all messages this turn. The most
       // recent score isn't necessarily the most informative — the worst one is.
@@ -767,7 +768,7 @@ export class CopilotSession {
           return sawApology;
         },
         get messageType() {
-          return messageType;
+          return strict && sawDisengaged ? "Disengaged" : messageType;
         },
         get messageId() {
           return messageId;
@@ -1275,7 +1276,7 @@ export class CopilotSession {
           }
         }
 
-        const normalized = arg && typeof arg === "object" && Array.isArray((arg as { messages?: unknown }).messages)
+        const normalized = strict && arg && typeof arg === "object" && Array.isArray((arg as { messages?: unknown }).messages)
           ? { ...(arg as Record<string, unknown>), messages: ((arg as { messages: any[] }).messages).filter(m => !(streamHub && m?.author === null && m?.messageType === "EndOfRequest")).filter(m => !(strict && m?.author === undefined)) }
           : arg;
         const msgUpdate = MessageUpdate.safeParse(normalized);
@@ -1291,6 +1292,7 @@ export class CopilotSession {
               captureImages(m);
               if (m.contentOrigin) contentOrigin = m.contentOrigin;
               if (m.contentOrigin === "Apology") sawApology = true;
+              if (m.messageType === "Disengaged") sawDisengaged = true;
               if (m.messageType) messageType = m.messageType;
               if (m.messageId) messageId = m.messageId;
               if (m.scores) {
@@ -1433,6 +1435,7 @@ export class CopilotSession {
               captureImages(m);
               if (m.contentOrigin) contentOrigin = m.contentOrigin;
               if (m.contentOrigin === "Apology") sawApology = true;
+              if (m.messageType === "Disengaged") sawDisengaged = true;
               if (m.messageType) messageType = m.messageType;
               if (m.messageId) messageId = m.messageId;
               if (strict && m.turnState === "Failed") turnState = "Failed";

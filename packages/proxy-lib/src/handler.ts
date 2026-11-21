@@ -992,6 +992,15 @@ export async function handleChatCompletion(
         conv.sentMessageCount = 0;
         return { error: jsonResponse(502, { error: { message: "Upstream turn did not complete successfully", type: "upstream_error" } }) };
       }
+      if (strict && !strictExpired() && resultValue === "Success" && copilotStream.messageType === "Disengaged" && hasTools && !disengageRetried && !process.env.M365_NO_DISENGAGE_RETRY && !turnSignal?.aborted) {
+        disengageRetried = true;
+        session.newConversation();
+        const retryVariant = transcriptStyleForVariant(framingVariant).framingTag === "system" ? "softened" : framingVariant;
+        text = formatWhole(retryVariant);
+        inputAttachments = attachmentUrls(body.messages);
+        attempt--;
+        continue;
+      }
       if (strictExpired() || (strict && turnSignal?.aborted && !retryRefusal) || (strict && resultValue !== "Success" && !retryRefusal && !classifiedFailure)) {
         session.newConversation();
         conv.sentMessageCount = 0;

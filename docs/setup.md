@@ -48,6 +48,9 @@ mode returns a generic upstream error, while default mode remains unchanged.
 A terminal result is accepted only if it is the sole terminal record observed
 before the WebSocket closes. Contradictory or missing terminal records observed
 before closure fail closed; records sent only after closure cannot be observed.
+Within a strict turn, a Disengaged signal remains authoritative despite later
+progress messages. An eligible tool request can retry it once in a fresh conversation,
+without releasing content from the refused attempt.
 A StreamHub error item never grants success, regardless of its category; malformed
 JSON and invalid known protocol containers or message fields observed before closure
 fail closed. Author-less partials with Apology, Disengaged or Failed outcomes are
@@ -55,12 +58,13 @@ ambiguous and rejected rather than attributed to a bot. Neutral author-less part
 retain valid bot siblings; only StreamHub's EndOfRequest control accepts a null author.
 Recognized StreamHub error categories use the same failure classification as a
 terminal outcome. A documented null-author EndOfRequest control is ignored when
-composing other messages in the same update; the mixed shape is synthetic, not a
-claimed live capture.
+composing other messages in the same update in strict mode; the mixed shape is
+synthetic, not a claimed live capture. Default mode keeps the original parser's
+behavior for that mixed update (the bot sibling is not composed). Top-level null
+or non-object protocol records are safely ignored in default mode.
 Unknown object-shaped update fields are accepted for forward compatibility, so this
-is not validation of every possible future message field. In the
-incremental default mode invalid records are ignored rather than crashing the
-socket callback. Pre-aborted or expired requests
+is not validation of every possible future message field. Default mode otherwise
+retains its legacy protocol handling. Pre-aborted or expired requests
 are checked before starting each setup operation; already-running foreign operations
 cannot necessarily be cancelled.
 This is a per-request wire-byte limit, not a 2 MiB process-memory limit: the receiver,
