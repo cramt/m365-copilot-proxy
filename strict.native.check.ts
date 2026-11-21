@@ -1,6 +1,6 @@
 import { afterAll, afterEach, beforeEach, expect, it, vi } from "vitest";
 import { createServer } from "node:http";
-import { readFileSync, writeFileSync } from "node:fs";
+import { appendFileSync, readFileSync, writeFileSync } from "node:fs";
 
 // Logger configuration is captured at module import; use its real private file sink.
 const logPath = vi.hoisted(() => {
@@ -202,6 +202,31 @@ for (const wire of ["chathub", "streamhub"]) it(`INFO strict excludes upstream s
   rawTerminalFrames = [JSON.stringify(wire === "streamhub" ? { type: 2, item: { type: "message_part", argument: update } } : { type: 1, target: "update", arguments: [update] }), JSON.stringify(wire === "streamhub" ? { type: 2, item: { type: "request_end", outcome: { category: "InvalidRequest", code: "InvalidNote" } } } : { type: 2, item: { result: { value: "InvalidRequest", errorCode: "InvalidNote" } } })];
   writeFileSync(logPath, ""); const pending = request(false); await started; release!(); const response = await pending; expect(response.status).toBe(400); await response.text();
   const info = readFileSync(logPath, "utf8").split("\n").filter(line => line.includes("[INFO]")).join("\n"); expect(info).not.toContain("PRIVATE_SCORE_CANARY");
+});
+// Differential records preserve the entire response and headers; only generated IDs and creation times vary.
+function responseReceipt(name: string, response: Response, body: string) {
+  const normalized = body.replace(/"id":"chatcmpl-[^"]+"/g, '"id":"<id>"').replace(/"created":\d+/g, '"created":0');
+  if (process.env.M365_RECEIPT_PATH) appendFileSync(process.env.M365_RECEIPT_PATH, JSON.stringify({ name, status: response.status, headers: [...response.headers], body: normalized, attempts }) + "\n");
+}
+for (const wire of ["chathub", "streamhub"]) for (const streaming of [false, true]) for (const value of ["Success", "InvalidRequest"]) it(`review INFO score diagnostics ${wire} stream=${streaming} ${value}`, async () => {
+  vi.stubEnv("M365_STRICT_STREAM", "1"); vi.stubEnv("M365_TRANSPORT", wire); transport = wire; payload = "SYNTHETIC_ANSWER";
+  const update = { messages: [{ author: "bot", scores: [{ component: "dea_violation", score: 0.001 }, { component: "BotOffense", score: 0.002 }, { component: "PRIVATE_SCORE_CANARY", score: 0.5 }] }] };
+  rawTerminalFrames = [JSON.stringify(wire === "streamhub" ? { type: 2, item: { type: "message_part", argument: update } } : { type: 1, target: "update", arguments: [update] }), JSON.stringify(wire === "streamhub" ? { type: 2, item: { type: "request_end", outcome: { category: value, ...(value === "InvalidRequest" ? { code: "InvalidNote" } : {}) } } } : { type: 2, item: { result: { value, ...(value === "InvalidRequest" ? { errorCode: "InvalidNote" } : {}) } } })];
+  writeFileSync(logPath, ""); const pending = request(streaming); await started; release!(); const response = await pending; const text = await response.text();
+  responseReceipt(`score:${wire}:${streaming}:${value}`, response, text);
+  expect(response.status).toBe(streaming || value === "Success" ? 200 : 400); expect(attempts).toBe(1);
+  if (value === "Success") { expect(text).toContain("SYNTHETIC_ANSWER"); if (!streaming) expect(JSON.parse(text).usage.x_m365_dea_score).toBe(0.001); }
+  else { expect(text).not.toContain("SYNTHETIC_ANSWER"); expect(text).toContain("m365_invalid_request"); }
+  const info = readFileSync(logPath, "utf8").split("\n").filter(line => line.includes("[INFO]")).join("\n");
+  expect(info).toContain("Turn scores:"); expect(info).toContain("dea_violation=0.001"); expect(info).toContain("BotOffense=0.002"); expect(info).not.toContain("PRIVATE_SCORE_CANARY");
+});
+for (const wire of ["chathub", "streamhub"]) for (const streaming of [false, true]) for (const code of ["InvalidCopilotLicense", "ClaudeUnavailableForLicense", "PremiumModelUnavailableForLicense", "PRIVATE_LICENSE_CANARY"]) it(`review INFO licence diagnostic ${wire} stream=${streaming} ${code}`, async () => {
+  vi.stubEnv("M365_STRICT_STREAM", "1"); vi.stubEnv("M365_TRANSPORT", wire); transport = wire; terminal = "ForbiddenRequest"; terminalCode = code; terminalMessage = "PRIVATE_PROSE_CANARY"; payload = "";
+  writeFileSync(logPath, ""); const pending = request(streaming); await started; release!(); const response = await pending; const text = await response.text();
+  responseReceipt(`license:${wire}:${streaming}:${code}`, response, text);
+  expect(response.status).toBe(streaming ? 200 : 502); expect(text).toContain("upstream_error"); expect(text).not.toContain(code); expect(text).not.toContain("PRIVATE_PROSE_CANARY"); expect(attempts).toBe(1);
+  const info = readFileSync(logPath, "utf8").split("\n").filter(line => line.includes("[INFO]")).join("\n"); expect(info).toContain("Turn result: ForbiddenRequest"); expect(info).not.toContain("PRIVATE_PROSE_CANARY");
+  if (code === "PRIVATE_LICENSE_CANARY") expect(info).not.toContain(code); else expect(info).toContain(code);
 });
 for (const category of ["Throttled", "InvalidRequest"]) it(`INFO strict StreamHub error item ${category}`, async () => {
   vi.stubEnv("M365_STRICT_STREAM", "1"); vi.stubEnv("M365_TRANSPORT", "streamhub"); transport = "streamhub"; payload = "";

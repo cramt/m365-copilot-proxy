@@ -1041,10 +1041,11 @@ export async function handleChatCompletion(
       if (!refused && typeof copilotStream.credits === "number") {
         requestCredits = Math.round(((requestCredits ?? 0) + copilotStream.credits) * 1e6) / 1e6;
       }
-      // The classifier scores reach clients only as `usage` extension fields,
-      // which a gateway drops; experiments read them from the debug log instead.
-      if (lastScores && Object.keys(lastScores).length > 0 && !strict) {
-        log.info(`Turn scores: ${Object.entries(lastScores).map(([k, v]) => `${k}=${v}`).join(" ")}${lastMessageType ? ` (${lastMessageType})` : ""}, cid=${session.conversationId}`);
+      // Only documented component names are trusted for strict-mode diagnostics;
+      // messageType and other names are upstream-controlled strings.
+      const scoreEntries = Object.entries(lastScores ?? {}).filter(([name]) => !strict || name === "dea_violation" || name === "BotOffense");
+      if (scoreEntries.length > 0) {
+        log.info(`Turn scores: ${scoreEntries.map(([k, v]) => `${k}=${v}`).join(" ")}${!strict && lastMessageType ? ` (${lastMessageType})` : ""}, cid=${session.conversationId}`);
       }
 
       // No text at all: the dead agent route's signature (below), unlike a failed

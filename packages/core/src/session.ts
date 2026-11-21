@@ -1247,7 +1247,7 @@ export class CopilotSession {
         };
         if (value !== "Success") {
           const category = strict && !["Throttled", "InvalidRequest", "OutOfCredits", "InternalError", "ForbiddenRequest", "InvalidTerminal", "UpstreamError"].includes(value) ? "UpstreamError" : value;
-          const code = strict && !["PerUserThrottled", "InputTokenLimitExceeded", "ModelNotInCatalog", "InvalidNote"].includes(errorCode ?? "") ? undefined : errorCode;
+          const code = strict && !["PerUserThrottled", "InputTokenLimitExceeded", "ModelNotInCatalog", "InvalidNote", "InvalidCopilotLicense", "ClaudeUnavailableForLicense", "PremiumModelUnavailableForLicense"].includes(errorCode ?? "") ? undefined : errorCode;
           log.info(`Turn result: ${category}${code ? ` (${code})` : ""}`);
         }
         if (value === "Throttled") recordThrottle();
