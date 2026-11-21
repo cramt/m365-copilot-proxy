@@ -17,6 +17,8 @@ const { WebSocketServer } = await import("../node_modules/.pnpm/ws@8.20.0/node_m
 const { oneTurn, probeBudgetStatus } = await import("./_probe-chat.mjs");
 // @ts-expect-error The probe is a JavaScript entrypoint.
 const throttleProbe = await import("./throttle-probe.mjs");
+// @ts-expect-error JavaScript probe entrypoint.
+const toneProbe = await import("./tone-probe.mjs");
 const server = new WebSocketServer({ host: "127.0.0.1", port: 0 });
 await once(server, "listening");
 transport.url = `ws://127.0.0.1:${server.address().port}`;
@@ -25,9 +27,19 @@ server.on("connection", (socket: any) => {
   socket.on("message", (data: Buffer) => {
     for (const frame of data.toString().split("\x1e").filter(Boolean).map((f) => JSON.parse(f))) {
       if (frame.protocol) socket.send("{}\x1e");
+      if (frame.item?.type === "chat_request") {
+        chats.push(frame);
+        const text = frame.item.chatStreamRequest.message.text;
+        const item = text === "end throttle" ? { type: "request_end", outcome: { category: "Throttled", code: "PerUserThrottled" } }
+          : text === "error throttle" ? { type: "error", errorCategory: "Throttled", errorCode: "PerUserThrottled", message: "refused" }
+          : text === "error invalid" ? { type: "error", errorCategory: "InvalidRequest", errorCode: "InvalidNote", message: "Sorry, I wasn't able to respond to that.", detail: "System.ArgumentException" }
+          : { type: "request_end", outcome: { category: "Success" } };
+        socket.send(JSON.stringify({ type: 2, invocationId: "1", item }) + "\x1e");
+      }
       if (frame.target === "chat") {
         chats.push(frame);
-        if (frame.arguments[0].message.text === "drop") socket.terminate();
+        if (frame.arguments[0].tone === "remote-invalid") socket.send(JSON.stringify({ type: 3, error: "Failed to invoke Chat" }) + "\x1e");
+        else if (frame.arguments[0].message.text === "drop") socket.terminate();
         else if (plan.throttleOn.has(chats.length)) socket.send(JSON.stringify({ type: 2, item: { result: { value: "Throttled", errorCode: "PerUserThrottled" }, throttling: { numUserMessagesInConversation: 1, maxNumUserMessagesInConversation: 600 } } }) + "\x1e");
         else socket.send(JSON.stringify({ type: 2, item: { result: { value: "Success" }, messages: [{ author: "bot", text: "synthetic reply" }] } }) + "\x1e");
       }
@@ -121,16 +133,15 @@ describe("per-call cap and throttle-latch options, over a real local WS peer", (
     expect(chats).toHaveLength(1);
   });
 
-  it("an opted-out call neither sets a latch nor clears one set by a default call", async () => {
+  it("an opted-out call cannot bypass a stop set by a default caller", async () => {
     const who = fresh(17, [1, 3]);
     await oneTurn({ ...who, text: "latches", timeoutMs: 1000 });
     expect(probeBudgetStatus(who).stopped).toBe(true);
-    const ignoring = await oneTurn({ ...who, text: "ignores the latch", timeoutMs: 1000, latchThrottle: false });
-    expect(ignoring.attempted).toBe(true);
-    expect(probeBudgetStatus(who).stopped).toBe(true);
-    expect((await oneTurn({ ...who, text: "still stopped", timeoutMs: 1000 })).error).toMatch(/throttle stop/);
-    const third = await oneTurn({ ...who, text: "throttled, not latching", timeoutMs: 1000, latchThrottle: false });
-    expect(third.result.value).toBe("Throttled");
+    const ignoring = await oneTurn({ ...who, text: "cannot bypass", timeoutMs: 1000, latchThrottle: false });
+    expect(ignoring.attempted).toBe(false);
+    expect(ignoring.error).toMatch(/throttle stop/);
+    expect(probeBudgetStatus({ ...who, latchThrottle: false }).stopped).toBe(true);
+    expect(chats).toHaveLength(1);
   });
 
   it.each([0, -1, 1.5, NaN, Infinity, 2 ** 53, "20", null])("rejects maxAttempts %j before opening a socket", async (maxAttempts) => {
@@ -183,4 +194,39 @@ describe("scripts/throttle-probe.mjs", () => {
     expect(chats).toHaveLength(5 + throttleProbe.RECOVERY_POLLS);
     expect(r.recoveryMin).toBeNull();
   });
+});
+
+it("tone sweep reports local stops as skipped and does not claim the control was rejected", async () => {
+  const who = fresh(30, [2]);
+  const cells = ["first", "throttled", "later", "Definitely_Not_A_Real_Tone_XYZ"].map((tone) => ({ tone, note: "" }));
+  const rows = await toneProbe.sweep({ cells, ...who, transport: "chathub", oneTurn, sleep: async () => {} });
+  expect(chats).toHaveLength(2);
+  expect(rows.map((r: any) => r.verdict)).toEqual(["UNKNOWN(origin=null)", "EMPTY", "SKIPPED", "SKIPPED"]);
+  expect(rows[2].attempted).toBe(false);
+});
+
+it.each(["end throttle", "error throttle"])("StreamHub %s accounts one dispatch and latches subsequent calls", async (text) => {
+  const who = fresh(text === "end throttle" ? 31 : 32);
+  const first = await oneTurn({ ...who, transport: "streamhub", text, timeoutMs: 1000 });
+  expect(first).toMatchObject({ attempted: true, result: { value: "Throttled", errorCode: "PerUserThrottled" } });
+  expect(probeBudgetStatus(who)).toMatchObject({ attempts: 1, stopped: true });
+  expect((await oneTurn({ ...who, transport: "streamhub", text: "success", timeoutMs: 1000 })).attempted).toBe(false);
+  expect(chats).toHaveLength(1);
+});
+
+it("StreamHub success and InvalidNote error follow upstream fixture shapes", async () => {
+  const who = fresh(33);
+  const ok = await oneTurn({ ...who, transport: "streamhub", text: "success", timeoutMs: 1000 });
+  expect(ok).toMatchObject({ attempted: true, result: { value: "Success" }, error: null });
+  const invalid = await oneTurn({ ...who, transport: "streamhub", text: "error invalid", timeoutMs: 1000 });
+  expect(invalid).toMatchObject({ attempted: true, result: { value: "InvalidRequest", errorCode: "InvalidNote" }, error: "InvalidRequest/InvalidNote" });
+  expect(probeBudgetStatus(who)).toMatchObject({ attempts: 2, stopped: false });
+  expect(chats).toHaveLength(2);
+});
+
+it("tone sweep retains a real remote invocation rejection", async () => {
+  const who = fresh(34);
+  const rows = await toneProbe.sweep({ cells: [{ tone: "remote-invalid", note: "" }], ...who, transport: "chathub", oneTurn, sleep: async () => {} });
+  expect(chats).toHaveLength(1);
+  expect(rows[0]).toMatchObject({ attempted: true, verdict: "REJECTED", error: "Failed to invoke Chat" });
 });

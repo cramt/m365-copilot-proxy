@@ -32,6 +32,7 @@
 
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { pathToFileURL } from "node:url";
 import { getToken, decodeJwt, getStreamHubScenario, getTransport, parsePriorityAccessExhaustion } from "../packages/core/dist/index.mjs";
 import { oneTurn } from "./_probe-chat.mjs";
 import { isLicenceRefusal } from "./agent-tone-probe.mjs";
@@ -168,15 +169,9 @@ function oneCellPerTone(cells, route) {
   return [...byTone.values()];
 }
 
-const TS = new Date().toISOString().replace(/[:.]/g, "-");
-const OUT = join(process.cwd(), "scripts", "tone-out", TS);
-mkdirSync(OUT, { recursive: true });
-
-const token = await getToken();
-const claims = decodeJwt(token);
-
 /** Live / rejected / registered-but-dead — never infer from "no error" alone. */
 function verdict(r) {
+  if (!r.attempted) return "SKIPPED";
   if (r.error) return "REJECTED";
   // The account isn't licensed for the cell's scenario (`InvalidCopilotLicense`:
   // a paid or `officeweb` cell on a non-premium account) or for the tone's model
@@ -193,13 +188,14 @@ function verdict(r) {
   return `UNKNOWN(origin=${r.contentOrigin})`;
 }
 
+export async function sweep({ cells, token, claims, transport, oneTurn, sleep = (ms) => new Promise((res) => setTimeout(res, ms)) }) {
 const results = [];
-for (const cell of CELLS) {
+for (const cell of cells) {
   const scenario = cell.scenario ?? INCLUDED.scenario;
   const licenseType = cell.licenseType ?? INCLUDED.licenseType;
   const r = await oneTurn({
-    token, claims, agentId: null, transport: TRANSPORT, tone: cell.tone, scenario, licenseType, timeoutMs: 60000,
-    maxAttempts: CELLS.length, // one turn per cell: more cells than the helper's default cap of 20
+    token, claims, agentId: null, transport: transport, tone: cell.tone, scenario, licenseType, timeoutMs: 60000,
+    maxAttempts: cells.length, // one turn per cell: more cells than the helper's default cap of 20
     text: `Reply with exactly the single word: pong`,
   });
   const row = {
@@ -209,6 +205,7 @@ for (const cell of CELLS) {
     transport: r.transport,
     note: cell.note,
     verdict: verdict(r),
+    attempted: r.attempted,
     gotContent: (r.fullText || "").trim().length > 0,
     reply: (r.fullText || "").slice(0, 80),
     contentOrigin: r.contentOrigin,
@@ -223,20 +220,32 @@ for (const cell of CELLS) {
   };
   results.push(row);
   console.log(`[tone] ${cell.tone.padEnd(32)} ${scenario.padEnd(25)} ${row.verdict.padEnd(20)} transport=${r.transport} origin=${String(r.contentOrigin)}${r.result && r.result.value !== "Success" ? ` result=${r.result.value}${r.result.errorCode ? `/${r.result.errorCode}` : ""}` : ""}${r.billing.length ? ` billing=${r.billing.map((b) => b.status).join(",")}` : ""} ${r.elapsedMs}ms ${r.error ? "ERR=" + r.error : ""} reply=${JSON.stringify(row.reply)}`);
-  await new Promise((res) => setTimeout(res, 1500)); // gentle spacing
+  await sleep(1500); // gentle spacing
 }
 
+return results;
+}
+
+async function main() {
+const TS = new Date().toISOString().replace(/[:.]/g, "-");
+const OUT = join(process.cwd(), "scripts", "tone-out", TS);
+mkdirSync(OUT, { recursive: true });
+
+const token = await getToken();
+const claims = decodeJwt(token);
+
+const results = await sweep({ cells: CELLS, token, claims, transport: TRANSPORT, oneTurn });
 writeFileSync(join(OUT, "results.json"), JSON.stringify(results, null, 2));
 console.log(`\n[tone] === VERDICT (transport=${[...new Set(results.map((r) => r.transport))].join("+")}) ===`);
 const control = results.find((r) => r.tone.includes("Definitely_Not"));
-console.log(`[tone] control (invalid tone): content=${control?.gotContent} error=${control?.error} → ${control?.gotContent ? "server SILENTLY FALLS BACK (can't distinguish fallback from real)" : "server REJECTS unknown tones (so content = a real tone)"}`);
+console.log(`[tone] control (invalid tone): ${!control?.attempted ? "not attempted; no conclusion" : control.verdict === "REJECTED" ? "server REJECTS unknown tones" : control.gotContent ? "server SILENTLY FALLS BACK (can't distinguish fallback from real)" : "inconclusive"}`);
 for (const r of results) {
   if (r.tone.includes("Definitely_Not")) continue;
   console.log(`  ${r.tone} @ ${r.scenario}: ${r.verdict} (origin=${r.contentOrigin})`);
 }
 // Scenario-sensitive tones are the interesting ones: same tone, two outcomes.
 for (const tone of new Set(results.map((r) => r.tone))) {
-  const cells = results.filter((r) => r.tone === tone);
+  const cells = results.filter((r) => r.tone === tone && r.attempted);
   if (cells.length > 1 && new Set(cells.map((c) => c.verdict)).size > 1) {
     console.log(`[tone] SCENARIO-SENSITIVE: ${tone} → ${cells.map((c) => `${c.scenario}=${c.verdict}`).join(", ")}`);
   }
@@ -253,3 +262,7 @@ if (modelRefused.length) {
 }
 console.log(`[tone] NOTE: a non-empty reply is not proof — only contentOrigin "DeepLeo" is (§12.15).`);
 console.log(`[tone] out: ${OUT}`);
+
+}
+
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) await main();
