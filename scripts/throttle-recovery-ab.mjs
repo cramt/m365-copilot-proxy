@@ -34,10 +34,12 @@
 import { getTokenSilent, loginAutomated, loadSecrets, decodeJwt } from "../packages/core/dist/index.mjs";
 import { oneTurn } from "./_probe-chat.mjs";
 import { mkdirSync, appendFileSync } from "node:fs";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
+import { pathToFileURL } from "node:url";
 
+export async function main({ argv = process.argv.slice(2), oneTurn: turn = oneTurn, getTokenSilent: getSilent = getTokenSilent, log = console.log } = {}) {
 const args = Object.fromEntries(
-  process.argv.slice(2).map((a) => {
+  argv.map((a) => {
     const m = a.match(/^--([^=]+)(?:=(.*))?$/);
     return m ? [m[1], m[2] ?? true] : [a, true];
   }),
@@ -81,7 +83,7 @@ function isThrottleEmpty(r) {
 const transports = new Set();
 
 async function probe(label, token, claims) {
-  const r = await oneTurn({
+  const r = await turn({
     token, claims, agentId: null,
     text: "Reply with exactly the word: pong",
     timeoutMs: 60000,
@@ -100,70 +102,70 @@ async function probe(label, token, claims) {
     reply: (r.fullText || "").slice(0, 40),
     throttle: r.throttle, elapsedMs: r.elapsedMs, msgTypes: r.messageTypes,
   });
-  console.log(
+  log(
     `  [${label}] ${clean ? "CLEAN" : empty ? "empty" : r.disengaged ? "DISENGAGED" : "other"}` +
     ` reply=${JSON.stringify(line.reply)} transport=${r.transport} throttle=${JSON.stringify(r.throttle)} ${r.elapsedMs}ms`,
   );
   return line;
 }
 
-console.log(`H-R1 throttle-recovery A/B — out: ${OUT}`);
-console.log(`  induce=${INDUCE} rounds=${ROUNDS} gap=${GAP_MS / 1000}s newtoken=${NEWTOKEN}\n`);
+log(`H-R1 throttle-recovery A/B — out: ${OUT}`);
+log(`  induce=${INDUCE} rounds=${ROUNDS} gap=${GAP_MS / 1000}s newtoken=${NEWTOKEN}\n`);
 
-const tokenOld = await getTokenSilent();
-if (!tokenOld) { console.log("No cached token (silent returned null). Auth first."); process.exit(1); }
+const tokenOld = await getSilent();
+if (!tokenOld) { log("No cached token (silent returned null). Auth first."); process.exit(1); }
 const claimsOld = decodeJwt(tokenOld);
 const rawOld = rawClaims(tokenOld);
-console.log(`token_OLD: oid=${claimsOld.oid?.slice(0, 8)} ttl=${Math.round((rawOld.exp - rawOld.iat) / 60)}min uti=${rawOld.uti}`);
+log(`token_OLD: oid=${claimsOld.oid?.slice(0, 8)} ttl=${Math.round((rawOld.exp - rawOld.iat) / 60)}min uti=${rawOld.uti}`);
 
 // --- optional: induce thread-rate degradation ---
 if (INDUCE > 0) {
-  console.log(`\nInducing degradation: ${INDUCE} back-to-back fresh threads...`);
+  log(`\nInducing degradation: ${INDUCE} back-to-back fresh threads...`);
   let empties = 0;
   for (let i = 0; i < INDUCE; i++) {
     const r = await probe(`induce-${i + 1}`, tokenOld, claimsOld);
     if (r.empty) empties++;
     await sleep(1500); // fast, to spend the thread budget
   }
-  console.log(`Induce done: ${empties}/${INDUCE} empty.\n`);
+  log(`Induce done: ${empties}/${INDUCE} empty.\n`);
 }
 
 // --- confirm we're actually degraded before measuring ---
-console.log("Confirming degradation state (probe on OLD token)...");
+log("Confirming degradation state (probe on OLD token)...");
 const confirm = await probe("confirm", tokenOld, claimsOld);
 if (confirm.clean) {
-  console.log(
+  log(
     "\n⚠️  Account is NOT degraded right now (OLD token returned a clean pong).\n" +
     "    An A/B on a rested account is meaningless (everything recovers at round 0).\n" +
     "    Rerun when the account is degraded, or pass --induce=N to force it (burns N threads).",
   );
   rec({ kind: "verdict", verdict: "NOT_DEGRADED", note: "aborted before A/B", transport: [...transports].join("+") });
-  process.exit(0);
+  return;
 }
-console.log("Confirmed degraded (OLD token empties). Proceeding to A/B.\n");
+log("Confirmed degraded (OLD token empties). Proceeding to A/B.\n");
 
 // --- mint token_NEW (the thing F13 credits with recovery) ---
 let tokenNew = null, claimsNew = null;
 if (NEWTOKEN !== "none") {
   const secrets = loadSecrets();
-  if (!secrets) { console.log("No secrets.json — cannot mint token_NEW. Use --no-new."); process.exit(1); }
-  console.log(`Minting token_NEW via ${NEWTOKEN}...`);
+  if (!secrets) { log("No secrets.json — cannot mint token_NEW. Use --no-new."); process.exit(1); }
+  log(`Minting token_NEW via ${NEWTOKEN}...`);
   const t0 = Date.now();
   // Faithful to F13: a full fresh login. (silent path would just return the
   // cached token on most stacks, which isn't a "fresh" token.)
   tokenNew = await loginAutomated(secrets.email, secrets.password, secrets.mfaSecret);
   claimsNew = decodeJwt(tokenNew);
   const rawNew = rawClaims(tokenNew);
-  console.log(`token_NEW minted in ${Date.now() - t0}ms: oid=${claimsNew.oid?.slice(0, 8)} uti-differs=${rawNew.uti !== rawOld.uti}`);
-  if (claimsNew.oid !== claimsOld.oid) console.log("  ⚠️ oid differs — different identity, comparison void.");
+  log(`token_NEW minted in ${Date.now() - t0}ms: oid=${claimsNew.oid?.slice(0, 8)} uti-differs=${rawNew.uti !== rawOld.uti}`);
+  if (claimsNew.oid !== claimsOld.oid) log("  ⚠️ oid differs — different identity, comparison void.");
   rec({ kind: "newtoken", method: NEWTOKEN, sameOid: claimsNew.oid === claimsOld.oid, utiDiffers: rawNew.uti !== rawOld.uti, ttlMin: Math.round((rawNew.exp - rawNew.iat) / 60) });
 }
 
 // --- the alternating A/B ---
 const firstClean = { OLD: null, NEW: null };
-console.log(`\nA/B: ${ROUNDS} rounds, ${GAP_MS / 1000}s between probes.\n`);
+log(`\nA/B: ${ROUNDS} rounds, ${GAP_MS / 1000}s between probes.\n`);
 for (let round = 1; round <= ROUNDS; round++) {
-  console.log(`round ${round}/${ROUNDS} @ ${stamp()}`);
+  log(`round ${round}/${ROUNDS} @ ${stamp()}`);
 
   const oldLine = await probe("OLD", tokenOld, claimsOld);
   rec({ kind: "round", round, token: "OLD", clean: oldLine.clean });
@@ -181,26 +183,29 @@ for (let round = 1; round <= ROUNDS; round++) {
   const done = tokenNew
     ? firstClean.OLD !== null && firstClean.NEW !== null
     : firstClean.OLD !== null;
-  if (done) { console.log("Both tokens recovered — stopping early."); break; }
+  if (done) { log("Both tokens recovered — stopping early."); break; }
 }
 
 // --- verdict ---
-console.log(`\n=== RESULT (transport=${[...transports].join("+")}) ===`);
-console.log(`first CLEAN round — OLD: ${firstClean.OLD ?? "never"}` + (tokenNew ? `  NEW: ${firstClean.NEW ?? "never"}` : ""));
+log(`\n=== RESULT (transport=${[...transports].join("+")}) ===`);
+log(`first CLEAN round — OLD: ${firstClean.OLD ?? "never"}` + (tokenNew ? `  NEW: ${firstClean.NEW ?? "never"}` : ""));
 let verdict;
 if (!tokenNew) {
   verdict = "BASELINE_ONLY";
-  console.log(`OLD-token natural recovery at round ${firstClean.OLD ?? ">" + ROUNDS}. (No NEW token; run without --no-new to compare.)`);
+  log(`OLD-token natural recovery at round ${firstClean.OLD ?? ">" + ROUNDS}. (No NEW token; run without --no-new to compare.)`);
 } else if (firstClean.OLD === null && firstClean.NEW === null) {
   verdict = "INCONCLUSIVE_NEITHER_RECOVERED";
-  console.log("Neither token recovered within the window — extend --rounds/--gap and rerun.");
+  log("Neither token recovered within the window — extend --rounds/--gap and rerun.");
 } else if (firstClean.NEW !== null && (firstClean.OLD === null || firstClean.NEW <= firstClean.OLD - 2)) {
   verdict = "H-R1_REJECTED_TOKEN_IS_LEVER";
-  console.log("NEW recovered clearly before OLD → the fresh token IS the lever. Auto-reauth is justified.");
+  log("NEW recovered clearly before OLD → the fresh token IS the lever. Auto-reauth is justified.");
 } else {
   verdict = "H-R1_CONFIRMED_TOKEN_IRRELEVANT";
-  console.log("OLD and NEW recovered together → recovery is time/identity-driven, NOT the token.");
-  console.log("Auto-reauth provides no throttle benefit; the loud login is pure downside.");
+  log("OLD and NEW recovered together → recovery is time/identity-driven, NOT the token.");
+  log("Auto-reauth provides no throttle benefit; the loud login is pure downside.");
 }
 rec({ kind: "verdict", verdict, firstClean, transport: [...transports].join("+") });
-console.log(`\nverdict=${verdict}\nraw: ${OUT}`);
+log(`\nverdict=${verdict}\nraw: ${OUT}`);
+
+}
+if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) await main();

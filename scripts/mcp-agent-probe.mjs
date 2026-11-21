@@ -126,6 +126,7 @@ const r = await oneTurn({
   extraAllowed: ["TriggerPlugin", "Progress", "InternalLoaderMessage"],
   timeoutMs: 90000,
 });
+if (r.attempted === false) { await cleanup(); throw new Error(`Probe not attempted: ${r.error}`); }
 const got = (r.fullText || "");
 const calledTool = readFileSync("scripts/sentinel-hits.log", "utf8").includes("tools/call");
 const leaked = got.includes(SENTINEL);

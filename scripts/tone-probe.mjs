@@ -151,10 +151,11 @@ function verdict(r) {
 
 export async function sweep({ cells, token, claims, transport, oneTurn, sleep = (ms) => new Promise((res) => setTimeout(res, ms)) }) {
 const results = [];
+let refusal = null;
 for (const cell of cells) {
   const scenario = cell.scenario ?? INCLUDED.scenario;
   const licenseType = cell.licenseType ?? INCLUDED.licenseType;
-  const r = await oneTurn({
+  const r = refusal ?? await oneTurn({
     token, claims, agentId: null, transport: transport, tone: cell.tone, scenario, licenseType, timeoutMs: 60000,
     maxAttempts: cells.length, // one turn per cell: more cells than the helper's default cap of 20
     text: `Reply with exactly the single word: pong`,
@@ -181,7 +182,8 @@ for (const cell of cells) {
   };
   results.push(row);
   console.log(`[tone] ${cell.tone.padEnd(32)} ${scenario.padEnd(25)} ${row.verdict.padEnd(20)} transport=${r.transport} origin=${String(r.contentOrigin)}${r.result && r.result.value !== "Success" ? ` result=${r.result.value}${r.result.errorCode ? `/${r.result.errorCode}` : ""}` : ""}${r.billing.length ? ` billing=${r.billing.map((b) => b.status).join(",")}` : ""} ${r.elapsedMs}ms ${r.error ? "ERR=" + r.error : ""} reply=${JSON.stringify(row.reply)}`);
-  await sleep(1500); // gentle spacing
+  if (r.attempted === false) refusal = r;
+  else await sleep(1500); // gentle spacing
 }
 
 return results;

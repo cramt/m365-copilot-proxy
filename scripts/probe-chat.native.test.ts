@@ -3,7 +3,7 @@ import { once } from "node:events";
 
 const transport = vi.hoisted(() => ({ url: "" }));
 // Which chats the peer throttles: by their 1-based order among the chats it has received since the last reset.
-const plan = vi.hoisted(() => ({ throttleOn: new Set<number>() }));
+const plan = vi.hoisted(() => ({ throttleOn: new Set<number>(), codeOnly: false }));
 // Preserve real WS framing/connection lifecycle; redirect only the endpoint.
 vi.mock("../node_modules/.pnpm/ws@8.20.0/node_modules/ws/wrapper.mjs", async (original) => {
   const ws = await original<any>();
@@ -40,8 +40,9 @@ server.on("connection", (socket: any) => {
         chats.push(frame);
         if (frame.arguments[0].tone === "remote-invalid") socket.send(JSON.stringify({ type: 3, error: "Failed to invoke Chat" }) + "\x1e");
         else if (frame.arguments[0].message.text === "drop") socket.terminate();
+        else if (plan.codeOnly) socket.send(JSON.stringify({ type: 2, item: { result: { errorCode: "PerUserThrottled" } } }) + "\x1e");
         else if (plan.throttleOn.has(chats.length)) socket.send(JSON.stringify({ type: 2, item: { result: { value: "Throttled", errorCode: "PerUserThrottled" }, throttling: { numUserMessagesInConversation: 1, maxNumUserMessagesInConversation: 600 } } }) + "\x1e");
-        else socket.send(JSON.stringify({ type: 2, item: { result: { value: "Success" }, messages: [{ author: "bot", text: "synthetic reply" }] } }) + "\x1e");
+        else socket.send(JSON.stringify({ type: 2, item: { result: { value: "Success" }, messages: [{ author: "bot", text: frame.arguments[0].message.text === "Reply with exactly the word: pong" ? "pong" : "synthetic reply" }] } }) + "\x1e");
       }
     }
   });
@@ -199,7 +200,9 @@ describe("scripts/throttle-probe.mjs", () => {
 it("tone sweep reports local stops as skipped and does not claim the control was rejected", async () => {
   const who = fresh(30, [2]);
   const cells = ["first", "throttled", "later", "Definitely_Not_A_Real_Tone_XYZ"].map((tone) => ({ tone, note: "" }));
-  const rows = await toneProbe.sweep({ cells, ...who, transport: "chathub", oneTurn, sleep: async () => {} });
+  let calls = 0;
+  const rows = await toneProbe.sweep({ cells, ...who, transport: "chathub", oneTurn: async (o: any) => { calls++; return oneTurn(o); }, sleep: async () => {} });
+  expect(calls).toBe(3);
   expect(chats).toHaveLength(2);
   expect(rows.map((r: any) => r.verdict)).toEqual(["UNKNOWN(origin=null)", "EMPTY", "SKIPPED", "SKIPPED"]);
   expect(rows[2].attempted).toBe(false);
@@ -261,4 +264,57 @@ it("recovery poll records a local pacing hold as inconclusive", async () => {
   expect(chats).toHaveLength(1);
   expect(run.recoveryMin).toBeNull();
   expect(run.recoverySkipped).toBe(true);
+});
+
+it("A/B actual caller aborts a pacing hold before claiming degraded", async () => {
+  // @ts-expect-error JavaScript probe
+  const ab = await import("./throttle-recovery-ab.mjs");
+  const who = fresh(90, [1]);
+  await oneTurn({ ...who, text: "throttle", latchThrottle: false });
+  vi.stubEnv("M365_AVOID_THROTTLING", "1");
+  const lines: string[] = [];
+  await expect(ab.main({ argv: ["--no-new", "--gap=0"], oneTurn, getTokenSilent: async () => who.token, log: (s: string) => lines.push(s) })).rejects.toThrow(/not attempted/i);
+  expect(chats).toHaveLength(1);
+  expect(lines.join("\n")).not.toMatch(/Confirmed degraded|verdict=/);
+});
+
+it("agent-tone actual sweep stops code-only throttle and pacing holds", async () => {
+  // @ts-expect-error JavaScript probe
+  const agent = await import("./agent-tone-probe.mjs");
+  const who = fresh(91);
+  plan.codeOnly = true;
+  vi.stubEnv("M365_TRANSPORT", "chathub");
+  const run = await agent.sweep({ oneTurn, ...who, agentId: "agent", cells: [{ tone: "magic", note: "" }, { tone: "magic", note: "" }], baseline: true, sleep: async () => {}, out: ".", writeFrames: false, log: () => {} });
+  expect(chats).toHaveLength(1);
+  expect(run.results[0].verdict).toBe("THROTTLED");
+  expect(run.stoppedEarly).toBe(true);
+  plan.codeOnly = false;
+  const held = fresh(92, [1]);
+  await oneTurn({ ...held, text: "throttle", latchThrottle: false });
+  vi.stubEnv("M365_AVOID_THROTTLING", "1");
+  const heldRun = await agent.sweep({ oneTurn, ...held, agentId: "agent", cells: [{ tone: "magic", note: "" }], baseline: true, sleep: async () => {}, out: ".", writeFrames: false, log: () => {} });
+  expect(chats).toHaveLength(1);
+  expect(heldRun.results[0].verdict).toBe("SKIPPED");
+});
+
+
+it("agent-tone real sweep preserves a successful remote attempt", async () => {
+  // @ts-expect-error JavaScript probe
+  const agent = await import("./agent-tone-probe.mjs");
+  const who = fresh(93);
+  const run = await agent.sweep({ oneTurn, ...who, agentId: "agent", cells: [{ tone: "magic", note: "" }], baseline: true, sleep: async () => {}, out: ".", writeFrames: false, log: () => {} });
+  expect(chats).toHaveLength(2);
+  expect(run.stoppedEarly).toBe(false);
+  expect(run.results[0].agent.attempted).toBe(true);
+  expect(run.results[0].baseline.attempted).toBe(true);
+});
+
+it("A/B real caller records rested response rather than degraded", async () => {
+  // @ts-expect-error JavaScript probe
+  const ab = await import("./throttle-recovery-ab.mjs");
+  const who = fresh(94);
+  const lines: string[] = [];
+  await ab.main({ argv: ["--no-new", "--gap=0"], oneTurn, getTokenSilent: async () => who.token, log: (s: string) => lines.push(s) });
+  expect(chats).toHaveLength(1);
+  expect(lines.join("\n")).toMatch(/NOT degraded/);
 });

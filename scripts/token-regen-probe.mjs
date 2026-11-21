@@ -41,6 +41,7 @@ if (MODE === "baseline") {
   try {
     const { oneTurn } = await import("./_probe-chat.mjs");
     const r = await oneTurn({ token: t, claims: decodeJwt(t), agentId: null, text: "Reply with exactly the word: pong", timeoutMs: 60000 });
+    if (r.attempted === false) throw new Error(`Probe not attempted: ${r.error}`);
     console.log(`  fresh-token chat: transport=${r.transport} reply=${JSON.stringify((r.fullText || "(empty)").slice(0, 40))} throttle=${JSON.stringify(r.throttle)} disengaged=${r.disengaged} ${r.elapsedMs}ms`);
   } catch (e) { console.log(`  fresh-token chat ERROR: ${e.message}`); }
 }

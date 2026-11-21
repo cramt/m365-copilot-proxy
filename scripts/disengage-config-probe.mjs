@@ -8,7 +8,12 @@
 //
 // Usage: nix develop --command node scripts/disengage-config-probe.mjs [repeat]
 import { getToken, decodeJwt } from "../packages/core/dist/index.mjs";
-import { oneTurn } from "./_probe-chat.mjs";
+import { oneTurn as defaultOneTurn } from "./_probe-chat.mjs";
+
+import { resolve as resolveEntrypoint } from "node:path";
+import { pathToFileURL as entrypointURL } from "node:url";
+
+export async function main({ oneTurn = defaultOneTurn } = {}) {
 
 const REPEAT = Number(process.argv[2] || 2);
 const COOLDOWN_MS = 25_000; // gentle thread spacing
@@ -33,6 +38,7 @@ const rows = [];
 for (const v of VARIANTS) {
   for (let i = 0; i < REPEAT; i++) {
     const r = await oneTurn({ token, claims, text: v.text, agentId: null, tone: "magic" });
+    if (r.attempted === false) throw new Error(`Probe not attempted: ${r.error}`);
     const dea = r.scores?.dea_violation;
     rows.push({ key: v.key, transport: r.transport, disengaged: r.disengaged, dea, origin: r.contentOrigin, mtypes: r.messageTypes.join("|"), err: r.error });
     console.log(`  ${v.key.padEnd(18)} #${i + 1}  transport=${r.transport}  disengaged=${r.disengaged}  dea=${dea ?? "?"}  origin=${r.contentOrigin ?? "?"}  ${r.error ? "ERR:" + r.error : ""}`);
@@ -52,3 +58,7 @@ for (const [k, s] of Object.entries(byKey)) {
   const maxDea = s.deas.length ? Math.max(...s.deas).toExponential(1) : "?";
   console.log(`  ${k.padEnd(18)} DIS ${s.dis}/${s.n}   max_dea=${maxDea}`);
 }
+
+}
+
+if (process.argv[1] && import.meta.url === entrypointURL(resolveEntrypoint(process.argv[1])).href) await main();

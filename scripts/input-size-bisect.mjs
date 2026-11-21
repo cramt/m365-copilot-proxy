@@ -29,7 +29,12 @@
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { getToken, getOrCreateAgent, decodeJwt } from "../packages/core/dist/index.mjs";
-import { oneTurn } from "./_probe-chat.mjs";
+import { oneTurn as defaultOneTurn } from "./_probe-chat.mjs";
+
+import { resolve as resolveEntrypoint } from "node:path";
+import { pathToFileURL as entrypointURL } from "node:url";
+
+export async function main({ oneTurn = defaultOneTurn } = {}) {
 
 const args = process.argv.slice(2);
 const has = (k) => args.includes(k);
@@ -78,6 +83,7 @@ const results = [];
 async function run(chars) {
   const text = makePrompt(chars);
   const r = await oneTurn({ token, claims, text, agentId, timeoutMs: 150000 });
+    if (r.attempted === false) throw new Error(`Probe not attempted: ${r.error}`);
   const out = (r.fullText ?? "");
   const sawHead = out.includes(CANARY_HEAD);
   const sawTail = out.includes(CANARY_TAIL);
@@ -146,3 +152,7 @@ if (deas.length >= 2) {
   console.log(`[in-probe] dea_violation: ${lo.c}c=${lo.dea.toExponential(2)} → ${hi.c}c=${hi.dea.toExponential(2)} (does benign bulk raise the score?)`);
 }
 console.log(`[in-probe] full output: ${OUT}`);
+
+}
+
+if (process.argv[1] && import.meta.url === entrypointURL(resolveEntrypoint(process.argv[1])).href) await main();

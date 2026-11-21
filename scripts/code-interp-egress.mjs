@@ -10,7 +10,12 @@
 // Usage: node scripts/code-interp-egress.mjs <tunnel-base-url> ["python snippet hint"]
 import { readFileSync } from "node:fs";
 import { getToken, decodeJwt } from "../packages/core/dist/index.mjs";
-import { oneTurn } from "./_probe-chat.mjs";
+import { oneTurn as defaultOneTurn } from "./_probe-chat.mjs";
+
+import { resolve as resolveEntrypoint } from "node:path";
+import { pathToFileURL as entrypointURL } from "node:url";
+
+export async function main({ oneTurn = defaultOneTurn } = {}) {
 
 const TUNNEL = (process.argv[2] || readFileSync("/tmp/tunnel_url.txt", "utf8")).trim().replace(/\/$/, "");
 const HINT = process.argv[3] || "";
@@ -32,6 +37,7 @@ const hitsBefore = (() => { try { return readFileSync("scripts/sentinel-hits.log
 
 console.log(`[egress] tunnel=${TUNNEL} sentinel=${SENTINEL}`);
 const r = await oneTurn({ token, claims, agentId: null, optionsSets: CODE_INTERP, extraAllowed: ["GeneratedCode", "GenerateContentQuery", "Progress"], text: prompt, timeoutMs: 120000 });
+if (r.attempted === false) throw new Error(`Probe not attempted: ${r.error}`);
 const out = r.fullText || "";
 
 const hitsAfter = (() => { try { return readFileSync("scripts/sentinel-hits.log", "utf8"); } catch { return ""; } })();
@@ -45,3 +51,6 @@ console.log(`\n[egress] sentinel server got a NEW inbound hit: ${serverGotHit}  
 console.log(`[egress] model reported the correct sentinel value: ${modelHasValue}  ${modelHasValue ? "🎉 END-TO-END" : ""}`);
 if (newHits.trim()) console.log(`[egress] new hit log lines:\n${newHits.trim().slice(0, 400)}`);
 console.log(`[egress] transport=${r.transport} msgTypes=${r.messageTypes.join(",")} ${r.elapsedMs}ms`);
+
+}
+if (process.argv[1] && import.meta.url === entrypointURL(resolveEntrypoint(process.argv[1])).href) await main();
