@@ -13,4 +13,13 @@ export default defineNitroConfig({
     // No-op for a normal (writable) `pnpm build`.
     chmod: true,
   },
+  // Keep selenium-webdriver OUT of the Rollup bundle: it ships ~22M of
+  // selenium-manager binaries for every platform, and its computed
+  // require('./atoms/' + module) calls break when inlined. Operators who opt
+  // into M365_BROWSER_PROVIDER=selenium install selenium-webdriver next to
+  // .output themselves.
+  rollupConfig: {
+    external: (id: string) =>
+      id === "selenium-webdriver" || id.startsWith("selenium-webdriver/"),
+  },
 });

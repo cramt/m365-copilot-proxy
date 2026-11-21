@@ -1,0 +1,297 @@
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { EventEmitter } from "node:events";
+
+const wire = vi.hoisted(() => ({ sockets: [] as any[], asyncClose: false }));
+vi.mock("ws", async () => {
+  const { EventEmitter } = await import("node:events");
+  class Socket extends EventEmitter {
+    static OPEN = 1;
+    readyState = 1;
+    sent: string[] = [];
+    constructor() { super(); wire.sockets.push(this); }
+    send(data: string) { this.sent.push(data); }
+    close() {
+      this.readyState = wire.asyncClose ? 2 : 3;
+      if (!wire.asyncClose) this.emit("close");
+    }
+    terminate() { this.readyState = 3; this.emit("close"); }
+  }
+  return { default: Socket };
+});
+vi.mock("./auth.js", () => ({ getToken: vi.fn() }));
+vi.mock("./agent.js", () => ({ getOrCreateAgent: vi.fn() }));
+import { CopilotSession } from "./session.js";
+const token = `x.${Buffer.from(JSON.stringify({ oid: "oid", tid: "tid", aud: "test", iss: "test", exp: 9999999999 })).toString("base64url")}.x`;
+const frame = (ws: EventEmitter, value: unknown) => ws.emit("message", Buffer.from(JSON.stringify(value) + "\x1e"));
+afterEach(() => { vi.useRealTimers(); delete process.env.M365_TURN_IDLE_MS; delete process.env.M365_TRANSPORT; wire.sockets = []; wire.asyncClose = false; });
+
+describe("terminal frames with an asynchronous closing handshake", () => {
+  const setup = async (nativeActions = false) => {
+    vi.useFakeTimers(); process.env.M365_TURN_IDLE_MS = "100";
+    wire.asyncClose = true;
+    const controller = new AbortController();
+    const remove = vi.spyOn(controller.signal, "removeEventListener");
+    const session = new CopilotSession(nativeActions ? { nativeActions: { capabilities: [] } } : {});
+    const pending = session.chat(token, "hello", undefined, controller.signal);
+    const ws = wire.sockets[0];
+    frame(ws, {});
+    return { ws, stream: await pending, controller, remove };
+  };
+
+  it("finalizes actual type2 success before transport close without a late idle error", async () => {
+    const { ws, stream, controller, remove } = await setup();
+    frame(ws, { type: 1, target: "update", arguments: [{ messages: [{ author: "bot", text: "answer", messageId: "m" }] }] });
+    frame(ws, { type: 2, item: { result: { value: "Success" }, turnState: "Completed", messages: [] } });
+    expect(ws.readyState).toBe(2); // close() does NOT emit close.
+    await vi.advanceTimersByTimeAsync(500);
+    const iterator = stream[Symbol.asyncIterator]();
+    expect(await iterator.next()).toEqual({ value: "answer", done: false });
+    expect(await iterator.next()).toEqual({ value: undefined, done: true });
+    expect(stream.result).toEqual({ value: "Success" });
+    expect(stream.turnState).toBe("Completed");
+    expect(vi.getTimerCount()).toBe(0);
+    expect(remove).toHaveBeenCalledWith("abort", expect.any(Function));
+    controller.abort();
+    ws.emit("error", new Error("late transport error"));
+    ws.emit("close");
+    expect((await iterator.next()).done).toBe(true);
+  });
+
+  it.each([3, 7])("preserves type%s errors and releases resources before close", async (type) => {
+    const { ws, stream, remove } = await setup();
+    frame(ws, { type, invocationId: "0", error: "terminal failure" });
+    expect(ws.readyState).toBe(2);
+    await vi.advanceTimersByTimeAsync(500);
+    await expect(stream[Symbol.asyncIterator]().next()).rejects.toThrow(
+      type === 3 ? "Completion error: terminal failure" : "Server close: terminal failure",
+    );
+    expect(vi.getTimerCount()).toBe(0);
+    expect(remove).toHaveBeenCalledWith("abort", expect.any(Function));
+  });
+
+  it("clears the Stop fallback on type3 acknowledgement before close", async () => {
+    const { ws, stream, controller } = await setup();
+    controller.abort();
+    frame(ws, { type: 3, invocationId: "1" });
+    expect(vi.getTimerCount()).toBe(0);
+    expect((await stream[Symbol.asyncIterator]().next()).done).toBe(true);
+  });
+
+  it("rejects a pre-aborted signal without waiting for transport close", async () => {
+    vi.useFakeTimers(); process.env.M365_TURN_IDLE_MS = "100";
+    wire.asyncClose = true;
+    const controller = new AbortController(); controller.abort();
+    const pending = new CopilotSession().chat(token, "hello", undefined, controller.signal);
+    const rejected = expect(pending).rejects.toThrow(/closed before handshake/);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(vi.getTimerCount()).toBe(0);
+    await rejected;
+    expect(wire.sockets[0].sent).toEqual([]);
+  });
+
+  it("still times out a silent resumed native action", async () => {
+    const { ws, stream } = await setup(true);
+    frame(ws, { type: 2, item: { messages: [{ author: "bot", messageType: "ConfirmationCard", actionId: "a", isConsequential: false }] } });
+    const rejected = expect(stream[Symbol.asyncIterator]().next()).rejects.toThrow("No response from M365 for 100ms");
+    await vi.advanceTimersByTimeAsync(100);
+    await rejected;
+    expect(ws.readyState).toBe(3);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it("ignores trailing frames in the same message after terminal success", async () => {
+    const { ws, stream } = await setup();
+    ws.emit("message", Buffer.from('{"type":2,"item":{}}\x1e{"type":7,"error":"too late"}\x1e'));
+    expect((await stream[Symbol.asyncIterator]().next()).done).toBe(true);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it("keeps a native-action type2 resume alive until its actual result", async () => {
+    const { ws, stream } = await setup(true);
+    frame(ws, { type: 2, item: { messages: [{ author: "bot", messageType: "ConfirmationCard", actionId: "a", sourceRequestId: "r", isConsequential: false }] } });
+    expect(ws.readyState).toBe(1);
+    expect(ws.sent.some((s: string) => s.includes("ResumeInvokeAction"))).toBe(true);
+    expect(vi.getTimerCount()).toBe(1);
+    await vi.advanceTimersByTimeAsync(75);
+    frame(ws, { type: 1, target: "update", arguments: [{ messages: [{ author: "bot", text: "action result", messageId: "m" }] }] });
+    frame(ws, { type: 2, item: { result: { value: "Success" } } });
+    await vi.advanceTimersByTimeAsync(500);
+    const iterator = stream[Symbol.asyncIterator]();
+    expect((await iterator.next()).value).toBe("action result");
+    expect((await iterator.next()).done).toBe(true);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+});
+
+describe("silent turn recovery", () => {
+  it("rejects when silent before handshake", async () => {
+    vi.useFakeTimers(); process.env.M365_TURN_IDLE_MS = "100";
+    const p = new CopilotSession().chat(token, "hello");
+    const rejected = expect(p).rejects.toThrow(/No response/);
+    await vi.advanceTimersByTimeAsync(100);
+    await rejected;
+  });
+  it("surfaces post-handshake silence to the stream", async () => {
+    vi.useFakeTimers(); process.env.M365_TURN_IDLE_MS = "100";
+    const p = new CopilotSession().chat(token, "hello");
+    frame(wire.sockets[0], {});
+    const stream = await p;
+    const rejected = expect(stream[Symbol.asyncIterator]().next()).rejects.toThrow(/No response/);
+    await vi.advanceTimersByTimeAsync(100);
+    await rejected;
+  });
+  it("resets the idle deadline on activity and cleans up on success", async () => {
+    vi.useFakeTimers(); process.env.M365_TURN_IDLE_MS = "100";
+    const p = new CopilotSession().chat(token, "hello");
+    const ws = wire.sockets[0];
+    await vi.advanceTimersByTimeAsync(75);
+    frame(ws, {});
+    const stream = await p;
+    await vi.advanceTimersByTimeAsync(75);
+    frame(ws, { type: 6 });
+    await vi.advanceTimersByTimeAsync(75);
+    frame(ws, { type: 2, item: {} });
+    expect(await stream[Symbol.asyncIterator]().next()).toEqual({ value: undefined, done: true });
+    await vi.advanceTimersByTimeAsync(500);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+  it("cleans up after a socket error", async () => {
+    vi.useFakeTimers(); process.env.M365_TURN_IDLE_MS = "100";
+    const p = new CopilotSession().chat(token, "hello");
+    const ws = wire.sockets[0]; frame(ws, {});
+    const stream = await p;
+    ws.emit("error", new Error("test failure"));
+    await expect(stream[Symbol.asyncIterator]().next()).rejects.toThrow("test failure");
+    await vi.advanceTimersByTimeAsync(500);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+  it("aborting after handshake sends stop and clears timers on acknowledgement", async () => {
+    vi.useFakeTimers(); process.env.M365_TURN_IDLE_MS = "100";
+    const controller = new AbortController();
+    const p = new CopilotSession().chat(token, "hello", undefined, controller.signal);
+    const ws = wire.sockets[0]; frame(ws, {});
+    const stream = await p;
+    controller.abort();
+    expect(ws.sent.some((s: string) => s.includes('"stop"'))).toBe(true);
+    frame(ws, { type: 3 });
+    expect((await stream[Symbol.asyncIterator]().next()).done).toBe(true);
+    await vi.advanceTimersByTimeAsync(3000);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+  it("aborting before handshake settles without a late timeout", async () => {
+    vi.useFakeTimers(); process.env.M365_TURN_IDLE_MS = "100";
+    const controller = new AbortController();
+    const p = new CopilotSession().chat(token, "hello", undefined, controller.signal);
+    const rejected = expect(p).rejects.toThrow(/closed before handshake/);
+    controller.abort();
+    await rejected;
+    await vi.advanceTimersByTimeAsync(3000);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+  it.each(["-1", "Infinity", "2147483648", "junk", "0"])("falls back for idle value %s", async (value) => {
+    vi.useFakeTimers(); process.env.M365_TURN_IDLE_MS = value;
+    const p = new CopilotSession().chat(token, "hello");
+    const rejected = expect(p).rejects.toThrow(/No response/);
+    await vi.advanceTimersByTimeAsync(119_999);
+    expect(wire.sockets[0].readyState).toBe(1);
+    await vi.advanceTimersByTimeAsync(1);
+    await rejected;
+  });
+});
+
+// M365's post-processing deletes `[word]:` from a message's final text. What a
+// turn hands back must be the model's own text however the turn ends, so every
+// ending goes through one settle: a terminal frame, the idle watchdog, a socket
+// error and the transport's close.
+describe("a turn's text is settled the same way however the turn ends", () => {
+  const RAW = "x = [regex]::Replace(a)\n";
+  const SETTLED = RAW + "then the rest";
+  const STRIPPED = "x = :Replace(a)\nthen the rest";
+  const item = (it: object) => ({ type: 2, invocationId: "1", item: it });
+  const part = (argument: object) => item({ type: "message_part", target: "update", argument });
+  const cursorJ = { j: "$['m1'].adaptiveCards[0].body[0].text", p: -1 };
+  const restate = () => part({ cursor: cursorJ, messages: [{ author: "bot", text: "", contentOrigin: "DeepLeo", messageId: "m1" }] });
+
+  type Ending = { name: string; send: (ws: any) => unknown; error?: string; closes?: boolean; idleMs?: string };
+  const chathub: Ending[] = [
+    { name: "a type 2 final item", send: (ws) => frame(ws, { type: 2, item: { result: { value: "Success" } } }) },
+    { name: "a type 3 completion", send: (ws) => frame(ws, { type: 3, invocationId: "0" }) },
+    { name: "a type 7 close", send: (ws) => frame(ws, { type: 7 }) },
+    { name: "a type 3 completion with an error", send: (ws) => frame(ws, { type: 3, invocationId: "0", error: "boom" }), error: "Completion error: boom" },
+    { name: "a type 7 close with an error", send: (ws) => frame(ws, { type: 7, invocationId: "0", error: "boom" }), error: "Server close: boom" },
+    { name: "the idle watchdog", send: async () => { await vi.advanceTimersByTimeAsync(100); }, error: "No response from M365 for 100ms" },
+    { name: "a socket error", send: (ws) => ws.emit("error", new Error("reset")), error: "WebSocket error: reset" },
+    { name: "the transport closing", send: (ws) => ws.emit("close"), closes: true },
+  ];
+  const streamhub: Ending[] = [
+    { name: "request_end", send: (ws) => frame(ws, item({ type: "request_end", outcome: { category: "Success" } })) },
+    { name: "an error item", send: (ws) => frame(ws, item({ type: "error", errorCategory: "InvalidRequest", errorCode: "InvalidNote", message: "no" })) },
+    { name: "the EndOfRequest grace timer", idleMs: "120000", send: async (ws) => {
+      frame(ws, part({ messages: [{ author: null, messageType: "EndOfRequest", messageId: "e1" }] }));
+      await vi.advanceTimersByTimeAsync(5_000);
+    } },
+    { name: "the idle watchdog", send: async () => { await vi.advanceTimersByTimeAsync(100); }, error: "No response from M365 for 100ms" },
+    { name: "a socket error", send: (ws) => ws.emit("error", new Error("reset")), error: "WebSocket error: reset" },
+    { name: "the transport closing", send: (ws) => ws.emit("close"), closes: true },
+  ];
+
+  async function run(transport: "chathub" | "streamhub", ending: Ending) {
+    vi.useFakeTimers();
+    process.env.M365_TURN_IDLE_MS = ending.idleMs ?? "100";
+    if (transport === "streamhub") process.env.M365_TRANSPORT = "streamhub";
+    wire.asyncClose = true; // close() leaves the socket open: only the proxy's own ending can finish the turn
+    const pending = new CopilotSession().chat(token, "hello");
+    const ws = wire.sockets[0];
+    frame(ws, {});
+    const stream = await pending;
+    if (transport === "chathub") {
+      frame(ws, { type: 1, target: "update", arguments: [{ messages: [{ author: "bot", messageId: "m1", text: "x = " }] }] });
+      frame(ws, { type: 1, target: "update", arguments: [{ writeAtCursor: "[regex]::Replace(a)\n" }] });
+      frame(ws, { type: 1, target: "update", arguments: [{ messages: [{ author: "bot", messageId: "m1", text: STRIPPED }] }] });
+    } else {
+      frame(ws, restate());
+      frame(ws, part({ w: RAW }));
+      frame(ws, restate());
+      frame(ws, part({ messages: [{ author: "bot", text: STRIPPED, contentOrigin: "DeepLeo", messageId: "m1" }], isLastUpdate: true }));
+    }
+    await ending.send(ws);
+    await vi.advanceTimersByTimeAsync(0);
+    const iterator = stream[Symbol.asyncIterator]();
+    let streamed = "";
+    let error: string | undefined;
+    for (;;) {
+      try {
+        const next = await iterator.next();
+        if (next.done) break;
+        streamed += next.value;
+      } catch (e: any) { error = e.message; break; }
+    }
+    return { stream, streamed, error, ws };
+  }
+
+  describe.each([["chathub", chathub], ["streamhub", streamhub]] as const)("over %s", (transport, endings) => {
+    it.each(endings.map((e) => [e.name, e] as const))("returns the model's own text when the turn ends with %s", async (_name, ending) => {
+      const { stream, streamed, error } = await run(transport, ending);
+      expect(stream.fullText).toBe(SETTLED);
+      expect(streamed).toBe(SETTLED);
+      expect(error).toBe(ending.error);
+    });
+
+    it.each(endings.filter((e) => !e.closes).map((e) => [e.name, e] as const))("leaves no timer or late error behind after %s", async (_name, ending) => {
+      const { ws, stream } = await run(transport, ending);
+      expect(vi.getTimerCount()).toBe(0);
+      await vi.advanceTimersByTimeAsync(10 * 60_000);
+      ws.emit("close"); // the lagging transport close, after the turn is over
+      expect(stream.fullText).toBe(SETTLED);
+    });
+  });
+
+  it("ends a StreamHub turn on request_end before the transport close, keeping the result", async () => {
+    const { stream, ws } = await run("streamhub", {
+      name: "request_end",
+      send: (w) => frame(w, item({ type: "request_end", outcome: { category: "Throttled", errorCode: "PerUserThrottled", message: "slow down" } })),
+    });
+    expect(ws.readyState).toBe(2);
+    expect(stream.result).toEqual({ value: "Throttled", errorCode: "PerUserThrottled", message: "slow down" });
+  });
+});

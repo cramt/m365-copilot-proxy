@@ -184,6 +184,53 @@ export function cursorMessageId(j: string | undefined): string | null {
   return m ? m[1] : null;
 }
 
+/** Resolve the streaming cursor's target string inside `m` (usually
+ *  `adaptiveCards[0].body[0].text`). Deltas after a cursor extend the card's
+ *  text, which can omit a leading `"<"`, `"("`, or `"("` in `"[("` that `m.text`
+ *  already holds (#134). Falls back to `m.text` when no card path resolves. */
+export function cursorBaseText(
+  m: { text?: string; adaptiveCards?: unknown[] },
+  cursorPath: string | undefined,
+): string | undefined {
+  const rest = cursorPath?.match(/^\$\['[^']+'\]\.(.+)$/)?.[1];
+  if (rest && /^([A-Za-z_]\w*|\[\d+\])(\.[A-Za-z_]\w*|\[\d+\])*$/.test(rest)) {
+    let cur: unknown = m;
+    for (const seg of rest.matchAll(/([A-Za-z_]\w*)|\[(\d+)\]/g)) {
+      const key = seg[1] ?? seg[2];
+      if (cur == null || typeof cur !== "object" || !Object.hasOwn(cur, key)) {
+        return m.text;
+      }
+      cur = (cur as Record<string, unknown>)[key];
+    }
+    if (typeof cur === "string") return cur;
+  }
+  return m.text;
+}
+
+/** Extract final adaptiveCard replacement text from StreamHub `patches`
+ *  items (`/#134` Cause 2, where the last character arrives only there). */
+export function cardReplacePatches(arg: unknown): Array<{ id: string; text: string }> {
+  const patches = (arg as { patches?: unknown } | null | undefined)?.patches;
+  if (!Array.isArray(patches)) return [];
+  const out: Array<{ id: string; text: string }> = [];
+  for (const p of patches) {
+    if (!p || typeof p !== "object") continue;
+    const { op, path, value } = p as { op?: unknown; path?: unknown; value?: unknown };
+    if (op !== "replace" || typeof path !== "string") continue;
+    const card = path.match(/^\/([^/]+)\/adaptiveCards$/);
+    if (card) {
+      const cardText = (value as Array<{ body?: Array<{ text?: unknown }> }> | undefined)?.[0]?.body?.[0]?.text;
+      if (typeof cardText === "string" && cardText.length > 0) out.push({ id: card[1], text: cardText });
+      continue;
+    }
+    const textPatch = path.match(/^\/([^/]+)\/adaptiveCards\/(\d+)\/body\/(\d+)\/text$/);
+    if (textPatch && typeof value === "string" && value.length > 0) {
+      out.push({ id: textPatch[1], text: value });
+    }
+  }
+  return out;
+}
+
 /** A request id as StreamHub may echo it: GUIDs compare without dashes or case. */
 function normalizeRequestId(id: string): string {
   return id.replace(/-/g, "").toLowerCase();
@@ -254,8 +301,6 @@ export function restoreStrippedBrackets(raw: string, final: string): string | nu
 export class TurnTextComposer {
   private texts = new Map<string, string>();
   private target: string | null = null;
-  /** No delta has arrived since the last cursor or restart (see delta). */
-  private afterCursor = false;
   // Per message: the run of deltas in progress (the text it started from, and
   // the deltas since), and the longest text a finished run built. The deltas
   // are the model's own text; see restoreStrippedBrackets.
@@ -273,7 +318,6 @@ export class TurnTextComposer {
   /** A cursor frame: subsequent deltas extend message `id`. */
   cursor(id: string): void {
     this.target = id;
-    this.afterCursor = true;
   }
 
   /** A full-text snapshot of one message. Before any cursor has been seen, the
@@ -282,33 +326,28 @@ export class TurnTextComposer {
     const key = id ?? this.target ?? "";
     if (this.target === null) this.target = key;
     this.endRun(key);
-    this.texts.set(key, foldStreamText(this.texts.get(key) ?? "", text).answer);
+    const current = this.texts.get(key) ?? "";
+    const folded = foldStreamText(current, text).answer;
+    // A final snapshot/patch can be shorter than `current` solely because M365
+    // stripped `[word]:` tokens even when it also carries trailing chars the deltas missed.
+    if (folded === current && text && text.length <= current.length) {
+      const restored = restoreStrippedBrackets(current, text);
+      if (restored && restored.length > current.length) {
+        this.texts.set(key, restored);
+        return;
+      }
+    }
+    this.texts.set(key, folded);
   }
 
-  /** A token delta for the message the cursor last named.
-   *
-   *  The first delta after a cursor (or StreamHub restart) can restate the
-   *  head snapshot that came with it. A message that opens with "<" streams the
-   *  snapshot "<" and then the delta "<document" (M365 holds the "<" back until
-   *  it knows the tag), so appending gave "<<document>notlar.docx…", and the
-   *  final snapshot, one character shorter, never replaced it. 9 of 1,061 cursor
-   *  frames in the Oct 2–5 debug logs, each one a "<"; in the rest the first
-   *  delta continues the snapshot. Only that "<" counts as restated: a head of
-   *  "*" or "`" followed by a delta that starts the same way is a continuation
-   *  ("*" + "*Summary**" is bold, "`" + "``bash" a fence), and dropping it would
-   *  break the markdown. Dropping the restated "<" from `run.base` as well keeps
-   *  `finalText` / `restoreStrippedBrackets` aligned with the model's text
-   *  (docs/hypotheses.md §50 F149). */
+  /** A token delta for the message the cursor last named. */
   delta(text: string): void {
     const key = this.target ?? "";
     const current = this.texts.get(key) ?? "";
-    const restated = this.afterCursor && current === "<" && text.startsWith("<");
-    const base = restated ? "" : current;
-    const run = this.runs.get(key) ?? { base, deltas: "" };
+    const run = this.runs.get(key) ?? { base: current, deltas: "" };
     run.deltas += text;
     this.runs.set(key, run);
-    this.texts.set(key, base + text);
-    this.afterCursor = false;
+    this.texts.set(key, current + text);
   }
 
   /** A StreamHub cursor frame: message `id` now reads exactly `text`, and the
@@ -317,7 +356,6 @@ export class TurnTextComposer {
    *  restatement in (as `snapshot` does) would duplicate the message. */
   restart(id: string, text: string): void {
     this.target = id;
-    this.afterCursor = true;
     this.endRun(id);
     this.texts.set(id, text);
   }
@@ -340,6 +378,47 @@ export class TurnTextComposer {
       })
       .filter((t) => t.length > 0)
       .join("\n\n");
+  }
+}
+
+/**
+ * Assemble one turn's chain of thought: the `Progress` messages whose
+ * `contentOrigin` is `ChainOfThoughtSummary`, the reasoning text the first-party
+ * clients show in their chain-of-thought card (summaries for Sonnet 5.5, Opus 5.5
+ * and GPT-5.5 Think Deeper; Opus 4.8's reads like its own thinking). A message
+ * arrives as full-text snapshots that grow as the model thinks, on both
+ * transports, and Chathub restates it in the final item. `add` returns what a
+ * snapshot adds to what was handed out, with a blank line before each new
+ * message, so streaming it reproduces `text`. A snapshot that rewrites a
+ * message rather than extending it updates `text` but adds nothing to the
+ * stream: what was streamed can't be taken back.
+ *
+ * The other `Progress` messages are left out: EarlyProgress's "Gathering
+ * details…" comes from a fixed list, and "Coding and executing" or "Creating
+ * file …" report the model's actions in its own sandbox, not its reasoning.
+ */
+export class ChainOfThoughtComposer {
+  private texts = new Map<string, string>();
+  private streamed = new Map<string, string>();
+
+  /** Fold a snapshot of chain-of-thought message `id`; returns the text to stream ("" for none). */
+  add(id: string, text: string): string {
+    const prev = this.texts.get(id) ?? "";
+    if (text.length <= prev.length) return "";
+    this.texts.set(id, text);
+    const sent = this.streamed.get(id);
+    if (sent === undefined) {
+      const sep = this.streamed.size > 0 ? "\n\n" : "";
+      this.streamed.set(id, text);
+      return sep + text;
+    }
+    if (!text.startsWith(sent)) return "";
+    this.streamed.set(id, text);
+    return text.slice(sent.length);
+  }
+
+  get text(): string {
+    return [...this.texts.values()].join("\n\n");
   }
 }
 
@@ -370,6 +449,9 @@ export interface ChatTurnOptions {
   /** Uploaded images and documents this turn's message points at (image-input.ts,
    *  file-upload.ts). */
   images?: (ImageAnnotation | FileAnnotation)[];
+  /** Called with each piece of the model's chain of thought as it arrives
+   *  (ChainOfThoughtComposer); the whole of it is `stream.reasoning`. */
+  onReasoning?: (delta: string) => void;
 }
 
 export interface CopilotSessionOptions {
@@ -520,6 +602,7 @@ export class CopilotSession {
     this._turnCount++;
     const wantImages = opts?.generateImages ?? false;
     const images = opts?.images ?? [];
+    const onReasoning = opts?.onReasoning;
 
     log.info(`Chat turn ${this._turnCount - 1}: model=${model}, isFirst=${isFirst}, text=${JSON.stringify(trunc(text, 200))}`);
     recordTurn(); // the throttle-avoidance bucket counts what that line counts (turn-budget.ts)
@@ -586,6 +669,9 @@ export class CopilotSession {
       // the composed whole folded into this string. See `advance`.
       let answer = "";
       const composer = new TurnTextComposer();
+      const answerMessageIds = new Set<string>();
+      // The model's chain of thought, kept apart from the answer.
+      const thoughts = new ChainOfThoughtComposer();
       let receivedContent = false;
       let throttleInfo: { current: number; max: number } | null = null;
       let contentOrigin: string | null = null;
@@ -737,6 +823,9 @@ export class CopilotSession {
         get sawAction() {
           return sawAction;
         },
+        get reasoning() {
+          return thoughts.text;
+        },
 
         [Symbol.asyncIterator]() {
           return {
@@ -764,6 +853,15 @@ export class CopilotSession {
 
       let handshakeDone = false;
       let stopped = false;
+      let finished = false;
+      let idleTimer: ReturnType<typeof setTimeout> | undefined;
+      let stopTimer: ReturnType<typeof setTimeout> | undefined;
+      // Safety net for a StreamHub turn whose `request_end` never comes (see
+      // STREAMHUB_VARIANTS): finish shortly after its `EndOfRequest` message.
+      let endGrace: ReturnType<typeof setTimeout> | undefined;
+      const rawIdle = process.env.M365_TURN_IDLE_MS;
+      const parsedIdle = rawIdle === undefined || rawIdle.trim() === "" ? NaN : Number(rawIdle);
+      const idleMs = Number.isFinite(parsedIdle) && parsedIdle > 0 && parsedIdle <= 2_147_483_647 ? parsedIdle : 120_000;
 
       // StreamHub frames go up as stream items of the client stream ("0").
       const sendItem = (item: Record<string, unknown>) => {
@@ -791,14 +889,43 @@ export class CopilotSession {
         }
       };
 
-      // Safety net for a StreamHub turn whose `request_end` never comes (see
-      // STREAMHUB_VARIANTS): close shortly after its `EndOfRequest` message.
-      let endGrace: ReturnType<typeof setTimeout> | null = null;
+      const cleanup = () => {
+        if (idleTimer) clearTimeout(idleTimer);
+        if (stopTimer) clearTimeout(stopTimer);
+        if (endGrace) clearTimeout(endGrace);
+        signal?.removeEventListener("abort", onAbort);
+      };
+      // The one way a turn ends, whichever frame, timer or socket event ends
+      // it: Chathub's type 2/3/7 frames, StreamHub's `request_end` and `error`
+      // items and its EndOfRequest grace timer, the idle watchdog, a socket
+      // error and the transport's own close. The protocol's end owns the
+      // result; the transport's close handshake can lag behind it. Before the
+      // handshake finishes there is no stream yet, so the chat() promise fails.
+      const finish = (error?: Error, closeBy: "close" | "terminate" | "none" = "close") => {
+        if (finished) return;
+        finished = true;
+        cleanup();
+        if (!handshakeDone) {
+          reject(error ?? new Error("WebSocket closed before handshake"));
+        } else {
+          settleAnswer();
+          if (error) onError(error); else onDone();
+        }
+        try {
+          if (closeBy === "close") ws.close();
+          else if (closeBy === "terminate") ws.terminate();
+        } catch {}
+      };
+      const armIdle = () => {
+        if (finished || stopped) return;
+        if (idleTimer) clearTimeout(idleTimer);
+        idleTimer = setTimeout(() => finish(new Error(`No response from M365 for ${idleMs}ms`), "terminate"), idleMs);
+      };
       const armEndGrace = () => {
         if (endGrace) return;
         endGrace = setTimeout(() => {
-          log.info(`StreamHub: no request_end ${STREAMHUB_END_GRACE_MS} ms after EndOfRequest — closing`);
-          try { ws.close(); } catch {}
+          log.info(`StreamHub: no request_end ${STREAMHUB_END_GRACE_MS} ms after EndOfRequest — ending the turn`);
+          finish();
         }, STREAMHUB_END_GRACE_MS);
       };
 
@@ -808,8 +935,9 @@ export class CopilotSession {
       // hard-close fallback). Before the handshake completes there's nothing to
       // stop, so just close. StreamHub's stop is a `stop` item naming the turn.
       const onAbort = () => {
-        if (stopped) return;
+        if (finished || stopped) return;
         stopped = true;
+        if (idleTimer) clearTimeout(idleTimer);
         try {
           if (ws.readyState === WebSocket.OPEN && handshakeDone) {
             log.info("Aborted — sending Stop frame to cancel the turn");
@@ -825,31 +953,35 @@ export class CopilotSession {
               dumpFrame(requestId, { target: "stop", type: 1 }, "send");
               ws.send(STOP_FRAME);
             }
-            setTimeout(() => { try { ws.close(); } catch {} }, 2_000);
+            stopTimer = setTimeout(() => { try { ws.close(); } catch {} }, 2_000);
           } else {
-            try { ws.close(); } catch {}
+            finish();
           }
         } catch {
-          try { ws.close(); } catch {}
+          finish();
         }
       };
       if (signal) {
-        if (signal.aborted) onAbort();
+        if (signal.aborted) queueMicrotask(onAbort);
         else signal.addEventListener("abort", onAbort, { once: true });
       }
-      const clearAbort = () => signal?.removeEventListener("abort", onAbort);
+      armIdle();
 
       ws.on("open", () => {
+        if (finished || stopped) return;
         log.debug("WS connected, sending handshake");
         ws.send(JSON.stringify({ protocol: "json", version: 1 }) + RS);
       });
 
       ws.on("message", (data: WebSocket.RawData) => {
+        if (finished) return;
+        armIdle();
         const raw = data.toString();
         log.debug("WS recv:", trunc(raw, 500));
         const frames = raw.split(RS).filter((f) => f.length > 0);
 
         for (const frame of frames) {
+          if (finished) break;
           let parsed: unknown;
           try {
             parsed = JSON.parse(frame);
@@ -863,13 +995,12 @@ export class CopilotSession {
           dumpFrame(requestId, parsed, "recv");
 
           if (!handshakeDone) {
-            handshakeDone = true;
             const hs = SignalRHandshakeResponse.safeParse(parsed);
             if (hs.success && hs.data.error) {
-              ws.close();
-              reject(new Error(`Handshake error: ${hs.data.error}`));
+              finish(new Error(`Handshake error: ${hs.data.error}`));
               return;
             }
+            handshakeDone = true;
             sendChat();
             continue;
           }
@@ -879,22 +1010,16 @@ export class CopilotSession {
       });
 
       ws.on("error", (err: Error) => {
+        if (finished) return;
         const msg = err.message || "connection failed";
         log.error("WS error:", msg);
-        if (!handshakeDone) {
-          reject(new Error(`WebSocket error: ${msg}`));
-        } else {
-          onError(new Error(`WebSocket error: ${msg}`));
-        }
+        finish(new Error(`WebSocket error: ${msg}`), "none");
       });
 
       ws.on("close", () => {
-        clearAbort();
-        if (endGrace) clearTimeout(endGrace);
-        settleAnswer();
+        finish(undefined, "none");
         log.info("WS closed, answer length:", answer.length);
         log.debug("Final response:", trunc(answer, 1000));
-        onDone();
       });
 
       const sendChat = () => {
@@ -1141,6 +1266,14 @@ export class CopilotSession {
         }
       };
 
+      // A chain-of-thought snapshot (an update's, or the final item's restatement).
+      const noteThought = (m: { contentOrigin?: unknown; messageId?: unknown; text?: unknown }) => {
+        if (m.contentOrigin !== "ChainOfThoughtSummary" || typeof m.text !== "string") return;
+        const piece = thoughts.add(typeof m.messageId === "string" ? m.messageId : "", m.text);
+        if (!piece || !onReasoning) return;
+        try { onReasoning(piece); } catch (e) { log.error("onReasoning failed:", (e as Error).message); }
+      };
+
       const noteResult = (value: string, errorCode?: string, message?: string) => {
         serverResult = {
           value,
@@ -1197,25 +1330,36 @@ export class CopilotSession {
               // messageType'd bot frame (which the plain-chat path drops). Detect
               // it and auto-approve on the same socket (H-NATIVE-6).
               maybeResumeAction(m);
+              noteThought(m);
             }
-            if (m.author !== "bot" || m.messageType || typeof m.text !== "string") continue;
+            if (m.author !== "bot" || m.messageType) continue;
+            if (m.messageId) answerMessageIds.add(m.messageId);
+            const text = cursorId && m.messageId === cursorId ? cursorBaseText(m, msgUpdate.data.cursor?.j) : m.text;
+            if (typeof text !== "string") continue;
             if (streamHub && cursorId && m.messageId === cursorId) {
-              composer.restart(cursorId, m.text);
+              composer.restart(cursorId, text);
               advance(composer.text);
-            } else if (m.text) {
-              composer.snapshot(m.messageId, m.text);
+            } else if (text) {
+              composer.snapshot(m.messageId, text);
               advance(composer.text);
             }
           }
-          return;
+        } else {
+          const throttle = ThrottlingUpdate.safeParse(arg);
+          if (throttle.success) {
+            const t = throttle.data.throttling;
+            if (streamHub) noteThrottling((arg as { throttling: unknown }).throttling);
+            else throttleInfo = { current: t.numUserMessagesInConversation, max: t.maxNumUserMessagesInConversation };
+            log.info(`Throttle: ${t.numUserMessagesInConversation}/${t.maxNumUserMessagesInConversation} messages`);
+          }
         }
 
-        const throttle = ThrottlingUpdate.safeParse(arg);
-        if (throttle.success) {
-          const t = throttle.data.throttling;
-          if (streamHub) noteThrottling((arg as { throttling: unknown }).throttling);
-          else throttleInfo = { current: t.numUserMessagesInConversation, max: t.maxNumUserMessagesInConversation };
-          log.info(`Throttle: ${t.numUserMessagesInConversation}/${t.maxNumUserMessagesInConversation} messages`);
+        if (streamHub) {
+          for (const patch of cardReplacePatches(arg)) {
+            if (!answerMessageIds.has(patch.id)) continue;
+            composer.snapshot(patch.id, patch.text);
+            advance(composer.text);
+          }
         }
       };
 
@@ -1249,7 +1393,7 @@ export class CopilotSession {
           const end = StreamHubRequestEnd.safeParse(item);
           const outcome = end.success ? end.data.outcome : undefined;
           if (outcome && !serverResult) noteResult(outcome.category, outcome.errorCode ?? outcome.code, outcome.message);
-          ws.close();
+          finish();
           return;
         }
         if (type === "error") {
@@ -1257,7 +1401,7 @@ export class CopilotSession {
           const e: { errorCategory?: string; errorCode?: string; message?: string; detail?: string } = err.success ? err.data : {};
           log.info(`StreamHub error item: ${e.errorCategory ?? "?"} ${e.errorCode ?? ""} ${trunc(e.detail ?? e.message ?? "", 300)}`);
           noteResult(e.errorCategory ?? "InternalError", e.errorCode, e.message);
-          ws.close();
+          finish();
         }
       };
 
@@ -1276,19 +1420,15 @@ export class CopilotSession {
 
         if (base.type === 7) {
           const frame = CloseFrame.safeParse(raw);
-          if (frame.success && frame.data.error) {
-            onError(new Error(`Server close: ${frame.data.error}`));
-          }
-          ws.close();
+          finish(frame.success && frame.data.error
+            ? new Error(`Server close: ${frame.data.error}`) : undefined);
           return;
         }
 
         if (base.type === 3) {
           const frame = CompletionFrame.safeParse(raw);
-          if (frame.success && frame.data.error) {
-            onError(new Error(`Completion error: ${frame.data.error}`));
-          }
-          ws.close();
+          finish(frame.success && frame.data.error
+            ? new Error(`Completion error: ${frame.data.error}`) : undefined);
           return;
         }
 
@@ -1324,13 +1464,14 @@ export class CopilotSession {
                 }
               }
               if (maybeResumeAction(m)) resumedHere = true;
+              noteThought(m);
             }
             // If the model just triggered a custom action, this "final" item isn't
             // final — we sent a ResumeInvokeAction and must keep the socket open to
             // receive the action's result (H-NATIVE-6).
             if (resumedHere) return;
           }
-          ws.close();
+          finish();
           return;
         }
 

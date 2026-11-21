@@ -41,8 +41,11 @@ import {
   truncateAtFabricatedToolResponse,
   fabricatedToolResponseAt,
   textAfterFirstToolCall,
+  unreadableToolCall,
   longHeredocAsWrite,
   strippedTypeMember,
+  findRecognizedShellTool,
+  toolsBlock,
   formatToolResponse,
   isProseDocument,
   getMessageContent,
@@ -111,6 +114,14 @@ const CONFAB_FORCE_PROMPT =
 const MIDTASK_FORCE_PROMPT =
   "Your tools are working: your previous command really ran on this machine, and its real output is in the last <tool_response>. Continue the task from there with ONE tool block for the next step. A missing program or library is not a missing tool — install it with the package manager (pip, npm, …) or do the job with what is already installed. Output only the tool block, nothing else.";
 
+// Sent (in the same conversation) when the reply tried to call a tool but the
+// call couldn't be read (unreadableToolCall): a fence never closed, an edit
+// without its markers. Passed on as prose instead, it ends the harness's turn,
+// and the model reads the silence as having no tools.
+function unreadableCallPrompt(bad: { name: string; reason: string }): string {
+  return `(Note: your last reply had a \`\`\`${bad.name} block that couldn't be read as a tool call — ${bad.reason} — so nothing ran. If you meant to run it, send it again as one block: \`\`\`${bad.name} on its own line, then its content, then \`\`\` on a line of its own. If you didn't mean to, reply without it.)`;
+}
+
 // Forcing follow-up when the model CLAIMS it did a file change but ran no tool.
 const HALLUCINATION_FORCE_PROMPT =
   "You have NOT actually done that — no tool ran this turn, so nothing changed on disk. Do not claim a file was created, replaced, or updated until a <tool_response> confirms it. Emit ONE ```bash block now that performs the change for real (write the file with a `cat > path <<'EOF' … EOF` heredoc), and nothing else.";
@@ -167,6 +178,31 @@ const UNSTREAMED_BUDGET_WAIT_LIMIT_MS = 2 * 60_000;
 type ChatBody = z.infer<typeof ChatCompletionRequest>;
 type ParsedMessage = ChatBody["messages"][number];
 
+/** Adapt only existing recovery triggers, never infer a trigger from a tool name. */
+function recoveryPrompt(body: ChatBody, reason: "confab" | "remote" | "halluc", everActed: boolean): string {
+  const choice = body.tool_choice;
+  const tools = typeof choice === "object"
+    ? (body.tools ?? []).filter(t => t.function.name === choice.function.name)
+    : (body.tools ?? []);
+  // Preserve the measured shell prompts byte-for-byte when shell routing is permitted.
+  if (findRecognizedShellTool(tools)) {
+    return reason === "remote" ? REMOTE_ARTIFACT_FORCE_PROMPT
+      : reason === "confab" ? (everActed ? MIDTASK_FORCE_PROMPT : CONFAB_FORCE_PROMPT)
+      : HALLUCINATION_FORCE_PROMPT;
+  }
+  if (!tools.length) return "The requested tool is not provided. Explain that limitation without claiming the action completed.";
+  const correction = reason === "remote"
+    ? "A remote artifact or download link is not evidence that the requested change was applied. Do not offer a remote patch or artifact as a completed change; use only a provided tool whose definition supports the requested action."
+    : reason === "confab"
+      ? "Continue using only the capabilities declared by the provided tools; do not assume filesystem or shell access beyond their definitions."
+      : "No tool ran this turn. Do not claim the requested action completed without a confirming <tool_response>.";
+  // Reuse the canonical fenced templates, not a second argument-format renderer.
+  // Only the definitions are needed: framing variants can assert shell/file access.
+  const definitions = toolsBlock(tools);
+  return `${correction}\n\nUse ONE fenced tool call with an exact tool name and the argument format below, then wait for its <tool_response>. Output only that single tool block, nothing else.\n\n${definitions}`;
+}
+
+
 // --- Per-conversation state ---
 
 interface ConversationState {
@@ -180,6 +216,8 @@ interface ConversationState {
    *  Opus fallback, #18) can't continue the M365 conversation — it may need
    *  another scenario — so it starts a fresh one with the full history. */
   servedModel?: string;
+  /** replyKey of the last reply this conversation gave the client. */
+  lastReply: string | null;
   /** Characters in the turn that last sent this M365 conversation the whole
    *  history (its opening, or a replay into it; the first part, when the
    *  history went in parts). */
@@ -194,6 +232,13 @@ interface ConversationState {
   runtime: boolean;
   /** Requests running in it now: the pool doesn't drop it for idleness meanwhile. */
   activeRequests: number;
+}
+
+/** What a client echoes back of a reply in its next request: the tool-call ids
+ *  (they pair the results, so they come back verbatim), else the text. */
+function replyKey(m: ParsedMessage | undefined): string | null {
+  if (m?.role !== "assistant") return null;
+  return m.tool_calls?.length ? m.tool_calls.map((c) => c.id).join(" ") : getMessageContent(m).trim();
 }
 
 /**
@@ -262,7 +307,11 @@ const MAX_CONVERSATIONS = 1000;
 const UNKEPT_OPENING_MIN_CHARS = 200_000;
 
 export class SessionPool {
-  private conversations = new Map<string, ConversationState>();
+  /** Keyed by fingerprint (first user message + tool names, scoped to
+   *  sessionKey when given). Several can share one: two pi sessions opened with
+   *  "merhaba", parallel subagents given one prompt, a session resumed after
+   *  another started the same way. */
+  private conversations = new Map<string, ConversationState[]>();
   private sessionOptions: ModelSessionOptions;
   /** Runs evictStale while the pool holds runtime conversations (RUNTIME_SWEEP_MS). */
   private runtimeSweep: ReturnType<typeof setInterval> | null = null;
@@ -303,48 +352,54 @@ export class SessionPool {
   /**
    * Resolve the conversation state for an incoming request.
    * Fingerprint is the hash of the first user message and the request's tool
-   * names — same opener and same tool set = same conversation — scoped to the
-   * client's session key when it sends one (prompt_cache_key / user), and to
-   * the backend: a conversation on Chat can't continue on the agent runtime.
+   * names — same opener and same tool set = same conversation family — scoped
+   * to the client's session key when it sends one (prompt_cache_key / user),
+   * and to the backend: a conversation on Chat can't continue on the agent
+   * runtime.
+   *
+   * A harness re-sends the whole history and only ever appends, so a
+   * continuation carries more messages than its conversation has sent, and at
+   * that position it echoes the conversation's last reply (replyKey). The echo
+   * tells apart conversations that share a fingerprint. Without a match it
+   * falls back only when the fingerprint has a single conversation, so a client
+   * that rewrites old replies still continues; with several, guessing would put
+   * one session's turn into another's thread.
    */
   resolve(messages: ParsedMessage[], tools?: ChatBody["tools"], sessionKey?: string, backend: Backend = "chat"): ConversationState {
     this.evictStale();
 
     const fingerprint = this.fingerprint(messages, tools, sessionKey, backend);
-    const existing = this.conversations.get(fingerprint);
-
-    if (existing) {
-      // A request that carries no more messages than this conversation already
-      // sent is not its continuation (a harness re-sends the whole history and
-      // only ever appends). It's a new session that shares the first user message
-      // — two pi sessions opened with the same prompt, even in different
-      // directories — or a re-sent request. Either way it needs a FRESH M365
-      // conversation: reset() kept the conversationId, so the full prompt went
-      // into the old thread, and at equal length nothing reset at all and
-      // "Please continue." went there. Measured (Windows / pi, 30 runs of 2
-      // prompts): later sessions answered from earlier ones — "notlar.docx was
-      // already created and verified" in an empty directory — and the pass rate
-      // fell 7/10 → 4/10 → 3/10 over the sweep. The full prompt re-sends the
-      // whole history, so nothing the harness holds is lost.
-      if (messages.length <= existing.sentMessageCount) {
-        log.info(`Conversation ${fingerprint}: not a continuation (${messages.length} <= ${existing.sentMessageCount} sent), starting a fresh M365 conversation`);
-        existing.session.newConversation();
-        existing.sentMessageCount = 0;
-        existing.pendingNote = null;
-        existing.replayNext = false;
-      }
-      existing.lastAccessedAt = Date.now();
-      return existing;
+    const bucket = this.conversations.get(fingerprint) ?? [];
+    const candidates = bucket.filter((s) => s.activeRequests === 0 && messages.length > s.sentMessageCount);
+    const own = candidates.find((s) => s.lastReply !== null && s.lastReply === replyKey(messages[s.sentMessageCount]))
+      ?? (bucket.length === 1 ? candidates[0] : undefined);
+    if (own) {
+      own.lastAccessedAt = Date.now();
+      return own;
     }
 
-    // New conversation
+    // Not a continuation of any of them: a new session that shares the first
+    // user message — two pi sessions opened with the same prompt, even in
+    // different directories — or a re-sent request. Either way it needs a FRESH
+    // M365 conversation, and the others stay as they are, because their sessions
+    // may still be running. Measured (Windows / pi, 30 runs of 2 prompts): joined
+    // to an earlier session's thread, later sessions answered from it —
+    // "notlar.docx was already created and verified" in an empty directory — and
+    // the pass rate fell 7/10 → 4/10 → 3/10 over the sweep. Resetting that thread
+    // instead (F84) broke the earlier session when it was still alive: two
+    // measurement jobs that ran at once threw each other's conversations away
+    // every turn (§52 F153). The full prompt re-sends the whole history, so nothing
+    // the harness holds is lost.
     this.evictOverflow();
-    log.info(`New conversation ${fingerprint}, ${this.conversations.size} active`);
+    const current = this.conversations.get(fingerprint) ?? [];
+    if (current.length) log.info(`Conversation ${fingerprint}: not a continuation of the ${current.length} on this first message, starting a fresh M365 conversation`);
+    else log.info(`New conversation ${fingerprint}, ${this.size} active`);
     const runtime = backend !== "chat";
     const state: ConversationState = {
       session: runtime ? new AetherSession({ mode: backend }) : new ModelSession(this.sessionOptions),
       sentMessageCount: 0,
       pendingNote: null,
+      lastReply: null,
       lastAccessedAt: Date.now(),
       openingChars: 0,
       openingAnswered: false,
@@ -352,7 +407,8 @@ export class SessionPool {
       runtime,
       activeRequests: 0,
     };
-    this.conversations.set(fingerprint, state);
+    current.push(state);
+    this.conversations.set(fingerprint, current);
     this.scheduleRuntimeSweep();
     return state;
   }
@@ -386,13 +442,18 @@ export class SessionPool {
     const now = Date.now();
     const ttl = conversationTtlMs();
     const runtimeTtl = runtimeConversationTtlMs();
-    for (const [key, state] of this.conversations) {
-      if (state.activeRequests > 0) continue;
-      if (now - state.lastAccessedAt > (state.runtime ? runtimeTtl : ttl)) {
-        log.info(`Evicting idle conversation ${key}`);
-        this.conversations.delete(key);
-        state.session.close?.();
+    for (const [key, bucket] of this.conversations) {
+      const live: ConversationState[] = [];
+      for (const s of bucket) {
+        if (s.activeRequests > 0 || now - s.lastAccessedAt <= (s.runtime ? runtimeTtl : ttl)) {
+          live.push(s);
+        } else {
+          s.session.close?.();
+        }
       }
+      if (live.length < bucket.length) log.info(`Evicting ${bucket.length - live.length} idle conversation(s) ${key}`);
+      if (live.length) this.conversations.set(key, live);
+      else this.conversations.delete(key);
     }
     this.scheduleRuntimeSweep();
   }
@@ -400,7 +461,7 @@ export class SessionPool {
   /** Sweeps for idle runtime conversations while there are any, so they're
    *  deleted on time even when no request comes (runtimeConversationTtlMs). */
   private scheduleRuntimeSweep() {
-    const any = [...this.conversations.values()].some((s) => s.runtime);
+    const any = [...this.conversations.values()].some((bucket) => bucket.some((s) => s.runtime));
     if (any && !this.runtimeSweep) {
       this.runtimeSweep = setInterval(() => this.evictStale(), RUNTIME_SWEEP_MS);
       this.runtimeSweep.unref?.();
@@ -412,17 +473,30 @@ export class SessionPool {
 
   /** Makes room for a new conversation; a request for a pooled one never evicts. */
   private evictOverflow() {
-    if (this.conversations.size < MAX_CONVERSATIONS) return;
-    const byAge = [...this.conversations].sort((a, b) => a[1].lastAccessedAt - b[1].lastAccessedAt);
-    for (const [key, state] of byAge.slice(0, this.conversations.size - MAX_CONVERSATIONS + 1)) {
+    const total = this.size;
+    if (total < MAX_CONVERSATIONS) return;
+    const all: Array<{ key: string; state: ConversationState }> = [];
+    for (const [key, bucket] of this.conversations) {
+      for (const state of bucket) {
+        if (state.activeRequests === 0) all.push({ key, state });
+      }
+    }
+    all.sort((a, b) => a.state.lastAccessedAt - b.state.lastAccessedAt);
+    for (const { key, state } of all.slice(0, total - MAX_CONVERSATIONS + 1)) {
       log.info(`Evicting conversation ${key} (pool full)`);
-      this.conversations.delete(key);
+      const bucket = this.conversations.get(key);
+      if (!bucket) continue;
+      const next = bucket.filter((s) => s !== state);
+      if (next.length) this.conversations.set(key, next);
+      else this.conversations.delete(key);
       state.session.close?.();
     }
   }
 
   get size(): number {
-    return this.conversations.size;
+    let n = 0;
+    for (const bucket of this.conversations.values()) n += bucket.length;
+    return n;
   }
 }
 
@@ -484,6 +558,8 @@ const MAX_PARTS_SENDS = 2;
  *  simplified README") would get its own answer executed as shell. That shape
  *  (multiple fences + prose) comes back as plain text instead — unless the reply
  *  OPENS with a tool call, which makes it an action with a speculative tail (#33).
+ *  A single call is never reclassified, unless M365_LONG_ANSWER_GUARD=1 (off by
+ *  default): then a long structured answer that ENDS in one example call is text.
  *
  *  This runs BEFORE the give-up checks, because a document runs nothing. It used
  *  to run after them, so a refusal that came with "run these yourself" fences —
@@ -497,7 +573,7 @@ const MAX_PARTS_SENDS = 2;
  *  forcing retry. */
 function parseReply(text: string, tools: Parameters<typeof parseToolCalls>[1]): { parsed: ParseResult; judged: string | null } {
   const parsed = parseToolCalls(text, tools);
-  if (isProseDocument(parsed, text, tools)) {
+  if (isProseDocument(parsed, text, tools, { longAnswers: process.env.M365_LONG_ANSWER_GUARD === "1" })) {
     log.info(`Response is a prose document (${parsed.toolCalls.length} embedded fences), returning as text instead of executing`);
     const opening = text.split("```")[0].trim().split(/\n\s*\n/)[0];
     return { parsed: { hasToolCalls: false, toolCalls: [], textContent: text }, judged: opening };
@@ -590,6 +666,7 @@ export async function handleChatCompletion(
     log.info(`Conversation switches model ${conv.servedModel} → ${model}: fresh conversation, full history`);
     session.newConversation();
     conv.sentMessageCount = 0;
+    conv.lastReply = null;
   }
 
   // A follow-up that M365 can't have context for: the reply to the last request
@@ -605,6 +682,7 @@ export async function handleChatCompletion(
     session.newConversation();
     conv.sentMessageCount = 0;
     conv.replayNext = false;
+    conv.lastReply = null;
   }
 
   // Which requests carry the declarative tool agent. GPT-the-chat-model won't
@@ -727,6 +805,24 @@ export async function handleChatCompletion(
   // The live stream's gate (set by the streaming render): whether any text has
   // reached the client, and a way to drop what it still holds back.
   let liveGate: { released: () => boolean; discard: () => void } | null = null;
+  // The model's chain of thought, returned as `reasoning_content`: every turn's
+  // in this request, in order, a retry's and a forcing turn's included (a long
+  // turn's parts are only acknowledged, so not theirs). The streaming render
+  // sets `liveReasoning` to send each piece as it arrives, tool turns included,
+  // whose text is held back. M365_NO_REASONING=1 leaves it out.
+  let reasoning = "";
+  let liveReasoning: ((delta: string) => void) | null = null;
+  const reasoningSink = (): ((delta: string) => void) | undefined => {
+    if (process.env.M365_NO_REASONING) return undefined;
+    let first = true;
+    return (delta: string) => {
+      if (!delta) return;
+      if (first && reasoning) delta = `\n\n${delta}`;
+      first = false;
+      reasoning += delta;
+      liveReasoning?.(delta);
+    };
+  };
   // M365_AVOID_THROTTLING=1: wait until the account's turn bucket can afford a
   // turn (turn-budget.ts, hypotheses §37). A pi session is one long thread, but
   // every turn in it draws on the same bucket as a bench sweep (F58), so a busy
@@ -912,7 +1008,7 @@ export async function handleChatCompletion(
           // The agent overrides `tone` (forces GPT-5), so tool-less requests must
           // skip it to reach the model the tone selects (e.g. Claude). See
           // ModelSession.run / docs H8.6.
-          copilotStream = await session.run(text, model, signal, useToolAgent, inputAttachments, waitForBudget, turnOptions);
+          copilotStream = await session.run(text, model, signal, useToolAgent, inputAttachments, waitForBudget, { ...turnOptions, onReasoning: reasoningSink() });
         } catch (err: any) {
           if (err instanceof TurnBudgetHold) return { error: turnBudgetHoldResponse(err) };
           return { error: jsonResponse(502, { error: { message: err.message, type: "upstream_error" } }) };
@@ -986,6 +1082,10 @@ export async function handleChatCompletion(
       if (lastScores && Object.keys(lastScores).length > 0) {
         log.info(`Turn scores: ${Object.entries(lastScores).map(([k, v]) => `${k}=${v}`).join(" ")}${lastMessageType ? ` (${lastMessageType})` : ""}, cid=${session.conversationId}`);
       }
+      // The chain of thought says why a model refused a framing (API doc §6).
+      if (!refused && copilotStream.reasoning) {
+        log.info(`Chain of thought (${copilotStream.reasoning.length} chars): ${JSON.stringify(trunc(copilotStream.reasoning, 400))}`);
+      }
 
       // No text at all: the dead agent route's signature (below), unlike a failed
       // turn, which carries M365's canned apology.
@@ -1051,6 +1151,7 @@ export async function handleChatCompletion(
         if (!chat) {
           session.newConversation();
           conv.sentMessageCount = 0;
+          conv.lastReply = null;
         }
         log.info(`Upstream InvalidRequest (${copilotStream.result.errorCode ?? "no errorCode"}), prompt ${text.length} chars — 400, no retry`);
         return { error: invalidRequestResponse(copilotStream.result, model, text.length) };
@@ -1347,6 +1448,7 @@ export async function handleChatCompletion(
     if (partsWentUp) {
       session.newConversation();
       conv.sentMessageCount = 0;
+      conv.lastReply = null;
     }
     return { kind: "error", resp };
   };
@@ -1372,6 +1474,24 @@ export async function handleChatCompletion(
     let { parsed, judged } = parseReply(fullText, body.tools);
     log.info(`Parse result: hasToolCalls=${parsed.hasToolCalls}, count=${parsed.toolCalls.length}`);
 
+    // The reply tried to call a tool, but the call couldn't be read: ask for it
+    // once more, saying what was wrong, before any give-up handling (§51 F152).
+    // Transport/filter retries (Bing overflow, Apology, Disengaged) already ran
+    // inside runBuffered above; the forcing retry below is skipped after this
+    // re-ask, while strippedTypeMember still guards any PowerShell call it
+    // returns. Off with M365_NO_FENCE_RETRY=1.
+    const unreadable = parsed.hasToolCalls || process.env.M365_NO_FENCE_RETRY ? null : unreadableToolCall(fullText, body.tools);
+    if (unreadable) {
+      log.info(`A \`\`\`${unreadable.name} call couldn't be read (${unreadable.reason}) — asking for it again`);
+      text = unreadableCallPrompt(unreadable);
+      const retry = await runBuffered(undefined, { forcing: true });
+      if ("error" in retry) return failedRequest(retry.error);
+      conv.sentMessageCount = body.messages.length;
+      fullText = stopAtFabricatedResult(retry.fullText);
+      ({ parsed, judged } = parseReply(fullText, body.tools));
+      log.info(`After asking again: hasToolCalls=${parsed.hasToolCalls}, count=${parsed.toolCalls.length}`);
+    }
+
     // Salvage stochastic turn-1 confabulation: M365's chat model sometimes claims it
     // "can't access the files / commands return no output" and asks the user to paste
     // them, WITHOUT calling a tool — even though the environment is real (the bench +
@@ -1386,16 +1506,16 @@ export async function handleChatCompletion(
     const everActed = (body.messages ?? []).some(
       (m) => m.role === "assistant" && Array.isArray(m.tool_calls) && m.tool_calls.length > 0,
     );
-    for (let attempt = 0; attempt < maxConfabRetries && !parsed.hasToolCalls; attempt++) {
+    // Not after asking again: the model was just told it could reply without the
+    // call, and a forcing retry would override the answer it gave to that.
+    for (let attempt = 0; attempt < (unreadable ? 0 : maxConfabRetries) && !parsed.hasToolCalls; attempt++) {
       const confab = looksLikeConfabulation(judged);
       const remoteArtifact = looksLikeRemoteArtifactCompletion(parsed.textContent);
       const halluc = !everActed && looksLikeHallucinatedCompletion(judged);
       if (!confab && !remoteArtifact && !halluc) break;
       const retryKind = remoteArtifact ? "Remote artifact completion" : confab ? "Confabulation" : "Hallucinated completion";
       log.info(`${retryKind} detected (no tool call) — forcing retry ${attempt + 1}/${maxConfabRetries}`);
-      text = remoteArtifact ? REMOTE_ARTIFACT_FORCE_PROMPT
-        : confab ? (everActed ? MIDTASK_FORCE_PROMPT : CONFAB_FORCE_PROMPT)
-        : HALLUCINATION_FORCE_PROMPT;
+      text = recoveryPrompt(body, remoteArtifact ? "remote" : confab ? "confab" : "halluc", everActed);
       const retry = await runBuffered(undefined, { forcing: true });
       if ("error" in retry) return { kind: "error", resp: retry.error };
       conv.sentMessageCount = body.messages.length;
@@ -1531,6 +1651,10 @@ export async function handleChatCompletion(
   }
   } // end produce()
 
+  // The turn holds its conversation until it ends, so a request from another
+  // session that opened with the same message can't join it mid-turn (resolve).
+  // Both renders below call this synchronously after resolve(): nothing slips in.
+  //
   // On the agent runtime a message stays in its conversation once it's posted,
   // answered or not, so the client's retry of a failed request (the same history
   // again) went in on top of it: Codex re-sent one 537,804-character request into
@@ -1544,6 +1668,7 @@ export async function handleChatCompletion(
     try {
       const p = await produce(onDelta);
       failed = p.kind === "error";
+      if (p.kind !== "error") conv.lastReply = p.kind === "tools" ? p.toolCalls.map((c) => c.id).join(" ") : p.text.trim();
       return p;
     } finally {
       conv.activeRequests--;
@@ -1552,6 +1677,7 @@ export async function handleChatCompletion(
         log.info(`Agent runtime (${route.backend}) request failed: the next one starts a fresh conversation`);
         session.newConversation();
         conv.sentMessageCount = 0;
+        conv.lastReply = null;
       }
     }
   }
@@ -1579,16 +1705,17 @@ export async function handleChatCompletion(
   if (!body.stream) {
     const p = await produceTurn();
     if (p.kind === "error") return p.resp;
+    const thought = reasoning ? { reasoning_content: reasoning } : {};
     if (p.kind === "tools") {
       return jsonResponse(200, {
         id: completionId, object: "chat.completion", created, model: responseModel(),
-        choices: [{ index: 0, message: { role: "assistant", content: null, tool_calls: p.toolCalls }, finish_reason: "tool_calls" }],
+        choices: [{ index: 0, message: { role: "assistant", content: null, ...thought, tool_calls: p.toolCalls }, finish_reason: "tool_calls" }],
         usage: usage(callsText(p.toolCalls)),
       });
     }
     return jsonResponse(200, {
       id: completionId, object: "chat.completion", created, model: responseModel(),
-      choices: [{ index: 0, message: { role: "assistant", content: p.text }, finish_reason: outputFinishReason(p.text, chat) }],
+      choices: [{ index: 0, message: { role: "assistant", content: p.text, ...thought }, finish_reason: outputFinishReason(p.text, chat) }],
       usage: usage(p.text),
     });
   }
@@ -1615,6 +1742,11 @@ export async function handleChatCompletion(
       const hb = setInterval(() => {
         try { send({ ...base, choices: [{ index: 0, delta: {}, finish_reason: null }] }); } catch {}
       }, 15000);
+      // The chain of thought goes out as it arrives (pi and opencode read
+      // `reasoning_content` as thinking), on tool turns too.
+      liveReasoning = (delta: string) => {
+        try { send({ ...base, choices: [{ index: 0, delta: { reasoning_content: delta }, finish_reason: null }] }); } catch {}
+      };
 
       // Live token passthrough (non-tool only). Track exactly what we've sent so the
       // final render emits only the not-yet-streamed remainder. session.ts guarantees

@@ -1,4 +1,5 @@
 import { getToken } from "./auth.js";
+import { CachePersistenceError } from "./storage.js";
 import { getOrCreateAgent } from "./agent.js";
 import { CopilotSession } from "./session.js";
 import { uploadImage, type ImageAnnotation } from "./image-input.js";
@@ -8,6 +9,20 @@ import { awaitTurnBudget } from "./turn-budget.js";
 import type { CopilotStream } from "./copilot.js";
 
 const log = createLogger("model");
+
+function reconnectDelay(signal?: AbortSignal): Promise<void> {
+  const raw = process.env.M365_RECONNECT_DELAY_MS;
+  const value = raw === undefined || raw.trim() === "" ? NaN : Number(raw);
+  const ms = Number.isFinite(value) && value >= 0 && value <= 2_147_483_647 ? value : 5000;
+  if (signal?.aborted) return Promise.reject(new DOMException("Aborted", "AbortError"));
+  if (ms === 0) return Promise.resolve();
+  return new Promise((resolve, reject) => {
+    const done = () => { signal?.removeEventListener("abort", abort); resolve(); };
+    const timer = setTimeout(done, ms);
+    const abort = () => { clearTimeout(timer); signal?.removeEventListener("abort", abort); reject(new DOMException("Aborted", "AbortError")); };
+    signal?.addEventListener("abort", abort, { once: true });
+  });
+}
 
 export interface ModelSessionOptions {
   /** Pre-resolved auth token. If not provided, getToken() is called. */
@@ -21,10 +36,12 @@ export interface ModelSessionOptions {
   temporaryChat?: boolean;
 }
 
-/** Per-turn settings a backend may use; Chat ignores them. */
+/** Per-turn settings; a backend uses the ones it has. */
 export interface TurnOptions {
-  /** The request's `reasoning_effort` (the agent runtime's `reasoningEffort`). */
+  /** The request's `reasoning_effort` (the agent runtime's `reasoningEffort`). Chat has no such setting. */
   reasoningEffort?: string;
+  /** Called with each piece of the model's chain of thought as it arrives (Chat). */
+  onReasoning?: (delta: string) => void;
 }
 
 /**
@@ -129,6 +146,8 @@ export class ModelSession implements TurnSession {
    * turn (M365_AVOID_THROTTLING; awaitTurnBudget). The caller waits before it
    * calls run(); run() waits again before the reconnect's turn. It throws
    * TurnBudgetHold rather than wait too long.
+   *
+   * `turn.onReasoning` receives the model's chain of thought as it streams.
    */
   async run(
     text: string,
@@ -137,6 +156,7 @@ export class ModelSession implements TurnSession {
     useAgent: boolean = true,
     images: string[] = [],
     waitForBudget: () => Promise<{ waitedMs: number }> = () => awaitTurnBudget({ signal }),
+    turn: TurnOptions = {},
   ): Promise<CopilotStream> {
     let token = await this.resolveToken();
     // Image input (#39): upload each image for this conversation; the message points at them.
@@ -148,6 +168,7 @@ export class ModelSession implements TurnSession {
       try {
         annotations.push(isImage ? await uploadImage(token, this.conversationId, url) : await uploadFile(url));
       } catch (err: any) {
+        if (err instanceof CachePersistenceError) throw err;
         const what = isImage ? "image" : "file";
         log.info(`${isImage ? "Image" : "File"} upload failed: ${err.message}`);
         text += `
@@ -163,7 +184,8 @@ export class ModelSession implements TurnSession {
         this.cachedAgentId = await getOrCreateAgent();
         if (this.cachedAgentId) log.info(`Using agent: ${this.cachedAgentId}`);
         else log.info("No agent available");
-      } catch {
+      } catch (error) {
+        if (error instanceof CachePersistenceError) throw error;
         this.cachedAgentId = null;
       }
     }
@@ -184,18 +206,23 @@ export class ModelSession implements TurnSession {
     // the tool-calling agent path — image optionsSets are agent-less, and we don't
     // want the image tool competing with fenced tool-call emission. Opt out with
     // M365_NO_IMAGE_GEN for a pure-text agent-less turn.
-    const turnOpts = { generateImages: !agentForTurn && !process.env.M365_NO_IMAGE_GEN, images: annotations };
+    const turnOpts = { generateImages: !agentForTurn && !process.env.M365_NO_IMAGE_GEN, images: annotations, onReasoning: turn.onReasoning };
 
     try {
       return await this.copilotSession.chat(token, text, model, signal, turnOpts);
     } catch (err: any) {
       // Session might be stale — reconnect with same IDs
       log.info("Session error, reconnecting:", err.message);
+      if (signal?.aborted) throw new DOMException("Aborted", "AbortError");
+      if (/EAI_AGAIN|ENOTFOUND|ECONNRESET|ECONNREFUSED|ETIMEDOUT|ENETUNREACH/.test(String(err?.message))) {
+        await reconnectDelay(signal);
+      }
       // The reconnect is one more upstream turn, so it waits on the budget too:
       // otherwise it skips the wait and its recordTurn takes the grant of a turn
       // another request was let through for (#77). A token held through a long
       // wait may be near its end, so fetch it again.
       if ((await waitForBudget()).waitedMs > 0) token = await this.resolveToken();
+      if (signal?.aborted) throw new DOMException("Aborted", "AbortError");
       this.copilotSession = this.createCopilotSession(agentForTurn);
       this.currentAgentId = agentForTurn;
       return await this.copilotSession.chat(token, text, model, signal, turnOpts);
@@ -225,6 +252,7 @@ export class ModelSession implements TurnSession {
         return true;
       }
     } catch (err: any) {
+      if (err instanceof CachePersistenceError) throw err;
       log.info(`Agent refresh failed: ${err.message}`);
     }
     return false;

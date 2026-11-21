@@ -1,5 +1,5 @@
 import { describe, it, expect, afterEach } from "vitest";
-import { buildCopilotWebSocketHeaders, buildCopilotWebSocketUrl, cursorMessageId, foldStreamText, restoreStrippedBrackets, TurnTextComposer } from "./session.js";
+import { buildCopilotWebSocketHeaders, buildCopilotWebSocketUrl, cardReplacePatches, ChainOfThoughtComposer, cursorBaseText, cursorMessageId, foldStreamText, restoreStrippedBrackets, TurnTextComposer } from "./session.js";
 import { MessageUpdate } from "./schemas.js";
 
 /** Replay a sequence of raw M365 frames (deltas as {d}, snapshots as {s}) through
@@ -204,22 +204,52 @@ describe("TurnTextComposer (multi-message turns)", () => {
     expect(r.text).toBe("one!\n\ntwo more");
   });
 
-  it("doesn't double a head that the first delta restates (\"<<document>\")", () => {
-    // Live (GPT-5.5 Think Deeper, Oct 5): the snapshot "<", then the delta "<document".
-    const r = compose([
-      { cursor: cur("m1"), s: "<", id: "m1" },
+  it("bases cursor deltas on the adaptive card text rather than m.text (fixing <<, ((, [() without dropping real leading '<'", () => {
+    // Live (GPT-5.5 Think Deeper, Oct 5): m.text holds "<" while card holds ""; delta starts with "<document".
+    const cardPath = "$['m1'].adaptiveCards[0].body[0].text";
+    const ltBase = cursorBaseText({ text: "<", adaptiveCards: [{ body: [{ text: "" }] }] }, cardPath)!;
+    const lt = compose([
+      { cursor: cur("m1"), s: ltBase, id: "m1" },
       { d: "<document" }, { d: ">notlar.docx</document>" }, { d: " oluşturuldu." },
       { s: "<document>notlar.docx</document> oluşturuldu.", id: "m1" },
     ]);
-    expect(r.text).toBe("<document>notlar.docx</document> oluşturuldu.");
-    expect(r.streamed).toBe(r.text);
-  });
+    expect(lt.text).toBe("<document>notlar.docx</document> oluşturuldu.");
+    expect(lt.streamed).toBe(lt.text);
 
-  it("keeps a one-character head that the first delta continues (\"**bold**\", a ``` fence)", () => {
+    // Real leading "<" already in the card MUST stay doubled ("<" + "<EOF" -> "<<EOF").
+    const realLt = compose([
+      { cursor: cur("m1"), s: cursorBaseText({ text: "<", adaptiveCards: [{ body: [{ text: "<" }] }] }, cardPath)!, id: "m1" },
+      { d: "<EOF" },
+    ]);
+    expect(realLt.text).toBe("<<EOF");
+
+    // Issue #134 Cause 1 (Chathub & StreamHub): m.text has "(" or "[(" while card has "" or "[".
+    expect(cursorBaseText({ text: "(", adaptiveCards: [{ body: [{ text: "" }] }] }, cardPath)).toBe("");
+    const paren = compose([
+      { cursor: cur("m1"), s: cursorBaseText({ text: "(", adaptiveCards: [{ body: [{ text: "" }] }] }, cardPath)!, id: "m1" },
+      { d: "(3" }, { d: ", 2), (17, 12), (99, 70)" },
+      { s: "(3, 2), (17, 12), (99, 70)", id: "m1" },
+    ]);
+    expect(paren.text).toBe("(3, 2), (17, 12), (99, 70)");
+
+    expect(cursorBaseText({ text: "[(", adaptiveCards: [{ body: [{ text: "[" }] }] }, cardPath)).toBe("[");
+
+    // Fallback to m.text when adaptiveCards is absent.
+    expect(cursorBaseText({ text: "*" }, cardPath)).toBe("*");
     const bold = compose([{ cursor: cur("m1"), s: "*", id: "m1" }, { d: "*Summary**" }, { d: " done." }]);
     expect(bold.text).toBe("**Summary** done.");
     const fence = compose([{ cursor: cur("m1"), s: "`", id: "m1" }, { d: "``bash\nls\n```" }]);
     expect(fence.text).toBe("```bash\nls\n```");
+  });
+
+  it("extracts final adaptiveCard replacement text from StreamHub patches and ignores metadata patches", () => {
+    expect(cardReplacePatches({ patches: [{ op: "replace", path: "/m1/metadata", value: {} }] })).toEqual([]);
+    expect(cardReplacePatches({
+      patches: [{ op: "replace", path: "/m1/adaptiveCards", value: [{ body: [{ text: "[(3, 2)]" }] }] }],
+    })).toEqual([{ id: "m1", text: "[(3, 2)]" }]);
+    expect(cardReplacePatches({
+      patches: [{ op: "replace", path: "/m1/adaptiveCards/0/body/0/text", value: "done]" }],
+    })).toEqual([{ id: "m1", text: "done]" }]);
   });
 
   it("falls back to the snapshot's message when no cursor was ever sent", () => {
@@ -264,21 +294,48 @@ describe("restoreStrippedBrackets (M365 deletes `[word]:` from the final text, �
     expect(c.text).toBe("$u = :Replace($c, 'a', 'b')\nSet-Content f $u");
     expect(c.finalText).toBe(raw + "Set-Content f $u");
   });
+});
 
-  it("handles leading '<' across StreamHub restart cursors and finalText bracket restore (§50 F149)", () => {
-    const sh = new TurnTextComposer();
-    sh.restart("m1", "");
-    sh.delta("<");
-    sh.delta("<EOF");
-    expect(sh.text).toBe("<<EOF");
-    expect(sh.finalText).toBe("<<EOF");
+describe("ChainOfThoughtComposer", () => {
+  // Live 2026-11-20, StreamHub, Claude_Sonnet_5: one message, re-sent a sentence longer each time.
+  const s1 = "I'm setting up the equations: the ball and bat together cost 1.10, and the bat costs 1.00 more than the ball.";
+  const s2 = `${s1} Substituting gives 2 times the ball equals 0.10, so the ball is 0.05.`;
+  const s3 = `${s2} I'm checking that: the bat would be 1.05, the total 1.10, and the difference 1.00, so it holds.`;
 
-    const c = new TurnTextComposer();
-    c.restart("m1", "<");
-    c.delta("<document [regex]::Replace()\n");
-    c.restart("m1", "");
-    c.snapshot("m1", "<document :Replace()\nend");
-    expect(c.text).toBe("<document :Replace()\nend");
-    expect(c.finalText).toBe("<document [regex]::Replace()\nend");
+  it("streams each snapshot's growth once (the StreamHub shape)", () => {
+    const c = new ChainOfThoughtComposer();
+    const out = [s1, s2, s3].map((s) => c.add("t1", s));
+    expect(out).toEqual([s1, s2.slice(s1.length), s3.slice(s2.length)]);
+    expect(out.join("")).toBe(s3);
+    expect(c.text).toBe(s3);
+  });
+
+  it("adds nothing for the final item's restatement (the Chathub shape)", () => {
+    const c = new ChainOfThoughtComposer();
+    expect(c.add("t1", s3)).toBe(s3);
+    expect(c.add("t1", s3)).toBe("");
+    expect(c.add("t1", "")).toBe("");
+    expect(c.text).toBe(s3);
+  });
+
+  it("puts a blank line between messages, in order of first appearance", () => {
+    const c = new ChainOfThoughtComposer();
+    const out = [c.add("a", "First thought."), c.add("b", "Second"), c.add("a", "First thought. More."), c.add("b", "Second thought.")];
+    expect(out).toEqual(["First thought.", "\n\nSecond", " More.", " thought."]);
+    expect(c.text).toBe("First thought. More.\n\nSecond thought.");
+  });
+
+  it("keeps a rewritten message for the text but streams nothing of it", () => {
+    const c = new ChainOfThoughtComposer();
+    expect(c.add("a", "Checking the file.")).toBe("Checking the file.");
+    expect(c.add("a", "Reading the whole file now.")).toBe("");
+    expect(c.text).toBe("Reading the whole file now.");
+    expect(c.add("a", "Checking the file. Then more.")).toBe(" Then more.");
+  });
+
+  it("starts empty", () => {
+    const c = new ChainOfThoughtComposer();
+    expect(c.add("a", "")).toBe("");
+    expect(c.text).toBe("");
   });
 });

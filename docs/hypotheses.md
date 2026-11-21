@@ -122,8 +122,17 @@ than "we eyeballed one run." See §M (Methods) for the experimental rig.
   changes and refuses what it doesn't list (F137); GPT-6.2 Sol takes 885k tokens in a message, not 892k, and its
   turns are now almost free (H48a); Code turns are charged and the monthly budget counts them (F138); Code's
   agent works in its own workspace, and slow turns met Codex's 5-minute timeout (F139)
-- §50 — a "<" at the head of a message came out twice: `TurnTextComposer` drops a restated leading `"<"`
-  after a cursor or StreamHub restart (F149)
+- §50 — the model's chain of thought as `reasoning_content`: which tones send it and how it arrives on each
+  transport (F149); pi and opencode read it as thinking with no setting (F150); live in both clients on both
+  transports (F151); what might make GPT-6.x send one (H50a, open)
+- §51 — dropped tool calls: eight fence shapes the scanner dropped or changed, and a ninth in real replies
+  (a closer with the next sentence glued on: 3 dropped calls in 1,153); CommonMark fences, and asking
+  again for a call that still can't be read (F152)
+- §52 — concurrent sessions sharing a first user message (or `prompt_cache_key` + opener): `SessionPool` keeps a bucket per fingerprint and matches continuations by the echoed reply (F153)
+- §53 — a long written answer ending in one example command was run as a tool call; opt-in `M365_LONG_ANSWER_GUARD=1` (F154, not benched)
+- §54 — `ECONNRESET` mid-conversation then a hung request; the idle watchdog and reconnect delay (H54a, n=1, open)
+- §55 — cursor deltas extend the adaptive card text rather than `m.text` (fixing doubled `<`, `(`, `[(`), and
+  StreamHub's final character can arrive only in `patches` (`#134`, F155)
 
 ---
 
@@ -3170,6 +3179,24 @@ this table to measure what it recovers.
   so it corroborates this rather than confirms it.
 
 ---
+
+### H-SOL56 — "GPT-5.6 Sol" in the web picker is `Gpt_5_6_Chat` / `Gpt_5_6_Reasoning` ❓
+**Reported, not re-run.** One tenant (non-premium), 2026-11-03, n=1 per cell. The picker shows
+"GPT-5.6 Sol Quick response" / "GPT-5.6 Sol Think deeper". Seven guessed tone names (`Gpt_56_Sol_*`,
+`Gpt_5_6_Sol_*`, …) were **REJECTED** (`type:3`), and the picker's menu JSON, read from the browser's
+HTTP cache, was reported to map the labels to the existing tones:
+`{"id":"Gpt_5_6_Chat","menuItemTitle":"GPT-5.6 Sol Quick response"}`,
+`{"id":"Gpt_5_6_Reasoning","menuItemTitle":"GPT-5.6 Sol Think deeper"}`. If so, "Sol" is a display
+rename of the mapped `gpt-5.6` / `gpt-5.6-think-deeper` and nothing needs adding. The captured JSON
+isn't in the repo, so this stays ❓ until the picker data is read again and the guesses are
+re-swept (E-SOL56 in `experiments.md`; the cells are in `scripts/tone-probe.mjs`).
+**Falsifier:** a `*_Sol_*` guess that serves (`DeepLeo`), or picker JSON that gives the "GPT-5.6 Sol"
+items another `id`.
+The same sweep also saw `Grok_Auto`, `Grok_Reasoning`, `Muse_Spark` and `Gpt_5_2_Auto`, named in the
+web client's tone enum, accepted, each self-identifying as "the GPT-5 chat model", and `Gpt_6_Astra`
+REJECTED (n=1). Self-ID can't tell a real model from a fallback (§18, §27 H27a), so those four are
+unconfirmed. The licence refusals that tenant also met (GPT-6 Sol, GPT-6.1 Sol, Claude) are recorded
+with later runs in §49 F146.
 
 ## 20. Sep 28 2026 — Claude bench forensics: proxy bugs found in the frame dumps
 
@@ -6827,22 +6854,256 @@ can't run on a non-premium account: it is refused by licence.
 
 ---
 
-## 50. Oct 5 2026 — Doubled leading `<` in `TurnTextComposer`
+## 50. Nov 20 2026 — the model's chain of thought as `reasoning_content`
 
-Follow-up from the Oct 5 real-pi sweep (#70 split into standalone PRs).
+M365 streams the model's reasoning as `Progress` messages with `contentOrigin: "ChainOfThoughtSummary"`
+(API doc §6), and the proxy dropped them. pi and opencode both show an OpenAI-style `reasoning_content` as
+thinking, so the proxy now returns it there. A premium account, agent-less unless a row says otherwise.
 
-### F149 — a "<" at the head of a message came out twice 🟢
-In the 5.5 sweep three baseline answers began `<<notlar.pdf>`, `<<notlar.docx>`,
-`<<document>notlar.docx</document>`. M365 sent the snapshot `"<"` with the message's cursor and then
-the delta `"<document"`: it holds a leading `<` back until it knows the tag, so the first delta
-restates the head. `TurnTextComposer` appended it, and the final snapshot, one character shorter than
-the doubled text, never replaced it (`foldStreamText` ignores a shorter snapshot). Across the Oct 2–5
-debug logs every cursor has `p: -1`; in 9 of 1,061 cursor frames the first delta restated the
-snapshot, each one a `"<"`.
+### F149 — who sends it, and how it arrives on each transport 🟢 (n=1 per tone and prompt)
+`scripts/cot-probe.mjs` (new) sends one turn per model through the proxy's own `CopilotSession`, with
+frame dumping on, and reads the turn back from its dump. Nov 20 10:37–10:44 UTC, one conversation per turn.
+Two prompts: an easy one (the bat-and-ball question) and one that takes work (every pair of positive
+integers with x < 200 and x² − 2y² = 1). A cell gives the snapshot lengths of each chain-of-thought message.
 
-**Fixed:** the first delta after a cursor (or StreamHub `restart`) replaces a held-back `"<"` head
-when it starts with `"<"`, otherwise appends as before (`afterCursor`). Taken for any head, the rule ate
-a one-character head the delta continues (`"*"` + `"*Summary**"` came out as broken bold, and `` "`" `` +
-`` "``bash" `` as a two-backtick fence); narrowing to `"<"` matches all 9 restated frames while keeping
-markdown continuations intact. On top of StreamHub's `TurnTextComposer`, `run.base` also drops the
-restated `"<"` so `finalText` / `restoreStrippedBrackets` and StreamHub restating cursors stay aligned.
+| transport | tone | easy prompt | worked prompt |
+|---|---|---|---|
+| StreamHub (`officeweb`) | `Claude_Sonnet` | none | 105 → 229 |
+| StreamHub | `Claude_Sonnet_5` | 109 → 179 → 275 | – |
+| StreamHub | `Claude_Opus` | – | 75 → 157 |
+| StreamHub | `Gpt_5_5_Reasoning` | none | 220, then the code interpreter |
+| StreamHub | `Claude_Fable`, `Gpt_62_Sol_Reasoning` | none | none; the code interpreter |
+| StreamHub | `Gpt_6_Reasoning`, `magic` | none | – |
+| Chathub @ paid | `Claude_Sonnet` (Sonnet 5.5) | – | 110 → 151 → 217 |
+| Chathub @ included | `Claude_Opus` (Opus 4.8) | – | 89 → 195 → … → 650 (8 snapshots) |
+| Chathub @ included | `Gpt_5_5_Reasoning` | – | 207 |
+| Chathub @ included | `Claude_Sonnet` (Sonnet 4.6) | – | none; the code interpreter |
+| Chathub @ included | `Gpt_62_Sol_Reasoning` | – | none |
+
+- **Shape.** One message per `messageId` (`messageType: Progress`, `addToChainOfThought: true`,
+  `responseOrigin: ModelRunner`), sent as full-text snapshots, each the last one plus a sentence or so. No
+  cursor named one and no delta extended one. Chathub restates each message unchanged in the final item;
+  StreamHub sends `{messages}` parts and no restatement. Every one arrived before the answer's first text.
+- **Text.** `Claude_Sonnet`, `Claude_Sonnet_5` and `Claude_Opus` over StreamHub send summaries ("I'm
+  setting up the equations: …"). `Gpt_5_5_Reasoning`'s open with a bold title line, in OpenAI's summary
+  style (`**Validating Pell sequence calculations** \n…`). `Claude_Opus` @ included sends text that reads like
+  Opus 4.8's own thinking ("This is a Pell equation! … Wait, let me check: (1, 0) is also a solution but y
+  must be positive.").
+- **Earlier dumps.** The Chathub frame dumps from Sep 28 to Nov 9 hold 87 such messages, from
+  `Claude_Sonnet_5` (on 21 of its 39 turns), `Claude_Sonnet` (34 of 143) and `Claude_Opus` (5 of 7). 21 grew
+  over two or more snapshots; none rewrote the text before it; 84 were restated unchanged in the final item.
+  None of the 30 GPT-6.x turns there carried one (nor the 4 above). Counted on turns with real server
+  messages: the dump folder also holds the unit tests' fake-socket turns.
+
+### F150 — pi and opencode read `reasoning_content` as thinking, with no setting 🟢 (code read)
+- **pi 1.5.2** (`openai-completions` in pi-ai) takes the first non-empty of `reasoning_content`,
+  `reasoning` and `reasoning_text` in a delta into one thinking block per message, ahead of the text block
+  when it comes first, and shows it by default (`hideThinkingBlock: false`). On the next request it sends
+  the thinking back on that assistant message, under the field it came in.
+- **opencode 2.3.2** reads the same three fields, a configured `reasoning_field` first, into one reasoning
+  part per step, whatever the model's `capabilities.reasoning` says.
+- The proxy's request schema drops fields it doesn't know, so the thinking pi sends back never reaches M365.
+
+### F151 — live, four real-harness runs: thinking in both clients on both transports 🟢 (n=1 per run)
+The bench's fix-calc task (a bug in `calc.py`), through the proxy with the change, Nov 20 10:51–10:58 UTC.
+"Turns" counts the requests of the task, each one M365 turn unless noted.
+
+| client | transport | model ID | outcome | turns | with a chain of thought |
+|---|---|---|---|---|---|
+| pi | StreamHub | `claude-sonnet-5.5` | solved, 15 s | 4 | 0 |
+| pi | StreamHub | `claude-sonnet-5` | solved, 25 s | 5 | 3 |
+| opencode | StreamHub | `claude-sonnet-5` | solved, 19 s | 4 | 3 |
+| pi | Chathub | `claude-opus-4.8` (tool agent) | solved, 24 s | 3 | 2 |
+| opencode | Chathub | `gpt-5.5-think-deeper` (tool agent) | solved, 93 s | 3 (4 M365 turns) | 3 (4 turns) |
+
+pi stored each one as a `thinking` block with signature `reasoning_content`, ahead of that message's tool
+call; opencode as a `reasoning` part ahead of its tool call. In the last run the first turn was a
+confabulation that the proxy re-prompted (`CONFAB_FORCE_PROMPT`), and opencode showed both turns' chain of
+thought in one part, a blank line apart. opencode's session-title requests carried none. Two `curl` checks:
+a streamed `claude-sonnet-5.5` reply over StreamHub sent three `delta.reasoning_content` chunks before its
+content; an unstreamed `gpt-5.5-think-deeper` reply over Chathub carried `message.reasoning_content`.
+
+The chain of thought is the RE instrument API doc §6 describes, now in the debug log on every turn:
+`gpt-5.5-think-deeper`'s first turn read "I'm currently examining options for a user-injected execution
+system, focusing on shell blocks…", and it then wrote no tool call.
+
+**Shipped:** `ChainOfThoughtComposer` (`session.ts`) folds each `ChainOfThoughtSummary` snapshot and hands
+out what it adds, a blank line between messages; `ChatTurnOptions.onReasoning` / `TurnOptions.onReasoning`
+carry it from `CopilotSession` through `ModelSession.run`, and `stream.reasoning` holds the turn's whole
+text. The handler streams each piece as `delta.reasoning_content` as it arrives, tool turns included, and
+puts the request's whole chain of thought in `message.reasoning_content` when unstreamed. Every turn of the
+request adds its own, a retry's and a forcing turn's included, a blank line apart; a long turn's parts don't.
+`M365_NO_REASONING=1` leaves it out. The debug log records each turn's (`Chain of thought (N chars): …`).
+The other `Progress` messages stay out (EarlyProgress's fixed list, the sandbox's "Coding and executing").
+
+### H50a — does a request field make GPT-6.x send its chain of thought? 🔴
+No GPT-6.x turn has carried one (F149), on a prompt that `Gpt_5_5_Reasoning` reasoned about on both
+transports. Does the web client show one for GPT-6.2 Sol, and if so, which of its `variants` (261 flags;
+the proxy sends 43 over StreamHub), `optionsSets` or `allowedMessageTypes` turns it on? Probe: capture
+the web client's `chat_request` for a GPT-6.2 Sol turn that shows a chain of thought, then add its extra
+fields to `cot-probe.mjs`'s turn one group at a time. Falsified if the web client shows none either.
+## 51. Oct 11 2026 — dropped tool calls: the fence shapes the scanner missed, and asking again for the rest
+
+A call the parser can't read is the worst failure the proxy has: the reply goes to the harness as prose,
+the harness ends its turn, and the model reads the silence as having no tools. 91bf23b brought back two
+shapes #44's scanner had dropped (a glued closer, a mid-line opener) as insurance; this asks which others
+exist, and whether any reach real replies.
+
+### F152 — eight fence shapes dropped or changed a call; a ninth was in the logs, 3 dropped calls in 1,153 replies 🟢
+**Probe** (model-free: `parseToolCalls` with pi's tools on `main` after 91bf23b). Read: a plain fence, a
+glued closer, a mid-line opener, CRLF. Dropped: ```` ```Bash ````, ```` ``` bash ````, `~~~bash`, ```` ```bash
+title="x" ````, a one-line ```` ```bash ls -la``` ````, a closer with text after it, a fence never closed.
+Changed: a ```` ````bash ```` block ran `ls -la` followed by a stray backtick line, and a block indented in a
+list item kept its indentation in the command (or in a written file).
+
+**The logs** (every tool-mode reply the proxy logged in real pi runs, Oct 3–8, Windows, `gpt-5.6-think-deeper`
+and some `gpt-5.5-think-deeper`; 1,153 logged whole). None of those shapes occurs. A ninth does: the closer
+with the next sentence glued on — "```Raporu hazırlayabilmem için önce…", "```Word belgesi oluşturamıyorum…" —
+in 3 replies, and each was a call the parser dropped (one `read` of a skill, two `bash` checks). It read as a
+nested opener, so the block never closed. It turned up only because the new check below flagged it.
+
+**Fix.**
+- **The scanner follows CommonMark's fence rules**: a closer is a bare line of the opener's character
+  (backtick or tilde), at least as long; inside an open fence, an opener of the same character and length
+  nests (the models' habit, as before) and any other fence line is body; the info string's first word names
+  the tool and the rest is ignored; an indented block's body loses the opener's indentation.
+- **Tool names**: an info word matching no tool exactly takes the one tool whose name matches it ignoring
+  case (```` ```Bash ````); with two candidates, none.
+- **Fallback closers**: a glued closer, and a closer with prose glued on (three or more words, no `=` or
+  `{`, so never ```` ```python title=x ````), end a block only when nothing else does by the end of the text.
+  A body line that merely ends in ``` (a README showing inline code) no longer cuts a write short.
+- **What still can't be read is named** (`unreadableToolFence`): a tool fence never closed, an edit fence
+  without its markers, a reply that is nothing but a one-line fence. The handler then asks once, in the same
+  conversation, saying what was wrong and that nothing ran ("If you meant to run it, send it again as one
+  block… If you didn't mean to, reply without it"), before any give-up handling (`M365_NO_FENCE_RETRY=1`
+  turns it off; transport/filter retries in `runBuffered` run before it and `strippedTypeMember` runs after).
+  A truncated reply is asked about, never run: the command or file in it is incomplete.
+
+**It doesn't move anything else.** Old and new parser over every distinct reply on disk (863 logged
+tool-mode replies and 37 assistant texts from pi sessions): 897 parse to the same calls, and the other 3 are
+the dropped calls, now read. The unreadable check flags no whole reply; its 56 flags were all replies the
+log had cut at 1,000 characters. In real pi with a scripted model, the call with prose glued to its closer
+ran as sent; the unclosed one was asked for again, came back closed, and ran.
+**Not covered:** shapes not seen anywhere yet (the re-ask is there for them), and Claude's output, which
+this corpus lacks. A one-line fence inside prose stays prose, by design: it is inline code.
+
+**Review (Oct 14).** Two inputs the fallbacks turned into wrong behaviour, worse than a missed call:
+- A truncated heredoc: ```` ```bash ```` / `cat > README.md <<'EOF'` / `# Title` / ```` ```Then run the following
+  commands ```` / `make install`, with no `EOF` and no closer, ran `cat > README.md <<'EOF'\n# Title` and would
+  have clobbered the file (main dropped it). A fallback closer is no longer taken while a heredoc in the
+  body is open (`openHeredoc`: `<<EOF`, `<<'EOF'`, `<<-EOF`, not a `<<<` here-string); the block stays
+  unclosed and is asked about instead of run.
+- A prose opener at the top level: ```` ```Here is the plan for you ```` opened a block and swallowed the
+  real ```` ```bash ```` block after it (main ran it). A fence line whose text reads as prose (the same
+  `looksLikeProse` as the closer side) is no opener now, unless its first word names a tool
+  (```` ```bash run this one first ```` still opens).
+- The forcing retry no longer follows a re-ask: the re-ask tells the model it may reply without the
+  call, and a give-up-shaped answer to it was then forced into the call anyway.
+
+The 900-reply replay is unchanged by these: 897 identical, the same 3 dropped calls read, no whole reply
+flagged.
+
+**Review (Nov 17).** Aliased shell fences (`stripNativeCloser`) now match both the resolved tool name and the
+fence's own info word case-insensitively (`</bash>` inside a ```` ```bash ```` block routed to Codex's
+`functions__exec` or Claude Code's `Bash`).
+## 52. Oct 4–8 2026 — Concurrent sessions sharing a first message (`SessionPool` bucket per fingerprint + `replyKey`)
+
+Follow-up from the Oct 4–5 real-pi sweeps on Windows (#70 split into standalone PRs).
+
+### F153 — sessions that share a first message: keeping each in its own conversation 🟢
+A sleeping measurement job was taken for dead (its log had stopped because it was sleeping) and a second
+one was started; both woke and ran against the same two proxies. Every session opened with the same first
+message, so `SessionPool` mapped both sweeps' sessions to one `ConversationState`, and under F84 each
+kept resetting the other's conversation — replies like "What would you like me to do with this CLI code?"
+and "this is just the same erroneous command's real output being passed again". All data from that hour is
+discarded.
+
+In real use the same collision happens whenever concurrent sessions open with the same message, e.g.
+parallel subagents given one prompt (even when they inherit the parent's `prompt_cache_key` / `user`),
+and sequentially too: open a second pi session with "merhaba", go back to the first, and the first one's
+next turn went into the second one's thread.
+
+**Fixed** without client cooperation: under the fingerprint (`prompt_cache_key` / `user` + first user
+message + sorted tool names), `SessionPool` keeps a bucket of every conversation sharing that fingerprint,
+and a request continues the non-busy conversation whose last reply it echoes back at position
+`sentMessageCount` (`replyKey` = joined tool-call ids, else trimmed text). A conversation with a turn in
+flight (`activeRequests > 0`) can't be joined, and F84's fresh conversation no longer replaces an earlier one.
+Without an echo match it falls back only when the fingerprint has a single conversation, so a client that
+rewrites old replies still continues; with several, a guess could put one session's turn into another's
+thread, so it starts fresh (changed on merge from "the most recent candidate"). Regression tests in `packages/proxy-lib/src/streaming.test.ts` cover two sessions continuing in
+their own threads by tool-call ids and by text, a same-opener request alongside an in-flight turn,
+subagents sharing `prompt_cache_key` and opener, and rewritten-reply fallback.
+
+---
+
+## 53. Nov 3 2026 — a long written answer that ends in an example command (#96)
+
+### F154 — a long written answer ending in an example command was run as a tool call ❓
+
+**Contributor report, 2026-11-03:** n=1 in 104 opencode turns (`gpt-5.6-think-deeper`,
+agent-less, relay_batch). Asked "what else could we add for local dev?", the model wrote
+7.7k chars of headed recommendations and a trailing example:
+```` ```bash docker compose --profile observability up -d ````.
+The single-call path executed the example rather than returning the answer; it failed in
+the wrong working directory, after which the agent started the stack unasked. The
+contributor reports replaying 78 real calls: none flagged; two long final answers were
+flagged when an example was appended. This replay was not independently rerun here.
+Maintainer review (#96): the first version of the single-call heuristic reclassified every
+single call after a ≥1,500-character preamble with a Markdown heading or table row, and so
+returned as prose a ~1.8k reply that explained a fix with a ```` ```python ```` block (comments
+start with `# `, which read as headings) and then ran it with a ```` ```bash ```` `sed … && pytest`
+call — a real edit, which on pi ends the loop. It is now opt-in (`M365_LONG_ANSWER_GUARD=1`, off
+by default, so default behaviour is unchanged), admits only a narrow plain-text preamble with headings or tables, refusing markup and code,
+and applies only when the call is the last thing in the reply. Multi-call
+rules are unchanged. Offline parser and handler regressions cover both settings, including that
+repro. **Not benched**: no A/B for the action-vs-answer decision exists, so the pass-rate effect
+is unknown (❓); a heuristic here can still misread an action as an answer.
+
+---
+
+## 54. Nov 3 2026 — `ECONNRESET` mid-conversation, an idle watchdog and a reconnect delay (#98)
+
+### H54a — mid-conversation `WS error: read ECONNRESET`, then a hung request 🟡
+**Contributor report, 2026-11-03, n=1 session; not rerun live for this handoff.** In an agent-less
+`gpt-5.6-think-deeper` thread, the contributor reported repeated `ECONNRESET` errors 15–17 seconds
+after sending a 5.4k-character tool response, followed by a silent attempt. Later they reported
+`EAI_AGAIN` / `ENOTFOUND` alongside resets, and that a subsequent resend succeeded after an idle
+timeout. These observations suggest a possible local network contribution, but do not establish
+the cause of each reset or exclude content, conversation, or upstream factors. The client now
+has an idle timeout and delays recognized network-error retries. A controlled comparison of the
+same text in a fresh conversation remains open.
+
+The supplied chronology names opencode turn 9, with four sends (two proxy reconnect attempts
+and two client attempts), no bot frame before the resets, and an `npm install` response in
+`<tool_response>`. The contributor observed a DigiCert TLS issuer; that alone does not prove
+all network intermediaries absent. At 19:59–20:08Z the resets recurred alongside DNS errors
+for `substrate.office.com`. The contributed timeout logged "No response from M365 for 120s",
+then the client's next resend succeeded. The original question remains falsifiable: compare
+the same response text in a fresh conversation against the existing conversation, with local
+DNS/connectivity observed independently. No causal verdict is inferred from this one session.
+
+---
+
+## 55. Oct 5 / Nov 20 2026 — Cursor deltas extend adaptive card text (`#134`)
+
+Follow-up from the Oct 5 real-pi sweep (#70 split into standalone PRs), reworked after `#134` showed the
+doubled `<` was one case of a broader cursor-base mismatch alongside `(`, `[(` and missing final characters
+in StreamHub `patches`.
+
+### F155 — cursor deltas extend the card text rather than `m.text`, and StreamHub `patches` carry the last char (#134) 🟢
+In the Oct 5 sweep three baseline answers began `<<notlar.pdf>`, `<<notlar.docx>`,
+`<<document>notlar.docx</document>`, and Nov 20 captures (`scripts/cot-probe.mjs`, `#134`) reproduced the
+same doubling with `(` (`(3, 2)` → `((3, 2)`) and `[(` (`[(3, 2)` → `[((3, 2)`), plus StreamHub answers
+missing their trailing `]`.
+
+1. **Card base (`cursorBaseText` in `packages/core/src/session.ts`):** the cursor's path names
+   `$['<id>'].adaptiveCards[0].body[0].text`, which the deltas extend; `m.text` held a held-back leading
+   `"<"`, `"("` or `"("` in `"[("` that the card didn't have, so starting deltas from `m.text` doubled it.
+   Cursor frames now read the card path when present (falling back to `m.text` otherwise), and the
+   narrower `current === "<"` special case was removed so a genuine `<` already in the card isn't dropped.
+   Note: the Oct 2–5 Windows raw dumps were not re-checked on disk here to verify whether `adaptiveCards` was
+   empty on those 9 `<` frames.
+2. **StreamHub `patches` (`cardReplacePatches`):** StreamHub turns whose deltas stop one character short
+   deliver the complete card text in a final `message_part` `patches` item (`op: "replace"`,
+   `path: "/<messageId>/adaptiveCards"` or `…/adaptiveCards/0/body/0/text`). Known non-Progress answer
+   messages fold those card replacements through `composer.snapshot` (preserving `restoreStrippedBrackets`).

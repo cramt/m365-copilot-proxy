@@ -26,9 +26,10 @@ const fake = vi.hoisted(() => {
         const frame = JSON.parse(f);
         this.sent.push(frame);
         if (frame.protocol === "json") setTimeout(() => this.emit("message", Buffer.from("{}" + RS)), 0);
-        if (frame.item?.type === "chat_request") {
-          // `$RID` in a scripted frame stands for this turn's request id.
-          const rid = frame.item.chatStreamRequest.requestId;
+        const rid = frame.item?.type === "chat_request"
+          ? frame.item.chatStreamRequest.requestId
+          : frame.target === "chat" ? frame.arguments[0].message.requestId : null;
+        if (rid) {
           state.script.forEach((s, i) => setTimeout(() => {
             if (this.readyState === 1) this.emit("message", Buffer.from(JSON.stringify(s).replaceAll("$RID", rid) + RS));
           }, i + 1));
@@ -196,5 +197,85 @@ describe("CopilotSession over StreamHub", () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  it("bases cursor restarts on the adaptive card text rather than m.text (#134 Cause 1)", async () => {
+    // StreamHub: m.text holds "[(" while the cursor's card holds "["; deltas extend "[".
+    const { stream, streamed } = await turn(new CopilotSession(), [
+      part({
+        cursor: cursor("m1"),
+        messages: [{ author: "bot", text: "[(", contentOrigin: "DeepLeo", messageId: "m1", adaptiveCards: [{ body: [{ text: "[" }] }] }],
+      }),
+      part({ w: "(3, 2), (17, 12), (99, 70)" }),
+      part({ patches: [{ op: "replace", path: "/m1/adaptiveCards", value: [{ body: [{ text: "[(3, 2), (17, 12), (99, 70)]" }] }] }], isLastUpdate: true }),
+      end,
+    ]);
+    expect(stream.fullText).toBe("[(3, 2), (17, 12), (99, 70)]");
+    expect(streamed.join("")).toBe("[(3, 2), (17, 12), (99, 70)]");
+  });
+
+  it("picks up a final character delivered only in a StreamHub adaptiveCards replace patch (#134 Cause 2)", async () => {
+    // StreamHub Claude_Fable / Gpt_5_5_Reasoning: deltas stop one character short; final "]" only in patches.
+    const partial = "\\[\n(3,2),\\ (17,12),\\ (99,70)\n\\";
+    const full = `${partial}]`;
+    const { stream, streamed } = await turn(new CopilotSession(), [
+      restate("m1"),
+      part({ w: partial }),
+      part({ patches: [{ op: "replace", path: "/m1/adaptiveCards", value: [{ body: [{ text: full }] }] }], isLastUpdate: true }),
+      end,
+    ]);
+    expect(stream.fullText).toBe(full);
+    expect(streamed.join("")).toBe(full);
+  });
+
+  it("ignores StreamHub adaptiveCards replace patches on Progress messages", async () => {
+    const { stream } = await turn(new CopilotSession(), [
+      part({ messages: [{ author: "bot", text: "Thinking…", messageType: "Progress", contentOrigin: "EarlyProgress", messageId: "p1" }] }),
+      restate("m1"),
+      part({ w: "Answer." }),
+      part({ patches: [{ op: "replace", path: "/p1/adaptiveCards", value: [{ body: [{ text: "Thinking… done" }] }] }], isLastUpdate: true }),
+      end,
+    ]);
+    expect(stream.fullText).toBe("Answer.");
+  });
+
+  it("restores [word]: tokens stripped from a StreamHub adaptiveCards replace patch via deltas", async () => {
+    const raw = "```powershell\n$u = [regex]::Replace($c, '3000', '8080')\nSet-Content config.json $";
+    const { stream } = await turn(new CopilotSession(), [
+      restate("m1"),
+      part({ w: raw }),
+      part({ patches: [{ op: "replace", path: "/m1/adaptiveCards", value: [{ body: [{ text: "```powershell\n$u = :Replace($c, '3000', '8080')\nSet-Content config.json $u\n```" }] }] }], isLastUpdate: true }),
+      end,
+    ]);
+    expect(stream.fullText).toBe(raw + "u\n```");
+  });
+});
+
+describe("CopilotSession over Chathub (#134 Cause 1)", () => {
+  beforeAll(() => { process.env.M365_TRANSPORT = "chathub"; });
+  afterAll(() => { delete process.env.M365_TRANSPORT; });
+  afterEach(() => { fake.state.sockets.length = 0; });
+
+  const chathubUpdate = (arg: object) => ({ type: 1, target: "update", arguments: [arg] });
+  const chathubDone = (text: string, id = "m1") => ({ type: 2, item: { result: { value: "Success" }, messages: [{ author: "bot", text, messageId: id }] } });
+
+  it("bases cursor deltas on card text when Chathub puts a leading '(' or '<' in m.text", async () => {
+    const first = await turn(new CopilotSession(), [
+      chathubUpdate({ cursor: cursor("m1"), messages: [{ author: "bot", text: "(", messageId: "m1", adaptiveCards: [{ body: [{ text: "" }] }] }] }),
+      chathubUpdate({ writeAtCursor: "(3" }),
+      chathubUpdate({ writeAtCursor: ", 2), (17, 12), (99, 70)" }),
+      chathubDone("(3, 2), (17, 12), (99, 70)"),
+    ]);
+    expect(first.stream.fullText).toBe("(3, 2), (17, 12), (99, 70)");
+    expect(first.streamed.join("")).toBe("(3, 2), (17, 12), (99, 70)");
+
+    const second = await turn(new CopilotSession(), [
+      chathubUpdate({ cursor: cursor("m1"), messages: [{ author: "bot", text: "<", messageId: "m1", adaptiveCards: [{ body: [{ text: "" }] }] }] }),
+      chathubUpdate({ writeAtCursor: "<document" }),
+      chathubUpdate({ writeAtCursor: ">notlar.docx</document>" }),
+      chathubDone("<document>notlar.docx</document>"),
+    ]);
+    expect(second.stream.fullText).toBe("<document>notlar.docx</document>");
+    expect(second.streamed.join("")).toBe("<document>notlar.docx</document>");
   });
 });
