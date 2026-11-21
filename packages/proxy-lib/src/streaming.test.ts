@@ -931,6 +931,234 @@ describe("follow-up turns and give-ups (Windows / pi, measured)", () => {
     scripted.queue = [];
   });
 
+  describe("a single call after a long written answer (M365_LONG_ANSWER_GUARD)", () => {
+    const doc = `# Recommendations\n${"Consider a local development improvement. ".repeat(45)}\n\n\`\`\`bash\nprintf example\n\`\`\``;
+    // The maintainer's repro: an explanation with a python block whose comments start
+    // with "# ", then the call that applies the fix.
+    const fix = [
+      "The date parser treats %d as zero padded everywhere, so single digit days fail. ".repeat(8),
+      "",
+      "```python",
+      ...Array.from({ length: 14 }, (_, i) => `# case ${i}: a single digit day parses like its padded form\nassert parse("2026-11-${i + 1}") == parse("2026-11-${String(i + 1).padStart(2, "0")}")`),
+      "```",
+      "",
+      "```bash\nsed -i 's/%d/%e/' src/date.py && pytest -q\n```",
+    ].join("\n");
+
+    afterEach(() => { delete process.env.M365_LONG_ANSWER_GUARD; });
+
+    const reply = async (fullText: string) => {
+      scripted.result = null;
+      scripted.texts = [];
+      scripted.queue = [{ fullText }];
+      const m = await ask([{ role: "user", content: `recommendations ${Math.random()}` }], new SessionPool());
+      scripted.queue = [];
+      return m;
+    };
+
+    it.each([["long structured answer", doc], ["python block then sed && pytest", fix]])(
+      "runs the call by default (%s)", async (_name, text) => {
+        const m = await reply(text);
+        expect(m.tool_calls).toHaveLength(1);
+        expect(scripted.texts).toHaveLength(1);
+      });
+
+    it("returns the long structured answer as prose when the guard is on", async () => {
+      process.env.M365_LONG_ANSWER_GUARD = "1";
+      const m = await reply(doc);
+      expect(scripted.texts).toHaveLength(1);
+      expect(m.tool_calls).toBeUndefined();
+      expect(m.content).toBe(doc);
+    });
+
+    it.each([
+      ["mid-line python", "Example: ```python\n# comment\nx = 1\n```"],
+      ["nested markdown", "```markdown\n```python\nx = 1\n```\n# comment\n```"],
+      ["mid-line table", "Example: ```text\n| a | b |\n```"],
+    ])("replay_7124b7e_fences: handler runs action after %s with guard on and off", async (_name, block) => {
+      const text = `${"A detailed explanation of the fix without document structure. ".repeat(30)}\n${block}\n\`\`\`bash\nsed -i 's/a/b/' file && pytest -q\n\`\`\``;
+      for (const enabled of [false, true]) {
+        if (enabled) process.env.M365_LONG_ANSWER_GUARD = "1";
+        else delete process.env.M365_LONG_ANSWER_GUARD;
+        const m = await reply(text);
+        expect(m.tool_calls).toHaveLength(1);
+        expect(JSON.parse(m.tool_calls[0].function.arguments).command).toContain("sed -i");
+      }
+    });
+
+    it.each([
+      ["unclosed python before native closer", "```python\n# comment\nx=1\n```bash\nsed -i s/a/b/ file && pytest\n</invoke>"],
+      ["tilde python", "~~~python\n# comment\nx=1\n~~~\n```bash\nsed -i s/a/b/ file && pytest\n```"],
+      ["four-backtick python", "````python\n# comment\nx=1\n````\n```bash\nsed -i s/a/b/ file && pytest\n```"],
+    ])("replay_8d5a8dd_ambiguous: handler retains %s action", async (_name, suffix) => {
+      const text = `${"Detailed explanation of the change and why it is needed. ".repeat(32)}\n${suffix}`;
+      for (const enabled of [false, true]) {
+        if (enabled) process.env.M365_LONG_ANSWER_GUARD = "1";
+        else delete process.env.M365_LONG_ANSWER_GUARD;
+        const m = await reply(text);
+        expect(m.tool_calls).toHaveLength(1);
+        expect(JSON.parse(m.tool_calls[0].function.arguments).command).toContain("sed -i");
+      }
+    });
+
+    it.each(["# comment", "| table row |"])("replay_ea83f49_mixed_fences: handler retains action after four-backtick block containing %s", async (structure) => {
+      const text = `${"Detailed explanation of the change and why it is needed. ".repeat(32)}\n${"`".repeat(4)}python\n\`\`\`\n${structure}\n\`\`\`python\n${"`".repeat(4)}\n\`\`\`bash\nsed -i s/a/b/ file && pytest\n\`\`\``;
+      for (const enabled of [false, true]) {
+        if (enabled) process.env.M365_LONG_ANSWER_GUARD = "1";
+        else delete process.env.M365_LONG_ANSWER_GUARD;
+        const m = await reply(text);
+        expect(m.tool_calls).toHaveLength(1);
+        expect(JSON.parse(m.tool_calls[0].function.arguments).command).toBe("sed -i s/a/b/ file && pytest");
+      }
+    });
+
+    it.each(["````", "`````", "~~~", "~~~~"])("conservatively retains a call when %s appears inside a closed native fence", async (marker) => {
+      const text = `# Heading\n${"Detailed explanation of the change. ".repeat(50)}\n\`\`\`python\n${marker}python\nx=1\n${marker}\n\`\`\`\n\`\`\`bash\nprintf example\n\`\`\``;
+      for (const enabled of [false, true]) {
+        if (enabled) process.env.M365_LONG_ANSWER_GUARD = "1";
+        else delete process.env.M365_LONG_ANSWER_GUARD;
+        const m = await reply(text);
+        expect(m.tool_calls).toHaveLength(1);
+        expect(JSON.parse(m.tool_calls[0].function.arguments).command).toBe("printf example");
+      }
+    });
+
+    it.each(["# Heading", "| Area | Value |"])("conservatively keeps action with %s and a nested fence", async (structure) => {
+      const text = `${structure}\n${"Useful explanation. ".repeat(90)}\nExample: \`\`\`markdown\n\`\`\`python\n# comment\n\`\`\`\n\`\`\`\n\`\`\`bash\nprintf example\n\`\`\``;
+      delete process.env.M365_LONG_ANSWER_GUARD;
+      expect((await reply(text)).tool_calls).toHaveLength(1);
+      process.env.M365_LONG_ANSWER_GUARD = "1";
+      const m = await reply(text);
+      expect(m.tool_calls).toHaveLength(1);
+    });
+
+    it.each(["    | a | b |", "     | a | b |", "\t| a | b |", " \t| a | b |", "    # comment", "\t# comment"])("replay_f2d1258_indented: handler keeps action after code line %j", async (line) => {
+      const text = `${"Detailed explanation of the change and why it is needed. ".repeat(32)}\n\n${line}\n\n\`\`\`bash\nsed -i s/a/b/ file && pytest\n\`\`\``;
+      for (const enabled of [false, true]) {
+        if (enabled) process.env.M365_LONG_ANSWER_GUARD = "1";
+        else delete process.env.M365_LONG_ANSWER_GUARD;
+        const m = await reply(text);
+        expect(m.tool_calls).toHaveLength(1);
+        expect(JSON.parse(m.tool_calls[0].function.arguments).command).toBe("sed -i s/a/b/ file && pytest");
+      }
+    });
+
+    it.each(["", " ", "  ", "   "])("handler recognizes real heading and table with %j indentation", async (indent) => {
+      for (const structure of ["| a | b |\n" + indent + "| --- | --- |", "# Heading"]) {
+        const text = `${"Detailed explanation of the change and why it is needed. ".repeat(32)}\n\n${indent}${structure}\n\`\`\`bash\nprintf example\n\`\`\``;
+        delete process.env.M365_LONG_ANSWER_GUARD;
+        expect((await reply(text)).tool_calls).toHaveLength(1);
+        process.env.M365_LONG_ANSWER_GUARD = "1";
+        const m = await reply(text);
+        expect(m.tool_calls).toBeUndefined();
+        expect(m.content).toBe(text);
+      }
+    });
+
+    it.each([
+      ["HTML comment heading", "<!--\n# internal implementation note\n-->"],
+      ["HTML comment table", "<!--\n| a | b |\n-->"],
+      ["HTML pre", "<pre>\n# code comment\n</pre>"],
+      ["multiline inline code", "Here is the snippet: `first line\n# this is code, not a heading\nlast line`"],
+      ["indented code with real heading", "# Plan\n    x = 1"],
+      ["inline code with real heading", "# Plan\nUse `example` here."],
+      ["list with real heading", "# Plan\n- item"],
+      ["link with real heading", "# Plan\n[reference](example)"],
+    ])("replay_a804b53_markup: handler retains action with %s", async (_name, block) => {
+      const text = `${"Detailed explanation of the change and why it is needed. ".repeat(32)}\n\n${block}\n\n\`\`\`bash\nsed -i s/a/b/ file && pytest\n\`\`\``;
+      for (const enabled of [false, true]) {
+        if (enabled) process.env.M365_LONG_ANSWER_GUARD = "1";
+        else delete process.env.M365_LONG_ANSWER_GUARD;
+        const m = await reply(text);
+        expect(m.tool_calls).toHaveLength(1);
+        expect(JSON.parse(m.tool_calls[0].function.arguments).command).toBe("sed -i s/a/b/ file && pytest");
+      }
+    });
+
+    describe.each([false, true])("table handler stream=%s", (stream) => {
+    it.each([
+      ["empty", "||", false], ["space", "| |", false], ["separator", "|---|---|", false],
+      ["one row", "| a | b |", false], ["blank header", "| | |\n|---|---|", false],
+      ["punctuation header", "| ... | --- |\n|---|---|", false],
+      ["valid table", "| a | b |\n|---|---|\n| x | y |", true],
+      ["escaped pipe", "| a \\| b | c |\n| --- | :---: |", true],
+      ["mismatched columns", "| a | b |\n| --- |", false],
+      ["CRLF spaced", "   | a | b |\r\n   | --- | --- |", true],
+      ["four spaces", "    | a | b |\n    | --- | --- |", false],
+      ["tab", "\t| a | b |\n\t| --- | --- |", false], ["heading", "# Heading", true],
+    ])("replay_34e3a2d_table: handler JSON and SSE %s", async (_name, structure, expected) => {
+      const text = `${"Detailed explanation of the change and why it is needed. ".repeat(32)}\n\n${structure}\n\`\`\`bash\nsed -i s/a/b/ file && pytest\n\`\`\``;
+      for (const enabled of [false, true]) {
+        if (enabled) process.env.M365_LONG_ANSWER_GUARD = "1"; else delete process.env.M365_LONG_ANSWER_GUARD;
+        scripted.result = null; scripted.texts = []; scripted.queue = [{ fullText: text }];
+        const body = ChatCompletionRequest.parse({ model: "gpt-5.6-think-deeper", stream, tools, messages: [{ role: "user", content: `check ${Math.random()}` }] });
+        const res = await handleChatCompletion(body, new SessionPool());
+        expect(res.status).toBe(200);
+        const prose = enabled && expected;
+        if (!stream) {
+          const m = (await res.json()).choices[0].message;
+          if (prose) { expect(m.tool_calls).toBeUndefined(); expect(m.content).toBe(text); }
+          else { expect(m.tool_calls).toHaveLength(1); expect(JSON.parse(m.tool_calls[0].function.arguments).command).toBe("sed -i s/a/b/ file && pytest"); }
+        } else {
+          const raw = await res.text();
+          expect(raw).toContain("data: [DONE]");
+          const chunks = raw.split("\n").filter(l => l.startsWith("data: ") && l !== "data: [DONE]").map(l => JSON.parse(l.slice(6)));
+          const deltas = chunks.map(c => c.choices?.[0]?.delta).filter(Boolean);
+          const calls = deltas.flatMap(d => d.tool_calls ?? []);
+          if (prose) { expect(calls).toHaveLength(0); expect(deltas.map(d => d.content ?? "").join("")).toBe(text); }
+          else { expect(calls.length).toBeGreaterThan(0); expect(JSON.parse(calls.map(c => c.function?.arguments ?? "").join("")).command).toBe("sed -i s/a/b/ file && pytest"); }
+        }
+      }
+    });
+
+    });
+
+    describe.each([false, true])("heading handler stream=%s", (stream) => {
+      it.each([
+        ["#  ", false], ["##    ", false], ["# ---", false], ["#", false], ["### !!!", false], ["#### ###", false],
+        ["# Heading", true], ["## 123", true], ["### Café", true], ["  # 東京", true],
+        ["| --- | ... |\n| --- | --- |", false], ["| 東京 | ... |\n| --- | --- |", true],
+      ])("replay_84edab9_heading: meaningful structure %j", async (row, expected) => {
+        const text = `${"Detailed explanation of the change and why it is needed. ".repeat(32)}\n\n${row}\n\n\`\`\`bash\nsed -i s/a/b/ file && pytest\n\`\`\``;
+        for (const enabled of [false, true]) {
+          if (enabled) process.env.M365_LONG_ANSWER_GUARD = "1"; else delete process.env.M365_LONG_ANSWER_GUARD;
+          scripted.result = null; scripted.texts = []; scripted.queue = [{ fullText: text }];
+          const body = ChatCompletionRequest.parse({ model: "gpt-5.6-think-deeper", stream, tools, messages: [{ role: "user", content: `check ${Math.random()}` }] });
+          const res = await handleChatCompletion(body, new SessionPool());
+          expect(res.status).toBe(200);
+          if (!stream) {
+            const m = (await res.json()).choices[0].message;
+            if (enabled && expected) { expect(m.tool_calls).toBeUndefined(); expect(m.content).toBe(text); }
+            else { expect(m.tool_calls).toHaveLength(1); expect(JSON.parse(m.tool_calls[0].function.arguments).command).toBe("sed -i s/a/b/ file && pytest"); }
+          } else {
+            const raw = await res.text(); expect(raw).toContain("data: [DONE]");
+            const deltas = raw.split("\n").filter(l => l.startsWith("data: ") && l !== "data: [DONE]").map(l => JSON.parse(l.slice(6)).choices?.[0]?.delta).filter(Boolean);
+            const calls = deltas.flatMap(d => d.tool_calls ?? []);
+            if (enabled && expected) { expect(calls).toHaveLength(0); expect(deltas.map(d => d.content ?? "").join("")).toBe(text); }
+            else { expect(calls.length).toBeGreaterThan(0); expect(JSON.parse(calls.map(c => c.function?.arguments ?? "").join("")).command).toBe("sed -i s/a/b/ file && pytest"); }
+          }
+        }
+      });
+    });
+
+    it("returns a structured answer with a native-closer example only when enabled", async () => {
+      const text = `# Recommendations\n${"Useful explanation. ".repeat(90)}\n\`\`\`bash\nprintf example\n</invoke>`;
+      delete process.env.M365_LONG_ANSWER_GUARD;
+      expect((await reply(text)).tool_calls).toHaveLength(1);
+      process.env.M365_LONG_ANSWER_GUARD = "1";
+      const m = await reply(text);
+      expect(m.tool_calls).toBeUndefined();
+      expect(m.content).toBe(text);
+    });
+
+    it("still runs the python-block-then-sed call when the guard is on", async () => {
+      process.env.M365_LONG_ANSWER_GUARD = "1";
+      const m = await reply(fix);
+      expect(m.tool_calls).toHaveLength(1);
+      expect(JSON.parse(m.tool_calls[0].function.arguments).command).toContain("sed -i");
+    });
+  });
+
   it("leaves a real document alone even if its body sounds like a give-up", async () => {
     scripted.result = null;
     scripted.texts = [];
