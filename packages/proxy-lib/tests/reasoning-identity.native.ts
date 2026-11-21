@@ -241,6 +241,36 @@ for (const stream of [false, true]) {
     const body = stream ? result.raw.split("\n").filter(x => x.startsWith("data: {")).map(x => JSON.parse(x.slice(6))).find(x => x.error)?.error : JSON.parse(result.raw).error;
     expect(body.suggested_models).toEqual(["gpt-5.6"]);
   });
+  it(`suggestions respect a globally preflight-walled quick route for another account, stream=${stream}`, async () => {
+    wire.result = { value: "OutOfCredits", message: "No credits" };
+    await ask(pool(A), "gpt-5.5", stream);
+    wire.result = cap;
+    const result = await ask(pool(B), "gpt-5.5-think-deeper", stream);
+    const error = stream ? result.raw.split("\n").filter(x => x.startsWith("data: {")).map(x => JSON.parse(x.slice(6))).find(x => x.error)?.error : JSON.parse(result.raw).error;
+    expect(error.suggested_models).toEqual(["gpt-5.6"]);
+    wire.result = undefined;
+    for (const candidate of error.suggested_models) {
+      const count = wire.texts.length;
+      const follow = await ask(pool(B), candidate, stream);
+      expect(wire.texts.length).toBe(count + 1);
+      expect(follow.raw).toContain("visible answer");
+    }
+  });
+  it(`cached priority preflight offers safe candidates without new auth, stream=${stream}`, async () => {
+    let calls = 0;
+    const a = new SessionPool({ useAgent: false, getToken: async () => { calls++; return token(A); } });
+    wire.result = { value: "OutOfCredits", message: "No credits" };
+    const first = await ask(a, "gpt-5.5", stream);
+    const firstBody = stream ? first.raw.split("\n").filter(x => x.startsWith("data: {")).map(x => JSON.parse(x.slice(6))).find(x => x.error)?.error : JSON.parse(first.raw).error;
+    const before = calls;
+    const again = await ask(a, "gpt-5.5", stream);
+    expect(again.status).toBe(429);
+    expect(calls).toBe(before);
+    const cached = JSON.parse(again.raw).error;
+    expect(cached.suggested_models).toEqual([]);
+    expect(cached.message).toContain("Wait");
+    expect(firstBody.suggested_models).toEqual(["gpt-5.6"]);
+  });
   it(`ordinary credits keep existing priority classification, stream=${stream}`, async () => {
     wire.result = { value: "OutOfCredits", errorCode: "Other", message: "No credits" };
     const response = await ask(pool(A), "gpt-5.5-think-deeper", stream);

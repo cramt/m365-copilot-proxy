@@ -1,4 +1,4 @@
-import { getToneForModel, getScenarioForModel, getTransport, getStreamHubScenario, getAvailableModels } from "@m365-copilot/core";
+import { getToneForModel, getScenarioForModel, getTransport, getStreamHubScenario, getAvailableModels, activePriorityAccessExhaustion, meteredBudgetOf } from "@m365-copilot/core";
 
 export function refusalRoute(model: string): string {
   if (!getAvailableModels().includes(model)) return `label:${model}`;
@@ -53,6 +53,6 @@ export function noteModelWall(scope: string | null, route: string | null, end: n
 }
 export function suggestions(scope: string | null, refused: string, now = Date.now()): string[] {
   const known = scope ? licences.get(scope) : undefined;
-  return ["gpt-5.5", "gpt-5.6"].filter((model) => refusalRoute(model) !== refusalRoute(refused) && (known?.get(refusalRoute(model)) ?? 0) <= now && (scope ? (modelWalls.get(scope)?.get(refusalRoute(model)) ?? 0) <= now : true));
+  return ["gpt-5.5", "gpt-5.6"].filter((model) => refusalRoute(model) !== refusalRoute(refused) && !activePriorityAccessExhaustion(meteredBudgetOf(model) ?? model, new Date(now)) && (known?.get(refusalRoute(model)) ?? 0) <= now && (scope ? (modelWalls.get(scope)?.get(refusalRoute(model)) ?? 0) <= now : true));
 }
 export function resetRefusalState(): void { walls.clear(); licences.clear(); modelWalls.clear(); }

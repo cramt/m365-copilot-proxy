@@ -593,7 +593,7 @@ export async function handleChatCompletion(
   const fallbackModel = knownExhaustion && requestedBudget ? priorityAccessFallbackModel(requestedBudget) : null;
   if (knownExhaustion && !fallbackModel) {
     log.info(`Priority access exhausted (${knownExhaustion.window}) until ${knownExhaustion.resetsAt.toISOString()} — 429 without contacting M365`);
-    return priorityAccessResponse(knownExhaustion, requestedModel);
+    return priorityAccessResponse(knownExhaustion, requestedModel, null);
   }
   let model = fallbackModel ?? requestedModel;
   if (fallbackModel) log.info(`Priority access exhausted until ${knownExhaustion!.resetsAt.toISOString()} — serving ${requestedModel} with ${fallbackModel} (${PRIORITY_ACCESS_FALLBACK_ENV[requestedBudget!]})`);
@@ -1809,7 +1809,7 @@ function reasoningResponse(end: number, scope: string | null, model: string): Re
 }
 
 function priorityAccessResponse(exhaustion: PriorityAccessExhaustion, model: string, scope?: string | null): Response {
-  const choices = scope === undefined ? null : suggestions(scope, model);
+  const choices = scope == null ? [] : suggestions(scope, model);
   const retryAfter = secondsUntilReset(exhaustion);
   const label = exhaustion.model ?? model;
   const when = exhaustion.window === "week" ? "this week" : "today";
