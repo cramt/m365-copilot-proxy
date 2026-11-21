@@ -330,9 +330,9 @@ That should be everything you need to get going quickly.`;
       expect(flagged(`${table}\`\`\`bash\nprintf example\n\`\`\``)).toBe(true);
     });
 
-    it("still flags it when a code block sits among the headed sections", () => {
+    it("keeps an action when a code block sits among the headed sections", () => {
       const text = `${recommendations.replace("## Observability", "## Observability\n```yaml\nprofiles: [observability]\n```")}\`\`\`bash\nprintf example\n\`\`\``;
-      expect(flagged(text)).toBe(true);
+      expect(flagged(text)).toBe(false);
     });
 
     it("keeps the python block with '# ' comments followed by a bash call as a tool call", () => {
@@ -345,6 +345,148 @@ That should be everything you need to get going quickly.`;
         const text = `${prose}\n\n${fenced}\n\n\`\`\`bash\nsed -i 's/%d/%e/' src/date.ts && pnpm test\n\`\`\``;
         expect(flagged(text)).toBe(false);
       }
+    });
+
+    it.each([
+      ["mid-line python", "Example: ```python\n# comment\nx = 1\n```"],
+      ["nested markdown", "```markdown\n```python\nx = 1\n```\n# comment\n```"],
+      ["mid-line table", "Example: ```text\n| a | b |\n```"],
+    ])("replay_7124b7e_fences: parses %s before a real trailing action", (_name, block) => {
+      const text = `${"A detailed explanation of the fix without document structure. ".repeat(30)}\n${block}\n\`\`\`bash\nsed -i 's/a/b/' file && pytest -q\n\`\`\``;
+      const parsed = parseToolCalls(text, bashTool);
+      expect(parsed.toolCalls).toHaveLength(1);
+      expect(JSON.parse(parsed.toolCalls[0].function.arguments).command).toContain("sed -i");
+      expect(isProseDocument(parsed, text, bashTool)).toBe(false);
+      expect(isProseDocument(parsed, text, bashTool, guard)).toBe(false);
+    });
+
+    it.each([
+      ["unclosed python before native closer", "```python\n# comment\nx=1\n```bash\nsed -i s/a/b/ file && pytest\n</invoke>"],
+      ["tilde python", "~~~python\n# comment\nx=1\n~~~\n```bash\nsed -i s/a/b/ file && pytest\n```"],
+      ["four-backtick python", "````python\n# comment\nx=1\n````\n```bash\nsed -i s/a/b/ file && pytest\n```"],
+    ])("replay_8d5a8dd_ambiguous: retains %s action", (_name, suffix) => {
+      const text = `${"Detailed explanation of the change and why it is needed. ".repeat(32)}\n${suffix}`;
+      const parsed = parseToolCalls(text, bashTool);
+      expect(parsed.toolCalls).toHaveLength(1);
+      expect(JSON.parse(parsed.toolCalls[0].function.arguments).command).toContain("sed -i");
+      expect(isProseDocument(parsed, text, bashTool)).toBe(false);
+      expect(isProseDocument(parsed, text, bashTool, guard)).toBe(false);
+    });
+
+    it.each(["# comment", "| table row |"])("replay_ea83f49_mixed_fences: retains action after four-backtick block containing %s", (structure) => {
+      const text = `${"Detailed explanation of the change and why it is needed. ".repeat(32)}\n${"`".repeat(4)}python\n\`\`\`\n${structure}\n\`\`\`python\n${"`".repeat(4)}\n\`\`\`bash\nsed -i s/a/b/ file && pytest\n\`\`\``;
+      const parsed = parseToolCalls(text, bashTool);
+      expect(parsed.toolCalls).toHaveLength(1);
+      expect(JSON.parse(parsed.toolCalls[0].function.arguments).command).toBe("sed -i s/a/b/ file && pytest");
+      expect(isProseDocument(parsed, text, bashTool)).toBe(false);
+      expect(isProseDocument(parsed, text, bashTool, guard)).toBe(false);
+    });
+
+    it.each(["````", "`````", "~~~", "~~~~"])("conservatively retains a call when %s appears inside a closed native fence", (marker) => {
+      const text = `# Heading\n${"Detailed explanation of the change. ".repeat(50)}\n\`\`\`python\n${marker}python\nx=1\n${marker}\n\`\`\`\n\`\`\`bash\nprintf example\n\`\`\``;
+      const parsed = parseToolCalls(text, bashTool);
+      expect(parsed.toolCalls).toHaveLength(1);
+      expect(isProseDocument(parsed, text, bashTool)).toBe(false);
+      expect(isProseDocument(parsed, text, bashTool, guard)).toBe(false);
+    });
+
+    it.each(["# Heading", "| Area | Value |"])("conservatively keeps action with %s and a mid-line nested fence", (structure) => {
+      const text = `${structure}\n${"Useful explanation. ".repeat(90)}\nExample: \`\`\`markdown\n\`\`\`python\n# comment\n\`\`\`\n\`\`\`\n\`\`\`bash\nprintf example\n\`\`\``;
+      const parsed = parseToolCalls(text, bashTool);
+      expect(parsed.toolCalls).toHaveLength(1);
+      expect(isProseDocument(parsed, text, bashTool)).toBe(false);
+      expect(isProseDocument(parsed, text, bashTool, guard)).toBe(false);
+    });
+
+    it("still flags a genuinely structured answer with a native-closer example", () => {
+      const text = `${recommendations}\`\`\`bash\nprintf example\n</invoke>`;
+      const parsed = parseToolCalls(text, bashTool);
+      expect(parsed.toolCalls).toHaveLength(1);
+      expect(isProseDocument(parsed, text, bashTool)).toBe(false);
+      expect(isProseDocument(parsed, text, bashTool, guard)).toBe(true);
+    });
+
+    it("does not count mid-line fenced content towards the length threshold", () => {
+      const text = `# Heading\nBrief.\nExample: \`\`\`python\n${"# filler\n".repeat(300)}\`\`\`\n\`\`\`bash\nprintf example\n\`\`\``;
+      expect(parseToolCalls(text, bashTool).toolCalls).toHaveLength(1);
+      expect(flagged(text)).toBe(false);
+    });
+
+    it.each(["    | a | b |", "     | a | b |", "\t| a | b |", " \t| a | b |", "    # comment", "\t# comment"])("replay_f2d1258_indented: keeps action after code line %j", (line) => {
+      const text = `${"Detailed explanation of the change and why it is needed. ".repeat(32)}\n\n${line}\n\n\`\`\`bash\nsed -i s/a/b/ file && pytest\n\`\`\``;
+      const parsed = parseToolCalls(text, bashTool);
+      expect(parsed.toolCalls).toHaveLength(1);
+      expect(JSON.parse(parsed.toolCalls[0].function.arguments).command).toBe("sed -i s/a/b/ file && pytest");
+      expect(isProseDocument(parsed, text, bashTool)).toBe(false);
+      expect(isProseDocument(parsed, text, bashTool, guard)).toBe(false);
+    });
+
+    it.each(["", " ", "  ", "   "])("recognizes real heading and table with %j indentation", (indent) => {
+      for (const structure of ["| a | b |\n" + indent + "| --- | --- |", "# Heading"]) {
+        const text = `${"Detailed explanation of the change and why it is needed. ".repeat(32)}\n\n${indent}${structure}\n\`\`\`bash\nprintf example\n\`\`\``;
+        const parsed = parseToolCalls(text, bashTool);
+        expect(parsed.toolCalls).toHaveLength(1);
+        expect(isProseDocument(parsed, text, bashTool)).toBe(false);
+        expect(isProseDocument(parsed, text, bashTool, guard)).toBe(true);
+      }
+    });
+
+    it("does not erase indentation on the first prose line", () => {
+      const text = `    | a | b |\n${"Detailed explanation of the change and why it is needed. ".repeat(32)}\n\`\`\`bash\nprintf example\n\`\`\``;
+      const parsed = parseToolCalls(text, bashTool);
+      expect(parsed.toolCalls).toHaveLength(1);
+      expect(isProseDocument(parsed, text, bashTool, guard)).toBe(false);
+    });
+
+    it.each([
+      ["HTML comment heading", "<!--\n# internal implementation note\n-->"],
+      ["HTML comment table", "<!--\n| a | b |\n-->"],
+      ["HTML pre", "<pre>\n# code comment\n</pre>"],
+      ["multiline inline code", "Here is the snippet: `first line\n# this is code, not a heading\nlast line`"],
+      ["indented code with real heading", "# Plan\n    x = 1"],
+      ["inline code with real heading", "# Plan\nUse `example` here."],
+      ["list with real heading", "# Plan\n- item"],
+      ["link with real heading", "# Plan\n[reference](example)"],
+    ])("replay_a804b53_markup: retains action with %s", (_name, block) => {
+      const text = `${"Detailed explanation of the change and why it is needed. ".repeat(32)}\n\n${block}\n\n\`\`\`bash\nsed -i s/a/b/ file && pytest\n\`\`\``;
+      const parsed = parseToolCalls(text, bashTool);
+      expect(parsed.toolCalls).toHaveLength(1);
+      expect(JSON.parse(parsed.toolCalls[0].function.arguments).command).toBe("sed -i s/a/b/ file && pytest");
+      expect(isProseDocument(parsed, text, bashTool)).toBe(false);
+      expect(isProseDocument(parsed, text, bashTool, guard)).toBe(false);
+    });
+
+    it.each([
+      ["empty", "||", false], ["space", "| |", false], ["separator", "|---|---|", false],
+      ["one row", "| a | b |", false], ["blank header", "| | |\n|---|---|", false],
+      ["punctuation header", "| ... | --- |\n|---|---|", false],
+      ["valid table", "| a | b |\n|---|---|\n| x | y |", true],
+      ["escaped pipe", "| a \\| b | c |\n| --- | :---: |", true],
+      ["mismatched columns", "| a | b |\n| --- |", false],
+      ["CRLF spaced", "   | a | b |\r\n   | --- | --- |", true],
+      ["four spaces", "    | a | b |\n    | --- | --- |", false],
+      ["tab", "\t| a | b |\n\t| --- | --- |", false],
+      ["heading", "# Heading", true],
+    ])("replay_34e3a2d_table: %s", (_name, structure, expected) => {
+      const text = `${"Detailed explanation of the change and why it is needed. ".repeat(32)}\n\n${structure}\n\`\`\`bash\nsed -i s/a/b/ file && pytest\n\`\`\``;
+      const parsed = parseToolCalls(text, bashTool);
+      expect(parsed.toolCalls).toHaveLength(1);
+      expect(JSON.parse(parsed.toolCalls[0].function.arguments).command).toBe("sed -i s/a/b/ file && pytest");
+      expect(isProseDocument(parsed, text, bashTool)).toBe(false);
+      expect(isProseDocument(parsed, text, bashTool, guard)).toBe(expected);
+    });
+
+    it.each([
+      ["#  ", false], ["##    ", false], ["# ---", false], ["#", false], ["### !!!", false], ["#### ###", false],
+      ["# Heading", true], ["## 123", true], ["### Café", true], ["  # 東京", true],
+      ["| --- | ... |\n| --- | --- |", false], ["| 東京 | ... |\n| --- | --- |", true],
+    ])("replay_84edab9_heading: meaningful structure %j", (row, expected) => {
+      const text = `${"Detailed explanation of the change and why it is needed. ".repeat(32)}\n\n${row}\n\n\`\`\`bash\nsed -i s/a/b/ file && pytest\n\`\`\``;
+      const parsed = parseToolCalls(text, bashTool);
+      expect(parsed.toolCalls).toHaveLength(1);
+      expect(JSON.parse(parsed.toolCalls[0].function.arguments).command).toBe("sed -i s/a/b/ file && pytest");
+      expect(isProseDocument(parsed, text, bashTool)).toBe(false);
+      expect(isProseDocument(parsed, text, bashTool, guard)).toBe(expected);
     });
 
     it("counts only the prose outside fenced blocks towards the length", () => {
@@ -367,7 +509,7 @@ That should be everything you need to get going quickly.`;
       expect(isProseDocument(parse(answerWithExample), answerWithExample, undefined, guard)).toBe(false);
     });
 
-    it.each(["# Heading", "| Area | Value |"])("uses the 1500-character trimmed boundary for %s", (structure) => {
+    it.each(["# Heading", "| Area | Value |\n| --- | --- |"])("uses the 1500-character trimmed boundary for %s", (structure) => {
       const prefix = (length: number) => structure + "\n" + "x".repeat(length - structure.length - 1);
       for (const [length, expected] of [[1499, false], [1500, true], [1501, true]] as const) {
         expect(flagged(`${prefix(length)}\n\n\`\`\`bash\nprintf example\n\`\`\``)).toBe(expected);

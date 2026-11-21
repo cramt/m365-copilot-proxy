@@ -936,8 +936,8 @@ single call after a ≥1,500-character preamble with a Markdown heading or table
 returned as prose a ~1.8k reply that explained a fix with a ```` ```python ```` block (comments
 start with `# `, which read as headings) and then ran it with a ```` ```bash ```` `sed … && pytest`
 call — a real edit, which on pi ends the loop. It is now opt-in (`M365_LONG_ANSWER_GUARD=1`, off
-by default, so default behaviour is unchanged), reads headings and tables in the prose with
-fenced blocks removed, and applies only when the call is the last thing in the reply. Multi-call
+by default, so default behaviour is unchanged), admits only a narrow plain-text preamble with headings or tables, refusing markup and code,
+and applies only when the call is the last thing in the reply. Multi-call
 rules are unchanged. Offline parser and handler regressions cover both settings, including that
 repro. **Not benched**: no A/B for the action-vs-answer decision exists, so the pass-rate effect
 is unknown (❓); a heuristic here can still misread an action as an answer.

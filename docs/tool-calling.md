@@ -90,18 +90,22 @@ prompt is tuned. The layers, in handler order:
   a tool call — so a model that ANSWERS with a markdown document full of code fences (e.g.
   "here's a simplified README") would get its own answer executed as shell. A response that
   looks like a document (≥2 fences AND ≥120 chars surrounding prose, OR ≥4 fences) is returned
-  as **text**, not executed. A single action is never reclassified. (hypotheses §9 F15.) A reply
+  as **text**, not executed. A single action is never reclassified by default. (hypotheses §9 F15.) A reply
   that **opens** with a tool call (a preamble under 200 chars, no heading, no code fence before
   it) is always an action: its tail was written before the call's result existed. Judged by
   the whole text, that tail made 34 of 42 guard verdicts in one day's bench runs. (#33.)
   **Opt-in, off by default: `M365_LONG_ANSWER_GUARD=1`** also returns a long written answer
-  that ends in ONE example call as text (hypotheses F-MIX). It applies when the call is the last
-  thing in the reply and the prose before it, with fenced blocks left out (a `# ` comment in a
-  python block is not a heading), is ≥1,500 trimmed characters and has a Markdown heading or a
-  table row. A reply that explains a fix with a code block and then runs it, or that carries
-  text after the call, stays an action. Not benched: the heuristic can still return a real
-  action as text, which in a coding loop ends the turn, so leave it off unless you see the
-  misfire it exists for.
+  that ends in ONE example call as text (hypotheses F-MIX). The call must be trailing;
+  the preamble must contain at least 1,500 trimmed characters and consist solely of
+  simple plain-text lines and 0–3-space headings or pipe tables, with at least one
+  heading containing a Unicode letter or number, or a table header containing one
+  immediately followed by a matching separator.
+  The table subset accepts escaped pipes. Unsupported syntax keeps the action. The
+  admission subset allows letters, numbers, spaces and
+  limited punctuation; backticks, HTML, links, lists, tabs, indented code and other
+  unrecognized markup keep the action. It is not a Markdown parser. **Not benched:**
+  a genuine long headed plan followed by a real action can still be returned as text,
+  ending the coding turn; leave this off unless you accept that risk.
 - **Only-the-first-call-ran note** (`executedOnlyFirstNote`): when the proxy runs less than the
   model wrote (a cut invented result, dropped batched calls, or a tail after the call), the
   next tool result is prefixed with a one-line note saying so. M365 keeps the whole reply in
