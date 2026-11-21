@@ -26,6 +26,10 @@ beforeEach(() => {
   vi.resetModules();
   root = fs.mkdtempSync(join(tmpdir(), "cache-callers-"));
   vi.stubEnv("HOME", root);
+
+  // os.homedir() reads USERPROFILE on Windows: without it these write the real ~/.config/opencode-m365.
+
+  vi.stubEnv("USERPROFILE", root);
   vi.stubEnv("M365_CACHE_FILE", join(root, "blocked", "cache.json"));
   vi.stubEnv("M365_ENABLE_INTERACTIVE_APPROVAL", "1");
   vi.stubEnv("M365_SECRETS_FILE", join(root, "unreadable-secrets"));

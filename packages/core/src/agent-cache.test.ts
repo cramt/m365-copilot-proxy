@@ -12,6 +12,10 @@ beforeEach(() => {
   vi.resetModules();
   root = fs.mkdtempSync(join(tmpdir(), "agent-cache-"));
   vi.stubEnv("HOME", root);
+
+  // os.homedir() reads USERPROFILE on Windows: without it these write the real ~/.config/opencode-m365.
+
+  vi.stubEnv("USERPROFILE", root);
   vi.stubEnv("M365_CACHE_FILE", join(root, "msal.json"));
   vi.stubGlobal("fetch", vi.fn(async (input: string, options?: RequestInit) => {
     if (input.includes("/~default?")) return Response.json({ name: "Default-123456" });
