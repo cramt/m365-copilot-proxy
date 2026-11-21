@@ -783,7 +783,9 @@ export async function handleChatCompletion(
         session.newConversation();
         return { error: jsonResponse(499, { error: { message: "client closed the request", type: "client_closed" } }) };
       }
-      log.info(`Reply to ${label}: ${JSON.stringify(trunc(stream.fullText ?? "", 120))}`);
+      if (stream.result?.value !== "ForbiddenRequest") {
+        log.info(`Reply to ${label}: ${JSON.stringify(trunc(stream.fullText ?? "", 120))}`);
+      }
       if (stream.result?.value === "Throttled") {
         noteOutcome(true, session.conversationId);
         drop(); // a throttled turn processed nothing
@@ -795,7 +797,11 @@ export async function handleChatCompletion(
         stream.messageType === "Disengaged" || stream.apology || stream.contentOrigin === "Apology" ||
         priorityAccessExhaustionOf(stream.result, stream.fullText)
       ) {
-        log.info(`M365 didn't acknowledge ${label} of a long turn (${stream.result?.value ?? "no result"}${stream.messageType ? `, ${stream.messageType}` : ""})`);
+        if (stream.result?.value === "ForbiddenRequest") {
+          log.info(`M365 didn't acknowledge ${label} of a long turn (ForbiddenRequest)`);
+        } else {
+          log.info(`M365 didn't acknowledge ${label} of a long turn (${stream.result?.value ?? "no result"}${stream.messageType ? `, ${stream.messageType}` : ""})`);
+        }
         return { refused: stream, label };
       }
       // Each part adds a message: a count of 1 on a long delta's first part, or
@@ -983,7 +989,7 @@ export async function handleChatCompletion(
       }
       // The classifier scores reach clients only as `usage` extension fields,
       // which a gateway drops; experiments read them from the debug log instead.
-      if (lastScores && Object.keys(lastScores).length > 0) {
+      if (lastScores && Object.keys(lastScores).length > 0 && copilotStream.result?.value !== "ForbiddenRequest") {
         log.info(`Turn scores: ${Object.entries(lastScores).map(([k, v]) => `${k}=${v}`).join(" ")}${lastMessageType ? ` (${lastMessageType})` : ""}, cid=${session.conversationId}`);
       }
 

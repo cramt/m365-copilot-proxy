@@ -24,7 +24,7 @@ const scripted: {
   /** Text of every run() call, in order. */
   texts: string[];
   /** Per-call overrides, consumed front-first (e.g. a Disengaged turn, then an answer). */
-  queue: Array<{ fullText: string; messageType?: string | null; contentOrigin?: string; apology?: boolean; result?: { value: string; errorCode?: string; message?: string }; metering?: Record<string, number>; throttle?: { current: number; max: number } | null; turnState?: string }>;
+  queue: Array<{ fullText: string; messageType?: string | null; contentOrigin?: string; apology?: boolean; scores?: Record<string, number>; result?: { value: string; errorCode?: string; message?: string }; metering?: Record<string, number>; throttle?: { current: number; max: number } | null; turnState?: string }>;
   /** The model argument of every run() call, in order. */
   models: string[];
   /** The `useAgent` argument of every run() call, in order. */
@@ -48,7 +48,7 @@ const scripted: {
   /** The `waitForBudget` argument of every run() call, in order (one function per call). */
   budgetWaits: Array<(() => Promise<unknown>) | undefined>;
   /** Replies to the parts of a long turn (replay.ts), consumed front-first; past them a part gets "OK". */
-  partQueue: Array<{ fullText: string; messageType?: string | null; contentOrigin?: string; apology?: boolean; result?: { value: string; errorCode?: string; message?: string }; throttle?: { current: number; max: number } | null; turnState?: string }>;
+  partQueue: Array<{ fullText: string; messageType?: string | null; contentOrigin?: string; apology?: boolean; scores?: Record<string, number>; result?: { value: string; errorCode?: string; message?: string }; throttle?: { current: number; max: number } | null; turnState?: string }>;
 } = { deltas: [], runs: 0, texts: [], queue: [], agentFlags: [], newConversations: 0, models: [], images: [], gate: null, signals: [], stoppedAfter: null, budgetHold: null, awaitTurnBudgetCalls: [], budgetWaits: [], partQueue: [] };
 
 vi.mock("@m365-copilot/core", async (importActual) => {
@@ -91,7 +91,7 @@ vi.mock("@m365-copilot/core", async (importActual) => {
         apology: next?.apology ?? false,
         messageType: (next?.messageType ?? null) as string | null,
         messageId: "m1",
-        scores: null,
+        scores: next?.scores ?? null,
         turnCount: 1,
         turnState: next?.turnState ?? "Completed",
         async *[Symbol.asyncIterator]() {
@@ -1942,6 +1942,41 @@ describe("a turn too long for M365 to keep goes up in parts (§47)", () => {
     delete process.env.M365_TURN_CHUNK_BYTES;
     scripted.queue = [];
     scripted.partQueue = [];
+  });
+
+  it("keeps multipart forbidden prose and unknown metadata out of info logs and JSON/SSE", async () => {
+    const secret = "synthetic_private_refusal_123";
+    const output: string[] = [];
+    const spy = vi.spyOn(process.stdout, "write").mockImplementation(((chunk: unknown) => { output.push(String(chunk)); return true; }) as typeof process.stdout.write);
+    try {
+      for (const code of ["InvalidCopilotLicense", secret]) {
+        for (const stream of [false, true]) {
+          reset(); scripted.runs = 0;
+          scripted.partQueue = [{ fullText: secret, messageType: secret, scores: { [secret]: 1 }, result: { value: "ForbiddenRequest", errorCode: code, message: secret } }];
+          const body = ChatCompletionRequest.parse({ model: "claude-sonnet", stream, messages: history() });
+          const res = await respond(body);
+          const text = await res.text();
+          expect(res.status).toBe(stream ? 200 : 403);
+          expect(text).toContain(code === "InvalidCopilotLicense" ? "m365_account_not_licensed" : "m365_forbidden");
+          expect(text).not.toContain(secret);
+          expect(scripted.runs).toBe(1);
+          expect(scripted.newConversations).toBe(1); // discard the partially sent history
+        }
+      }
+      expect(output.join("")).toContain("Upstream ForbiddenRequest");
+      expect(output.join("")).not.toContain(secret);
+    } finally { spy.mockRestore(); }
+  });
+
+  it("keeps ordinary multipart acknowledgement logging and answers", async () => {
+    const output: string[] = [];
+    const spy = vi.spyOn(process.stdout, "write").mockImplementation(((chunk: unknown) => { output.push(String(chunk)); return true; }) as typeof process.stdout.write);
+    try {
+      reset({ fullText: "The answer." });
+      scripted.partQueue = [{ fullText: "ordinary acknowledgement" }];
+      expect(await answerOf(await ask(new SessionPool(), history()))).toBe("The answer.");
+      expect(output.join("")).toContain('"ordinary acknowledgement"');
+    } finally { spy.mockRestore(); }
   });
 
   it("sends the earlier messages as acknowledged parts, then the request, and returns only the answer to it", async () => {
