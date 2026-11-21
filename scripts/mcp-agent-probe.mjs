@@ -13,6 +13,7 @@
 //   node scripts/mcp-agent-probe.mjs <tunnel-base-url> [--shape bareurl|connector|taskdialog]
 // Cost: ~2 chat messages + PowerPlatform create/publish/delete (no BizChat quota for those).
 
+import { randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { getToken, decodeJwt, getTokenForScope, getEnvironmentUrl } from "../packages/core/dist/index.mjs";
 import { oneTurn as defaultOneTurn } from "./_probe-chat.mjs";
@@ -28,10 +29,10 @@ const SENTINEL = readFileSync("scripts/sentinel-value.txt", "utf8").trim();
 
 const PP_SCOPES = ["https://api.powerplatform.com/.default"];
 const BAP_SCOPES = ["https://api.bap.microsoft.com/.default"];
-const NAME = `m365-mcp-probe-${Date.now().toString(36)}`;
+const NAME = `m365-mcp-probe-${randomUUID()}`;
 const ICON = "iVBORw0KGgoAAAANSUhEUgAAADAAAAAwCAIAAADYYG7QAAAAB3RJTUUH6AMbAAAoLbOJEAAAABl0RVh0Q29tbWVudABDcmVhdGVkIHdpdGggR0lNUFeBDhcAAAAoSURBVFjD7cExAQAAAMKg9U9tDB+gAAAAAAAAAAAAAAAAAAAAAAAA/BgwMAAB/0LuMgAAAABJRU5ErkJggg==";
 
-console.log(`[mcp] tunnel=${TUNNEL}  shape=${SHAPE}  sentinel=${SENTINEL}`);
+console.log(`[mcp] shape=${SHAPE}`);
 
 const ppToken = await getTokenForScope(PP_SCOPES);
 const bapToken = await getTokenForScope(BAP_SCOPES);
@@ -90,29 +91,42 @@ const createBody = {
   bot: { authorizedSecurityGroupIds: [], supportedLanguages: [], diagnostics: [], displayName: NAME, language: 1033, schemaName: ZERO, template: "gpt-1.1.0", $kind: "BotEntity", iconBase64: ICON },
 };
 
-console.log(`[mcp] creating agent ${NAME} with tool dialog:\n${toolDialogYaml().split("\n").map(l=>"      "+l).join("\n")}`);
+console.log(`[mcp] creating temporary agent`);
 const createRes = await ppFetch(API, { method: "POST", body: JSON.stringify(createBody) });
 const createText = await createRes.text();
 console.log(`[mcp] create → ${createRes.status}`);
-if (!createRes.ok) {
-  console.log(`[mcp] create FAILED body:\n${createText.slice(0, 1200)}`);
-  process.exit(1);
-}
+if (!createRes.ok) throw new Error(`[mcp] create failed (HTTP ${createRes.status})`);
 const created = JSON.parse(createText);
-const botId = created.bot?.schemaName || created.bot?.cdsBotId;
-if (!botId) throw new Error("Created agent response has no bot ID; cannot clean up safely");
-console.log(`[mcp] created botId=${botId}`);
+const botId = created.bot?.schemaName ?? created.bot?.cdsBotId;
+// Existing code accepts either field; constrain it to one literal path segment.
+if (typeof botId !== "string" || !/^[A-Za-z0-9_-][A-Za-z0-9_.-]{0,255}$/.test(botId) || botId === "." || botId === "..") {
+  throw new Error("Created agent response has invalid or no bot ID; cannot clean up safely");
+}
+const ownershipRes = await ppFetch(API, { method: "GET" });
+if (!ownershipRes.ok) throw new Error("[mcp] unable to verify agent ownership");
+let owners;
+try { owners = await ownershipRes.json(); } catch { throw new Error("[mcp] unable to verify agent ownership"); }
+if (!Array.isArray(owners) || owners.filter((row) => row?.botId === botId && row?.shortBotName === NAME).length !== 1 || owners.filter((row) => row?.botId === botId || row?.shortBotName === NAME).length !== 1) {
+  throw new Error("[mcp] unable to verify agent ownership");
+}
+const botPath = `${envUrl}/copilotstudio/minimalBots/api/${encodeURIComponent(botId)}`;
+console.log(`[mcp] created temporary agent`);
 
 async function cleanup() {
-  try { const d = await ppFetch(`${envUrl}/copilotstudio/minimalBots/api/${botId}?api-version=2022-03-01-preview`, { method: "DELETE" }); console.log(`[mcp] cleanup delete → ${d.status}`); } catch (e) { console.log(`[mcp] cleanup err ${e.message}`); }
+  let response;
+  try { response = await ppFetch(`${botPath}?api-version=2022-03-01-preview`, { method: "DELETE" }); }
+  catch { throw new Error("[mcp] cleanup failed (transport error)"); }
+  if (!response.ok) throw new Error(`[mcp] cleanup failed (HTTP ${response.status})`);
+  console.log(`[mcp] cleanup delete → ${response.status}`);
 }
 
+let hasPrimaryError = false;
 try {
 // publish
-const pubRes = await ppFetch(`${envUrl}/copilotstudio/minimalBots/api/${botId}/publish?api-version=2022-03-01-preview`, { method: "POST" });
+const pubRes = await ppFetch(`${botPath}/publish?api-version=2022-03-01-preview`, { method: "POST" });
 const pubText = await pubRes.text();
 console.log(`[mcp] publish → ${pubRes.status}`);
-if (!pubRes.ok) { console.log(`[mcp] publish FAILED:\n${pubText.slice(0, 800)}`); }
+if (!pubRes.ok) throw new Error(`[mcp] publish failed (HTTP ${pubRes.status})`);
 let titleId = null;
 try { titleId = JSON.parse(pubText).TitleId; } catch {}
 console.log(`[mcp] titleId=${titleId}`);
@@ -137,12 +151,19 @@ const got = (r.fullText || "");
 const calledTool = readFileSync("scripts/sentinel-hits.log", "utf8").includes("tools/call");
 const leaked = got.includes(SENTINEL);
 console.log(`\n[mcp] === RESULT ===`);
-console.log(`[mcp] reply: ${JSON.stringify(got.slice(0, 300))}`);
+console.log(`[mcp] reply received: ${got.length > 0}`);
 console.log(`[mcp] transport=${r.transport} msgTypes: ${r.messageTypes.join(",")} disengaged=${r.disengaged} ${r.elapsedMs}ms`);
 console.log(`[mcp] OUR MCP SERVER GOT A tools/call: ${calledTool}  ${calledTool ? "🎉 COPILOT CALLED OUR TOOL" : "❌ not called"}`);
 console.log(`[mcp] sentinel value present in reply: ${leaked}  ${leaked ? "🎉🎉 END-TO-END TOOL EXECUTION" : ""}`);
+} catch (error) {
+  hasPrimaryError = true;
+  throw error;
 } finally {
-  await cleanup();
+  try { await cleanup(); }
+  catch (error) {
+    if (!hasPrimaryError) throw error;
+    console.log("[mcp] cleanup failed; temporary agent may remain");
+  }
 }
 
 }
