@@ -255,3 +255,52 @@ it("unknown create transport failure warns without echoing transport details", a
     expect(e?.message).not.toContain("credential-secret-9384");
   } finally { log.mockRestore(); }
 });
+
+
+describe("indeterminate create responses", () => {
+  it.each([null, [], "abc", 0, true, {}, {bot:null}, {bot:[]}, {bot:"text"}])("sanitizes JSON shape %j and never deletes", async (body) => {
+    const calls: string[] = [];
+    const log = vi.spyOn(console, "log").mockImplementation(() => {});
+    try {
+      const err = await actualMain({ fetcher: async (_: string, opts: {method: string}) => { calls.push(opts.method); return Response.json(body); }, createTimeoutMs: 40 }).then(() => null, (e: Error) => e);
+      expect(err?.message).toMatch(/temporary agent may remain.*inspect/i);
+      expect(err?.message).not.toMatch(/TypeError|Cannot read|credential-secret/);
+      expect(calls).toEqual(["POST"]);
+    } finally { log.mockRestore(); }
+  });
+  it.each(["invalid-json", "body-throws", "body-hangs", "transport-hangs", "transport-throws", "non-2xx"])("sanitizes %s and completes bounded without DELETE", async (kind) => {
+    const calls: string[] = []; let signal: AbortSignal | undefined;
+    const log = vi.spyOn(console, "log").mockImplementation(() => {});
+    try {
+      const start = Date.now();
+      const fetcher = async (_: string, opts: {method: string; signal?: AbortSignal}) => {
+        calls.push(opts.method); signal = opts.signal;
+        if (kind === "transport-hangs") return new Promise(() => {});
+        if (kind === "transport-throws") throw new Error("credential-secret");
+        if (kind === "body-hangs") return { ok: true, status: 200, text: () => new Promise(() => {}) };
+        if (kind === "body-throws") return { ok: true, status: 200, text: () => { throw new Error("credential-secret"); } };
+        return new Response(kind === "invalid-json" ? "{credential-secret" : "credential-secret", { status: kind === "non-2xx" ? 503 : 200 });
+      };
+      const err = await actualMain({ fetcher, createTimeoutMs: 40 }).then(() => null, (e: Error) => e);
+      expect(Date.now() - start).toBeLessThan(1000);
+      expect(err?.message).toMatch(/temporary agent may remain.*inspect/i);
+      expect(err?.message).not.toContain("credential-secret");
+      expect(log.mock.calls.flat().join(" ")).not.toContain("credential-secret");
+      expect(calls).toEqual(["POST"]);
+      if (kind.endsWith("hangs")) expect(signal?.aborted).toBe(true);
+    } finally { log.mockRestore(); }
+  });
+});
+
+
+it("late successful create response after timeout cannot trigger verification or delete", async () => {
+  const calls: string[] = []; let release!: (response: Response) => void;
+  const log = vi.spyOn(console, "log").mockImplementation(() => {});
+  try {
+    const fetcher = async (_: string, opts: {method: string}) => { calls.push(opts.method); return new Promise<Response>((resolve) => { release = resolve; }); };
+    await expect(actualMain({ fetcher, createTimeoutMs: 20 })).rejects.toThrow(/temporary agent may remain/i);
+    release(Response.json({ bot: { schemaName: "synthetic-bot" } }));
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(calls).toEqual(["POST"]);
+  } finally { log.mockRestore(); }
+});
