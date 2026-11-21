@@ -12,6 +12,8 @@ import {
   shellDialect,
   findWriteTool,
   longHeredocAsWrite,
+  longCommandAsScript,
+  harnessWorkingDirectory,
   strippedTypeMember,
   currentFramingVariant,
   defaultFramingForTone,
@@ -695,6 +697,48 @@ describe("longHeredocAsWrite", () => {
     const r = longHeredocAsWrite(shellCall(`mkdir -p docs && cat > docs/a.md <<'EOF'\n${body}\nEOF`), tools, "win32");
     expect(args(r!.call).path).toBe("docs/a.md");
     expect(r?.skipped).toBe("mkdir -p docs");
+  });
+
+  // Everything the heredoc rewrite can't carry: here a Python heredoc, the shape
+  // of a long analysis script (`py - <<'EOF'`), which reached Python cut short.
+  describe("longCommandAsScript", () => {
+    const script = `cd data && py - <<'EOF'\n${"print('ı ş ğ', 1)\n".repeat(600)}EOF`;
+
+    it("saves the whole command with the write tool and runs it from there", () => {
+      const r = longCommandAsScript(shellCall(script), tools, "win32", "C:\\Users\\O'Neil\\Temp");
+      expect(r?.path).toMatch(/^C:\/Users\/O'Neil\/Temp\/m365-cmd-[0-9a-f]{8}\.sh$/);
+      expect(r?.write.function.name).toBe("write");
+      expect(args(r!.write)).toEqual({ path: r!.path, content: `${script}\n` });
+      const q = `'${r!.path.replace("'", "'\\''")}'`;
+      expect(args(r!.run)).toEqual({ command: `bash ${q}; s=$?; rm -f ${q}; exit $s` });
+      expect(r?.length).toBe(script.length);
+    });
+
+    it("keeps the call's other arguments on the run", () => {
+      const call = { ...shellCall(script), function: { name: "bash", arguments: JSON.stringify({ command: script, timeout: 600 }) } };
+      expect(args(longCommandAsScript(call, tools, "win32", "C:/t")!.run).timeout).toBe(600);
+    });
+
+    it("leaves alone what the command line carries, or a host it can't run on", () => {
+      expect(longCommandAsScript(shellCall("py - <<'EOF'\nprint(1)\nEOF"), tools, "win32")).toBeNull();
+      expect(longCommandAsScript(shellCall(script), tools, "linux")).toBeNull();
+      expect(longCommandAsScript(shellCall(script), [bash], "win32")).toBeNull();
+      const ps: ToolDef = { type: "function", function: { name: "shell", description: "Run a PowerShell command", parameters: { type: "object", properties: { command: { type: "string" } } } } };
+      const psCall = { ...shellCall(script), function: { name: "shell", arguments: JSON.stringify({ command: script }) } };
+      expect(longCommandAsScript(psCall, [ps, write], "win32")).toBeNull();
+    });
+
+    it("reads the harness's working directory off its system prompt", () => {
+      expect(harnessWorkingDirectory("<skills>…</skills>\n<cwd>\nC:/Users/necmi/proj\n</cwd>")).toBe("C:/Users/necmi/proj"); // pi
+      expect(harnessWorkingDirectory("Environment\n - Primary working directory: C:\\Users\\necmi\\my proj\n - Is a git repository: true")).toBe("C:\\Users\\necmi\\my proj"); // Claude Code
+      expect(harnessWorkingDirectory("<env>\n  Working directory: D:\\work\n</env>")).toBe("D:\\work"); // opencode
+      expect(harnessWorkingDirectory("<cwd>\n/home/necmi\n</cwd>")).toBeUndefined(); // not a Windows path the write tool can reach
+      // pi 0.78 ends its system prompt with this line, after AGENTS.md and the context files
+      expect(harnessWorkingDirectory("You are an expert coding assistant…\nCurrent date: 2026-11-21\nCurrent working directory: C:/Users/necmi/proj")).toBe("C:/Users/necmi/proj");
+      // a context file quoting a cwd line comes first; the harness's own (last) one wins
+      expect(harnessWorkingDirectory("# AGENTS.md\nWorking directory: C:/elsewhere\n…\nCurrent working directory: C:/Users/necmi/proj")).toBe("C:/Users/necmi/proj");
+      expect(harnessWorkingDirectory("edit files in the working directory: create or overwrite them")).toBeUndefined();
+    });
   });
 });
 

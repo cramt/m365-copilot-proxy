@@ -133,10 +133,12 @@ than "we eyeballed one run." See §M (Methods) for the experimental rig.
 - §54 — `ECONNRESET` mid-conversation then a hung request; the idle watchdog and reconnect delay (H54a, n=1, open)
 - §55 — tool-result labels that misdescribed calls or cut silently (F155), and M365 file-chip markup
   in answers (F156)
-- §58 — GPT-5.6 Think Deeper through pi: its give-up is an instruction conflict that `relay` dissolves,
-  and `relay_batch` too at baseline's turn count (F159); a pile of global skills (F160)
 - §56 — cursor deltas extend the adaptive card text rather than `m.text` (fixing doubled `<`, `(`, `[(`), and
   StreamHub's final character can arrive only in `patches` (`#134`, F157)
+- §57 — over-cap shell commands on Windows: save any non-heredoc or bundled command to a temp script
+  and run it whole without an extra M365 turn (F158)
+- §58 — GPT-5.6 Think Deeper through pi: its give-up is an instruction conflict that `relay` dissolves,
+  and `relay_batch` too at baseline's turn count (F159); a pile of global skills (F160)
 
 ---
 
@@ -7117,6 +7119,62 @@ distinct final answers of the pi transcripts (Oct 2–5): `<File>` 58 times, plu
 file name (`plainFileNames`); closed and unclosed backtick/tilde fenced blocks and inline code are left
 alone, and a bare `<name.ext>` is not touched (`#include <stdio.h>`). Not applied to a tool-less streamed
 answer, which goes to the client delta by delta before the markup is complete.
+
+## 56. Oct 5 / Nov 20 2026 — Cursor deltas extend adaptive card text (`#134`)
+
+Follow-up from the Oct 5 real-pi sweep (#70 split into standalone PRs), reworked after `#134` showed the
+doubled `<` was one case of a broader cursor-base mismatch alongside `(`, `[(` and missing final characters
+in StreamHub `patches`.
+
+### F157 — cursor deltas extend the card text rather than `m.text`, and StreamHub `patches` carry the last char (#134) 🟢
+In the Oct 5 sweep three baseline answers began `<<notlar.pdf>`, `<<notlar.docx>`,
+`<<document>notlar.docx</document>`, and Nov 20 captures (`scripts/cot-probe.mjs`, `#134`) reproduced the
+same doubling with `(` (`(3, 2)` → `((3, 2)`) and `[(` (`[(3, 2)` → `[((3, 2)`), plus StreamHub answers
+missing their trailing `]`.
+
+1. **Card base (`cursorBaseText` in `packages/core/src/session.ts`):** the cursor's path names
+   `$['<id>'].adaptiveCards[0].body[0].text`, which the deltas extend; `m.text` held a held-back leading
+   `"<"`, `"("` or `"("` in `"[("` that the card didn't have, so starting deltas from `m.text` doubled it.
+   Cursor frames now read the card path when present (falling back to `m.text` otherwise), and the
+   narrower `current === "<"` special case was removed so a genuine `<` already in the card isn't dropped.
+   Checked on the Oct 2–14 Windows debug logs (frames cut at 500 chars, which still reach the card's first
+   TextBlock): all 10 restated heads (the 9 from Oct 5 and one from Oct 14) had card text `""` under
+   `m.text` `"<"`. 48 more cursor frames had an empty card under `"<"` or `"<File"` (M365 holding back
+   file-chip markup) with deltas going on with the file name: with `m.text` as the base the stream read
+   `<notlar.docx…` or `<Filenotlar.docx…` until the final snapshot replaced it; the card base streams
+   `notlar.docx…`. The other 2,137 cursor frames, and all 146 in full frame dumps, had card text equal to
+   `m.text`, so nothing else changes.
+2. **StreamHub `patches` (`cardReplacePatches`):** StreamHub turns whose deltas stop one character short
+   deliver the complete card text in a final `message_part` `patches` item (`op: "replace"`,
+   `path: "/<messageId>/adaptiveCards"` or `…/adaptiveCards/0/body/0/text`). Known non-Progress answer
+   messages fold those card replacements through `composer.snapshot` (preserving `restoreStrippedBrackets`).
+
+## 57. Oct 8 2026 — Running over-cap shell commands whole on Windows (`longCommandAsScript`)
+
+Follow-up from the Oct 4–8 real-pi runs on Windows (#70 split into standalone PRs).
+
+### F158 — the heredoc rewrite left every other long command cut; a script carries any of them 🟢 (model-free)
+F78's fix covers one shape: a lone quoted heredoc that writes a file. A long `py - <<'EOF'` analysis
+script, a long `py -c "…"`, or a heredoc bundled with other commands (`cd`, `find`, `wc`) still reached
+the shell cut at ~8.2k characters. The proxy holds the whole command, and the harness's write tool has
+no length cap, so an over-cap call to a POSIX shell on Windows now goes out in two steps: the write tool
+saves the command unchanged to `<dir>/m365-cmd-<id>.sh`, and when that result comes back the proxy
+answers `bash '<script>'; s=$?; rm -f '<script>'; exit $s` itself, with no M365 turn
+(`longCommandAsScript`). M365 never sees the write: the next delta is the run's output, after a note
+saying the command was saved and run unchanged. A lone heredoc write still goes straight to the write
+tool (one step); one bundled with other commands now runs whole instead of skipping them.
+**Measured** (real pi, the real handler with a scripted model, one 14,785-char `cd sub && py - <<'EOF'
+… EOF; echo …; pwd`): with the fix the script printed the right sum with Turkish text intact, the
+trailing `echo`/`pwd` ran in `sub`, the script was deleted, and M365's second message was the note plus
+that output; with it off (`M365_HOST_SHELL=powershell`) bash said "here-document … delimited by
+end-of-file" and Python a SyntaxError on the cut list. `<dir>` is the harness's working directory
+when its system prompt names one (pi's `Current working directory:`, Claude Code's `Primary working directory:`, opencode's
+`Working directory:`), because Claude Code asks before writing outside the project and would stop the
+run halfway; otherwise the proxy host's temp dir. The cost: a script whose run never comes (the user
+stops the session between the two steps) stays in the project. **Not covered:** WSL bash (it can't see
+a Windows path), a PowerShell shell tool (left as it was), and Claude Code itself: the cwd choice
+follows from its permission rules, it wasn't run against it.
+
 ## 58. Oct 4–14 2026 — GPT-5.6 Think Deeper through pi on Windows (`relay_batch` default, give-up patterns, and global skills pile)
 
 Follow-ups to §31 and §32 from the same real-pi setup (Windows, `gpt-5.6-think-deeper`, the user's
@@ -7266,31 +7324,3 @@ listing (`task-observer` "ANY multi-step task", `modern-web-guidance` "MANDATORY
 skip" and it needs a search tool pi doesn't have, `graphify`, `ponytail`) with `disable-model-invocation:
 true` and call them with `/skill:name`. Don't copy `~/.agents/skills` into `~/.pi/agent/skills` (pi reads
 both; duplicate names keep the first and warn). **Not measured:** real bodies at 308; `gpt-5.5-think-deeper`.
-## 56. Oct 5 / Nov 20 2026 — Cursor deltas extend adaptive card text (`#134`)
-
-Follow-up from the Oct 5 real-pi sweep (#70 split into standalone PRs), reworked after `#134` showed the
-doubled `<` was one case of a broader cursor-base mismatch alongside `(`, `[(` and missing final characters
-in StreamHub `patches`.
-
-### F157 — cursor deltas extend the card text rather than `m.text`, and StreamHub `patches` carry the last char (#134) 🟢
-In the Oct 5 sweep three baseline answers began `<<notlar.pdf>`, `<<notlar.docx>`,
-`<<document>notlar.docx</document>`, and Nov 20 captures (`scripts/cot-probe.mjs`, `#134`) reproduced the
-same doubling with `(` (`(3, 2)` → `((3, 2)`) and `[(` (`[(3, 2)` → `[((3, 2)`), plus StreamHub answers
-missing their trailing `]`.
-
-1. **Card base (`cursorBaseText` in `packages/core/src/session.ts`):** the cursor's path names
-   `$['<id>'].adaptiveCards[0].body[0].text`, which the deltas extend; `m.text` held a held-back leading
-   `"<"`, `"("` or `"("` in `"[("` that the card didn't have, so starting deltas from `m.text` doubled it.
-   Cursor frames now read the card path when present (falling back to `m.text` otherwise), and the
-   narrower `current === "<"` special case was removed so a genuine `<` already in the card isn't dropped.
-   Checked on the Oct 2–14 Windows debug logs (frames cut at 500 chars, which still reach the card's first
-   TextBlock): all 10 restated heads (the 9 from Oct 5 and one from Oct 14) had card text `""` under
-   `m.text` `"<"`. 48 more cursor frames had an empty card under `"<"` or `"<File"` (M365 holding back
-   file-chip markup) with deltas going on with the file name: with `m.text` as the base the stream read
-   `<notlar.docx…` or `<Filenotlar.docx…` until the final snapshot replaced it; the card base streams
-   `notlar.docx…`. The other 2,137 cursor frames, and all 146 in full frame dumps, had card text equal to
-   `m.text`, so nothing else changes.
-2. **StreamHub `patches` (`cardReplacePatches`):** StreamHub turns whose deltas stop one character short
-   deliver the complete card text in a final `message_part` `patches` item (`op: "replace"`,
-   `path: "/<messageId>/adaptiveCards"` or `…/adaptiveCards/0/body/0/text`). Known non-Progress answer
-   messages fold those card replacements through `composer.snapshot` (preserving `restoreStrippedBrackets`).

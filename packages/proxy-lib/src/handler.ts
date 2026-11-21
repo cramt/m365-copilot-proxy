@@ -43,6 +43,8 @@ import {
   textAfterFirstToolCall,
   unreadableToolCall,
   longHeredocAsWrite,
+  longCommandAsScript,
+  harnessWorkingDirectory,
   strippedTypeMember,
   findRecognizedShellTool,
   toolsBlock,
@@ -57,6 +59,7 @@ import {
   fetchImageBytes,
   type CapturedImage,
   type ParseResult,
+  type ParsedToolCall,
 } from "@m365-copilot/core";
 import { ChatCompletionRequest } from "./schemas.js";
 import { maxTurnParts, planFullPrompt, planText, turnChunkBytes } from "./replay.js";
@@ -216,6 +219,9 @@ interface ConversationState {
    *  Opus fallback, #18) can't continue the M365 conversation — it may need
    *  another scenario — so it starts a fresh one with the full history. */
   servedModel?: string;
+  /** The second half of a long command (longCommandAsScript): sent, without a
+   *  turn on M365, when the result of the write call `writeId` comes back. */
+  chain: { writeId: string; run: ParsedToolCall } | null;
   /** replyKey of the last reply this conversation gave the client. */
   lastReply: string | null;
   /** Characters in the turn that last sent this M365 conversation the whole
@@ -399,6 +405,7 @@ export class SessionPool {
       session: runtime ? new AetherSession({ mode: backend }) : new ModelSession(this.sessionOptions),
       sentMessageCount: 0,
       pendingNote: null,
+      chain: null,
       lastReply: null,
       lastAccessedAt: Date.now(),
       openingChars: 0,
@@ -670,6 +677,11 @@ export async function handleChatCompletion(
   const noteOutcome = (throttled: boolean, cid: string) => { if (chat) noteRequestOutcome(throttled, cid); };
   const conv = pool.resolve(body.messages, body.tools, body.prompt_cache_key ?? body.user, route.backend);
   const { session } = conv;
+  // The harness saved a long command to a script (longCommandAsScript); run it.
+  const last = body.messages[body.messages.length - 1];
+  const run = conv.chain && last?.role === "tool" && last.tool_call_id === conv.chain.writeId ? conv.chain.run : null;
+  if (conv.chain && !run) conv.pendingNote = null; // its note says the script ran
+  conv.chain = null;
   const hasTools = body.tools && body.tools.length > 0 && body.tool_choice !== "none";
   const requestedModel = route.model;
   const turnOptions = { reasoningEffort: body.reasoning_effort };
@@ -690,7 +702,7 @@ export async function handleChatCompletion(
   }
   let model = fallbackModel ?? requestedModel;
   if (fallbackModel) log.info(`Priority access exhausted until ${knownExhaustion!.resetsAt.toISOString()} — serving ${requestedModel} with ${fallbackModel} (${PRIORITY_ACCESS_FALLBACK_ENV[requestedBudget!]})`);
-  if (conv.servedModel && conv.servedModel !== model) {
+  if (!run && conv.servedModel && conv.servedModel !== model) {
     // The conversation was being served by another model (e.g. Opus 5.5 before
     // the fallback): continue in a fresh M365 conversation with the full history.
     log.info(`Conversation switches model ${conv.servedModel} → ${model}: fresh conversation, full history`);
@@ -705,7 +717,7 @@ export async function handleChatCompletion(
   // failed to keep (§46 F125). A delta would land in an empty conversation, so
   // replay the whole history in a fresh one.
   const unkeptOpeningChars = pool.unkeptOpeningChars(model);
-  if (conv.sentMessageCount > 0 && (conv.replayNext || conv.openingChars >= unkeptOpeningChars)) {
+  if (!run && conv.sentMessageCount > 0 && (conv.replayNext || conv.openingChars >= unkeptOpeningChars)) {
     log.info(conv.replayNext
       ? "M365 lost this conversation's history last turn: replaying the whole history in a fresh conversation"
       : `This conversation opened with ${conv.openingChars} chars, too long for M365 to keep (${unkeptOpeningChars} wasn't kept): replaying the whole history in a fresh conversation`);
@@ -775,8 +787,11 @@ export async function handleChatCompletion(
   };
   let text: string;
   // Images and files ride on the message that carries their text (core image-input.ts, file-upload.ts).
-  let inputAttachments: string[];
-  if (isFirstTurn || conv.sentMessageCount === 0) {
+  let inputAttachments: string[] = [];
+  if (run) {
+    text = "";
+    log.info(`Running the saved long command: ${trunc(run.function.arguments, 200)} (no M365 turn), cid=${convId}`);
+  } else if (isFirstTurn || conv.sentMessageCount === 0) {
     text = formatWhole();
     inputAttachments = attachmentUrls(body.messages);
     const chars = pendingParts.reduce((n, p) => n + p.length, text.length);
@@ -802,7 +817,7 @@ export async function handleChatCompletion(
       log.info(`Chat completion: model=${model}${chat ? "" : ` (${route.backend})`}, stream=${body.stream}, messages=${body.messages.length}, turn=${session.turnCount}, mode=retry, cid=${convId}`);
     }
   }
-  conv.pendingNote = null; // one turn only: consumed above, or stale
+  if (!run) conv.pendingNote = null; // one turn only: consumed above, or stale (kept past the script run)
 
   log.debug("Formatted prompt:", trunc(text, 1000));
 
@@ -1471,6 +1486,11 @@ export async function handleChatCompletion(
   // caller). Tool mode ignores it: the raw text is parsed for tool-call fences and
   // can't be shown verbatim, so it stays fully buffered.
   async function produce(onDelta?: (delta: string) => void): Promise<Produced> {
+  if (run) {
+    // M365 never saw the write; the next delta starts at the run's result.
+    conv.sentMessageCount = body.messages.length;
+    return { kind: "tools", toolCalls: [run] };
+  }
   // A request that fails after a history's parts went up leaves M365 holding a
   // history it never recorded as sent; the client's retry would put a second
   // copy into the same conversation. Start the next request afresh instead.
@@ -1654,14 +1674,24 @@ export async function handleChatCompletion(
     }
 
     if (parsed.hasToolCalls && parsed.toolCalls.length > 0) {
-      // A heredoc file write past the Windows command-line cap would reach the
-      // shell cut short; run the same write through the harness's write tool.
-      const asWrite = longHeredocAsWrite(parsed.toolCalls[0], body.tools);
+      // A command past the Windows command-line cap would reach the shell cut
+      // short. A lone heredoc file write goes through the harness's write tool;
+      // anything else (other commands with it, `py - <<'EOF'`, `py -c`) is saved
+      // to a script by the write tool and run whole on the next request.
+      const heredoc = longHeredocAsWrite(parsed.toolCalls[0], body.tools);
+      const asWrite = heredoc && !heredoc.skipped ? heredoc : null;
+      const system = body.messages.filter((m) => m.role === "system").map(getMessageContent).join("\n");
+      const asScript = asWrite ? null : longCommandAsScript(parsed.toolCalls[0], body.tools, undefined, harnessWorkingDirectory(system));
       let rewriteNote: string | null = null;
       if (asWrite) {
         log.info(`Heredoc write to ${asWrite.path} is over the Windows command-line cap — sent as ${asWrite.call.function.name} instead`);
         parsed.toolCalls = [asWrite.call];
-        rewriteNote = `(Note: your heredoc to \`${asWrite.path}\` was longer than the ~8,000-character Windows command-line limit and would have been cut off, so it was written with the \`${asWrite.call.function.name}\` tool instead.${asWrite.skipped ? ` The commands after the heredoc did NOT run: \`${asWrite.skipped.slice(0, 200)}\`.` : ""})`;
+        rewriteNote = `(Note: your heredoc to \`${asWrite.path}\` was longer than the ~8,000-character Windows command-line limit and would have been cut off, so it was written with the \`${asWrite.call.function.name}\` tool instead.)`;
+      } else if (asScript) {
+        log.info(`Command of ${asScript.length} chars is over the Windows command-line cap — saving it to ${asScript.path}, run on the next request`);
+        parsed.toolCalls = [asScript.write];
+        conv.chain = { writeId: asScript.write.id, run: millisecondArgsFixed(asScript.run, body.tools) };
+        rewriteNote = `(Note: your command was ${asScript.length.toLocaleString("en-US")} characters, longer than the ~8,000 the Windows command line carries, so it would have been cut off. It was saved unchanged to \`${asScript.path}\` and run from there; this is its output:)`;
       }
       // The model's server-side history holds more than what runs; say so on
       // the turn that carries the real result (executedOnlyFirstNote).

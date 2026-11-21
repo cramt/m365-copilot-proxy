@@ -433,6 +433,46 @@ describe("the only-the-first-call-ran note", () => {
   });
 });
 
+describe("a command too long for the Windows command line", () => {
+  const tools = [
+    { type: "function", function: { name: "bash", parameters: { type: "object", properties: { command: { type: "string" } } } } },
+    { type: "function", function: { name: "write", parameters: { type: "object", properties: { path: { type: "string" }, content: { type: "string" } } } } },
+  ];
+  const platform = process.platform;
+  afterEach(() => { Object.defineProperty(process, "platform", { value: platform }); });
+
+  it("is saved by the write tool, then run whole without a turn on M365", async () => {
+    Object.defineProperty(process, "platform", { value: "win32" });
+    const command = `py - <<'EOF'\nprint(${"1+".repeat(5000)}1)\nEOF`;
+    scripted.result = null;
+    scripted.texts = [];
+    scripted.queue = [{ fullText: "```bash\n" + command + "\n```" }, { fullText: "Done." }];
+    const pool = new SessionPool();
+    const messages: any[] = [{ role: "system", content: "<cwd>\nC:/work/proj\n</cwd>" }, { role: "user", content: `long ${Math.random()}` }];
+    const ask = async () => (await (await handleChatCompletion(ChatCompletionRequest.parse({ model: "claude-sonnet", stream: false, tools, messages }), pool)).json()).choices[0].message;
+
+    const saved = await ask();
+    expect(saved.tool_calls[0].function.name).toBe("write");
+    const { path, content } = JSON.parse(saved.tool_calls[0].function.arguments);
+    expect(content).toBe(`${command}\n`);
+    expect(path).toMatch(/^C:\/work\/proj\/m365-cmd-[0-9a-f]{8}\.sh$/); // under the harness's cwd, not the proxy's temp dir
+    messages.push({ role: "assistant", content: null, tool_calls: saved.tool_calls });
+    messages.push({ role: "tool", tool_call_id: saved.tool_calls[0].id, content: `Successfully wrote ${content.length} bytes to ${path}` });
+
+    const ran = await ask();
+    expect(scripted.texts).toHaveLength(1); // the run cost no M365 turn
+    expect(JSON.parse(ran.tool_calls[0].function.arguments).command).toBe(`bash '${path}'; s=$?; rm -f '${path}'; exit $s`);
+    messages.push({ role: "assistant", content: null, tool_calls: ran.tool_calls });
+    messages.push({ role: "tool", tool_call_id: ran.tool_calls[0].id, content: "10001" });
+
+    await ask();
+    expect(scripted.texts[1]).toContain(`(Note: your command was ${command.length.toLocaleString("en-US")} characters`);
+    expect(scripted.texts[1]).toContain("10001");
+    expect(scripted.texts[1]).not.toContain("Successfully wrote"); // M365 never saw the write
+    scripted.queue = [];
+  });
+});
+
 describe("a reply that opens with a tool call and then writes an essay", () => {
   it("runs the opening call and tells the model its essay was written before the result", async () => {
     const tools = [{ type: "function", function: { name: "bash", parameters: { type: "object", properties: { command: { type: "string" } } } } }];
