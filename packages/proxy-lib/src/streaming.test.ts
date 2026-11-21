@@ -843,6 +843,54 @@ describe("follow-up turns and give-ups (Windows / pi, measured)", () => {
     scripted.queue = [];
   });
 
+  describe("a single call after a long written answer (M365_LONG_ANSWER_GUARD)", () => {
+    const doc = `# Recommendations\n${"Consider a local development improvement. ".repeat(45)}\n\n\`\`\`bash\nprintf example\n\`\`\``;
+    // The maintainer's repro: an explanation with a python block whose comments start
+    // with "# ", then the call that applies the fix.
+    const fix = [
+      "The date parser treats %d as zero padded everywhere, so single digit days fail. ".repeat(8),
+      "",
+      "```python",
+      ...Array.from({ length: 14 }, (_, i) => `# case ${i}: a single digit day parses like its padded form\nassert parse("2026-11-${i + 1}") == parse("2026-11-${String(i + 1).padStart(2, "0")}")`),
+      "```",
+      "",
+      "```bash\nsed -i 's/%d/%e/' src/date.py && pytest -q\n```",
+    ].join("\n");
+
+    afterEach(() => { delete process.env.M365_LONG_ANSWER_GUARD; });
+
+    const reply = async (fullText: string) => {
+      scripted.result = null;
+      scripted.texts = [];
+      scripted.queue = [{ fullText }];
+      const m = await ask([{ role: "user", content: `recommendations ${Math.random()}` }], new SessionPool());
+      scripted.queue = [];
+      return m;
+    };
+
+    it.each([["long structured answer", doc], ["python block then sed && pytest", fix]])(
+      "runs the call by default (%s)", async (_name, text) => {
+        const m = await reply(text);
+        expect(m.tool_calls).toHaveLength(1);
+        expect(scripted.texts).toHaveLength(1);
+      });
+
+    it("returns the long structured answer as prose when the guard is on", async () => {
+      process.env.M365_LONG_ANSWER_GUARD = "1";
+      const m = await reply(doc);
+      expect(scripted.texts).toHaveLength(1);
+      expect(m.tool_calls).toBeUndefined();
+      expect(m.content).toBe(doc);
+    });
+
+    it("still runs the python-block-then-sed call when the guard is on", async () => {
+      process.env.M365_LONG_ANSWER_GUARD = "1";
+      const m = await reply(fix);
+      expect(m.tool_calls).toHaveLength(1);
+      expect(JSON.parse(m.tool_calls[0].function.arguments).command).toContain("sed -i");
+    });
+  });
+
   it("leaves a real document alone even if its body sounds like a give-up", async () => {
     scripted.result = null;
     scripted.texts = [];

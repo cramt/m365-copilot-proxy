@@ -465,7 +465,10 @@ export function fabricatedToolResponseAt(text: string, tools?: ToolDef[]): numbe
  *
  * Chosen empirically (scripts guard-experiment, README-about-bash fixture):
  * ≥2 fences AND (≥120 chars of surrounding prose OR ≥4 fences). A SINGLE action
- * is never reclassified regardless of prose, so the coding loop is untouched.
+ * is never reclassified regardless of prose, so the coding loop is untouched —
+ * unless `options.longAnswers` is set (M365_LONG_ANSWER_GUARD, off by default),
+ * which also returns a long, structured answer that ends in one example call
+ * as prose (see isAnswerWithTrailingExample).
  *
  * With `text` + `tools`, one more rule runs first: a reply that OPENS with a
  * tool call is an action, whatever follows it. A tool-calling model stops at
@@ -477,8 +480,14 @@ export function fabricatedToolResponseAt(text: string, tools?: ToolDef[]): numbe
  * before their first fence (a title, an intro, example code), so the preamble
  * decides.
  */
-export function isProseDocument(parsed: ParseResult, text?: string, tools?: ToolDef[]): boolean {
-  if (!parsed.hasToolCalls || parsed.toolCalls.length < 2) return false;
+export function isProseDocument(
+  parsed: ParseResult,
+  text?: string,
+  tools?: ToolDef[],
+  options: { longAnswers?: boolean } = {},
+): boolean {
+  if (!parsed.hasToolCalls) return false;
+  if (parsed.toolCalls.length === 1) return options.longAnswers === true && isAnswerWithTrailingExample(text, tools);
   if (text !== undefined && tools && tools.length > 0) {
     const first = findFirstToolFence(text, buildSpecMap(tools));
     if (first && !looksLikeDocumentPreamble(text.slice(0, first.start))) return false;
@@ -494,6 +503,28 @@ export function isProseDocument(parsed: ParseResult, text?: string, tools?: Tool
   // Flag only documents. (Old heuristic was prose≥120, which ate Claude's preambles.)
   const hasMarkdownHeaders = /^#{1,6}\s/m.test(prose);
   return parsed.toolCalls.length >= 4 || hasMarkdownHeaders || prose.length >= 300;
+}
+
+/** Opt-in (M365_LONG_ANSWER_GUARD). A single call that ENDS the reply, after a
+ *  document-length written answer, is an example that closes the answer rather
+ *  than an action. The answer's structure — a Markdown heading or a table row —
+ *  is looked for in the prose only: a `# ` comment in a python block, or a `|`
+ *  line in a code listing, is code, and a reply that explains a fix with such a
+ *  block and then runs it is an action. Text after the call (a tail written
+ *  before the call had a result) keeps it an action too. */
+function isAnswerWithTrailingExample(text?: string, tools?: ToolDef[]): boolean {
+  if (text === undefined || !tools || tools.length === 0) return false;
+  const first = findFirstToolFence(text, buildSpecMap(tools));
+  if (!first) return false;
+  if (text.slice(first.end).trim() !== "") return false;
+  const prose = stripFencedBlocks(text.slice(0, first.start)).trim();
+  if (prose.length < 1500) return false;
+  return /^#{1,6}\s/m.test(prose) || /^\s*\|.*\|\s*$/m.test(prose);
+}
+
+/** `text` without its fenced code blocks (an unclosed fence runs to the end). */
+function stripFencedBlocks(text: string): string {
+  return text.replace(/^[ \t]*```[^\n]*\n[\s\S]*?(?:^[ \t]*```[ \t]*$|(?![\s\S]))/gm, "");
 }
 
 /** Is the text before a reply's first tool call the opening of a written

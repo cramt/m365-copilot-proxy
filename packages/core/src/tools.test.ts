@@ -262,6 +262,134 @@ That should be everything you need to get going quickly.`;
   it("returns false when there are no tool calls at all", () => {
     expect(isProseDocument(parse("The answer is 42."))).toBe(false);
   });
+
+  // A long headed answer to "what else could we add?" ending in an example command:
+  // running it threw the answer away and started a stack nobody asked for.
+  const recommendations = [
+    "Here's what I'd add next for local dev, roughly in order of value.",
+    "",
+    "## Highest value next additions",
+    "",
+    "| Area | Addition | Why |",
+    "|---|---|---|",
+    ...Array.from({ length: 14 }, (_, i) =>
+      `| Area ${i} | A seed script, health checks or a Make target for piece ${i} | Saves a few minutes on every fresh checkout and every onboarding |`),
+    "",
+    "## Observability",
+    "Grafana, Loki and Tempo are already in the compose file behind a profile. To try them:",
+    "",
+  ].join("\n");
+  const answerWithExample = `${recommendations}\`\`\`bash\ndocker compose --profile observability up -d\n\`\`\``;
+  const guard = { longAnswers: true };
+
+  // A real edit: an explanation of the fix, a python block whose comments start
+  // with "# ", then the call that applies it. It is an action with or without the guard.
+  const fixThenEdit = [
+    "The failure comes from the date parser treating %d as zero padded on every platform, while the",
+    "fixture dates use a single digit day. That is why only the first nine days of a month fail, and why",
+    "the suite is green on the maintainer's machine. The fix is to accept both widths in the parser and",
+    "to pin the expectation in the test so the two cannot drift apart again. The block below is the shape",
+    "of the check I am going to make the parser satisfy:",
+    "",
+    "```python",
+    ...Array.from({ length: 12 }, (_, i) => [
+      `# case ${i}: a single digit day must parse the same as its padded form`,
+      `assert parse_date("2026-11-${i + 1}") == parse_date("2026-11-${String(i + 1).padStart(2, "0")}")`,
+    ]).flat(),
+    "```",
+    "",
+    "Applying the change and running the suite:",
+    "",
+  ].join("\n");
+  const fixThenEditCall = `${fixThenEdit}\`\`\`bash\nsed -i 's/%d/%e/' src/date.py && pytest -q tests/test_date.py\n\`\`\``;
+
+  describe("with the guard off (the default)", () => {
+    it("never reclassifies a single action, however long and structured the lead-in", () => {
+      expect(recommendations.length).toBeGreaterThan(1500);
+      expect(isProseDocument(parse(answerWithExample), answerWithExample, bashTool)).toBe(false);
+    });
+
+    it("keeps a python block with '# ' comments followed by a bash call as a tool call", () => {
+      expect(fixThenEdit.trim().length).toBeGreaterThan(1500);
+      expect(/^#{1,6}\s/m.test(fixThenEdit)).toBe(true); // what used to read as a heading
+      expect(parse(fixThenEditCall).toolCalls).toHaveLength(1);
+      expect(isProseDocument(parse(fixThenEditCall), fixThenEditCall, bashTool)).toBe(false);
+    });
+  });
+
+  describe("with the guard on (M365_LONG_ANSWER_GUARD)", () => {
+    const flagged = (text: string) => isProseDocument(parse(text), text, bashTool, guard);
+
+    it("flags a long headed answer whose only fence is a trailing example", () => {
+      expect(flagged(answerWithExample)).toBe(true);
+    });
+
+    it("flags a long answer built on a table alone", () => {
+      const table = recommendations.replace(/^## .*$/gm, "");
+      expect(/^#{1,6}\s/m.test(table)).toBe(false);
+      expect(flagged(`${table}\`\`\`bash\nprintf example\n\`\`\``)).toBe(true);
+    });
+
+    it("still flags it when a code block sits among the headed sections", () => {
+      const text = `${recommendations.replace("## Observability", "## Observability\n```yaml\nprofiles: [observability]\n```")}\`\`\`bash\nprintf example\n\`\`\``;
+      expect(flagged(text)).toBe(true);
+    });
+
+    it("keeps the python block with '# ' comments followed by a bash call as a tool call", () => {
+      expect(flagged(fixThenEditCall)).toBe(false);
+    });
+
+    it("does not read a '# ' comment or a table row inside a fenced block as structure", () => {
+      const prose = "I looked at the failing test and the stack trace points at the date parser. ".repeat(25);
+      for (const fenced of ["```python\n# a comment\nx = 1\n```", "```text\n| a | b |\n|---|---|\n```"]) {
+        const text = `${prose}\n\n${fenced}\n\n\`\`\`bash\nsed -i 's/%d/%e/' src/date.ts && pnpm test\n\`\`\``;
+        expect(flagged(text)).toBe(false);
+      }
+    });
+
+    it("counts only the prose outside fenced blocks towards the length", () => {
+      const filler = "```python\n" + "# filler\n".repeat(400) + "```";
+      const text = `## Heading\nShort prose.\n\n${filler}\n\n\`\`\`bash\nprintf example\n\`\`\``;
+      expect(flagged(text)).toBe(false);
+    });
+
+    it("does NOT flag a single action with a long but unstructured lead-in", () => {
+      const lead = `${"I looked at the failing test and the stack trace points at the date parser. ".repeat(25)}\n`;
+      expect(flagged(`${lead}\`\`\`bash\nsed -i 's/%d/%e/' src/date.ts && pnpm test\n\`\`\``)).toBe(false);
+    });
+
+    it("does NOT flag a single action with a short headed lead-in", () => {
+      expect(flagged("## Step 2\nNow run the migration.\n```bash\npnpm db:migrate\n```")).toBe(false);
+    });
+
+    it("does NOT flag a single call when the raw text isn't given", () => {
+      expect(isProseDocument(parse(answerWithExample), undefined, bashTool, guard)).toBe(false);
+      expect(isProseDocument(parse(answerWithExample), answerWithExample, undefined, guard)).toBe(false);
+    });
+
+    it.each(["# Heading", "| Area | Value |"])("uses the 1500-character trimmed boundary for %s", (structure) => {
+      const prefix = (length: number) => structure + "\n" + "x".repeat(length - structure.length - 1);
+      for (const [length, expected] of [[1499, false], [1500, true], [1501, true]] as const) {
+        expect(flagged(`${prefix(length)}\n\n\`\`\`bash\nprintf example\n\`\`\``)).toBe(expected);
+      }
+    });
+
+    it("needs the call to end the reply: text after it makes the call an action", () => {
+      expect(flagged(`${answerWithExample}\n\n`)).toBe(true);
+      expect(flagged(`${answerWithExample}\nMore prose follows.`)).toBe(false);
+      expect(flagged(`${answerWithExample}\n\`\`\`text\noutput\n\`\`\``)).toBe(false);
+    });
+
+    it("keeps an opening call despite a long structured tail", () => {
+      expect(flagged(`\`\`\`bash\nprintf example\n\`\`\`\n${recommendations}`)).toBe(false);
+    });
+
+    it("leaves the multi-call rules as they were", () => {
+      const readme = "# Title\nintro\n```bash\nls\n```\ntext\n```bash\npwd\n```";
+      expect(isProseDocument(parse(readme), readme, bashTool, guard)).toBe(isProseDocument(parse(readme), readme, bashTool));
+      expect(isProseDocument(parse(readme), readme, bashTool)).toBe(true);
+    });
+  });
 });
 
 describe("a call the model restates as a correction", () => {

@@ -921,6 +921,27 @@ unit-tested, validated offline against the real README (6 fences → text).
 README task remains stochastically flaky for *other* reasons (turn-1 confab, a model
 misreading `ls` output as file content) — orthogonal to this fix.
 
+### F-MIX — a long written answer ending in an example command was run as a tool call
+
+**Contributor report, 2026-11-03:** n=1 in 104 opencode turns (`gpt-5.6-think-deeper`,
+agent-less, relay_batch). Asked "what else could we add for local dev?", the model wrote
+7.7k chars of headed recommendations and a trailing example:
+```` ```bash docker compose --profile observability up -d ````.
+The single-call path executed the example rather than returning the answer; it failed in
+the wrong working directory, after which the agent started the stack unasked. The
+contributor reports replaying 78 real calls: none flagged; two long final answers were
+flagged when an example was appended. This replay was not independently rerun here.
+Maintainer review (#96): the first version of the single-call heuristic reclassified every
+single call after a ≥1,500-character preamble with a Markdown heading or table row, and so
+returned as prose a ~1.8k reply that explained a fix with a ```` ```python ```` block (comments
+start with `# `, which read as headings) and then ran it with a ```` ```bash ```` `sed … && pytest`
+call — a real edit, which on pi ends the loop. It is now opt-in (`M365_LONG_ANSWER_GUARD=1`, off
+by default, so default behaviour is unchanged), reads headings and tables in the prose with
+fenced blocks removed, and applies only when the call is the last thing in the reply. Multi-call
+rules are unchanged. Offline parser and handler regressions cover both settings, including that
+repro. **Not benched**: no A/B for the action-vs-answer decision exists, so the pass-rate effect
+is unknown (❓); a heuristic here can still misread an action as an answer.
+
 ### F16 — Behavioural reliability fixes (from the live pi README run) 🟢
 
 Two deterministic fixes for failures seen in the live pi README run (F15's session):
