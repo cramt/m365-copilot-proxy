@@ -1,4 +1,4 @@
-import { describe, it, expect, vi } from "vitest";
+import { afterEach, describe, it, expect, vi } from "vitest";
 
 vi.mock("../packages/core/dist/index.mjs", async (importOriginal) => ({
   ...await importOriginal<object>(),
@@ -50,4 +50,36 @@ describe("actual probe callers stop at local admission refusal", () => {
     await expect(mod.main({ oneTurn })).rejects.toThrow(/not attempted.*probe turn budget hold/i);
     expect(calls).toBe(1);
   });
+});
+
+
+afterEach(() => { vi.useRealTimers(); vi.restoreAllMocks(); vi.unstubAllEnvs(); });
+
+it("Claude caller stops on the tool turn after successful self-id", async () => {
+  vi.useFakeTimers(); vi.stubEnv("TONES", "Claude_Sonnet");
+  const out = vi.spyOn(console, "log").mockImplementation(() => {});
+  const mod = await modules[0][1]();
+  let calls = 0;
+  const oneTurn = async () => ++calls === 1
+    ? { attempted: true, fullText: "Claude", transport: "chathub", disengaged: false }
+    : { attempted: false, error: "probe turn budget hold", fullText: "", transport: "chathub" };
+  const receipt = mod.main({ oneTurn }).then(() => null, (e: Error) => e);
+  await vi.runAllTimersAsync();
+  expect((await receipt)?.message).toMatch(/not attempted.*budget hold/i);
+  expect(calls).toBe(2);
+  expect(out.mock.calls.flat().join(" ")).not.toMatch(/tool-fence.*0\/4/);
+});
+
+it("Claude caller reports a real self-id and tool turn", async () => {
+  vi.useFakeTimers(); vi.stubEnv("TONES", "Claude_Sonnet");
+  const out = vi.spyOn(console, "log").mockImplementation(() => {});
+  const argv = process.argv; process.argv = [argv[0]!, argv[1]!, "1"];
+  try {
+    const mod = await modules[0][1](); let calls = 0;
+    const oneTurn = async () => ({ attempted: true, fullText: ++calls === 1 ? "Claude" : "```bash\npwd\n```", transport: "chathub", disengaged: false });
+    const promise = mod.main({ oneTurn });
+    await vi.runAllTimersAsync(); await promise;
+    expect(calls).toBe(2);
+    expect(out.mock.calls.flat().join(" ")).toMatch(/tool-fence 1\/1/);
+  } finally { process.argv = argv; }
 });
