@@ -53,7 +53,9 @@ export function createSeleniumChromeOptions(options: SeleniumAuthOptions): chrom
   // nativeclient redirect before Chrome follows it to /common/wrongplace.
   chromeOptions.setLoggingPrefs({ performance: "ALL" });
   chromeOptions.setPerfLoggingPrefs({ enableNetwork: true });
-  chromeOptions.set("se:timezone", options.timezone ?? "Europe/Copenhagen");
+  // docker-selenium / Selenium Grid expects `se:timeZone` (capital Z). Chrome
+  // applies the timezone via DevTools where supported.
+  chromeOptions.set("se:timeZone", options.timezone ?? "Europe/Copenhagen");
   return chromeOptions;
 }
 

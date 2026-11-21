@@ -325,6 +325,19 @@ function seleniumServerUrl(): string {
   return process.env.M365_SELENIUM_URL ?? "http://localhost:4444";
 }
 
+/** Selenium only drives Chrome: setChromeOptions + Chrome performance logs are
+ *  the only ones wired up. Reject firefox/Edge up front instead of failing
+ *  with "performance logs unavailable" mid-login. */
+function seleniumBrowser(): string {
+  const browser = (process.env.M365_SELENIUM_BROWSER ?? "chrome").toLowerCase();
+  if (browser !== "chrome") {
+    throw new Error(
+      `M365_SELENIUM_BROWSER="${browser}" is not supported: Selenium login only works with Chrome (setChromeOptions + Chrome performance logs). Set M365_SELENIUM_BROWSER=chrome or unset it.`,
+    );
+  }
+  return browser;
+}
+
 async function loadSeleniumAuth() {
   try {
     return await import("./selenium-auth.js");
@@ -362,7 +375,7 @@ async function runSeleniumLoginFlow(
   const serverUrl = seleniumServerUrl();
   const browser = await createSeleniumAuthDriver({
     serverUrl,
-    browser: process.env.M365_SELENIUM_BROWSER ?? "chrome",
+    browser: seleniumBrowser(),
     userAgent: LOGIN_USER_AGENT,
     locale: LOGIN_LOCALE,
     timezone: LOGIN_TIMEZONE,

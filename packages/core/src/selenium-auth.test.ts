@@ -123,6 +123,6 @@ describe("createSeleniumChromeOptions", () => {
     expect(args).toContain("--lang=fr-FR");
     expect(args).toContain("--user-agent=Mozilla/5.0 Custom UA");
     // timezone is set as a custom capability, not a chrome arg
-    expect(options.get("se:timezone")).toBe("Europe/Paris");
+    expect(options.get("se:timeZone")).toBe("Europe/Paris");
   });
 });
