@@ -353,6 +353,52 @@ Prompt size doesn't matter to this budget — it counts turns (above). So the pr
 >
 > **GPT-6.1 Sol (2026-10-06, hypotheses §27) splits exactly like GPT-6 Sol:** with the agent, `Gpt_61_Sol_Reasoning` serves on a premium account (8/8 across both scenarios) and is the dead route on both non-premium accounts (3/3, included and paid); agent-less it serves on the included scenario everywhere. It is in `PREMIUM_ONLY_AGENT_TONES` too, and the learned fallback is per tone.
 
+### Reading the picker's model list from the browser's HTTP cache (no quota)
+
+When the web client's model picker shows a label that matches no known tone, the cheapest first
+check is the picker's own data, which costs no chat turn and no quota. The client fetches a menu
+JSON whose items pair a tone `id` with a `menuItemTitle`, for example
+`{"id":"Gpt_5_6_Chat","menuItemTitle":"GPT-5.6 Sol Quick response"}` (a reported reading, Nov 2026). A
+Chromium browser keeps response bodies in its HTTP cache still gzip-encoded, so the menu can be read
+back from disk without capturing traffic:
+
+1. Open the picker once in the signed-in web client, so the menu has been fetched.
+2. Find the cache directory: for Edge on Windows, usually
+   `%LOCALAPPDATA%\Microsoft\Edge\User Data\<profile>\Cache\Cache_Data`. The one reported
+   reading found the bodies in `data_2` there; larger bodies may sit in the `f_*` files, so scan them all.
+3. Scan every file for gzip bodies and print only the menu items, nothing else from the cache (it
+   holds the page's other responses):
+
+```js
+// node scan-picker.mjs <Cache_Data dir>
+import { readdirSync, readFileSync } from "node:fs";
+import { constants, inflateRawSync } from "node:zlib";
+import { join } from "node:path";
+
+const dir = process.argv[2];
+const found = new Set();
+for (const name of readdirSync(dir)) {
+  const buf = readFileSync(join(dir, name));
+  for (let i = buf.indexOf("\x1f\x8b\x08", 0, "latin1"); i >= 0; i = buf.indexOf("\x1f\x8b\x08", i + 1, "latin1")) {
+    let body;
+    try {
+      body = inflateRawSync(buf.subarray(i + 10), { finishFlush: constants.Z_SYNC_FLUSH }).toString("utf8");
+    } catch {
+      continue;
+    }
+    for (const m of body.matchAll(/\{[^{}]*"menuItemTitle"[^{}]*\}/g)) found.add(m[0]);
+  }
+}
+for (const item of found) console.log(item);
+```
+
+The scan assumes the usual 10-byte gzip header (no name or extra fields), skips what doesn't
+inflate, and prints a truncated body's complete items. It was run against a synthetic cache file
+here, not a real browser cache, so treat the file layout in step 2 as what one reading saw. No
+output means the cache doesn't hold the menu (it was evicted, or the picker wasn't opened), which
+is no evidence either way: capture the picker's requests as in hypotheses §45 F120, or probe with
+`scripts/tone-probe.mjs`.
+
 ### Code interpreter — a real server-side Python sandbox
 
 Enabling these `optionsSets` on the chat turn unlocks M365's actual Python execution environment (the engine behind the "Analyst" experience):
