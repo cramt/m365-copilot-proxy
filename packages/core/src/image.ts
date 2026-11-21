@@ -135,7 +135,9 @@ export async function fetchImageBytes(
   // trailing empty query, which some fetch implementations drop.
   const locator = url.match(/^https:\/\/[^/]+(\/[^#]*)$/i)?.[1];
   const parsed = new URL(url);
-  if (!locator || locator.endsWith("?") || parsed.href.slice(parsed.origin.length) !== locator) {
+  // Only the first '?' starts the query; subsequent '?' characters are query data.
+  const queryStart = locator?.indexOf("?") ?? -1;
+  if (!locator || (queryStart !== -1 && queryStart === locator.length - 1) || parsed.href.slice(parsed.origin.length) !== locator) {
     throw new Error("Untrusted image artifact URL");
   }
   if (signal?.aborted) throw new Error("Image artifact fetch aborted");

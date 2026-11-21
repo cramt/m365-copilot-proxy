@@ -39,7 +39,7 @@ describe("image artifact credential boundary", () => {
     "/a/%2e/signed", "/a/%2E%2e/signed", "/a/.%2E/signed",
     "/a/%2e./signed", "/%2E%2E/signed", "/a/../signed?sig=%2F",
     "/a/é?sig=x", '/a/"signed', "/a/<signed", "/a/`signed",
-    "/a?sig='signed", '/a?sig="signed', "/a#signed", "?sig=x", "",
+    "/a?sig='signed", '/a?sig="signed', "/a#signed", "/signed?sig=x?#fragment", "/signed?#fragment", "?sig=x", "",
     // An empty query is dropped by some transports, so what was validated would
     // not be what is fetched.
     "/signed?", "/designerapp/document.ashx?", "/?",
@@ -49,6 +49,15 @@ describe("image artifact credential boundary", () => {
     await expect(fetchImageBytes(`https://designerapp.officeapps.live.com${target}`, token))
       .rejects.toThrow(/^Untrusted image artifact URL$/);
     expect(fetcher).not.toHaveBeenCalled();
+  });
+
+  it.each(["/signed?sig=x?", "/signed??", "/signed?sig=%3F&other=+?"])("preserves a nonempty opaque query ending in ?: %s", async (target) => {
+    const fetcher = vi.fn(async () => new Response(new Uint8Array([1])));
+    vi.stubGlobal("fetch", fetcher);
+    const input = `https://designerapp.officeapps.live.com${target}`;
+    await expect(fetchImageBytes(input, token)).resolves.toMatchObject({ data: Buffer.from([1]) });
+    expect(fetcher).toHaveBeenCalledOnce();
+    expect(fetcher).toHaveBeenCalledWith(input, expect.anything());
   });
 
   it("preserves opaque signed URL bytes and sends bearer only with redirects disabled", async () => {
