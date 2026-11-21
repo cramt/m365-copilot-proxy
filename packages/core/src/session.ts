@@ -184,6 +184,55 @@ export function cursorMessageId(j: string | undefined): string | null {
   return m ? m[1] : null;
 }
 
+/** Resolve the streaming cursor's target string inside `m` (usually
+ *  `adaptiveCards[0].body[0].text`). Deltas after a cursor extend the card's
+ *  text, which can omit a leading `"<"`, `"("`, or `"("` in `"[("` that `m.text`
+ *  already holds (#134). Falls back to `m.text` when no card path resolves. */
+export function cursorBaseText(
+  m: { text?: string; adaptiveCards?: unknown[] },
+  cursorPath: string | undefined,
+): string | undefined {
+  const rest = cursorPath?.match(/^\$\['[^']+'\]\.(.+)$/)?.[1];
+  if (rest && /^([A-Za-z_]\w*|\[\d+\])(\.[A-Za-z_]\w*|\[\d+\])*$/.test(rest)) {
+    let cur: unknown = m;
+    for (const seg of rest.matchAll(/([A-Za-z_]\w*)|\[(\d+)\]/g)) {
+      const key = seg[1] ?? seg[2];
+      if (cur == null || typeof cur !== "object" || !Object.hasOwn(cur, key)) {
+        return m.text;
+      }
+      cur = (cur as Record<string, unknown>)[key];
+    }
+    if (typeof cur === "string") return cur;
+  }
+  return m.text;
+}
+
+/** Extract final adaptiveCard replacement text from StreamHub `patches`
+ *  items (`/#134` Cause 2, where the last character arrives only there). */
+export function cardReplacePatches(arg: unknown): Array<{ id: string; text: string }> {
+  const patches = (arg as { patches?: unknown } | null | undefined)?.patches;
+  if (!Array.isArray(patches)) return [];
+  const out: Array<{ id: string; text: string }> = [];
+  for (const p of patches) {
+    if (!p || typeof p !== "object") continue;
+    const { op, path, value } = p as { op?: unknown; path?: unknown; value?: unknown };
+    if (op !== "replace" || typeof path !== "string") continue;
+    const card = path.match(/^\/([^/]+)\/adaptiveCards$/);
+    if (card) {
+      const cardText = (value as Array<{ body?: Array<{ text?: unknown }> }> | undefined)?.[0]?.body?.[0]?.text;
+      if (typeof cardText === "string" && cardText.length > 0) out.push({ id: card[1], text: cardText });
+      continue;
+    }
+    // Only the answer's own text block, as in the whole-card branch above: a
+    // later body block (sources, a citation list) isn't the message's text.
+    const textPatch = path.match(/^\/([^/]+)\/adaptiveCards\/0\/body\/0\/text$/);
+    if (textPatch && typeof value === "string" && value.length > 0) {
+      out.push({ id: textPatch[1], text: value });
+    }
+  }
+  return out;
+}
+
 /** A request id as StreamHub may echo it: GUIDs compare without dashes or case. */
 function normalizeRequestId(id: string): string {
   return id.replace(/-/g, "").toLowerCase();
@@ -279,7 +328,18 @@ export class TurnTextComposer {
     const key = id ?? this.target ?? "";
     if (this.target === null) this.target = key;
     this.endRun(key);
-    this.texts.set(key, foldStreamText(this.texts.get(key) ?? "", text).answer);
+    const current = this.texts.get(key) ?? "";
+    const folded = foldStreamText(current, text).answer;
+    // A final snapshot/patch can be shorter than `current` solely because M365
+    // stripped `[word]:` tokens even when it also carries trailing chars the deltas missed.
+    if (folded === current && text && text.length <= current.length) {
+      const restored = restoreStrippedBrackets(current, text);
+      if (restored && restored.length > current.length) {
+        this.texts.set(key, restored);
+        return;
+      }
+    }
+    this.texts.set(key, folded);
   }
 
   /** A token delta for the message the cursor last named. */
@@ -611,6 +671,7 @@ export class CopilotSession {
       // the composed whole folded into this string. See `advance`.
       let answer = "";
       const composer = new TurnTextComposer();
+      const answerMessageIds = new Set<string>();
       // The model's chain of thought, kept apart from the answer.
       const thoughts = new ChainOfThoughtComposer();
       let receivedContent = false;
@@ -1273,24 +1334,34 @@ export class CopilotSession {
               maybeResumeAction(m);
               noteThought(m);
             }
-            if (m.author !== "bot" || m.messageType || typeof m.text !== "string") continue;
+            if (m.author !== "bot" || m.messageType) continue;
+            if (m.messageId) answerMessageIds.add(m.messageId);
+            const text = cursorId && m.messageId === cursorId ? cursorBaseText(m, msgUpdate.data.cursor?.j) : m.text;
+            if (typeof text !== "string") continue;
             if (streamHub && cursorId && m.messageId === cursorId) {
-              composer.restart(cursorId, m.text);
+              composer.restart(cursorId, text);
               advance(composer.text);
-            } else if (m.text) {
-              composer.snapshot(m.messageId, m.text);
+            } else if (text) {
+              composer.snapshot(m.messageId, text);
               advance(composer.text);
             }
           }
-          return;
+        } else {
+          const throttle = ThrottlingUpdate.safeParse(arg);
+          if (throttle.success) {
+            const t = throttle.data.throttling;
+            if (streamHub) noteThrottling((arg as { throttling: unknown }).throttling);
+            else throttleInfo = { current: t.numUserMessagesInConversation, max: t.maxNumUserMessagesInConversation };
+            log.info(`Throttle: ${t.numUserMessagesInConversation}/${t.maxNumUserMessagesInConversation} messages`);
+          }
         }
 
-        const throttle = ThrottlingUpdate.safeParse(arg);
-        if (throttle.success) {
-          const t = throttle.data.throttling;
-          if (streamHub) noteThrottling((arg as { throttling: unknown }).throttling);
-          else throttleInfo = { current: t.numUserMessagesInConversation, max: t.maxNumUserMessagesInConversation };
-          log.info(`Throttle: ${t.numUserMessagesInConversation}/${t.maxNumUserMessagesInConversation} messages`);
+        if (streamHub) {
+          for (const patch of cardReplacePatches(arg)) {
+            if (!answerMessageIds.has(patch.id)) continue;
+            composer.snapshot(patch.id, patch.text);
+            advance(composer.text);
+          }
         }
       };
 

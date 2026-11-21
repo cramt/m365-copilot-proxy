@@ -1,5 +1,5 @@
 import { describe, it, expect, afterEach } from "vitest";
-import { buildCopilotWebSocketHeaders, buildCopilotWebSocketUrl, ChainOfThoughtComposer, cursorMessageId, foldStreamText, restoreStrippedBrackets, TurnTextComposer } from "./session.js";
+import { buildCopilotWebSocketHeaders, buildCopilotWebSocketUrl, cardReplacePatches, ChainOfThoughtComposer, cursorBaseText, cursorMessageId, foldStreamText, restoreStrippedBrackets, TurnTextComposer } from "./session.js";
 import { MessageUpdate } from "./schemas.js";
 
 /** Replay a sequence of raw M365 frames (deltas as {d}, snapshots as {s}) through
@@ -202,6 +202,58 @@ describe("TurnTextComposer (multi-message turns)", () => {
       { d: " more" },
     ]);
     expect(r.text).toBe("one!\n\ntwo more");
+  });
+
+  it("bases cursor deltas on the adaptive card text rather than m.text (fixing <<, ((, [() without dropping real leading '<'", () => {
+    // Live (GPT-5.5 Think Deeper, Oct 5): m.text holds "<" while card holds ""; delta starts with "<document".
+    const cardPath = "$['m1'].adaptiveCards[0].body[0].text";
+    const ltBase = cursorBaseText({ text: "<", adaptiveCards: [{ body: [{ text: "" }] }] }, cardPath)!;
+    const lt = compose([
+      { cursor: cur("m1"), s: ltBase, id: "m1" },
+      { d: "<document" }, { d: ">notlar.docx</document>" }, { d: " oluşturuldu." },
+      { s: "<document>notlar.docx</document> oluşturuldu.", id: "m1" },
+    ]);
+    expect(lt.text).toBe("<document>notlar.docx</document> oluşturuldu.");
+    expect(lt.streamed).toBe(lt.text);
+
+    // Real leading "<" already in the card MUST stay doubled ("<" + "<EOF" -> "<<EOF").
+    const realLt = compose([
+      { cursor: cur("m1"), s: cursorBaseText({ text: "<", adaptiveCards: [{ body: [{ text: "<" }] }] }, cardPath)!, id: "m1" },
+      { d: "<EOF" },
+    ]);
+    expect(realLt.text).toBe("<<EOF");
+
+    // Issue #134 Cause 1 (Chathub & StreamHub): m.text has "(" or "[(" while card has "" or "[".
+    expect(cursorBaseText({ text: "(", adaptiveCards: [{ body: [{ text: "" }] }] }, cardPath)).toBe("");
+    const paren = compose([
+      { cursor: cur("m1"), s: cursorBaseText({ text: "(", adaptiveCards: [{ body: [{ text: "" }] }] }, cardPath)!, id: "m1" },
+      { d: "(3" }, { d: ", 2), (17, 12), (99, 70)" },
+      { s: "(3, 2), (17, 12), (99, 70)", id: "m1" },
+    ]);
+    expect(paren.text).toBe("(3, 2), (17, 12), (99, 70)");
+
+    expect(cursorBaseText({ text: "[(", adaptiveCards: [{ body: [{ text: "[" }] }] }, cardPath)).toBe("[");
+
+    // Fallback to m.text when adaptiveCards is absent.
+    expect(cursorBaseText({ text: "*" }, cardPath)).toBe("*");
+    const bold = compose([{ cursor: cur("m1"), s: "*", id: "m1" }, { d: "*Summary**" }, { d: " done." }]);
+    expect(bold.text).toBe("**Summary** done.");
+    const fence = compose([{ cursor: cur("m1"), s: "`", id: "m1" }, { d: "``bash\nls\n```" }]);
+    expect(fence.text).toBe("```bash\nls\n```");
+  });
+
+  it("extracts final adaptiveCard replacement text from StreamHub patches and ignores metadata patches", () => {
+    expect(cardReplacePatches({ patches: [{ op: "replace", path: "/m1/metadata", value: {} }] })).toEqual([]);
+    expect(cardReplacePatches({
+      patches: [{ op: "replace", path: "/m1/adaptiveCards", value: [{ body: [{ text: "[(3, 2)]" }] }] }],
+    })).toEqual([{ id: "m1", text: "[(3, 2)]" }]);
+    expect(cardReplacePatches({
+      patches: [{ op: "replace", path: "/m1/adaptiveCards/0/body/0/text", value: "done]" }],
+    })).toEqual([{ id: "m1", text: "done]" }]);
+    // A later body block (sources, citations) is not the message's text.
+    expect(cardReplacePatches({
+      patches: [{ op: "replace", path: "/m1/adaptiveCards/0/body/1/text", value: "Sources: a much longer citation block here" }],
+    })).toEqual([]);
   });
 
   it("falls back to the snapshot's message when no cursor was ever sent", () => {
