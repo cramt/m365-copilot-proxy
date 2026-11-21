@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 
 test('offline selection selects exactly one included cell and rejects unknown names', () => {
-  const run = (...args) => spawnSync(process.execPath, ['scripts/tone-probe.mjs', ...args], { encoding: 'utf8' });
+  const run = (...args) => spawnSync(process.execPath, ['scripts/tone-probe.mjs', ...args], { encoding: 'utf8', env: { ...process.env, M365_TRANSPORT: '' } });
   const selected = run('--only=Gpt_56_Sol_Chat', '--included', '--dry-run');
   assert.equal(selected.status, 0, selected.stderr);
   const cells = JSON.parse(selected.stdout);
