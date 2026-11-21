@@ -511,11 +511,11 @@ export function textAfterFirstToolCall(text: string, tools?: ToolDef[]): string 
   return first ? text.slice(first.end).trim() : "";
 }
 
-export function parseToolCalls(text: string, tools?: ToolDef[]): ParseResult {
+export function parseToolCalls(text: string, tools?: ToolDef[], options?: { reservedNames?: Set<string>; strictShell?: boolean }): ParseResult {
   // Fenced is the format: parse ```toolname blocks first. Needs the tool schemas
   // to map header/body args. The JSON parse below is only a tolerance fallback for
   // when M365 ignores the contract and emits a `{"tool":...}` object anyway.
-  const specMap = tools && tools.length > 0 ? buildSpecMap(tools) : null;
+  const specMap = tools && tools.length > 0 ? buildSpecMap(tools, options) : null;
   if (specMap) {
     const { calls, leftover } = parseFencedToolCalls(text, specMap);
     if (calls.length > 0) {

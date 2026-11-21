@@ -697,3 +697,16 @@ describe("transcript style (which tags wrap the framing and harness system promp
     }
   });
 });
+
+
+describe("mixed shell routing", () => {
+  it("prefers Codex exec over an unrelated single-input search tool", () => {
+    const search = { type: "function" as const, function: { name: "search_docs", parameters: { type: "object", properties: { input: { type: "string" } } } } };
+    const exec = { type: "function" as const, function: { name: "functions__exec", description: "Runs JavaScript", parameters: { type: "object", properties: { input: { type: "string" } } } } };
+    for (const tools of [[search, exec], [exec, search]]) {
+      const result = parseToolCalls("```bash\nprintf hello\n```", tools);
+      expect(result.toolCalls[0]?.function.name).toBe("functions__exec");
+      expect(JSON.parse(result.toolCalls[0]!.function.arguments).input).toContain("tools.exec_command");
+    }
+  });
+});

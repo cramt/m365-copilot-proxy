@@ -205,18 +205,23 @@ export function strippedTypeMember(
   return null;
 }
 
+/** True for a named shell or Codex Code Mode, without the single-input heuristic. */
+export function isExplicitShellTool(tool: ToolDef): boolean {
+  return SHELL_TOOL_NAME.test(tool.function.name) || isCodeModeExecTool(tool);
+}
+
 /** The harness tool (if any) that runs a shell command — the target for ```bash routing.
- *  Codex's Code Mode `exec` is the last resort: shell fences reach it wrapped as a
- *  nested `exec_command` call (codeModeShellScript). */
+ *  Named shells take priority, then Codex's Code Mode executor, then a heuristic
+ *  single-parameter tool. */
 export function findShellTool(tools: ToolDef[]): ToolDef | undefined {
   const shells = tools.filter((t) => !isCodeModeExecTool(t));
   return shells.find((t) => SHELL_TOOL_NAME.test(t.function.name)) ??
-    // fallback: a single-string-param tool whose param is command-ish
+    // A known Code Mode executor is less ambiguous than an arbitrary input tool.
+    tools.find(isCodeModeExecTool) ??
     shells.find((t) => {
       const props = Object.keys(t.function.parameters?.properties ?? {});
       return props.length === 1 && /^(command|cmd|script|input)$/i.test(props[0]);
-    }) ??
-    tools.find(isCodeModeExecTool);
+    });
 }
 
 // Claude Code on Windows offers a `PowerShell` tool next to `Bash`, which runs Git
@@ -348,7 +353,7 @@ export function deriveFencedSpec(tool: ToolDef): FencedToolSpec {
   };
 }
 
-export function buildSpecMap(tools: ToolDef[]): Map<string, FencedToolSpec> {
+export function buildSpecMap(tools: ToolDef[], options?: { reservedNames?: Set<string>; strictShell?: boolean }): Map<string, FencedToolSpec> {
   const m = new Map<string, FencedToolSpec>();
   for (const t of tools) m.set(t.function.name, deriveFencedSpec(t));
 
@@ -356,7 +361,9 @@ export function buildSpecMap(tools: ToolDef[]): Map<string, FencedToolSpec> {
   // to the harness's shell tool even when it's named `run`/`run_command`/etc., so
   // the model can "just write bash" (the behavior M365 reliably permits) and the
   // harness still receives a structured tool_call under its own tool's name.
-  const shell = findShellTool(tools);
+  const shell = options?.strictShell
+    ? tools.find(isExplicitShellTool)
+    : findShellTool(tools);
   if (shell) {
     const own = m.get(shell.function.name)!;
     // A ```bash fence is a shell command by definition: Code Mode always wraps it.
@@ -365,7 +372,7 @@ export function buildSpecMap(tools: ToolDef[]): Map<string, FencedToolSpec> {
     const pwsh = findPowerShellTool(tools);
     const pwshSpec = pwsh && pwsh !== shell ? m.get(pwsh.function.name) : undefined;
     for (const lang of SHELL_LANGS) {
-      if (!m.has(lang)) m.set(lang, pwshSpec && POWERSHELL_LANGS.has(lang) ? pwshSpec : shellSpec);
+      if (!m.has(lang) && !options?.reservedNames?.has(lang)) m.set(lang, pwshSpec && POWERSHELL_LANGS.has(lang) ? pwshSpec : shellSpec);
     }
   }
   return m;
