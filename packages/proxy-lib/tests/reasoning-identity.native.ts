@@ -295,6 +295,53 @@ for (const stream of [false, true]) {
       expect(Number(cached.retryAfter)).toBeLessThanOrEqual(86400);
     });
   }
+  for (const transport of ["chathub", "streamhub"]) for (const alias of ["gpt-5.5", "gpt-5.5-quick"]) {
+    it(`text-only priority denial filters aliases by principal and expires: ${transport}, ${alias}, stream=${stream}`, async () => {
+      const oldTransport = process.env.M365_TRANSPORT;
+      try {
+        process.env.M365_TRANSPORT = transport;
+        vi.useFakeTimers({ toFake: ["Date"] });
+        vi.setSystemTime(new Date("2026-11-21T23:59:59Z"));
+        wire.answer = "You've used your available priority access to the GPT model for today.";
+        wire.result = { value: "Success" };
+        const initial = await ask(pool(A), alias, stream);
+        expect(initial.raw).toContain("priority_access_exhausted");
+        wire.answer = ""; wire.result = cap;
+        const a = await ask(pool(A), "gpt-5.6-think-deeper", stream);
+        const parse = (raw: string) => stream ? raw.split("\n").filter(x => x.startsWith("data: {")).map(x => JSON.parse(x.slice(6))).find(x => x.error)?.error : JSON.parse(raw).error;
+        expect(parse(a.raw).suggested_models).toEqual(["gpt-5.6"]);
+        const b = await ask(pool(B), "gpt-5.5-think-deeper", stream);
+        expect(parse(b.raw).suggested_models).toEqual(["gpt-5.5", "gpt-5.6"]);
+        wire.answer = "visible answer"; wire.result = undefined;
+        for (const candidate of parse(a.raw).suggested_models) {
+          const before = wire.texts.length;
+          expect((await ask(pool(A), candidate, stream)).raw).toContain("visible answer");
+          expect(wire.texts.length).toBe(before + 1);
+        }
+        vi.setSystemTime(new Date("2026-11-22T00:00:00Z"));
+        wire.answer = ""; wire.result = cap;
+        const after = await ask(pool(A), "gpt-5.5-think-deeper", stream);
+        expect(parse(after.raw).suggested_models).toEqual(["gpt-5.5", "gpt-5.6"]);
+      } finally {
+        if (oldTransport === undefined) delete process.env.M365_TRANSPORT; else process.env.M365_TRANSPORT = oldTransport;
+      }
+    });
+    it(`benign priority discussion is not a denial: ${transport}, ${alias}, stream=${stream}`, async () => {
+      const oldTransport = process.env.M365_TRANSPORT;
+      try {
+        process.env.M365_TRANSPORT = transport;
+        wire.answer = "A colleague discussed priority access and said to wait until tomorrow.";
+        wire.result = { value: "Success" };
+        expect((await ask(pool(A), alias, stream)).raw).not.toContain("priority_access_exhausted");
+        wire.answer = ""; wire.result = cap;
+        const result = await ask(pool(A), "gpt-5.5-think-deeper", stream);
+        const body = stream ? result.raw.split("\n").filter(x => x.startsWith("data: {")).map(x => JSON.parse(x.slice(6))).find(x => x.error)?.error : JSON.parse(result.raw).error;
+        expect(body.suggested_models).toEqual(["gpt-5.5", "gpt-5.6"]);
+      } finally {
+        if (oldTransport === undefined) delete process.env.M365_TRANSPORT; else process.env.M365_TRANSPORT = oldTransport;
+      }
+    });
+  }
   it(`ordinary credits keep existing priority classification, stream=${stream}`, async () => {
     wire.result = { value: "OutOfCredits", errorCode: "Other", message: "No credits" };
     const response = await ask(pool(A), "gpt-5.5-think-deeper", stream);

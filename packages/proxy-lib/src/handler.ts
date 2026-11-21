@@ -1154,7 +1154,7 @@ export async function handleChatCompletion(
       }
       const exhausted = chat && priorityAccessExhaustionOf(copilotStream.result, refused ? copilotStream.fullText : fullText);
       if (exhausted) {
-        if (copilotStream.result?.value === "OutOfCredits") noteModelWall(attemptScope, attemptRoute, exhausted.resetsAt.getTime());
+        noteModelWall(attemptScope, attemptRoute, exhausted.resetsAt.getTime());
         const budget = meteredBudgetOf(model);
         if (budget || copilotStream.result?.value === "OutOfCredits") notePriorityAccessExhausted(budget ?? model, exhausted);
         const fallback = budget && !priorityFallbackDone ? priorityAccessFallbackModel(budget) : null;
