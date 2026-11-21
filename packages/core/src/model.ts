@@ -149,6 +149,7 @@ export class ModelSession implements TurnSession {
       try {
         annotations.push(isImage ? await uploadImage(token, this.conversationId, url) : await uploadFile(url));
       } catch (err: any) {
+        if (err instanceof CachePersistenceError) throw err;
         const what = isImage ? "image" : "file";
         log.info(`${isImage ? "Image" : "File"} upload failed: ${err.message}`);
         text += `

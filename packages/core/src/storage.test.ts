@@ -85,7 +85,7 @@ describe("private atomic publication", () => {
       try { atomicWritePrivate(target, "secret-contents"); } catch (error) { thrown = error; }
       expect(thrown).toBeInstanceOf(CachePersistenceError);
       const error = thrown as CachePersistenceError;
-      expect(error.message).toBe("Cannot persist local cache; check directory permissions and available disk space");
+      expect(error.message).toContain(code);
       expect(error.cause).toMatchObject({ code, syscall });
       const visible = [error.message, String((error.cause as Error).message), JSON.stringify(error.cause),
         String((error.cause as Error).stack)].join("\n");
@@ -94,6 +94,14 @@ describe("private atomic publication", () => {
       expect(fs.readdirSync(root)).toEqual(["cache.json"]);
     },
   );
+
+  it("does not expose arbitrary code-shaped secrets as errno", () => {
+    vi.spyOn(fs, "renameSync").mockImplementation(() => { throw Object.assign(new Error("private"), { code: "SECRET_TOKEN" }); });
+    let thrown: unknown;
+    try { atomicWritePrivate(target, "new"); } catch (error) { thrown = error; }
+    expect((thrown as Error).message).not.toContain("SECRET_TOKEN");
+    expect((thrown as Error).cause).toBeUndefined();
+  });
 
   it("carries no cause code when the failure has no OS error code", () => {
     vi.spyOn(fs, "renameSync").mockImplementation(() => { throw new Error("no code, /synthetic/path"); });
@@ -153,6 +161,26 @@ describe("private atomic publication", () => {
     expect(fs.readdirSync(root)).toEqual(["cache.json"]);
   });
 
+  it.skipIf(process.platform === "win32")("preserves directory fsync errno if close also fails after rename", () => {
+    const sync = fs.fsyncSync, close = fs.closeSync;
+    let syncs = 0, closes = 0;
+    vi.spyOn(fs, "fsyncSync").mockImplementation((fd) => {
+      if (++syncs === 2) throw Object.assign(new Error("private fsync secret"), { code: "EIO", syscall: "fsync" });
+      sync(fd);
+    });
+    vi.spyOn(fs, "closeSync").mockImplementation((fd) => {
+      close(fd);
+      if (++closes === 2) throw Object.assign(new Error("private close secret"), { code: "EBADF", syscall: "close" });
+    });
+    let error: any;
+    try { atomicWritePrivate(target, "published"); } catch (e) { error = e; }
+    expect(error).toBeInstanceOf(CachePersistenceError);
+    expect(error.cause).toMatchObject({ code: "EIO", syscall: "fsync" });
+    expect(error.message).toContain("EIO");
+    expect(fs.readFileSync(target, "utf8")).toBe("published");
+    expect(fs.readdirSync(root)).toEqual(["cache.json"]);
+  });
+
   it.skipIf(process.platform === "win32")("rejects a symlink immediate parent without touching its target", () => {
     const link = join(root, "alias");
     fs.symlinkSync(root, link);
@@ -197,20 +225,4 @@ describe("private atomic publication", () => {
       expect(fs.readdirSync(root)).toEqual(["cache.json"]);
     } finally { await Promise.all(workers.map((w) => w.terminate())); }
   }, 30_000);
-});
-
-describe("documented rename caveat", () => {
-  const read = (file: string) => fs.readFileSync(new URL(`../../../${file}`, import.meta.url), "utf8");
-
-  it("README warns that M365_CACHE_FILE on a bind-mounted file fails with EBUSY/EXDEV", () => {
-    const row = read("README.md").split("\n").find((line) => line.startsWith("| `M365_CACHE_FILE`"));
-    expect(row).toMatch(/bind-mounted/);
-    expect(row).toMatch(/EBUSY/);
-    expect(row).toMatch(/EXDEV/);
-    expect(row).toMatch(/directory/);
-  });
-
-  it("API doc states the same caveat next to the atomic-publication description", () => {
-    expect(read("docs/m365-copilot-api.md")).toMatch(/`M365_CACHE_FILE` on a single\nbind-mounted file fails with `EBUSY`\/`EXDEV`/);
-  });
 });

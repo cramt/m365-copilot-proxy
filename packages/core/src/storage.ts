@@ -4,6 +4,9 @@ import {
 } from "node:fs";
 import { dirname, join } from "node:path";
 import { randomUUID } from "node:crypto";
+import { constants } from "node:os";
+
+const errnoCodes = new Set(Object.keys(constants.errno));
 
 /**
  * The message deliberately excludes paths and serialized cache contents. When the
@@ -12,9 +15,9 @@ import { randomUUID } from "node:crypto";
  */
 export class CachePersistenceError extends Error {
   constructor(cause?: unknown) {
-    super("Cannot persist local cache; check directory permissions and available disk space");
-    this.name = "CachePersistenceError";
     const safe = errnoOnly(cause);
+    super(`Cannot persist local cache; check directory permissions and available disk space${safe ? ` (${(safe as Error & { code: string }).code})` : ""}`);
+    this.name = "CachePersistenceError";
     if (safe) this.cause = safe;
   }
 }
@@ -22,7 +25,7 @@ export class CachePersistenceError extends Error {
 function errnoOnly(error: unknown): Error | undefined {
   if (typeof error !== "object" || error === null) return undefined;
   const { code, syscall } = error as { code?: unknown; syscall?: unknown };
-  if (typeof code !== "string" || !/^[A-Z][A-Z0-9_]{1,31}$/.test(code)) return undefined;
+  if (typeof code !== "string" || !errnoCodes.has(code)) return undefined;
   const call = typeof syscall === "string" && /^[a-z][a-z0-9_]{0,31}$/.test(syscall) ? syscall : undefined;
   return Object.assign(new Error(call ? `${code} (${call})` : code), call ? { code, syscall: call } : { code });
 }
@@ -60,18 +63,23 @@ export function atomicWritePrivate(path: string, contents: string): void {
     // Windows does not provide POSIX directory fsync. On other systems tolerate
     // only documented unsupported-operation errors, not real I/O/permission faults.
     if (process.platform !== "win32") {
+      let syncFailure: unknown;
+      let failed = false;
       try {
         fd = openSync(parent, "r");
         fsyncSync(fd);
       } catch (error) {
-        if (!directorySyncUnsupported(error)) throw error;
+        if (!directorySyncUnsupported(error)) { failed = true; syncFailure = error; }
       } finally {
         if (fd !== undefined) {
           const closingDirectory = fd;
           fd = undefined;
-          closeSync(closingDirectory);
+          try { closeSync(closingDirectory); } catch (error) {
+            if (!failed) throw error;
+          }
         }
       }
+      if (failed) throw syncFailure;
     }
   } catch (error) {
     throw error instanceof CachePersistenceError ? error : new CachePersistenceError(error);

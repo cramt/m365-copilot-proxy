@@ -37,6 +37,7 @@ beforeEach(() => {
 });
 afterEach(() => {
   vi.unstubAllEnvs();
+  vi.unstubAllGlobals();
   vi.restoreAllMocks();
   fs.rmSync(root, { recursive: true, force: true });
 });
@@ -48,11 +49,25 @@ describe("native auth cache publication", () => {
       const auth = await import("./auth.js");
       await expect(auth[method](["synthetic-scope"])).rejects.toMatchObject({
         name: "CachePersistenceError",
-        message: "Cannot persist local cache; check directory permissions and available disk space",
+        message: expect.stringContaining("Cannot persist local cache"),
       });
       expect(identity.serializations).toBe(1);
     },
   );
+
+  it("real document upload propagates auth persistence failure before any chat or upload", async () => {
+    const { ModelSession } = await import("./model.js");
+    const { CopilotSession } = await import("./session.js");
+    const chat = vi.spyOn(CopilotSession.prototype, "chat").mockResolvedValue({} as never);
+    const fetch = vi.fn(() => { throw new Error("unexpected network"); });
+    vi.stubGlobal("fetch", fetch);
+    const model = new ModelSession({ getToken: async () => "synthetic-chat-token", useAgent: false });
+    await expect(model.run("read document", "m365-copilot", undefined, false, ["data:application/pdf;base64,JVBERi0="]))
+      .rejects.toMatchObject({ name: "CachePersistenceError" });
+    expect(identity.serializations).toBe(1);
+    expect(fetch).not.toHaveBeenCalled();
+    expect(chat).not.toHaveBeenCalled();
+  });
 
   it("keeps the OS error code on the cause through the auth caller", async () => {
     const { getTokenSilent } = await import("./auth.js");
