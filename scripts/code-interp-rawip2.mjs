@@ -1,7 +1,12 @@
 // Lean retry: raw TCP SYN to public IPv4s (no DNS, no proxy, no subprocess).
 import { readFileSync, writeFileSync, mkdirSync } from "node:fs";
 import { getToken, decodeJwt } from "../packages/core/dist/index.mjs";
-import { oneTurn } from "./_probe-chat.mjs";
+import { oneTurn as defaultOneTurn } from "./_probe-chat.mjs";
+
+import { resolve as resolveEntrypoint } from "node:path";
+import { pathToFileURL as entrypointURL } from "node:url";
+
+export async function main({ oneTurn = defaultOneTurn } = {}) {
 
 const SENTINEL = readFileSync("scripts/sentinel-value.txt", "utf8").trim();
 const CODE_INTERP = ["cwc_code_interpreter", "cwc_code_interpreter_amsfix", "cwc_code_interpreter_citation_fix", "code_interpreter_interactive_charts", "code_interpreter_matplotlib_patching"];
@@ -33,8 +38,12 @@ mkdirSync("scripts/code-interp-out", { recursive: true });
 const token = await getToken();
 const claims = decodeJwt(token);
 const r = await oneTurn({ token, claims, agentId: null, optionsSets: CODE_INTERP, extraAllowed: ["GeneratedCode", "GenerateContentQuery", "Progress"], text: prompt, timeoutMs: 150000 });
+if (r.attempted === false) throw new Error(`Probe not attempted: ${r.error}`);
 const out = r.fullText || "";
 const fp = `scripts/code-interp-out/rawip2-${new Date().toISOString().replace(/[:.]/g, "-")}.txt`;
 writeFileSync(fp, out);
 console.log(`[rawip2] saved ${fp} (${out.length} chars)\n${out}`);
 console.log(`[rawip2] transport=${r.transport} msgTypes=${r.messageTypes.join(",")} elapsed=${r.elapsedMs}ms throttle=${JSON.stringify(r.throttle)} disengaged=${r.disengaged}`);
+
+}
+if (process.argv[1] && import.meta.url === entrypointURL(resolveEntrypoint(process.argv[1])).href) await main();

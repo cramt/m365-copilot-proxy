@@ -194,9 +194,10 @@ export const isLicenceRefusal = (result) => /^(InvalidCopilotLicense|\w+Unavaila
 
 /** Turn-level outcome, before any question of identity. */
 export function outcome(t) {
+  if (t.attempted === false) return "SKIPPED";
+  if (t.result?.value === "Throttled" || t.result?.errorCode === "PerUserThrottled") return "THROTTLED";
   if (t.error === "timeout") return "TIMEOUT";
   if (t.error) return "REJECTED";
-  if (t.result?.value === "Throttled") return "THROTTLED";
   // Before the BotConnection check: the licence refusal ALSO comes from
   // BotConnection, but it's about the account, not the route (§22).
   if (isLicenceRefusal(t.result)) return "UNLICENSED";
@@ -357,7 +358,7 @@ function scanFrame(frame, acc) {
   walk(frame);
 }
 
-async function probeTurn({ oneTurn, token, claims, agentId, cell, framesFile, prompt = PROMPT }) {
+async function probeTurn({ oneTurn, token, claims, agentId, cell, framesFile, prompt = PROMPT, maxAttempts, writeFrames = true }) {
   // An unpinned cell goes out as the proxy would send it: over StreamHub under
   // one pair for every model (getStreamHubScenario), over Chathub by its tone.
   const transport = getTransport();
@@ -368,10 +369,10 @@ async function probeTurn({ oneTurn, token, claims, agentId, cell, framesFile, pr
   const frames = [];
   const r = await oneTurn({
     token, claims, agentId, transport, tone: cell.tone, scenario, licenseType,
-    timeoutMs: 90000, text: prompt,
+    timeoutMs: 90000, text: prompt, maxAttempts,
     onFrame: (f) => { frames.push(f); scanFrame(f, acc); },
   });
-  writeFileSync(framesFile, frames.map((f) => JSON.stringify(f)).join("\n") + "\n");
+  if (writeFrames) writeFileSync(framesFile, frames.map((f) => JSON.stringify(f)).join("\n") + "\n");
   const reply = (r.fullText || "").trim();
   return {
     scenario, licenseType,
@@ -384,7 +385,8 @@ async function probeTurn({ oneTurn, token, claims, agentId, cell, framesFile, pr
     agentHandled: acc.agentNames.has("3PDeclarativeAgent") || acc.origins.has("3PDeclarativeAgent"),
     // The helper reads the outcome on either transport; StreamHub frames carry no
     // `result` for scanFrame to find (a turn ends with request_end's `outcome`).
-    result: r.result?.value ? { value: r.result.value, errorCode: r.result.errorCode ?? null } : acc.result,
+    attempted: r.attempted,
+    result: r.result ?? acc.result,
     disengaged: r.disengaged,
     messageTypes: r.messageTypes,
     error: r.error,
@@ -394,6 +396,39 @@ async function probeTurn({ oneTurn, token, claims, agentId, cell, framesFile, pr
 }
 
 // --- sweep -------------------------------------------------------------------
+
+export async function sweep({ oneTurn, token, claims, agentId, cells, baseline: includeBaseline = false, cooldownMs = 5000, out, prompt = PROMPT, sleep = (ms) => new Promise((res) => setTimeout(res, ms)), writeFrames = true, log = console.log }) {
+  // One turn per cell, two with --baseline: over the helper's default cap of 20
+  // for the default list with --baseline. The sweep stops at a throttle itself,
+  // so the helper's own latch stays on.
+  const maxAttempts = cells.length * (includeBaseline ? 2 : 1);
+  const results = [];
+  let stoppedEarly = false;
+
+  for (const [i, cell] of cells.entries()) {
+    const slug = `${String(i).padStart(2, "0")}-${cell.tone}-${cell.scenario ?? "default"}`;
+    if (i > 0) await sleep(cooldownMs);
+    const agent = await probeTurn({ oneTurn, token, claims, agentId, cell, prompt, maxAttempts, writeFrames, framesFile: join(out, `${slug}.agent.jsonl`) });
+
+    let baseline = null;
+    if (includeBaseline && !["THROTTLED", "SKIPPED"].includes(outcome(agent))) {
+      await sleep(cooldownMs);
+      baseline = await probeTurn({ oneTurn, token, claims, agentId: null, cell, prompt, maxAttempts, writeFrames, framesFile: join(out, `${slug}.agentless.jsonl`) });
+    }
+
+    const row = classifyRow(cell, agent, baseline);
+    results.push(row);
+    for (const line of cellLines(row)) log(line);
+    const stop = [agent, baseline].find((t) => t && ["THROTTLED", "SKIPPED"].includes(outcome(t)));
+    if (stop) {
+      log(`\n[agent-tone] ${outcome(stop)} — stopping; later cells would not provide observations.`);
+      stoppedEarly = true;
+      break;
+    }
+  }
+
+  return { stoppedEarly, results };
+}
 
 async function main(argv) {
   const flag = (name) => argv.find((a) => a === `--${name}` || a.startsWith(`--${name}=`));
@@ -430,30 +465,7 @@ async function main(argv) {
   console.log(`[agent-tone] ${CELLS.length} cells${BASELINE ? " × 2 (agent + agent-less baseline)" : ""}, cooldown ${COOLDOWN_MS}ms\n`);
 
   const sleep = (ms) => new Promise((res) => setTimeout(res, ms));
-  const results = [];
-  let stoppedEarly = false;
-
-  for (const [i, cell] of CELLS.entries()) {
-    const slug = `${String(i).padStart(2, "0")}-${cell.tone}-${cell.scenario ?? "default"}`;
-    if (i > 0) await sleep(COOLDOWN_MS);
-    const agent = await probeTurn({ oneTurn, token, claims, agentId, cell, prompt, framesFile: join(OUT, `${slug}.agent.jsonl`) });
-
-    let baseline = null;
-    if (BASELINE && agent.result?.value !== "Throttled") {
-      await sleep(COOLDOWN_MS);
-      baseline = await probeTurn({ oneTurn, token, claims, agentId: null, cell, prompt, framesFile: join(OUT, `${slug}.agentless.jsonl`) });
-    }
-
-    const row = classifyRow(cell, agent, baseline);
-    results.push(row);
-    for (const line of cellLines(row)) console.log(line);
-    if ([agent, baseline].some((t) => t?.result?.value === "Throttled")) {
-      console.log(`\n[agent-tone] THROTTLED (${agent.result?.errorCode ?? baseline?.result?.errorCode}) — stopping; later cells would read as failures. Wait it out: a fresh login doesn't clear it (the throttle is keyed on the account's oid, AGENTS.md).`);
-      stoppedEarly = true;
-      break;
-    }
-  }
-
+  const { stoppedEarly, results } = await sweep({ oneTurn, token, claims, agentId, cells: CELLS, baseline: BASELINE, cooldownMs: COOLDOWN_MS, out: OUT, prompt, sleep });
   const run = { account, agentId, prompt, baseline: BASELINE, stoppedEarly, results };
   writeFileSync(join(OUT, "results.json"), JSON.stringify(run, null, 2));
   console.log("");

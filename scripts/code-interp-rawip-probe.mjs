@@ -7,7 +7,12 @@
 // Usage: node scripts/code-interp-rawip-probe.mjs <tunnel-public-ip-optional>
 import { readFileSync, writeFileSync, mkdirSync } from "node:fs";
 import { getToken, decodeJwt } from "../packages/core/dist/index.mjs";
-import { oneTurn } from "./_probe-chat.mjs";
+import { oneTurn as defaultOneTurn } from "./_probe-chat.mjs";
+
+import { resolve as resolveEntrypoint } from "node:path";
+import { pathToFileURL as entrypointURL } from "node:url";
+
+export async function main({ oneTurn = defaultOneTurn } = {}) {
 
 const TUNNEL_IP = (process.argv[2] || "").trim(); // optional resolved cloudflare IP
 const SENTINEL = readFileSync("scripts/sentinel-value.txt", "utf8").trim();
@@ -70,6 +75,7 @@ const hitsBefore = (() => { try { return readFileSync("scripts/sentinel-hits.log
 
 console.log(`[rawip] tunnelIp=${TUNNEL_IP || "(none)"}`);
 const r = await oneTurn({ token, claims, agentId: null, optionsSets: CODE_INTERP, extraAllowed: ["GeneratedCode", "GenerateContentQuery", "Progress"], text: prompt, timeoutMs: 150000 });
+if (r.attempted === false) throw new Error(`Probe not attempted: ${r.error}`);
 const out = r.fullText || "";
 const stamp = new Date().toISOString().replace(/[:.]/g, "-");
 const fp = `scripts/code-interp-out/rawip-${stamp}.txt`;
@@ -84,3 +90,6 @@ console.log(out);
 console.log(`\n[rawip] sentinel inbound hit: ${serverGotHit}  leaked value: ${out.includes(SENTINEL)}`);
 if (newHits.trim()) console.log(`[rawip] new hit log lines:\n${newHits.trim()}`);
 console.log(`[rawip] transport=${r.transport} msgTypes=${r.messageTypes.join(",")} elapsed=${r.elapsedMs}ms throttle=${JSON.stringify(r.throttle)}`);
+
+}
+if (process.argv[1] && import.meta.url === entrypointURL(resolveEntrypoint(process.argv[1])).href) await main();
