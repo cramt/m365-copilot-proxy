@@ -109,6 +109,27 @@ const TONES = [
   { tone: "Claude_Fable", note: "claude-fable — included scenario: expect DeepLeo (uses credits)", ...INCLUDED },
   { tone: "Claude_Fable", note: "PAID scenario: serves too", ...PAID },
 
+  // Tones the web picker's JSON or the web client's tone enum name, or that the
+  // picker's "GPT-5.6 Sol" labels suggest (H-SOL56), and that the proxy doesn't
+  // map. A `pong` reply doesn't say which model answered, so a LIVE cell here is
+  // a lead, not a model; check the first-party picker data too (§27 H27a).
+  { tone: "Gpt_6_Astra", note: "unmapped: the bare name; gpt-6-astra is `Gpt_6_Astra_Reasoning`", ...INCLUDED },
+  { tone: "Grok_Auto", note: "unmapped: in the web client's tone enum", ...INCLUDED },
+  { tone: "Grok_Reasoning", note: "unmapped: in the web client's tone enum", ...INCLUDED },
+  { tone: "Muse_Spark", note: "unmapped: in the web client's tone enum", ...INCLUDED },
+  { tone: "Gpt_5_2_Auto", note: "unmapped: in the web client's tone enum", ...INCLUDED },
+  { tone: "Chat", note: "unversioned guess (`Gpt_Chat` is REJECTED, §19 F34)", ...INCLUDED },
+  { tone: "Reasoning", note: "unversioned guess (`Gpt_Reasoning` is REJECTED, §19 F34)", ...INCLUDED },
+  // Guessed names for the picker's "GPT-5.6 Sol" items, which map to Gpt_5_6_Chat /
+  // Gpt_5_6_Reasoning (H-SOL56). A guess that comes back LIVE would be news.
+  { tone: "Gpt_56_Sol_Chat", note: "guess for GPT-5.6 Sol Quick response: expect REJECTED", ...INCLUDED },
+  { tone: "Gpt_56_Sol_Reasoning", note: "guess for GPT-5.6 Sol Think deeper: expect REJECTED", ...INCLUDED },
+  { tone: "Gpt_5_6_Sol_Chat", note: "guess for GPT-5.6 Sol Quick response: expect REJECTED", ...INCLUDED },
+  { tone: "Gpt_5_6_Sol_Reasoning", note: "guess for GPT-5.6 Sol Think deeper: expect REJECTED", ...INCLUDED },
+  { tone: "Gpt_56_Sol", note: "guess: expect REJECTED", ...INCLUDED },
+  { tone: "Gpt_5_6_Sol", note: "guess: expect REJECTED", ...INCLUDED },
+  { tone: "Gpt_56_Sol_Quick", note: "guess: expect REJECTED", ...INCLUDED },
+
   { tone: "Definitely_Not_A_Real_Tone_XYZ", note: "CONTROL: invalid" },
 ];
 

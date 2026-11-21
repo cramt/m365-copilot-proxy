@@ -195,6 +195,19 @@ All run with `scripts/_probe-chat.mjs` overrides; no license needed.
 - **Run:** `frame-dump-probe.mjs --many-tools` style, escalating tool count, watch
   `dea_violation` + `messageType`.  **Cost:** ~1 msg/step.
 
+### E-SOL56 — do the picker's "GPT-5.6 Sol" labels need a tone of their own? (H-SOL56)
+- **Hypothesis:** the reported "GPT-5.6 Sol" labels use the existing `Gpt_5_6_Chat` /
+  `Gpt_5_6_Reasoning` tones, not a new `*_Sol_*` tone.
+- **Run:** `M365_NO_INTERACTIVE=1 CHROMIUM_PATH=$(which chromium) node scripts/tone-probe.mjs`.
+  The cells before the invalid-tone control are the guessed `Gpt_56_Sol_*` / `Gpt_5_6_Sol_*` names
+  and the tones found in the web client's tone enum; drop the Opus and Sonnet cells to spare their
+  budgets.
+- **Read:** `REJECTED` is a validator error, `REGISTERED_BUT_DEAD` a BotConnection deflection,
+  `UNLICENSED` a refusal by licence, and `LIVE` only says a model answered, not which one. Settle
+  the labels against the web client's own picker data, not a self-ID (§27 H27a).
+- **Cost:** one message per cell. Run it sequentially, as the sweep does; a fresh conversation per
+  cell is what the thread-rate throttle counts (F13).
+
 ---
 
 ## E. Claude Sonnet 5 (paid scenario — §21)
