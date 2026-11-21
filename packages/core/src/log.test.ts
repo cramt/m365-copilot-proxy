@@ -28,8 +28,9 @@ describe("debug log and frame dump paths", () => {
   });
 
   it("take an absolute path as is, and an empty one as unset", async () => {
-    const m = await load({ M365_LOG_FILE: "/tmp/x/a.log", M365_FRAME_DIR: "" });
-    expect(m.LOG_PATH).toBe("/tmp/x/a.log");
+    const abs = join(tmpdir(), "x", "a.log"); // absolute everywhere; "/tmp/x/a.log" isn't on Windows
+    const m = await load({ M365_LOG_FILE: abs, M365_FRAME_DIR: "" });
+    expect(m.LOG_PATH).toBe(abs);
     expect(m.FRAME_DIR).toBe(join(CONFIG_DIR, "frames"));
   });
 });
@@ -68,7 +69,48 @@ describe("rolling window over the debug log (M365_LOG_MAX_BYTES)", () => {
 
   afterEach(() => {
     while (dirs.length) rmSync(dirs.pop()!, { recursive: true, force: true });
+    vi.doUnmock("node:fs");
     vi.unstubAllEnvs();
+  });
+
+  /** As loggerAt, with log.ts's fs calls replaced: Windows refusing a rename, say. */
+  async function loggerWithFs(logFile: string, maxBytes: string, replace: (fs: typeof import("node:fs")) => object) {
+    vi.doMock("node:fs", async (importOriginal) => {
+      const fs = await importOriginal<typeof import("node:fs")>();
+      return { ...fs, ...replace(fs) };
+    });
+    return loggerAt(logFile, maxBytes);
+  }
+  const refused = () => { throw Object.assign(new Error("in use"), { code: "EPERM" }); };
+
+  it("trims in place when the log can't be replaced, as on Windows while a terminal tails it", async () => {
+    const logFile = tempLog();
+    writeFileSync(logFile, history(2_000));
+    const logger = await loggerWithFs(logFile, "1000", () => ({ renameSync: refused }));
+
+    logger.info("the newest line");
+    const text = readFileSync(logFile, "utf8");
+
+    expect(text).toContain("the newest line");
+    expect(text).not.toContain("line 000");
+    expect(text.length).toBeLessThan(1_200);
+    expect(existsSync(`${logFile}.tmp`)).toBe(false);
+  });
+
+  it("doesn't re-read the window on every line while trimming fails", async () => {
+    const logFile = tempLog();
+    writeFileSync(logFile, history(17_000));
+    let reads = 0;
+    const logger = await loggerWithFs(logFile, "10000", (fs) => ({
+      renameSync: refused,
+      writeFileSync: refused,
+      readSync: (...args: unknown[]) => { reads++; return (fs.readSync as (...a: unknown[]) => number)(...args); },
+    }));
+
+    for (let i = 0; i < 5; i++) logger.info(`line after the failed trim ${i}`);
+
+    expect(reads).toBe(1); // the next try waits for another tenth of the window
+    expect(readFileSync(logFile, "utf8")).toContain("line after the failed trim 4");
   });
 
   it("cuts the oldest bytes once the file passes 1.6x the window", async () => {

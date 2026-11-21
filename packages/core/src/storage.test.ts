@@ -8,6 +8,11 @@ import { atomicWritePrivate, CachePersistenceError } from "./storage.js";
 vi.mock("node:fs", async (original) => ({ ...await original<typeof import("node:fs")>() }));
 let root: string;
 let target: string;
+const realPlatform = process.platform;
+/** Run the rest of the test as if on `platform`: the Windows rename retry depends on it. */
+function onPlatform(platform: NodeJS.Platform) {
+  Object.defineProperty(process, "platform", { value: platform });
+}
 beforeEach(() => {
   root = fs.mkdtempSync(join(tmpdir(), "private-cache-"));
   target = join(root, "cache.json");
@@ -15,6 +20,7 @@ beforeEach(() => {
 });
 afterEach(() => {
   vi.restoreAllMocks();
+  onPlatform(realPlatform);
   fs.rmSync(root, { recursive: true, force: true });
 });
 
@@ -71,6 +77,7 @@ describe("private atomic publication", () => {
 
   it.each([["EBUSY", "rename"], ["EXDEV", "rename"], ["EACCES", "open"]] as const)(
     "keeps %s from %s on the cause without paths or contents in message or cause", (code, syscall) => {
+      onPlatform("linux"); // the error's shape, not the Windows retry of an EBUSY rename (below)
       const secretPath = "/synthetic/private/dir/cache.json";
       const real = fs[syscall === "rename" ? "renameSync" : "openSync"];
       const seam = syscall === "rename" ? "renameSync" : "openSync";
@@ -136,6 +143,45 @@ describe("private atomic publication", () => {
   it("rejects malformed parent paths without replacing them", () => {
     expect(() => atomicWritePrivate(join(target, "child"), "new")).toThrow(CachePersistenceError);
     expect(fs.readFileSync(target, "utf8")).toBe("old-complete");
+  });
+
+  describe("a rename that meets another handle on the destination", () => {
+    /** renameSync refusing `failures` times with `code`, then renaming. */
+    function refuse(failures: number, code: string) {
+      const real = fs.renameSync;
+      let calls = 0;
+      vi.spyOn(fs, "renameSync").mockImplementation(((...args: Parameters<typeof fs.renameSync>) => {
+        if (++calls <= failures) throw Object.assign(new Error("in use"), { code, syscall: "rename" });
+        real(...args);
+      }) as typeof fs.renameSync);
+      return () => calls;
+    }
+
+    it("is retried on Windows, which refuses while the other handle is open", () => {
+      onPlatform("win32");
+      const calls = refuse(3, "EPERM");
+      atomicWritePrivate(target, "new-complete");
+      expect(calls()).toBe(4);
+      expect(fs.readFileSync(target, "utf8")).toBe("new-complete");
+      expect(fs.readdirSync(root)).toEqual(["cache.json"]);
+    });
+
+    it("fails at once elsewhere, where a refused rename is no sharing conflict", () => {
+      onPlatform("linux");
+      const calls = refuse(1, "EPERM");
+      expect(() => atomicWritePrivate(target, "new-complete")).toThrow(CachePersistenceError);
+      expect(calls()).toBe(1);
+      expect(fs.readFileSync(target, "utf8")).toBe("old-complete");
+    });
+
+    it("fails at once on Windows when a directory is in the way, which no wait clears", () => {
+      onPlatform("win32");
+      fs.rmSync(target);
+      fs.mkdirSync(target);
+      const calls = refuse(Infinity, "EPERM");
+      expect(() => atomicWritePrivate(target, "new-complete")).toThrow(CachePersistenceError);
+      expect(calls()).toBe(1);
+    });
   });
 
   it.skipIf(process.platform === "win32")("replaces a destination symlink, never writing its target", () => {
