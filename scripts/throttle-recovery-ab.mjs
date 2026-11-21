@@ -87,6 +87,10 @@ async function probe(label, token, claims) {
     timeoutMs: 60000,
     ...TURN_LIMITS,
   });
+  if (r.attempted === false) {
+    rec({ kind: "local_refusal", label, error: r.error });
+    throw new Error(`Probe not attempted (${label}): ${r.error}; no recovery verdict`);
+  }
   transports.add(r.transport);
   const empty = isThrottleEmpty(r);
   const clean = !empty && !r.disengaged && /pong/i.test(r.fullText || "");

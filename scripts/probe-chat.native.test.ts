@@ -230,3 +230,35 @@ it("tone sweep retains a real remote invocation rejection", async () => {
   expect(chats).toHaveLength(1);
   expect(rows[0]).toMatchObject({ attempted: true, verdict: "REJECTED", error: "Failed to invoke Chat" });
 });
+
+it("throttle sweep stops local refusal without claiming degradation or recovery", async () => {
+  const who = fresh(80, [1]);
+  await oneTurn({ ...who, text: "latch", timeoutMs: 1000 });
+  const calls: string[] = [];
+  const r = await throttleProbe.sweep({ oneTurn: async (o: any) => { calls.push(o.text); return oneTurn(o); }, ...who, agentId: null, rpm: 600000, max: 3, recover: true, sleep: async () => {}, log: () => {} });
+  expect(chats).toHaveLength(1);
+  expect(r.onset).toBeUndefined();
+  expect(r.recoveryMin).toBeNull();
+  expect(r.results[0].cls).toBe("skipped");
+  expect(calls.length).toBeLessThanOrEqual(3);
+});
+
+it("agent outcome distinguishes code-only remote throttle and local refusal", async () => {
+  // @ts-expect-error JavaScript entrypoint
+  const agent = await import("./agent-tone-probe.mjs");
+  const base = { reply: "", error: null, result: { errorCode: "PerUserThrottled" } };
+  expect(agent.outcome(base)).toBe("THROTTLED");
+  expect(agent.outcome({ ...base, attempted: false, error: "probe turn budget hold", result: null })).toBe("SKIPPED");
+});
+
+it("recovery poll records a local pacing hold as inconclusive", async () => {
+  const who = fresh(81, [1]);
+  const run = await throttleProbe.sweep({ oneTurn: async (o: any) => {
+    const r = await oneTurn(o);
+    if (r.result?.value === "Throttled") vi.stubEnv("M365_AVOID_THROTTLING", "1");
+    return r;
+  }, ...who, agentId: null, rpm: 600000, max: 1, recover: true, sleep: async () => {}, log: () => {} });
+  expect(chats).toHaveLength(1);
+  expect(run.recoveryMin).toBeNull();
+  expect(run.recoverySkipped).toBe(true);
+});
