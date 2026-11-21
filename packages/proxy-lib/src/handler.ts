@@ -7,6 +7,7 @@ import {
   type Backend,
   resolveModelRoute,
   createLogger,
+  publicForbiddenCode,
   trunc,
   getToneForModel,
   requestUsesAgent,
@@ -1824,11 +1825,6 @@ function terminalErrorResponse(status: number, body: { error: Record<string, unk
 }
 
 const MODEL_LICENCE_CODES = new Set(["PremiumModelUnavailableForLicense", "ClaudeUnavailableForLicense"]);
-const FORBIDDEN_CODES = new Set([...MODEL_LICENCE_CODES, "InvalidCopilotLicense"]);
-
-function publicForbiddenCode(code: unknown): string | undefined {
-  return typeof code === "string" && FORBIDDEN_CODES.has(code) ? code : undefined;
-}
 
 /** M365 refused the request as forbidden (`result.value: "ForbiddenRequest"`). A 403, in
  *  three kinds, by the result's `errorCode`: the model isn't licensed for this

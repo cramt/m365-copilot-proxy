@@ -30,6 +30,7 @@ import {
   shouldAutoConfirm,
   ACTION_ALLOWED_MESSAGE_TYPES,
 } from "./native-actions.js";
+import { publicForbiddenCode } from "./forbidden.js";
 import { createLogger, trunc, FRAME_DIR } from "./log.js";
 import { recordThrottle, recordTurn } from "./turn-budget.js";
 import { parseMetering, meteredAllowance, METERED_BUDGETS, type MeteredBudget } from "./priority-access.js";
@@ -1127,7 +1128,8 @@ export class CopilotSession {
           ...(errorCode ? { errorCode } : {}),
           ...(message ? { message } : {}),
         };
-        if (value !== "Success") log.info(`Turn result: ${value}${errorCode ? ` (${errorCode})` : ""}`);
+        const logCode = value === "ForbiddenRequest" ? publicForbiddenCode(errorCode) : errorCode;
+        if (value !== "Success") log.info(`Turn result: ${value}${logCode ? ` (${logCode})` : ""}`);
         if (value === "Throttled") recordThrottle();
       };
 

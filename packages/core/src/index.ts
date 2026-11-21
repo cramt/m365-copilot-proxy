@@ -1,3 +1,5 @@
+export { publicForbiddenCode } from "./forbidden.js";
+
 export {
   getToken,
   getTokenSilent,
