@@ -51,10 +51,14 @@ const setVars = (vars) => {
   Object.assign(process.env, vars);
 };
 
+// The helper keys its accounting on the token's tid/oid, so the stand-in turns carry a real principal.
+const CLAIMS = { aud: "synthetic", iss: "synthetic", tid: "11111111-1111-1111-1111-111111111111", oid: "22222222-2222-2222-2222-222222222222", exp: 2000000000 };
+const TOKEN = `e30.${Buffer.from(JSON.stringify(CLAIMS)).toString("base64url")}.sig`;
+
 /** One helper turn against the stand-in; what its URL carried. */
 async function sent(opts) {
   const before = fake.state.urls.length;
-  const r = await oneTurn({ token: "token", claims: { oid: "oid-1", tid: "tid-1" }, text: "pong", timeoutMs: 5000, ...opts });
+  const r = await oneTurn({ token: TOKEN, claims: CLAIMS, text: "pong", timeoutMs: 5000, ...opts });
   const url = new URL(fake.state.urls[before]);
   return {
     transport: r.transport,

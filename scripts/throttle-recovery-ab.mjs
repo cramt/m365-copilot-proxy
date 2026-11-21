@@ -46,6 +46,10 @@ const INDUCE = Number(args.induce ?? 0);
 const ROUNDS = Number(args.rounds ?? 12);
 const GAP_MS = Number(args.gap ?? 45) * 1000;
 const NEWTOKEN = args["no-new"] ? "none" : (args.newtoken ?? "login");
+// Both tokens are the same principal to the helper, so its cap is for the whole
+// run: the induce turns, the confirming probe and every round's probes. The run
+// probes the account while it is throttled, so a throttle doesn't stop it.
+const TURN_LIMITS = { maxAttempts: INDUCE + 1 + ROUNDS * (NEWTOKEN === "none" ? 1 : 2), latchThrottle: false };
 
 const OUT_DIR = join(process.cwd(), "scripts", "throttle-recovery-out");
 mkdirSync(OUT_DIR, { recursive: true });
@@ -81,6 +85,7 @@ async function probe(label, token, claims) {
     token, claims, agentId: null,
     text: "Reply with exactly the word: pong",
     timeoutMs: 60000,
+    ...TURN_LIMITS,
   });
   transports.add(r.transport);
   const empty = isThrottleEmpty(r);

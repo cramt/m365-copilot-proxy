@@ -1,7 +1,13 @@
 // Shared single-turn chat helper for RE probes.
 //
 // Opens one raw WS to M365 Copilot, sends one chat turn, accumulates the
-// response, and returns a structured summary. No files written — callers
+// response, and returns a structured summary. Build core first (pnpm build).
+// A process-local per-principal cap defaults to 20 attempted dispatches;
+// M365_PROBE_MAX_ATTEMPTS sets a positive finite cap, and a call's `maxAttempts`
+// overrides both. Explicit throttling stops that principal for this run unless
+// the call passes `latchThrottle: false` (a probe that provokes throttling on
+// purpose). M365_AVOID_THROTTLING enables native pacing decisions (refuse
+// rather than sleep). No files written — callers
 // decide what to persist. Modelled on frame-dump-probe.mjs's payload.
 //
 // Two transports reach the same backend (docs/m365-copilot-api.md §13):
@@ -27,8 +33,9 @@
 //   disengaged,                          // saw messageType:"Disengaged"
 //   messageTypes, contentOrigin,         // control-frame metadata
 //   scores: { BotOffense, dea_violation, ... },
-//   throttle: { current, max, metering } | null,   // metering: paid scenario only
+//   throttle: { current, max, metering, meteringObservation } | null, // raw + normalized
 //   result: { value, errorCode?, message?, detail? } | null,   // the turn's outcome
+//   attempted,                           // a chat request was dispatched (spent a local attempt)
 //   itemTypes, billing,                  // StreamHub only: item types seen, billing_info items
 //   serviceVersion, turnCount,
 //   elapsedMs, frameCount, error
@@ -48,6 +55,79 @@
 const RS = "\x1E";
 
 import { pathToFileURL } from "node:url";
+import { createHash } from "node:crypto";
+import { recordTurn, recordThrottle, proxyBudgetStatus, budgetConfig, decide, parseMetering, decodeJwt } from "../packages/core/dist/index.mjs";
+
+// A run cap, not an inferred upstream allowance. No tokens or observations persist.
+const attempts = new Map();
+const stopped = new Set();
+const observations = new Map();
+const GUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const DEFAULT_MAX_ATTEMPTS = 20;
+
+// Local claim-shape/consistency check only; NOT JWT signature verification.
+function principal(token, claims) {
+  try {
+    const decoded = decodeJwt(token);
+    for (const key of ["tid", "oid"]) {
+      if (!GUID.test(decoded[key]) || typeof claims?.[key] !== "string" ||
+          !GUID.test(claims[key]) || decoded[key].toLowerCase() !== claims[key].toLowerCase()) throw new Error();
+    }
+    const tid = decoded.tid.toLowerCase(), oid = decoded.oid.toLowerCase();
+    return { tid, oid, scope: createHash("sha256").update(JSON.stringify([tid, oid])).digest("hex") };
+  } catch { throw new TypeError("probe accounting requires a valid JWT principal"); }
+}
+
+/** The attempt cap for one call: its `maxAttempts`, else M365_PROBE_MAX_ATTEMPTS, else 20. */
+function runCap(maxAttempts) {
+  if (maxAttempts !== undefined) {
+    if (!Number.isSafeInteger(maxAttempts) || maxAttempts < 1) throw new TypeError("maxAttempts must be a positive safe integer");
+    return maxAttempts;
+  }
+  const raw = process.env.M365_PROBE_MAX_ATTEMPTS;
+  const cap = raw === undefined ? DEFAULT_MAX_ATTEMPTS : Number(raw);
+  if (!Number.isSafeInteger(cap) || cap < 1) throw new TypeError("M365_PROBE_MAX_ATTEMPTS must be a positive safe integer");
+  return cap;
+}
+
+/**
+ * This helper's credential-scoped memory only; legacy budgetStatus remains log-based.
+ * `maxAttempts` and `latchThrottle` are the options oneTurn takes; they change
+ * what is reported as `cap` and `stopped` for a caller that passes them.
+ */
+export function probeBudgetStatus({ token, claims, maxAttempts, latchThrottle = true }) {
+  const { scope } = principal(token, claims);
+  const cfg = budgetConfig();
+  return {
+    attempts: attempts.get(scope) ?? 0, cap: runCap(maxAttempts), stopped: latchThrottle && stopped.has(scope),
+    observedRemaining: structuredClone(observations.get(scope) ?? null),
+    pacing: proxyBudgetStatus(Date.now(), cfg, false, scope),
+  };
+}
+
+function refusal(scope, cap, latchThrottle) {
+  if (latchThrottle && stopped.has(scope)) return "probe throttle stop: restart only after reviewing the upstream refusal";
+  if ((attempts.get(scope) ?? 0) >= cap) return "probe run cap reached";
+  const cfg = budgetConfig();
+  if (cfg.enabled && !decide(proxyBudgetStatus(Date.now(), cfg, false, scope), 1, Date.now(), cfg).ok) return "probe turn budget hold";
+  return null;
+}
+
+function refusedSummary(error, transport) {
+  return { transport, fullText: "", deltaText: "", snapshotText: "", disengaged: false,
+    messageTypes: [], contentOrigin: null, scores: {}, throttle: null,
+    result: null, serviceVersion: null, turnCount: null, attempted: false,
+    itemTypes: [], billing: [], elapsedMs: 0, frameCount: 0, error };
+}
+
+function throttleOf(t) {
+  return {
+    current: t.numUserMessagesInConversation,
+    max: t.maxNumUserMessagesInConversation,
+    metering: t.metering,
+    meteringObservation: parseMetering(t.metering),
+  };
+}
 const ROOT = pathToFileURL(process.cwd()).href;
 const wsMod = await import(`${ROOT}/node_modules/.pnpm/ws@8.20.0/node_modules/ws/wrapper.mjs`);
 const WebSocket = wsMod.default ?? wsMod.WebSocket;
@@ -276,6 +356,11 @@ function streamHubResult(value, errorCode, message, detail) {
  * @param {string} [o.streamingMode]  default "ConciseWithPadding" (Chathub), "ConciseV2" (StreamHub)
  * @param {number} [o.timeoutMs] default 120000
  * @param {(frame:object)=>void} [o.onFrame]  optional raw-frame sink
+ * @param {number} [o.maxAttempts]  this call's cap on attempted dispatches for the principal
+ *   (a positive safe integer); overrides M365_PROBE_MAX_ATTEMPTS and the default of 20
+ * @param {boolean} [o.latchThrottle]  default true: an explicit throttle result stops the
+ *   principal for the rest of the run. `false` observes it and lets the run go on; the call
+ *   then ignores a stop that is already latched and sets none
  */
 export function oneTurn(o) {
   const {
@@ -311,14 +396,22 @@ export function oneTurn(o) {
     // (docs/hypotheses.md §16 F28/F29). `false` / M365_SAVE_HISTORY=1 restores the
     // pre-#15 wire state most recorded probe evidence was taken under.
     temporaryChat = process.env.M365_SAVE_HISTORY !== "1",
+    maxAttempts = undefined,
+    latchThrottle = true,
   } = o;
   if (transport !== "chathub" && transport !== "streamhub") {
     throw new Error(`oneTurn: transport must be "chathub" or "streamhub", not ${JSON.stringify(transport)}`);
   }
   const streamHub = transport === "streamhub";
+  if (typeof latchThrottle !== "boolean") throw new TypeError("latchThrottle must be a boolean");
+
+  const { tid, oid, scope } = principal(token, claims);
+  const cap = runCap(maxAttempts);
+  const preflight = refusal(scope, cap, latchThrottle);
+  if (preflight) return Promise.resolve(refusedSummary(preflight, transport));
 
   const turn = {
-    token, claims, text, agentId, tone, streamingMode, optionsSets, plugins,
+    token, claims: { tid, oid }, text, agentId, tone, streamingMode, optionsSets, plugins,
     variants, scenario, licenseType, temporaryChat,
     allowedMessageTypes: [...new Set([...baseAllowed, ...extraAllowed])],
     sessionId: crypto.randomUUID(),
@@ -346,6 +439,14 @@ export function oneTurn(o) {
     const itemTypes = new Set();
     const billing = [];
     let settled = false;
+    let attempted = false;
+
+    // An explicit throttle result ends the principal's run, unless this call opted out.
+    function noteResult() {
+      if (result?.value !== "Throttled" && result?.errorCode !== "PerUserThrottled") return;
+      if (latchThrottle) stopped.add(scope);
+      recordThrottle(Date.now(), scope);
+    }
 
     // StreamHub text, per message (the proxy's TurnTextComposer, reduced). A
     // cursor frame names the message the next deltas extend and restates its
@@ -372,7 +473,7 @@ export function oneTurn(o) {
         transport,
         fullText, deltaText, snapshotText,
         disengaged, messageTypes: [...messageTypes].sort(), contentOrigin,
-        scores, throttle, result, serviceVersion, turnCount,
+        scores, throttle, result, serviceVersion, turnCount, attempted,
         itemTypes: [...itemTypes].sort(), billing,
         elapsedMs: Date.now() - t0, frameCount, error: error ?? null,
       });
@@ -425,11 +526,8 @@ export function oneTurn(o) {
         if (typeof a.w === "string") streamDelta(a.w);
         if (typeof a.writeAtCursor === "string") streamDelta(a.writeAtCursor);
         if (a.throttling) {
-          throttle = {
-            current: a.throttling.numUserMessagesInConversation,
-            max: a.throttling.maxNumUserMessagesInConversation,
-            metering: a.throttling.metering ?? null,
-          };
+          throttle = throttleOf(a.throttling);
+          observations.set(scope, structuredClone(throttle.meteringObservation));
         }
         return;
       }
@@ -440,6 +538,7 @@ export function oneTurn(o) {
       if (item.type === "request_end") {
         const out = item.outcome ?? {};
         result = streamHubResult(out.category, out.code ?? out.errorCode, out.message, out.error);
+        noteResult();
         // As with Chathub's final `result.message`: a refusal's only text can be here.
         if (typeof out.message === "string" && out.message.length > snapshotText.length) snapshotText = out.message;
         finish(null);
@@ -447,25 +546,36 @@ export function oneTurn(o) {
       }
       if (item.type === "error") {
         result = streamHubResult(item.errorCategory, item.errorCode, item.message, item.detail);
+        noteResult();
         finish([item.errorCategory, item.errorCode].filter(Boolean).join("/") || "error item");
       }
     }
 
     ws.on("open", () => {
+      if (settled) return;
       ws.send(JSON.stringify({ protocol: "json", version: 1 }) + RS);
     });
 
     ws.on("message", (data) => {
+      if (settled) return;
       const frames = data.toString().split(RS).filter((f) => f.length > 0);
       for (const f of frames) {
         let parsed;
         try { parsed = JSON.parse(f); } catch { continue; }
         frameCount++;
-        if (onFrame) { try { onFrame(parsed); } catch {} }
+        if (onFrame) { try { onFrame(structuredClone(parsed)); } catch {} }
+        if (settled) break;
 
         if (!handshakeDone) {
+          if (parsed.error) { finish(`Handshake error: ${parsed.error}`); continue; }
           handshakeDone = true;
-          for (const s of request.sends) ws.send(s);
+          // Pending handshakes may race; serialize accounting synchronously at dispatch.
+          const denied = refusal(scope, cap, latchThrottle);
+          if (denied) { finish(denied); continue; }
+          attempted = true;
+          attempts.set(scope, (attempts.get(scope) ?? 0) + 1);
+          recordTurn(Date.now(), scope);
+          try { for (const s of request.sends) ws.send(s); } catch (err) { finish(err.message); }
           continue;
         }
 
@@ -484,10 +594,8 @@ export function oneTurn(o) {
             if (typeof a.writeAtCursor === "string") deltaText += a.writeAtCursor;
             if (Array.isArray(a.messages)) for (const m of a.messages) ingestBotMessage(m);
             if (a.throttling) {
-              throttle = {
-                current: a.throttling.numUserMessagesInConversation,
-                max: a.throttling.maxNumUserMessagesInConversation,
-              };
+              throttle = throttleOf(a.throttling);
+              observations.set(scope, structuredClone(throttle.meteringObservation));
             }
           }
         }
@@ -499,13 +607,10 @@ export function oneTurn(o) {
           if (it) {
             if (Array.isArray(it.messages)) for (const m of it.messages) ingestBotMessage(m);
             if (it.throttling) {
-              throttle = {
-                current: it.throttling.numUserMessagesInConversation,
-                max: it.throttling.maxNumUserMessagesInConversation,
-                metering: it.throttling.metering ?? null,
-              };
+              throttle = throttleOf(it.throttling);
+              observations.set(scope, structuredClone(throttle.meteringObservation));
             }
-            if (it.result && typeof it.result === "object") result = it.result;
+            if (it.result && typeof it.result === "object") { result = it.result; noteResult(); }
             if (it.result?.serviceVersion) serviceVersion = it.result.serviceVersion;
             if (typeof it.turnCount === "number") turnCount = it.turnCount;
             if (typeof it.result?.message === "string" && it.result.message.length > snapshotText.length) snapshotText = it.result.message;

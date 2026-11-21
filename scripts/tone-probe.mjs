@@ -160,6 +160,7 @@ for (const cell of CELLS) {
   const licenseType = cell.licenseType ?? INCLUDED.licenseType;
   const r = await oneTurn({
     token, claims, agentId: null, transport: TRANSPORT, tone: cell.tone, scenario, licenseType, timeoutMs: 60000,
+    maxAttempts: CELLS.length, // one turn per cell: more cells than the helper's default cap of 20
     text: `Reply with exactly the single word: pong`,
   });
   const row = {
