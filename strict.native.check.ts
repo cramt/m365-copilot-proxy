@@ -283,6 +283,92 @@ for (const wire of ["chathub", "streamhub"]) for (const streaming of [false, tru
   vi.stubEnv("M365_STRICT_STREAM", "1"); vi.stubEnv("M365_TRANSPORT", wire); transport = wire; separateRecords = separate; rawTerminalFrames = reverse ? [invalid, "success"] : ["success", invalid];
   const pending = request(streaming); await started; release!(); const text = await (await pending).text(); expect(text).not.toContain(content); expect(text).toContain("error");
 });
+for (const streaming of [false, true]) for (const strictMode of [false, true]) it(`replay_1ce0b35_terminal malformed author stream=${streaming} strict=${strictMode}`, async () => {
+  if (strictMode) vi.stubEnv("M365_STRICT_STREAM", "1"); vi.stubEnv("M365_TRANSPORT", "chathub"); transport = "chathub";
+  rawTerminalFrames = [JSON.stringify({ type: 2, item: { messages: [{ author: 123 }], result: { value: "ForbiddenRequest", errorCode: "InvalidCopilotLicense" } } })];
+  let peerClosed!: () => void; const peerClosedPromise = new Promise<void>(resolve => { peerClosed = resolve; }); closed = peerClosed;
+  const pending = request(streaming).then(async response => ({ status: response.status, text: await response.text() })); await started; release!();
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const bounded = <T>(p: Promise<T>) => Promise.race([p, new Promise<null>(resolve => { timer = setTimeout(() => resolve(null), 750); })]);
+  const result = await bounded(pending); if (timer) clearTimeout(timer);
+  if (!result) { for (const client of server.clients) client.terminate(); await pending.catch(() => {}); }
+  expect(result).not.toBeNull(); if (!result) return;
+  expect(result.status).toBe(streaming ? 200 : strictMode ? 502 : 200); expect(result.text).toContain(strictMode ? "error" : content);
+  if (strictMode) expect(result.text).not.toContain(content); expect(attempts).toBe(1);
+  const observedClose = await bounded(peerClosedPromise.then(() => true)); if (timer) clearTimeout(timer); expect(observedClose).toBe(true);
+});
+for (const wire of ["chathub", "streamhub"]) for (const streaming of [false, true]) for (const strictMode of [false, true]) it(`replay_1ce0b35_malformed mixed delta ${wire} stream=${streaming} strict=${strictMode}`, async () => {
+  if (strictMode) vi.stubEnv("M365_STRICT_STREAM", "1"); vi.stubEnv("M365_TRANSPORT", wire); transport = wire;
+  const argument = { ...(wire === "streamhub" ? { w: "VISIBLE_DELTA" } : { writeAtCursor: "VISIBLE_DELTA" }), messages: [{ author: 123 }] };
+  rawTerminalFrames = [JSON.stringify(wire === "streamhub" ? { type: 2, item: { type: "message_part", argument } } : { type: 1, target: "update", arguments: [argument] }), "success"];
+  const pending = request(streaming); await started; release!(); const response = await pending; const text = await response.text(); expect(response.status).toBe(strictMode && !streaming ? 502 : 200);
+  if (strictMode) { expect(text).not.toContain(content); expect(text).not.toContain("VISIBLE_DELTA"); expect(text).toContain("error"); } else { expect(text).toContain(content); expect(text).toContain("VISIBLE_DELTA"); }
+  expect(attempts).toBe(1);
+});
+for (const wire of ["chathub", "streamhub"]) for (const streaming of [false, true]) for (const separate of [false, true]) for (const reverse of [false, true]) for (const signal of [{ contentOrigin: "Apology" }, { messageType: "Disengaged" }, { turnState: "Failed" }]) it(`replay_1ce0b35_authorless outcome ${wire} stream=${streaming} separate=${separate} reverse=${reverse} ${JSON.stringify(signal)}`, async () => {
+  vi.stubEnv("M365_STRICT_STREAM", "1"); vi.stubEnv("M365_TRANSPORT", wire); transport = wire; separateRecords = separate;
+  const argument = { messages: [{ ...signal, text: "SYNTHETIC_WARNING" }, { author: "bot", text: "SYNTHETIC_ANSWER", messageId: "answer" }] };
+  const update = JSON.stringify(wire === "streamhub" ? { type: 2, item: { type: "message_part", argument } } : { type: 1, target: "update", arguments: [argument] });
+  rawTerminalFrames = reverse ? ["success", update] : [update, "success"];
+  const pending = request(streaming); await started; release!(); const response = await pending; const text = await response.text();
+  expect(response.status).toBe(streaming ? 200 : 502); expect(text).not.toContain(content); expect(text).not.toContain("SYNTHETIC_WARNING"); expect(text).not.toContain("SYNTHETIC_ANSWER"); expect(text).toContain("error"); expect(attempts).toBe(1);
+});
+for (const streaming of [false, true]) for (const signal of [{ contentOrigin: "Apology" }, { messageType: "Disengaged" }, { turnState: "Failed" }]) it(`replay_1ce0b35_authorless final Chathub stream=${streaming} ${JSON.stringify(signal)}`, async () => {
+  vi.stubEnv("M365_STRICT_STREAM", "1"); vi.stubEnv("M365_TRANSPORT", "chathub"); transport = "chathub";
+  rawTerminalFrames = [JSON.stringify({ type: 2, item: { result: { value: "Success" }, messages: [signal] } })];
+  const pending = request(streaming); await started; release!(); const response = await pending; const text = await response.text(); expect(response.status).toBe(streaming ? 200 : 502); expect(text).not.toContain(content); expect(text).toContain("error"); expect(attempts).toBe(1);
+});
+for (const wire of ["chathub", "streamhub"]) for (const streaming of [false, true]) it(`strict rejects bot Failed with Success ${wire} stream=${streaming}`, async () => {
+  vi.stubEnv("M365_STRICT_STREAM", "1"); vi.stubEnv("M365_TRANSPORT", wire); transport = wire;
+  const argument = { messages: [{ author: "bot", turnState: "Failed" }, { author: "bot", turnState: "Completed" }] }; rawTerminalFrames = [JSON.stringify(wire === "streamhub" ? { type: 2, item: { type: "message_part", argument } } : { type: 1, target: "update", arguments: [argument] }), "success"];
+  const pending = request(streaming); await started; release!(); const response = await pending; const text = await response.text(); expect(response.status).toBe(streaming ? 200 : 502); expect(text).not.toContain(content); expect(text).toContain("error"); expect(attempts).toBe(1);
+});
+for (const streaming of [false, true]) it(`strict rejects bot Failed in final Chathub stream=${streaming}`, async () => {
+  vi.stubEnv("M365_STRICT_STREAM", "1"); vi.stubEnv("M365_TRANSPORT", "chathub"); transport = "chathub"; rawTerminalFrames = [JSON.stringify({ type: 2, item: { result: { value: "Success" }, messages: [{ author: "bot", turnState: "Failed" }] } })];
+  const pending = request(streaming); await started; release!(); const response = await pending; const text = await response.text(); expect(response.status).toBe(streaming ? 200 : 502); expect(text).not.toContain(content); expect(text).toContain("error"); expect(attempts).toBe(1);
+});
+for (const streaming of [false, true]) for (const signal of [{ contentOrigin: "Apology" }, { turnState: "Failed" }]) it(`strict rejects contradictory null author control stream=${streaming} ${JSON.stringify(signal)}`, async () => {
+  vi.stubEnv("M365_STRICT_STREAM", "1"); vi.stubEnv("M365_TRANSPORT", "streamhub"); transport = "streamhub";
+  const argument = { messages: [{ author: null, messageType: "EndOfRequest", ...signal }] }; rawTerminalFrames = [JSON.stringify({ type: 2, item: { type: "message_part", argument } }), "success"];
+  const pending = request(streaming); await started; release!(); const response = await pending; const text = await response.text(); expect(response.status).toBe(streaming ? 200 : 502); expect(text).not.toContain(content); expect(text).toContain("error"); expect(attempts).toBe(1);
+});
+for (const wire of ["chathub", "streamhub"]) for (const streaming of [false, true]) for (const separate of [false, true]) for (const reverse of [false, true]) for (const sibling of [
+  { author: 123 }, { author: null }, { author: "bot", contentOrigin: 42 }, { author: "bot", messageType: false },
+  { author: "bot", text: 123 }, { author: "bot", messageId: {} }, { author: "bot", scores: [{ component: "x", score: "wrong" }] },
+  { author: "bot", turnState: 7 }, { author: "bot", adaptiveCards: "wrong" },
+]) it(`replay_ffd6e4c_mixed malformed sibling ${wire} stream=${streaming} separate=${separate} reverse=${reverse} ${JSON.stringify(sibling)}`, async () => {
+  vi.stubEnv("M365_STRICT_STREAM", "1"); vi.stubEnv("M365_TRANSPORT", wire); transport = wire; separateRecords = separate;
+  const argument = { messages: [{ author: "bot", messageId: "warning", contentOrigin: "Apology", text: "SYNTHETIC_WARNING" }, sibling] };
+  const update = JSON.stringify(wire === "streamhub" ? { type: 2, item: { type: "message_part", argument } } : { type: 1, target: "update", arguments: [argument] });
+  rawTerminalFrames = reverse ? ["success", update] : [update, "success"];
+  const pending = request(streaming); await started; release!(); const response = await pending; const text = await response.text();
+  expect(response.status).toBe(streaming ? 200 : 502); expect(text).not.toContain(content); expect(text).not.toContain("SYNTHETIC_WARNING"); expect(text).toContain("error"); expect(attempts).toBe(1);
+});
+for (const wire of ["chathub", "streamhub"]) for (const streaming of [false, true]) for (const invalid of [{ cursor: {} }, { nonce: 4 }, { streamingMode: false }, { requestId: 9 }]) it(`strict rejects malformed message envelope ${wire} stream=${streaming} ${JSON.stringify(invalid)}`, async () => {
+  vi.stubEnv("M365_STRICT_STREAM", "1"); vi.stubEnv("M365_TRANSPORT", wire); transport = wire;
+  const argument = { messages: [{ author: "bot", contentOrigin: "Apology", text: "SYNTHETIC_WARNING" }], ...invalid };
+  rawTerminalFrames = [JSON.stringify(wire === "streamhub" ? { type: 2, item: { type: "message_part", argument } } : { type: 1, target: "update", arguments: [argument] }), "success"];
+  const pending = request(streaming); await started; release!(); const response = await pending; const text = await response.text(); expect(response.status).toBe(streaming ? 200 : 502); expect(text).not.toContain(content); expect(text).not.toContain("SYNTHETIC_WARNING"); expect(text).toContain("error"); expect(attempts).toBe(1);
+});
+for (const wire of ["chathub", "streamhub"]) for (const streaming of [false, true]) it(`strict sees apology alongside delta ${wire} stream=${streaming}`, async () => {
+  vi.stubEnv("M365_STRICT_STREAM", "1"); vi.stubEnv("M365_TRANSPORT", wire); transport = wire;
+  const argument = { ...(wire === "streamhub" ? { w: "SYNTHETIC_DELTA" } : { writeAtCursor: "SYNTHETIC_DELTA" }), messages: [{ author: "bot", contentOrigin: "Apology", text: "SYNTHETIC_WARNING" }] };
+  rawTerminalFrames = [JSON.stringify(wire === "streamhub" ? { type: 2, item: { type: "message_part", argument } } : { type: 1, target: "update", arguments: [argument] }), "success"];
+  const pending = request(streaming); await started; release!(); const response = await pending; const text = await response.text(); expect(response.status).toBe(streaming ? 200 : 502); expect(text).not.toContain(content); expect(text).not.toContain("SYNTHETIC_DELTA"); expect(text).not.toContain("SYNTHETIC_WARNING"); expect(text).toContain("error"); expect(attempts).toBe(1);
+});
+for (const wire of ["chathub", "streamhub"]) for (const streaming of [false, true]) it(`strict partial sibling preserves valid apology ${wire} stream=${streaming}`, async () => {
+  vi.stubEnv("M365_STRICT_STREAM", "1"); vi.stubEnv("M365_TRANSPORT", wire); transport = wire;
+  const argument = { messages: [{ author: "bot", contentOrigin: "Apology", text: "SYNTHETIC_WARNING" }, { messageId: "partial", futureField: { opaque: true } }] };
+  rawTerminalFrames = [JSON.stringify(wire === "streamhub" ? { type: 2, item: { type: "message_part", argument } } : { type: 1, target: "update", arguments: [argument] }), "success"];
+  const pending = request(streaming); await started; release!(); const response = await pending; const text = await response.text();
+  expect(response.status).toBe(streaming ? 200 : 502); expect(text).not.toContain(content); expect(text).not.toContain("SYNTHETIC_WARNING"); expect(text).toContain("error"); expect(attempts).toBe(1);
+});
+for (const wire of ["chathub", "streamhub"]) for (const streaming of [false, true]) it(`strict legitimate partial and bot reply ${wire} stream=${streaming}`, async () => {
+  vi.stubEnv("M365_STRICT_STREAM", "1"); vi.stubEnv("M365_TRANSPORT", wire); transport = wire; payload = "";
+  const messages = [{ messageId: "partial", futureField: { opaque: true } }, { author: "bot", messageId: "answer", text: "SYNTHETIC_VALID_ANSWER" }, ...(wire === "streamhub" ? [{ author: null, messageType: "EndOfRequest" }] : [])];
+  const argument = { messages }; rawTerminalFrames = [JSON.stringify(wire === "streamhub" ? { type: 2, item: { type: "message_part", argument } } : { type: 1, target: "update", arguments: [argument] }), "success"];
+  const pending = request(streaming); await started; release!(); const response = await pending; const text = await response.text(); expect(response.status).toBe(200); expect(text).toContain("SYNTHETIC_VALID_ANSWER"); expect(attempts).toBe(1);
+});
 for (const wire of ["chathub", "streamhub"]) for (const streaming of [false, true]) for (const separate of [false, true]) for (const reverse of [false, true]) for (const malformed of [{ messages: [null] }, { messages: [{ author: "bot", scores: [null] }] }, { messages: [{ author: "bot", scores: {} }] }, { messages: [{ author: "bot", scores: [{ component: "x", score: "bad" }] }] }]) it(`strict rejects nested message corruption ${wire} stream=${streaming} separate=${separate} reverse=${reverse} ${JSON.stringify(malformed)}`, async () => {
   vi.stubEnv("M365_STRICT_STREAM", "1"); vi.stubEnv("M365_TRANSPORT", wire); transport = wire; separateRecords = separate;
   const record = wire === "streamhub" ? { type: 2, item: { type: "message_part", argument: malformed } } : { type: 1, target: "update", arguments: [malformed] };
@@ -338,6 +424,13 @@ it("strict fails closed on a contradictory terminal refusal following success", 
   vi.stubEnv("M365_STRICT_STREAM", "1"); vi.stubEnv("M365_TRANSPORT", "streamhub"); transport = "streamhub"; contradictoryTerminal = true;
   const pending = request(true); await started; release!();
   const text = await (await pending).text(); expect(text).not.toContain(content); expect(text).toContain("error");
+});
+for (const mode of ["json", "structured", "text"]) for (const reverse of [false, true]) it(`strict rejects contradictory StreamHub success and ForbiddenRequest error ${mode} reverse=${reverse}`, async () => {
+  vi.stubEnv("M365_STRICT_STREAM", "1"); vi.stubEnv("M365_TRANSPORT", "streamhub"); vi.stubEnv("M365_STREAM_ERROR_MODE", mode === "text" ? "text" : "structured"); transport = "streamhub";
+  const error = JSON.stringify({ type: 2, item: { type: "error", errorCategory: "ForbiddenRequest", errorCode: "InvalidCopilotLicense", message: "PRIVATE_CONTRADICTION" } });
+  rawTerminalFrames = reverse ? [error, "success"] : ["success", error];
+  const pending = request(mode !== "json"); await started; release!(); const response = await pending; const text = await response.text();
+  expect(response.status).toBe(mode === "json" ? 502 : 200); expect(text).not.toContain(content); expect(text).not.toContain("PRIVATE_CONTRADICTION"); expect(text).not.toContain("m365_account_not_licensed"); expect(text).toContain("error"); expect(attempts).toBe(1);
 });
 it("strict does not echo upstream completion-error text", async () => {
   vi.stubEnv("M365_STRICT_STREAM", "1"); vi.stubEnv("M365_TRANSPORT", "chathub"); transport = "chathub"; completionError = true;
