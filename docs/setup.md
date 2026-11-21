@@ -24,6 +24,29 @@ only for Codex and Claude Code, and it doesn't need GitHub Copilot: with a provi
 GitHub login it starts in provider-only mode. If you already run it for Copilot, add the provider in
 step 3 and your Copilot models stay. Tested with 2.6.23 and 2.9.12.
 
+## Opt-in strict response mode
+
+Set `M365_STRICT_STREAM=1` to hold Chat response content until the upstream turn
+explicitly reports `Success`. This applies to JSON and SSE, with or without tools.
+SSE still sends the assistant role and empty-delta heartbeats immediately, but
+answer content arrives only after the whole upstream turn; it is not incremental.
+The default remains incremental and can expose text sent before a terminal refusal.
+
+Strict mode fails closed on missing/non-success results, cancellation, timeout, or
+more than 2 MiB of total upstream WebSocket payload across the entire request,
+including retries, replay parts, repeated snapshots and control frames. It uses a 180-second request deadline, disables the
+usual tool early-stop, and rejects generated images rather than fetching them.
+Cowork/Code backends are unsupported in this mode. F22/Apology tool retries remain;
+an interrupted or refused attempt's content is not emitted. SSE errors follow the
+existing configured error-chunk or compatibility-text policy after HTTP 200.
+This is a per-request wire-byte limit, not a 2 MiB process-memory limit: the receiver,
+composer, queue and response encoding may keep multiple copies. Concurrent requests
+multiply memory use. SSE
+heartbeats are skipped while a slow client has a full output queue. Request bodies,
+image uploads, runtime overhead and kernel/socket buffers are outside this budget.
+This mode trades latency, memory and some availability for stricter classification;
+it does not establish how often real M365 sends content before a refusal.
+
 ## 1. Prerequisites
 
 - Node.js 24+, pnpm 10+ (`corepack enable`), git.

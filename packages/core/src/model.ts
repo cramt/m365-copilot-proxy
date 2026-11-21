@@ -25,6 +25,8 @@ export interface ModelSessionOptions {
 export interface TurnOptions {
   /** The request's `reasoning_effort` (the agent runtime's `reasoningEffort`). */
   reasoningEffort?: string;
+  /** Internal shared response wire-byte allowance for all turns of a request. */
+  responseBudget?: { remaining: number };
 }
 
 /**
@@ -137,6 +139,7 @@ export class ModelSession implements TurnSession {
     useAgent: boolean = true,
     images: string[] = [],
     waitForBudget: () => Promise<{ waitedMs: number }> = () => awaitTurnBudget({ signal }),
+    turn?: TurnOptions,
   ): Promise<CopilotStream> {
     let token = await this.resolveToken();
     // Image input (#39): upload each image for this conversation; the message points at them.
@@ -184,11 +187,12 @@ export class ModelSession implements TurnSession {
     // the tool-calling agent path — image optionsSets are agent-less, and we don't
     // want the image tool competing with fenced tool-call emission. Opt out with
     // M365_NO_IMAGE_GEN for a pure-text agent-less turn.
-    const turnOpts = { generateImages: !agentForTurn && !process.env.M365_NO_IMAGE_GEN, images: annotations };
+    const turnOpts = { generateImages: !agentForTurn && !process.env.M365_NO_IMAGE_GEN, images: annotations, responseBudget: turn?.responseBudget };
 
     try {
       return await this.copilotSession.chat(token, text, model, signal, turnOpts);
     } catch (err: any) {
+      if (signal?.aborted) throw err;
       // Session might be stale — reconnect with same IDs
       log.info("Session error, reconnecting:", err.message);
       // The reconnect is one more upstream turn, so it waits on the budget too:

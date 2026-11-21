@@ -350,6 +350,8 @@ export interface ChatTurnOptions {
   /** Uploaded images and documents this turn's message points at (image-input.ts,
    *  file-upload.ts). */
   images?: (ImageAnnotation | FileAnnotation)[];
+  /** Shared across all upstream turns for this request. */
+  responseBudget?: { remaining: number };
 }
 
 export interface CopilotSessionOptions {
@@ -559,6 +561,13 @@ export class CopilotSession {
     }
 
     return new Promise((resolve, reject) => {
+      // Bound the entire received turn before parsing/copying it into the composer,
+      // queue, image metadata or snapshots. This is intentionally a wire-byte
+      // budget, including repeated snapshots and control frames.
+      const strict = process.env.M365_STRICT_STREAM === "1";
+      const strictLimit = 2 * 1024 * 1024;
+      let receivedBytes = 0;
+      let limitExceeded = false;
       // The authoritative reconstructed answer. M365 streams a MIX of token-level
       // DeltaUpdates and full-text MessageUpdate snapshots (empirically the FIRST
       // token often arrives only as a snapshot, not a delta), across one or more
@@ -740,6 +749,7 @@ export class CopilotSession {
 
       const ws = new WebSocket(wsUrl, {
         headers: streamHub ? buildStreamHubHeaders() : buildCopilotWebSocketHeaders(conversationId),
+        ...(strict ? { maxPayload: strictLimit } : {}),
       });
 
       let handshakeDone = false;
@@ -825,6 +835,19 @@ export class CopilotSession {
       });
 
       ws.on("message", (data: WebSocket.RawData) => {
+        if (strict) {
+          if (limitExceeded) return;
+          const bytes = Array.isArray(data) ? data.reduce((n, b) => n + b.length, 0) : data.byteLength;
+          receivedBytes += bytes;
+          if (opts?.responseBudget) opts.responseBudget.remaining -= bytes;
+          if (receivedBytes > strictLimit || (opts?.responseBudget && opts.responseBudget.remaining < 0)) {
+            limitExceeded = true;
+            queue.length = 0;
+            onError(new Error("Upstream turn exceeded the strict response limit"));
+            ws.terminate();
+            return;
+          }
+        }
         const raw = data.toString();
         log.debug("WS recv:", trunc(raw, 500));
         const frames = raw.split(RS).filter((f) => f.length > 0);
@@ -870,6 +893,10 @@ export class CopilotSession {
 
       ws.on("close", () => {
         clearAbort();
+        if (strict && !handshakeDone) {
+          reject(new Error("Upstream connection closed before handshake"));
+          return;
+        }
         if (endGrace) clearTimeout(endGrace);
         settleAnswer();
         log.info("WS closed, answer length:", answer.length);
@@ -1228,7 +1255,7 @@ export class CopilotSession {
         if (type === "request_end") {
           const end = StreamHubRequestEnd.safeParse(item);
           const outcome = end.success ? end.data.outcome : undefined;
-          if (outcome && !serverResult) noteResult(outcome.category, outcome.errorCode ?? outcome.code, outcome.message);
+          if (outcome && (!serverResult || (strict && outcome.category !== "Success"))) noteResult(outcome.category, outcome.errorCode ?? outcome.code, outcome.message);
           ws.close();
           return;
         }

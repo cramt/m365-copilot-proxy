@@ -561,12 +561,19 @@ export async function handleChatCompletion(
   }
   // Chat's throttle, priority-access budgets, tool agent and Bing plugin don't apply to the agent runtime.
   const chat = route.backend === "chat";
+  const strict = process.env.M365_STRICT_STREAM === "1";
+  const strictAbort = strict ? new AbortController() : null;
+  const strictExpiresAt = strict ? performance.now() + 180_000 : Infinity;
+  const strictExpired = () => strict && (performance.now() >= strictExpiresAt || !!opts.signal?.aborted);
+  const strictDeadline = strict ? AbortSignal.timeout(180_000) : undefined;
+  if (strictAbort && strictDeadline) opts = { ...opts, signal: opts.signal ? AbortSignal.any([opts.signal, strictAbort.signal, strictDeadline]) : AbortSignal.any([strictAbort.signal, strictDeadline]) };
+  if (strict && !chat) return jsonResponse(400, { error: { message: "Strict response mode supports Chat only", type: "invalid_request_error" } });
   const noteOutcome = (throttled: boolean, cid: string) => { if (chat) noteRequestOutcome(throttled, cid); };
   const conv = pool.resolve(body.messages, body.tools, body.prompt_cache_key ?? body.user, route.backend);
   const { session } = conv;
   const hasTools = body.tools && body.tools.length > 0 && body.tool_choice !== "none";
   const requestedModel = route.model;
-  const turnOptions = { reasoningEffort: body.reasoning_effort };
+  const turnOptions = { reasoningEffort: body.reasoning_effort, ...(strict ? { responseBudget: { remaining: 2 * 1024 * 1024 } } : {}) };
 
   // Priority access (§15, §24 F55, §26, issue #18). Once a budget is used up
   // every turn on it is refused until the reset, so don't start one: serve the
@@ -773,11 +780,13 @@ export async function handleChatCompletion(
       try {
         // The final turn's agent-ness: a change of it would open another M365 session (ModelSession.run).
         stream = await session.run(parts[i], model, opts.signal, useToolAgent, [], waitForBudget, turnOptions);
-        for await (const _ack of stream) { /* acknowledged, not forwarded */ }
+        for await (const _ack of stream) {
+          if (strictExpired()) { strictAbort?.abort(); throw new Error("Upstream deadline exceeded"); }
+        }
       } catch (err: any) {
         session.newConversation();
         if (err instanceof TurnBudgetHold) return { error: turnBudgetHoldResponse(err) };
-        return { error: jsonResponse(502, { error: { message: err.message, type: "upstream_error" } }) };
+        return { error: jsonResponse(502, { error: { message: strict ? "Upstream turn failed" : err.message, type: "upstream_error" } }) };
       }
       if (opts.signal?.aborted) {
         session.newConversation();
@@ -791,7 +800,7 @@ export async function handleChatCompletion(
         return { error: throttledResponse(stream.result) };
       }
       if (
-        (stream.result && stream.result.value !== "Success") || turnFailed(stream) ||
+        (strict ? stream.result?.value !== "Success" : (stream.result && stream.result.value !== "Success")) || turnFailed(stream) ||
         stream.messageType === "Disengaged" || stream.apology || stream.contentOrigin === "Apology" ||
         priorityAccessExhaustionOf(stream.result, stream.fullText)
       ) {
@@ -844,7 +853,7 @@ export async function handleChatCompletion(
       // stopping at the tag cost Sonnet 4.6 (`claude-sonnet`, agent-less) 10%
       // more turns (§35 F89).
       // M365_NO_EARLY_STOP=1 waits for the turn to end instead.
-      const earlyStop = hasTools && !process.env.M365_NO_EARLY_STOP ? new AbortController() : null;
+      const earlyStop = !strict && hasTools && !process.env.M365_NO_EARLY_STOP ? new AbortController() : null;
       const stopAfter = earlyStopAfter();
       // An attempt that sends the whole history, in this one turn or in parts
       // ahead of it, opens the M365 conversation (or re-opens it). Not
@@ -900,6 +909,7 @@ export async function handleChatCompletion(
       const lostStop = needsMemory && !historyResent ? new AbortController() : null;
       const signals = [opts.signal, earlyStop?.signal, lostStop?.signal].filter((s): s is AbortSignal => s !== undefined);
       const signal = signals.length <= 1 ? signals[0] : AbortSignal.any(signals);
+      const turnSignal = signal;
       // A part M365 didn't acknowledge stands for this attempt's turn: the final
       // turn isn't sent, and the checks below judge the part instead.
       let copilotStream: TurnStream;
@@ -912,10 +922,11 @@ export async function handleChatCompletion(
           // The agent overrides `tone` (forces GPT-5), so tool-less requests must
           // skip it to reach the model the tone selects (e.g. Claude). See
           // ModelSession.run / docs H8.6.
-          copilotStream = await session.run(text, model, signal, useToolAgent, inputAttachments, waitForBudget, turnOptions);
+          copilotStream = await session.run(text, model, turnSignal, useToolAgent, inputAttachments, waitForBudget, turnOptions);
         } catch (err: any) {
+          if (strict) { session.newConversation(); conv.sentMessageCount = 0; }
           if (err instanceof TurnBudgetHold) return { error: turnBudgetHoldResponse(err) };
-          return { error: jsonResponse(502, { error: { message: err.message, type: "upstream_error" } }) };
+          return { error: jsonResponse(502, { error: { message: strict ? "Upstream turn failed" : err.message, type: "upstream_error" } }) };
         }
       }
 
@@ -924,6 +935,7 @@ export async function handleChatCompletion(
       let forwarded = false; // some of this attempt's text has reached the client
       if (!refused) try {
         for await (const delta of copilotStream) {
+          if (strictExpired()) { strictAbort?.abort(); throw new Error("Upstream deadline exceeded"); }
           if (lostStop?.signal.aborted) continue;
           // M365 has lost this conversation (see below). On StreamHub its message
           // count arrives ahead of the reply, so the turn stops before any of a
@@ -954,9 +966,40 @@ export async function handleChatCompletion(
           fullText = copilotStream.fullText;
         }
       } catch (err: any) {
-        return { error: jsonResponse(502, { error: { message: err.message, type: "upstream_error" } }) };
+        if (strict) { session.newConversation(); conv.sentMessageCount = 0; }
+        return { error: jsonResponse(502, { error: { message: strict ? "Upstream turn failed" : err.message, type: "upstream_error" } }) };
       }
 
+      if (strict && !refused && turnSignal?.aborted && lostStop?.signal.aborted && !opts.signal?.aborted) {
+        historyResent = true;
+        session.newConversation();
+        text = formatWhole(framingVariant, forcingPrompt);
+        inputAttachments = attachmentUrls(body.messages);
+        originalText = text;
+        attempt--;
+        continue;
+      }
+      // Strict mode never renders images or answer text before explicit success.
+      // Leave the normal F22/Apology retry path reachable, but never treat an
+      // unclassified or non-success turn as an answer.
+      const retryRefusal = !turnSignal?.aborted && copilotStream.result?.value !== "ForbiddenRequest" && hasTools && !disengageRetried && !process.env.M365_NO_DISENGAGE_RETRY &&
+        ((copilotStream.messageType === "Disengaged" && !fullText) || copilotStream.apology || copilotStream.contentOrigin === "Apology");
+      if (strictExpired() || (strict && turnSignal?.aborted && !retryRefusal) || (strict && copilotStream.result?.value !== "Success" && !retryRefusal)) {
+        session.newConversation();
+        conv.sentMessageCount = 0;
+        return { error: jsonResponse(502, { error: { message: "Upstream turn did not complete successfully", type: "upstream_error" } }) };
+      }
+      if (strict && !retryRefusal && (copilotStream.apology || copilotStream.contentOrigin === "Apology" || copilotStream.messageType === "Disengaged")) {
+        session.newConversation();
+        conv.sentMessageCount = 0;
+        return { error: jsonResponse(502, { error: { message: "Upstream declined the turn", type: "upstream_error" } }) };
+      }
+      // Strict mode cannot safely fetch unbounded image bytes for embedding.
+      if (strict && (copilotStream.images?.length ?? 0) > 0) {
+        session.newConversation();
+        conv.sentMessageCount = 0;
+        return { error: jsonResponse(502, { error: { message: "Generated images are not supported in strict response mode", type: "upstream_error" } }) };
+      }
       // Image gen (§14): the picture arrives on a GraphicArt frame, usually with NO
       // chat text — so an image turn looks empty to the checks below and would burn
       // a retry. Render the image(s) into the response instead, and (for streaming)
@@ -1542,7 +1585,12 @@ export async function handleChatCompletion(
     conv.activeRequests++;
     let failed = true;
     try {
-      const p = await produce(onDelta);
+      let p = await produce(onDelta);
+      if (strictExpired() && p.kind !== "error") {
+        session.newConversation();
+        conv.sentMessageCount = 0;
+        p = { kind: "error", resp: jsonResponse(502, { error: { message: "Upstream deadline exceeded", type: "upstream_error" } }) };
+      }
       failed = p.kind === "error";
       return p;
     } finally {
@@ -1613,7 +1661,7 @@ export async function handleChatCompletion(
       // trip its stale watchdog) see this as activity. No content is added — an empty
       // delta contributes nothing to the assembled message.
       const hb = setInterval(() => {
-        try { send({ ...base, choices: [{ index: 0, delta: {}, finish_reason: null }] }); } catch {}
+        try { if (!strict || (controller.desiredSize ?? 0) > 0) send({ ...base, choices: [{ index: 0, delta: {}, finish_reason: null }] }); } catch {}
       }, 15000);
 
       // Live token passthrough (non-tool only). Track exactly what we've sent so the
@@ -1644,7 +1692,7 @@ export async function handleChatCompletion(
       if (liveDelta) liveGate = { released: () => sent.length > 0, discard: () => { if (gated) head = ""; } };
 
       let p: Produced;
-      try { p = await produceTurn(liveDelta); }
+      try { p = await produceTurn(strict ? undefined : liveDelta); }
       catch (err: any) { p = { kind: "error", resp: jsonResponse(502, { error: { message: err?.message ?? "stream error", type: "upstream_error" } }) }; }
       clearInterval(hb);
       try {
@@ -1696,7 +1744,8 @@ export async function handleChatCompletion(
         try { controller.enqueue(enc.encode("data: [DONE]\n\n")); controller.close(); } catch {}
       }
     },
-  }));
+    cancel() { strictAbort?.abort(); },
+  }, strict ? { highWaterMark: 1 } : undefined));
 }
 
 /**
