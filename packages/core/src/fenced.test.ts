@@ -13,7 +13,6 @@ import {
   findWriteTool,
   longHeredocAsWrite,
   longCommandAsScript,
-
   harnessWorkingDirectory,
   strippedTypeMember,
   currentFramingVariant,

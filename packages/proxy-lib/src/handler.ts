@@ -44,7 +44,6 @@ import {
   unreadableToolCall,
   longHeredocAsWrite,
   longCommandAsScript,
-
   harnessWorkingDirectory,
   strippedTypeMember,
   findRecognizedShellTool,
