@@ -34,6 +34,45 @@ import { createLogger, trunc, FRAME_DIR } from "./log.js";
 import { recordThrottle, recordTurn } from "./turn-budget.js";
 import { parseMetering, meteredAllowance, METERED_BUDGETS, type MeteredBudget } from "./priority-access.js";
 
+// Validate the structures consumed directly by the protocol dispatcher. Unknown
+// object-shaped updates remain forward-compatible; known container fields do not.
+function isProtocolRecord(value: unknown, handshake: boolean, streamHub: boolean): boolean {
+  const object = (v: unknown): v is Record<string, any> => v !== null && typeof v === "object" && !Array.isArray(v);
+  if (!object(value)) return false;
+  if (handshake) return SignalRHandshakeResponse.safeParse(value).success && !("type" in value);
+  if (!Number.isInteger(value.type)) return false;
+  const argument = (v: unknown): v is Record<string, any> => {
+    if (!object(v)) return false;
+    if ("messages" in v && (!Array.isArray(v.messages) || !v.messages.every(m => m === null || object(m)))) return false;
+    if ("throttling" in v && !object(v.throttling)) return false;
+    if ("cursor" in v && !object(v.cursor)) return false;
+    if ("writeAtCursor" in v && typeof v.writeAtCursor !== "string") return false;
+    if ("w" in v && typeof v.w !== "string") return false;
+    return true;
+  };
+  if (value.type === 1) {
+    if (typeof value.target !== "string" || !Array.isArray(value.arguments) || !value.arguments.every(argument)) return false;
+  }
+  if (value.type === 2) {
+    if (!object(value.item)) return false;
+    const item = value.item;
+    if (streamHub) {
+      if (typeof item.type !== "string") return false;
+      if ("requestId" in item && typeof item.requestId !== "string") return false;
+      if (item.type === "message_part" && !argument(item.argument)) return false;
+      if (item.type === "request_end" && !StreamHubRequestEnd.safeParse(item).success) return false;
+      if (item.type === "error" && !StreamHubError.safeParse(item).success) return false;
+    } else {
+      if ("messages" in item && (!Array.isArray(item.messages) || !item.messages.every(object))) return false;
+      if ("throttling" in item && !object(item.throttling)) return false;
+      if ("result" in item && !object(item.result)) return false;
+    }
+  }
+  if (value.type === 3 && !CompletionFrame.safeParse(value).success) return false;
+  if (value.type === 7 && !CloseFrame.safeParse(value).success) return false;
+  return true;
+}
+
 const RS = "\x1E";
 const log = createLogger("session");
 
@@ -868,6 +907,19 @@ export class CopilotSession {
               handshakeDone = true;
               sendChat();
             }
+            continue;
+          }
+          if (!isProtocolRecord(parsed, !handshakeDone, streamHub)) {
+            if (strict) {
+              serverResult = { value: "InvalidTerminal" };
+              const error = new Error("Invalid upstream protocol record");
+              if (!handshakeDone) reject(error); else onError(error);
+              try { ws.close(); } catch {}
+              return;
+            }
+            // Ignore invalid non-records in legacy mode instead of dereferencing
+            // them; retain the old handshake fallback for compatibility.
+            if (!handshakeDone) { handshakeDone = true; sendChat(); }
             continue;
           }
           dumpFrame(requestId, parsed, "recv");
