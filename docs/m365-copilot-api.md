@@ -115,7 +115,7 @@ The `nativeclient` redirect URI is designed to be **intercepted by an embedded n
 - `page.waitForURL("**/oauth2/nativeclient**")` **misses** the auth code — the `?code=` URL exists only transiently before the bounce.
 - **Fix:** attach a `page.on("request")` listener and pull `code` out of the *navigation request* to `…/oauth2/nativeclient?code=…`. See `runBrowserLogin()` in `auth.ts`.
 
-### Automated login quirks (Playwright)
+### WSL Edge login (opt-in)
 The optional WSL Edge path bypasses Playwright and stored credentials after silent MSAL
 acquisition fails. Only `M365_EDGE_LOGIN=1` enables it: `M365_ENABLE_INTERACTIVE_APPROVAL=1`,
 WSL detection and an existing `secrets.json` do not, so every other login path is unchanged.
@@ -130,6 +130,7 @@ in Edge history. Node.js 22.13+ with `node:sqlite` is required for this path. Se
 WSL sign-in section for profile/path overrides and privacy considerations. Offline synthetic
 history tests do not establish compatibility with every live Edge profile or tenant policy.
 
+### Automated login quirks (Playwright)
 - The converged AAD login page keeps **hidden duplicate `<input type=password>` nodes**; a naive `fill()` can target a stale hidden one and submit an empty password. Fill the **visible** `name=`-selected field and verify the value landed (`fillVerified()`).
 - Field selectors: email `input[name="loginfmt"]`, password `input[name="passwd"]`, TOTP `input[name="otc"]`.
 - On NixOS, Playwright's bundled `chrome-headless-shell` fails (`libglib-2.0.so.0`); point it at a system Chromium via `CHROMIUM_PATH` (`resolveChromiumPath()`).

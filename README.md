@@ -788,6 +788,10 @@ The default auth flow uses Azure MSAL with PKCE:
    `M365_ENABLE_INTERACTIVE_APPROVAL=1`, and only after step 2 is unavailable or has
    actually failed. This is the path for tenants where no TOTP seed exists.
 
+On WSL, `M365_EDGE_LOGIN=1` adds a step between 1 and 2: sign in through the Windows Edge
+profile ([On WSL: sign in through Windows Edge](#on-wsl-sign-in-through-windows-edge)).
+Without the flag nothing changes.
+
 All three redeem the code against `https://login.microsoftonline.com/common/oauth2/nativeclient`
 with PKCE. That redirect isn't a stylistic choice: the client is Microsoft's own Copilot app
 (the Sydney scopes are granted to no other), so nobody can register a loopback URI — a
@@ -840,6 +844,7 @@ not an exemption from your organization's Conditional Access policy.
 | `M365_LOGIN_HINT` | In WAM mode, select a broker account by its sign-in name; otherwise the saved selection or a single available account is used. Multiple accounts without a selection require the interactive account picker. |
 | `M365_WAM_WINDOW_HANDLE` | Optional positive decimal native parent-window handle for the Windows account picker. Used only when WAM interaction is enabled. |
 | `M365_ENABLE_INTERACTIVE_APPROVAL` | Set to `1` to allow a **visible** browser window for sign-in when the automated login can't work or fails — the fallback for tenants with no TOTP option (push-only MFA, FIDO2, Okta/Ping/Duo). In WAM mode, allows the native Windows account picker instead. You complete SSO/MFA by hand once; tokens refresh silently afterwards. Off by default so headless hosts fail loudly rather than hang. See [If your tenant has no TOTP option](#if-your-tenant-has-no-totp-option). |
+| `M365_EDGE_LOGIN` | Set to `1` on WSL to sign in through the Windows Edge profile instead of stored credentials, after silent refresh fails. The only switch for it; `M365_NO_INTERACTIVE=1` vetoes it. `M365_EDGE_PROFILE`, `M365_EDGE_PATH` and `M365_EDGE_USER_DATA` are in [On WSL: sign in through Windows Edge](#on-wsl-sign-in-through-windows-edge). |
 | `M365_NO_INTERACTIVE` | Set to `1` to hard-disable any visible browser login or WAM account picker, overriding the flag above. For systemd/CI hosts where a window must never open. |
 | `M365_INTERACTIVE_TIMEOUT_MS` | How long to wait for you to finish the interactive sign-in (default `600000`, i.e. 10 minutes). |
 | `M365_LOGIN_LOCALE` / `M365_LOGIN_TIMEZONE` | Browser locale and timezone presented during login (defaults `en-GB` / `Europe/Copenhagen`). These are part of the anti-bot-scoring fingerprint ([§11 F25](docs/hypotheses.md)) — set them to match your own machine if AAD starts treating your automated login as a bot. |
