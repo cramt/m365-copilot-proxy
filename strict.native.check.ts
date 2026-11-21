@@ -1,5 +1,14 @@
 import { afterAll, afterEach, beforeEach, expect, it, vi } from "vitest";
 import { createServer } from "node:http";
+import { readFileSync, writeFileSync } from "node:fs";
+
+// Logger configuration is captured at module import; use its real private file sink.
+const logPath = vi.hoisted(() => {
+  const path = `${process.env.TMPDIR ?? "/tmp"}/m365-info-${process.pid}.log`;
+  process.env.M365_DEBUG = "1";
+  process.env.M365_LOG_FILE = path;
+  return path;
+});
 
 const setupMocks = vi.hoisted(() => ({ agent: null as null | (() => Promise<any>), image: null as null | (() => Promise<any>), file: null as null | (() => Promise<any>) }));
 vi.mock("./packages/core/src/file-upload.js", async original => {
@@ -171,6 +180,40 @@ async function request(stream: boolean, tools = false, options: { signal?: Abort
 beforeEach(() => { vi.stubEnv("M365_NO_BACKOFF", "1"); });
 afterEach(() => { vi.unstubAllEnvs(); for (const c of server.clients) c.terminate(); release = undefined; payload = content; chunks = null; closed = undefined; retryApology = false; retrySequence = false; firstPadding = 0; f22Sequence = false; f22Progress = false; confabSequence = false; graphics = false; completionError = false; contradictoryTerminal = false; terminalRecords = null; separateRecords = false; rawTerminalFrames = null; repeatedFrames = 1; attempts = 0; multipartSize = 0; handshakeReply = "{}"; terminalCode = undefined; terminalMessage = undefined; terminalApology = false; automaticFallback = false; automaticBingFallback = false; multipartSent = []; multipartPrompts = []; });
 afterAll(async () => { for (const c of server.clients) c.terminate(); await new Promise<void>(r => server.close(r)); await new Promise<void>(r => http.close(() => r())); });
+for (const wire of ["chathub", "streamhub"]) for (const part of [false, true]) for (const value of ["Throttled", "InvalidRequest", "PRIVATE_RESULT_CANARY"]) for (const known of [false, true]) it(`INFO strict terminal privacy ${wire} part=${part} ${value} known=${known}`, async () => {
+  vi.stubEnv("M365_STRICT_STREAM", "1"); vi.stubEnv("M365_TRANSPORT", wire); transport = wire;
+  if (part) vi.stubEnv("M365_TURN_CHUNK_BYTES", "1024");
+  terminal = value; terminalCode = known ? (value === "Throttled" ? "PerUserThrottled" : "InvalidNote") : "PRIVATE_CODE_CANARY"; terminalMessage = "PRIVATE_MESSAGE_CANARY"; payload = "";
+  writeFileSync(logPath, "");
+  started = new Promise(r => { seen = r; });
+  const body = ChatCompletionRequest.parse({ model: "claude-sonnet", stream: false, messages: [{ role: "user", content: part ? "Q".repeat(2600) : "hello" }] });
+  const pending = handleChatCompletion(body, new SessionPool({ getToken: async () => token, useAgent: false }));
+  await started; release!(); const response = await pending; const text = await response.text();
+  expect(attempts).toBe(1); expect(response.status).toBe(value === "Throttled" ? 429 : value === "InvalidRequest" ? 400 : 502);
+  expect(text).not.toContain("PRIVATE_CODE_CANARY"); expect(text).not.toContain("PRIVATE_MESSAGE_CANARY");
+  if (value === "Throttled") expect(response.headers.get("Retry-After")).toBeNull();
+  const info = readFileSync(logPath, "utf8").split("\n").filter(line => line.includes("[INFO]" )).join("\n");
+  expect(info).not.toContain("PRIVATE_CODE_CANARY"); expect(info).not.toContain("PRIVATE_RESULT_CANARY");
+  if (known && value !== "PRIVATE_RESULT_CANARY") expect(info).toContain(terminalCode);
+});
+for (const wire of ["chathub", "streamhub"]) it(`INFO strict excludes upstream score component ${wire}`, async () => {
+  vi.stubEnv("M365_STRICT_STREAM", "1"); vi.stubEnv("M365_TRANSPORT", wire); transport = wire; payload = ""; terminal = "InvalidRequest";
+  const update = { messages: [{ author: "bot", scores: [{ component: "PRIVATE_SCORE_CANARY", score: 0.5 }] }] };
+  rawTerminalFrames = [JSON.stringify(wire === "streamhub" ? { type: 2, item: { type: "message_part", argument: update } } : { type: 1, target: "update", arguments: [update] }), JSON.stringify(wire === "streamhub" ? { type: 2, item: { type: "request_end", outcome: { category: "InvalidRequest", code: "InvalidNote" } } } : { type: 2, item: { result: { value: "InvalidRequest", errorCode: "InvalidNote" } } })];
+  writeFileSync(logPath, ""); const pending = request(false); await started; release!(); const response = await pending; expect(response.status).toBe(400); await response.text();
+  const info = readFileSync(logPath, "utf8").split("\n").filter(line => line.includes("[INFO]")).join("\n"); expect(info).not.toContain("PRIVATE_SCORE_CANARY");
+});
+for (const category of ["Throttled", "InvalidRequest"]) it(`INFO strict StreamHub error item ${category}`, async () => {
+  vi.stubEnv("M365_STRICT_STREAM", "1"); vi.stubEnv("M365_TRANSPORT", "streamhub"); transport = "streamhub"; payload = "";
+  rawTerminalFrames = [JSON.stringify({ type: 2, item: { type: "error", errorCategory: category, errorCode: "PRIVATE_CODE_CANARY", detail: "PRIVATE_DETAIL_CANARY" } })];
+  writeFileSync(logPath, ""); const pending = request(false); await started; release!(); const response = await pending; expect(response.status).toBe(category === "Throttled" ? 429 : 400); expect(await response.text()).not.toContain("PRIVATE_CODE_CANARY");
+  const info = readFileSync(logPath, "utf8").split("\n").filter(line => line.includes("[INFO]")).join("\n"); expect(info).not.toContain("PRIVATE_CODE_CANARY"); expect(info).not.toContain("PRIVATE_DETAIL_CANARY");
+});
+for (const wire of ["chathub", "streamhub"]) it(`INFO default preserves terminal diagnostic ${wire}`, async () => {
+  vi.stubEnv("M365_TRANSPORT", wire); transport = wire; payload = ""; terminal = "Throttled"; terminalCode = "PRIVATE_DEFAULT_CANARY";
+  writeFileSync(logPath, ""); const pending = request(false); await started; release!(); const response = await pending; expect(response.status).toBe(429); await response.text();
+  expect(readFileSync(logPath, "utf8")).toContain("PRIVATE_DEFAULT_CANARY");
+});
 for (const streaming of [false, true]) for (const strictMode of [false, true]) for (const entry of [
   { category: "InvalidRequest", code: "InvalidNote", status: 400, result: "m365_invalid_request" },
   { category: "Throttled", code: "PerUserThrottled", status: 429, result: "m365_throttled" },

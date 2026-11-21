@@ -796,7 +796,7 @@ export async function handleChatCompletion(
       if (stream.result?.value === "Throttled") {
         noteOutcome(true, session.conversationId);
         drop(); // a throttled turn processed nothing
-        log.info(`Upstream Throttled on ${label} (${stream.result.errorCode ?? "no errorCode"}) — 429, no retry`);
+        log.info(`Upstream Throttled on ${label} (${strict ? (stream.result.errorCode === "PerUserThrottled" ? "PerUserThrottled" : "no safe errorCode") : (stream.result.errorCode ?? "no errorCode")}) — 429, no retry`);
         const failureResult = strict ? { errorCode: stream.result.errorCode === "PerUserThrottled" ? "PerUserThrottled" : undefined } : stream.result;
         return { error: throttledResponse(failureResult) };
       }
@@ -805,7 +805,7 @@ export async function handleChatCompletion(
         stream.messageType === "Disengaged" || stream.apology || stream.contentOrigin === "Apology" ||
         priorityAccessExhaustionOf(stream.result, stream.fullText)
       ) {
-        log.info(`M365 didn't acknowledge ${label} of a long turn (${stream.result?.value ?? "no result"}${stream.messageType ? `, ${stream.messageType}` : ""})`);
+        log.info(`M365 didn't acknowledge ${label} of a long turn (${strict ? "upstream refusal" : `${stream.result?.value ?? "no result"}${stream.messageType ? `, ${stream.messageType}` : ""}`})`);
         return { refused: stream, label };
       }
       // Each part adds a message: a count of 1 on a long delta's first part, or
@@ -1043,7 +1043,7 @@ export async function handleChatCompletion(
       }
       // The classifier scores reach clients only as `usage` extension fields,
       // which a gateway drops; experiments read them from the debug log instead.
-      if (lastScores && Object.keys(lastScores).length > 0) {
+      if (lastScores && Object.keys(lastScores).length > 0 && !strict) {
         log.info(`Turn scores: ${Object.entries(lastScores).map(([k, v]) => `${k}=${v}`).join(" ")}${lastMessageType ? ` (${lastMessageType})` : ""}, cid=${session.conversationId}`);
       }
 
@@ -1074,7 +1074,7 @@ export async function handleChatCompletion(
       // Fail fast with a 429 instead, and count it toward the degradation backoff.
       if (copilotStream.result?.value === "Throttled") {
         noteOutcome(true, convId);
-        log.info(`Upstream Throttled (${copilotStream.result.errorCode ?? "no errorCode"}) — 429, no retry`);
+        log.info(`Upstream Throttled (${strict ? (copilotStream.result.errorCode === "PerUserThrottled" ? "PerUserThrottled" : "no safe errorCode") : (copilotStream.result.errorCode ?? "no errorCode")}) — 429, no retry`);
         const failureResult = strict ? { errorCode: copilotStream.result.errorCode === "PerUserThrottled" ? "PerUserThrottled" : undefined } : copilotStream.result;
         return { error: throttledResponse(failureResult) };
       }
@@ -1113,7 +1113,7 @@ export async function handleChatCompletion(
           session.newConversation();
           conv.sentMessageCount = 0;
         }
-        log.info(`Upstream InvalidRequest (${copilotStream.result.errorCode ?? "no errorCode"}), prompt ${text.length} chars — 400, no retry`);
+        log.info(`Upstream InvalidRequest (${strict ? (["InputTokenLimitExceeded", "ModelNotInCatalog", "InvalidNote"].includes(copilotStream.result.errorCode ?? "") ? copilotStream.result.errorCode : "no safe errorCode") : (copilotStream.result.errorCode ?? "no errorCode")}), prompt ${text.length} chars — 400, no retry`);
         const failureResult = strict ? { errorCode: ["InputTokenLimitExceeded", "ModelNotInCatalog", "InvalidNote"].includes(copilotStream.result.errorCode ?? "") ? copilotStream.result.errorCode : undefined } : copilotStream.result;
         return { error: invalidRequestResponse(failureResult, model, text.length) };
       }
