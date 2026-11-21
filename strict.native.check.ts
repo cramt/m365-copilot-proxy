@@ -1,4 +1,4 @@
-import { afterAll, afterEach, expect, it, vi } from "vitest";
+import { afterAll, afterEach, beforeEach, expect, it, vi } from "vitest";
 import { createServer } from "node:http";
 
 const setupMocks = vi.hoisted(() => ({ agent: null as null | (() => Promise<any>), image: null as null | (() => Promise<any>), file: null as null | (() => Promise<any>) }));
@@ -23,6 +23,7 @@ vi.mock("./node_modules/.pnpm/ws@8.20.0/node_modules/ws/wrapper.mjs", async (ori
 const { WebSocketServer } = await import("./node_modules/.pnpm/ws@8.20.0/node_modules/ws/wrapper.mjs");
 const { handleChatCompletion, SessionPool } = await import("./packages/proxy-lib/src/handler.js");
 const { ModelSession } = await import("./packages/core/src/model.js");
+const { resetPriorityAccessState, activePriorityAccessExhaustion } = await import("./packages/core/src/priority-access.js");
 const { ChatCompletionRequest } = await import("./packages/proxy-lib/src/schemas.js");
 const http = createServer();
 const server = new WebSocketServer({ server: http });
@@ -31,6 +32,11 @@ await new Promise<void>(resolve => http.listen(sockpath, resolve));
 endpoint.url = `ws+unix://${sockpath}:/`;
 const token = `e30.${Buffer.from(JSON.stringify({ oid: "synthetic", tid: "synthetic", aud: "synthetic", iss: "synthetic", exp: 9999999999 })).toString("base64url")}.sig`;
 let terminal = "ForbiddenRequest";
+let terminalCode: string | undefined;
+let terminalMessage: string | undefined;
+let terminalApology = false;
+let automaticFallback = false;
+let automaticBingFallback = false;
 let transport = "chathub";
 const content = "arbitrary content that is not a recognizable refusal";
 let release: (() => void) | undefined;
@@ -67,6 +73,19 @@ server.on("connection", (ws: any) => { ws.on("close", () => closed?.()); ws.on("
       const id = f.item?.chatStreamRequest?.requestId;
       const send = (x: object) => ws.send(JSON.stringify(x) + "\x1e");
       attempts++;
+      if (automaticBingFallback) {
+        const text = attempts === 1 ? "refused precursor" : "bing fallback success";
+        const update = transport === "streamhub" ? { type: 2, item: { type: "message_part", requestId: id, argument: { w: text } } } : { type: 1, target: "update", arguments: [{ writeAtCursor: text }] };
+        const outcome = attempts === 1 ? { category: "InvalidRequest", code: "InputTokenLimitExceeded" } : { category: "Success" };
+        const end = transport === "streamhub" ? { type: 2, item: { type: "request_end", requestId: id, outcome } } : { type: 2, item: { result: { value: outcome.category, ...(outcome.code ? { errorCode: outcome.code } : {}) } } };
+        send(update); send(end); continue;
+      }
+      if (automaticFallback) {
+        const text = attempts === 1 ? "refused precursor" : "fallback success";
+        const update = transport === "streamhub" ? { type: 2, item: { type: "message_part", requestId: id, argument: { w: text } } } : { type: 1, target: "update", arguments: [{ writeAtCursor: text }] };
+        const end = transport === "streamhub" ? { type: 2, item: { type: "request_end", requestId: id, outcome: { category: attempts === 1 ? "OutOfCredits" : "Success", ...(attempts === 1 ? { message: "You've used your available priority access to the Sonnet model for today." } : {}) } } } : { type: 2, item: { result: { value: attempts === 1 ? "OutOfCredits" : "Success", ...(attempts === 1 ? { message: "You've used your available priority access to the Sonnet model for today." } : {}) } } };
+        send(update); send(end); continue;
+      }
       if (multipartSize) {
         multipartPrompts.push(transport === "streamhub" ? f.item.chatStreamRequest.message.text : f.arguments[0].message.text);
         const text = attempts <= 2 ? "P".repeat(multipartSize) : "FINAL-ANSWER";
@@ -101,7 +120,7 @@ server.on("connection", (ws: any) => { ws.on("close", () => closed?.()); ws.on("
         continue;
       }
       const makePart = (text: string) => transport === "streamhub" ? { type: 2, item: { type: "message_part", requestId: id, argument: { w: text } } } : { type: 1, target: "update", arguments: [{ writeAtCursor: text }] };
-      const part = makePart(payload);
+      const part = terminalApology ? (transport === "streamhub" ? { type: 2, item: { type: "message_part", requestId: id, argument: { messages: [{ author: "bot", text: payload, contentOrigin: "Apology", messageId: "apology" }] } } } : { type: 1, target: "update", arguments: [{ messages: [{ author: "bot", text: payload, contentOrigin: "Apology", messageId: "apology" }] }] }) : makePart(payload);
       if (chunks) for (const chunk of chunks) send(makePart(chunk));
       else for (let i = 0; i < repeatedFrames; i++) send(part);
       if (terminal === "flood") {
@@ -135,7 +154,7 @@ server.on("connection", (ws: any) => { ws.on("close", () => closed?.()); ws.on("
           send(transport === "streamhub" ? { type: 2, item: { type: "request_end", requestId: id } } : { type: 2, item: {} });
           return;
         }
-        send(transport === "streamhub" ? { type: 2, item: { type: "request_end", requestId: id, outcome: { category: terminal } } } : { type: 2, item: { result: { value: terminal }, ...(graphics ? { messages: [{ author: "bot", contentGenerationProgressList: [{ ImageReferenceUrls: ["https://example.invalid/picture"], fileToken: "synthetic", status: 2 }] }] } : {}) } });
+        send(transport === "streamhub" ? { type: 2, item: { type: "request_end", requestId: id, outcome: { category: terminal, ...(terminalCode ? { code: terminalCode } : {}), ...(terminalMessage ? { message: terminalMessage } : {}) } } } : { type: 2, item: { result: { value: terminal, ...(terminalCode ? { errorCode: terminalCode } : {}), ...(terminalMessage ? { message: terminalMessage } : {}) }, ...(graphics ? { messages: [{ author: "bot", contentGenerationProgressList: [{ ImageReferenceUrls: ["https://example.invalid/picture"], fileToken: "synthetic", status: 2 }] }] } : {}) } });
       };
       seen?.();
     }
@@ -147,8 +166,63 @@ async function request(stream: boolean, tools = false, options: { signal?: Abort
   const body = ChatCompletionRequest.parse({ model: "claude-sonnet", stream, messages: [{ role: "user", content: "hello" }], ...(tools ? { tools: [{ type: "function", function: { name: "bash", description: "shell", parameters: { type: "object", properties: {} } } }] } : {}) });
   return handleChatCompletion(body, new SessionPool({ getToken: options.getToken ?? (async () => token), useAgent: false }), { signal: options.signal });
 }
-afterEach(() => { vi.unstubAllEnvs(); for (const c of server.clients) c.terminate(); release = undefined; payload = content; chunks = null; closed = undefined; retryApology = false; retrySequence = false; firstPadding = 0; f22Sequence = false; confabSequence = false; graphics = false; completionError = false; contradictoryTerminal = false; terminalRecords = null; separateRecords = false; rawTerminalFrames = null; repeatedFrames = 1; attempts = 0; multipartSize = 0; handshakeReply = "{}"; multipartSent = []; multipartPrompts = []; });
+beforeEach(() => { vi.stubEnv("M365_NO_BACKOFF", "1"); });
+afterEach(() => { vi.unstubAllEnvs(); for (const c of server.clients) c.terminate(); release = undefined; payload = content; chunks = null; closed = undefined; retryApology = false; retrySequence = false; firstPadding = 0; f22Sequence = false; confabSequence = false; graphics = false; completionError = false; contradictoryTerminal = false; terminalRecords = null; separateRecords = false; rawTerminalFrames = null; repeatedFrames = 1; attempts = 0; multipartSize = 0; handshakeReply = "{}"; terminalCode = undefined; terminalMessage = undefined; terminalApology = false; automaticFallback = false; automaticBingFallback = false; multipartSent = []; multipartPrompts = []; });
 afterAll(async () => { for (const c of server.clients) c.terminate(); await new Promise<void>(r => server.close(r)); await new Promise<void>(r => http.close(() => r())); });
+for (const wire of ["chathub", "streamhub"]) for (const streaming of [false, true]) it(`default ForbiddenRequest with content remains ordinary answer ${wire} stream=${streaming}`, async () => {
+  vi.stubEnv("M365_TRANSPORT", wire); transport = wire; terminal = "ForbiddenRequest"; terminalCode = "InvalidCopilotLicense";
+  const pending = request(streaming); await started; release!(); const response = await pending; const text = await response.text(); expect(response.status).toBe(200); expect(text).toContain(content); expect(attempts).toBe(1);
+});
+for (const wire of ["chathub", "streamhub"]) for (const streaming of [false, true]) it(`strict input-limit Bing fallback succeeds ${wire} stream=${streaming}`, async () => {
+  const core = await import("./packages/core/src/copilot.js"); core.resetWebSearchOverflow();
+  vi.stubEnv("M365_STRICT_STREAM", "1"); vi.stubEnv("M365_TRANSPORT", wire); transport = wire; automaticBingFallback = true;
+  try { const response = await request(streaming); const text = await response.text(); expect(response.status).toBe(200); expect(text).toContain("bing fallback success"); expect(text).not.toContain("refused precursor"); expect(attempts).toBe(2); expect(core.toneUsesWebSearch("Claude_Sonnet")).toBe(false); }
+  finally { core.resetWebSearchOverflow(); }
+});
+for (const wire of ["chathub", "streamhub"]) for (const streaming of [false, true]) it(`strict priority fallback succeeds ${wire} stream=${streaming}`, async () => {
+  resetPriorityAccessState(); vi.stubEnv("M365_STRICT_STREAM", "1"); vi.stubEnv("M365_TRANSPORT", wire); vi.stubEnv("M365_SONNET_FALLBACK_MODEL", "claude-sonnet"); transport = wire; automaticFallback = true;
+  const body = ChatCompletionRequest.parse({ model: "claude-sonnet-5.5", stream: streaming, messages: [{ role: "user", content: "hello" }] });
+  try { const response = await handleChatCompletion(body, new SessionPool({ getToken: async () => token, useAgent: false })); const text = await response.text(); expect(response.status).toBe(200); expect(text).toContain("fallback success"); expect(text).not.toContain("refused precursor"); expect(attempts).toBe(2); expect(activePriorityAccessExhaustion("sonnet-5.5")).not.toBeNull(); }
+  finally { resetPriorityAccessState(); }
+});
+for (const wire of ["chathub", "streamhub"]) for (const streaming of [false, true]) for (const value of ["Throttled", "InvalidRequest"]) it(`strict sanitizes upstream error fields ${wire} stream=${streaming} ${value}`, async () => {
+  vi.stubEnv("M365_STRICT_STREAM", "1"); vi.stubEnv("M365_TRANSPORT", wire); transport = wire; terminal = value; terminalCode = "PRIVATE_CANARY_CODE"; terminalMessage = "PRIVATE_CANARY_MESSAGE";
+  const pending = request(streaming); await started; release!(); const response = await pending; const text = await response.text();
+  expect(response.status).toBe(streaming ? 200 : value === "Throttled" ? 429 : 400); expect(text).not.toContain("PRIVATE_CANARY"); expect(text).not.toContain(content); expect(attempts).toBe(1);
+});
+for (const wire of ["chathub", "streamhub"]) for (const streaming of [false, true]) for (const value of ["Throttled", "OutOfCredits", "ForbiddenRequest"]) for (const mode of ["structured", "text"]) it(`strict apology terminal no retry ${wire} stream=${streaming} ${value} ${mode}`, async () => {
+  resetPriorityAccessState(); vi.stubEnv("M365_STRICT_STREAM", "1"); vi.stubEnv("M365_TRANSPORT", wire); vi.stubEnv("M365_STREAM_ERROR_MODE", mode); transport = wire; terminal = value; terminalApology = true;
+  try { const pending = request(streaming, true); await started; release!(); const response = await pending; const text = await response.text(); expect(attempts).toBe(1); expect(text).not.toContain(content); expect(text).toContain(mode === "text" && streaming ? "m365-proxy" : "error"); }
+  finally { resetPriorityAccessState(); }
+});
+for (const wire of ["chathub", "streamhub"]) for (const value of ["Throttled", "OutOfCredits", "ForbiddenRequest"]) it(`strict does not retry ${value} disguised as Apology ${wire}`, async () => {
+  resetPriorityAccessState(); vi.stubEnv("M365_STRICT_STREAM", "1"); vi.stubEnv("M365_TRANSPORT", wire); transport = wire; terminal = value; terminalApology = true;
+  try { const pending = request(true, true); await started; release!(); const response = await pending; const text = await response.text(); expect(text).toContain("error"); expect(text).not.toContain(content); expect(attempts).toBe(1); }
+  finally { resetPriorityAccessState(); }
+});
+for (const wire of ["chathub", "streamhub"]) for (const streaming of [false, true]) for (const strictMode of [false, true]) it(`priority wall classification ${wire} stream=${streaming} strict=${strictMode}`, async () => {
+  resetPriorityAccessState(); if (strictMode) vi.stubEnv("M365_STRICT_STREAM", "1"); vi.stubEnv("M365_TRANSPORT", wire); transport = wire; terminal = "OutOfCredits"; terminalMessage = "You've used your available priority access to the Opus model for today."; payload = strictMode ? content : "";
+  const body = ChatCompletionRequest.parse({ model: "claude-sonnet-5.5", stream: streaming, messages: [{ role: "user", content: "hello" }] });
+  try {
+    started = new Promise(r => { seen = r; }); const pending = handleChatCompletion(body, new SessionPool({ getToken: async () => token, useAgent: false })); await started; release!();
+    const response = await pending; const text = await response.text(); expect(response.status).toBe(streaming ? 200 : 429); expect(text).toContain("priority_access_exhausted"); expect(text).toContain(streaming ? "retry_after" : "rate_limit_error"); if (!streaming) expect(Number(response.headers.get("Retry-After"))).toBeGreaterThan(0); if (strictMode) expect(text).not.toContain(content); expect(attempts).toBe(1); expect(activePriorityAccessExhaustion("sonnet-5.5")).not.toBeNull();
+  } finally { resetPriorityAccessState(); }
+});
+for (const wire of ["chathub", "streamhub"]) for (const streaming of [false, true]) for (const strictMode of [false, true]) it(`throttle controls ${wire} stream=${streaming} strict=${strictMode}`, async () => {
+  if (strictMode) vi.stubEnv("M365_STRICT_STREAM", "1"); vi.stubEnv("M365_TRANSPORT", wire); transport = wire; terminal = "Throttled"; terminalCode = "PerUserThrottled"; payload = "";
+  if (streaming && strictMode) vi.stubEnv("M365_STREAM_ERROR_MODE", "text");
+  const pending = request(streaming); await started; release!(); const response = await pending; const text = await response.text();
+  expect(response.status).toBe(streaming ? 200 : 429); expect(text).toContain("m365_throttled"); expect(text).toContain(streaming && strictMode ? '[m365-proxy:' : 'rate_limit_error'); expect(attempts).toBe(1);
+});
+for (const wire of ["chathub", "streamhub"]) for (const streaming of [false, true]) for (const entry of [
+  { value: "Throttled", upstream: "PerUserThrottled", status: 429, code: "m365_throttled" },
+  { value: "InvalidRequest", upstream: "InputTokenLimitExceeded", status: 400, code: "context_length_exceeded" },
+]) it(`strict classifies ${entry.value} ${wire} stream=${streaming}`, async () => {
+  vi.stubEnv("M365_STRICT_STREAM", "1"); vi.stubEnv("M365_TRANSPORT", wire); transport = wire; terminal = entry.value; terminalCode = entry.upstream;
+  if (entry.value === "InvalidRequest") (await import("./packages/core/src/copilot.js")).noteWebSearchOverflow("Claude_Sonnet");
+  const pending = request(streaming); await started; release!(); const response = await pending; const text = await response.text();
+  expect(response.status).toBe(streaming ? 200 : entry.status); expect(text).toContain(entry.code); expect(text).not.toContain(content); expect(attempts).toBe(1);
+});
 for (const wire of ["chathub", "streamhub"]) for (const streaming of [false, true]) for (const tools of [false, true]) {
   it(`strict refuses pending content: ${wire} stream=${streaming} tools=${tools}`, async () => {
     vi.stubEnv("M365_STRICT_STREAM", "1"); vi.stubEnv("M365_TRANSPORT", wire); transport = wire; terminal = "ForbiddenRequest";

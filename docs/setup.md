@@ -39,6 +39,12 @@ usual tool early-stop, and rejects generated images rather than fetching them.
 Cowork/Code backends are unsupported in this mode. F22/Apology tool retries remain;
 an interrupted or refused attempt's content is not emitted. SSE errors follow the
 existing configured error-chunk or compatibility-text policy after HTTP 200.
+In strict mode the existing Throttled, InvalidRequest and priority-access response
+classes and configured fallbacks remain in use. Upstream error prose and unknown
+error codes are omitted from strict error responses; only recognized codes are
+retained. On this base ForbiddenRequest has no dedicated licence mapping: strict
+mode returns a generic upstream error, while default mode remains unchanged.
+
 A terminal result is accepted only if it is the sole terminal record observed
 before the WebSocket closes. Contradictory or missing terminal records observed
 before closure fail closed; records sent only after closure cannot be observed.

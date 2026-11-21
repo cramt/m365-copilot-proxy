@@ -797,7 +797,8 @@ export async function handleChatCompletion(
         noteOutcome(true, session.conversationId);
         drop(); // a throttled turn processed nothing
         log.info(`Upstream Throttled on ${label} (${stream.result.errorCode ?? "no errorCode"}) — 429, no retry`);
-        return { error: throttledResponse(stream.result) };
+        const failureResult = strict ? { errorCode: stream.result.errorCode === "PerUserThrottled" ? "PerUserThrottled" : undefined } : stream.result;
+        return { error: throttledResponse(failureResult) };
       }
       if (
         (strict ? stream.result?.value !== "Success" : (stream.result && stream.result.value !== "Success")) || turnFailed(stream) ||
@@ -982,14 +983,16 @@ export async function handleChatCompletion(
       // Strict mode never renders images or answer text before explicit success.
       // Leave the normal F22/Apology retry path reachable, but never treat an
       // unclassified or non-success turn as an answer.
-      const retryRefusal = !turnSignal?.aborted && copilotStream.result?.value !== "ForbiddenRequest" && hasTools && !disengageRetried && !process.env.M365_NO_DISENGAGE_RETRY &&
+      const resultValue = copilotStream.result?.value;
+      const retryRefusal = !turnSignal?.aborted && resultValue === "Success" && hasTools && !disengageRetried && !process.env.M365_NO_DISENGAGE_RETRY &&
         ((copilotStream.messageType === "Disengaged" && !fullText) || copilotStream.apology || copilotStream.contentOrigin === "Apology");
-      if (strictExpired() || (strict && turnSignal?.aborted && !retryRefusal) || (strict && copilotStream.result?.value !== "Success" && !retryRefusal)) {
+      const classifiedFailure = resultValue === "Throttled" || resultValue === "InvalidRequest" || resultValue === "OutOfCredits";
+      if (strictExpired() || (strict && turnSignal?.aborted && !retryRefusal) || (strict && resultValue !== "Success" && !retryRefusal && !classifiedFailure)) {
         session.newConversation();
         conv.sentMessageCount = 0;
         return { error: jsonResponse(502, { error: { message: "Upstream turn did not complete successfully", type: "upstream_error" } }) };
       }
-      if (strict && !retryRefusal && (copilotStream.apology || copilotStream.contentOrigin === "Apology" || copilotStream.messageType === "Disengaged")) {
+      if (strict && !classifiedFailure && !retryRefusal && (copilotStream.apology || copilotStream.contentOrigin === "Apology" || copilotStream.messageType === "Disengaged")) {
         session.newConversation();
         conv.sentMessageCount = 0;
         return { error: jsonResponse(502, { error: { message: "Upstream declined the turn", type: "upstream_error" } }) };
@@ -1058,7 +1061,8 @@ export async function handleChatCompletion(
       if (copilotStream.result?.value === "Throttled") {
         noteOutcome(true, convId);
         log.info(`Upstream Throttled (${copilotStream.result.errorCode ?? "no errorCode"}) — 429, no retry`);
-        return { error: throttledResponse(copilotStream.result) };
+        const failureResult = strict ? { errorCode: copilotStream.result.errorCode === "PerUserThrottled" ? "PerUserThrottled" : undefined } : copilotStream.result;
+        return { error: throttledResponse(failureResult) };
       }
 
       // An agent-less turn carries the Bing plugin, and on some accounts that
@@ -1096,7 +1100,8 @@ export async function handleChatCompletion(
           conv.sentMessageCount = 0;
         }
         log.info(`Upstream InvalidRequest (${copilotStream.result.errorCode ?? "no errorCode"}), prompt ${text.length} chars — 400, no retry`);
-        return { error: invalidRequestResponse(copilotStream.result, model, text.length) };
+        const failureResult = strict ? { errorCode: ["InputTokenLimitExceeded", "ModelNotInCatalog"].includes(copilotStream.result.errorCode ?? "") ? copilotStream.result.errorCode : undefined } : copilotStream.result;
+        return { error: invalidRequestResponse(failureResult, model, text.length) };
       }
 
       // M365 has lost this conversation's history: on a turn that relies on it
@@ -1173,7 +1178,7 @@ export async function handleChatCompletion(
       const exhausted = chat && priorityAccessExhaustionOf(copilotStream.result, refused ? copilotStream.fullText : fullText);
       if (exhausted) {
         const budget = meteredBudgetOf(model);
-        if (budget || copilotStream.result?.value === "OutOfCredits") notePriorityAccessExhausted(budget ?? model, exhausted);
+        if (budget || copilotStream.result?.value === "OutOfCredits") notePriorityAccessExhausted(budget ?? model, strict ? { ...exhausted, message: "Priority access exhausted." } : exhausted);
         const fallback = budget && !priorityFallbackDone ? priorityAccessFallbackModel(budget) : null;
         if (fallback) {
           priorityFallbackDone = true;
@@ -1191,9 +1196,14 @@ export async function handleChatCompletion(
         }
         noteOutcome(false, convId); // an answer, not a throttle
         log.info(`Priority access exhausted (${exhausted.window}) — resets ${exhausted.resetsAt.toISOString()}`);
-        return { error: priorityAccessResponse(exhausted, model) };
+        return { error: priorityAccessResponse(strict ? { ...exhausted, message: "Priority access exhausted." } : exhausted, model) };
       }
 
+      if (strict && classifiedFailure) {
+        session.newConversation();
+        conv.sentMessageCount = 0;
+        return { error: jsonResponse(502, { error: { message: "Upstream turn did not complete successfully", type: "upstream_error" } }) };
+      }
       // M365's prompt filter can answer with a canned apology instead of a
       // Disengaged message: contentOrigin "Apology", "Sorry, it looks like I can't
       // chat about this. Let's try a different topic." GPT-5.6 Think Deeper did on
