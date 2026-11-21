@@ -1158,6 +1158,15 @@ export class CopilotSession {
         if (value === "Throttled") recordThrottle();
       };
 
+      let terminalSeen = false;
+      const strictResult = (value?: string, errorCode?: string, message?: string) => {
+        if (terminalSeen || !value) {
+          noteResult("InvalidTerminal");
+        } else {
+          noteResult(value, errorCode, message);
+        }
+        terminalSeen = true;
+      };
       // One streaming update: a Chathub `update` invocation's argument, or a
       // StreamHub `message_part` item's.
       const handleUpdateArg = (arg: unknown) => {
@@ -1255,7 +1264,8 @@ export class CopilotSession {
         if (type === "request_end") {
           const end = StreamHubRequestEnd.safeParse(item);
           const outcome = end.success ? end.data.outcome : undefined;
-          if (outcome && (!serverResult || (strict && outcome.category !== "Success"))) noteResult(outcome.category, outcome.errorCode ?? outcome.code, outcome.message);
+          if (strict) strictResult(outcome?.category, outcome?.errorCode ?? outcome?.code, outcome?.message);
+          else if (outcome && !serverResult) noteResult(outcome.category, outcome.errorCode ?? outcome.code, outcome.message);
           ws.close();
           return;
         }
@@ -1263,7 +1273,8 @@ export class CopilotSession {
           const err = StreamHubError.safeParse(item);
           const e: { errorCategory?: string; errorCode?: string; message?: string; detail?: string } = err.success ? err.data : {};
           log.info(`StreamHub error item: ${e.errorCategory ?? "?"} ${e.errorCode ?? ""} ${trunc(e.detail ?? e.message ?? "", 300)}`);
-          noteResult(e.errorCategory ?? "InternalError", e.errorCode, e.message);
+          if (strict) strictResult(e.errorCategory ?? "InternalError", e.errorCode, e.message);
+          else noteResult(e.errorCategory ?? "InternalError", e.errorCode, e.message);
           ws.close();
         }
       };
@@ -1303,8 +1314,13 @@ export class CopilotSession {
           // Stream item — the FINAL state of the conversation, with authoritative
           // throttle/turnCount/scores. Mine it before closing.
           const item = (raw as { item?: { messages?: any[]; throttling?: any; turnState?: string; result?: { value?: unknown; errorCode?: unknown; message?: unknown } } }).item;
+          if (strict) strictResult(
+            typeof item?.result?.value === "string" ? item.result.value : undefined,
+            typeof item?.result?.errorCode === "string" ? item.result.errorCode : undefined,
+            typeof item?.result?.message === "string" ? item.result.message : undefined,
+          );
           if (item) {
-            if (typeof item.result?.value === "string") {
+            if (!strict && typeof item.result?.value === "string") {
               noteResult(
                 item.result.value,
                 typeof item.result.errorCode === "string" ? item.result.errorCode : undefined,

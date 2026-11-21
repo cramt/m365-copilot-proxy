@@ -66,6 +66,19 @@ export interface TurnSession {
  * reconnections so M365 finds the existing server-side conversation
  * instead of creating a new one.
  */
+async function awaitSetup<T>(operation: Promise<T>, signal?: AbortSignal): Promise<T> {
+  if (!signal) return operation;
+  if (signal.aborted) { void operation.catch(() => {}); throw new Error("Request aborted"); }
+  return new Promise<T>((resolve, reject) => {
+    const abort = () => reject(new Error("Request aborted"));
+    signal.addEventListener("abort", abort, { once: true });
+    operation.then(
+      value => { signal.removeEventListener("abort", abort); if (signal.aborted) reject(new Error("Request aborted")); else resolve(value); },
+      error => { signal.removeEventListener("abort", abort); reject(error); },
+    );
+  });
+}
+
 export class ModelSession implements TurnSession {
   private resolveToken: () => Promise<string>;
   private useAgent: boolean;
@@ -141,7 +154,9 @@ export class ModelSession implements TurnSession {
     waitForBudget: () => Promise<{ waitedMs: number }> = () => awaitTurnBudget({ signal }),
     turn?: TurnOptions,
   ): Promise<CopilotStream> {
-    let token = await this.resolveToken();
+    const strictSignal = turn?.responseBudget ? signal : undefined;
+    const setup = <T>(operation: Promise<T>) => awaitSetup(operation, strictSignal);
+    let token = await setup(this.resolveToken());
     // Image input (#39): upload each image for this conversation; the message points at them.
     // Any other data URL is a document, which goes to OneDrive like the web client's (file-upload.ts).
     // A failed upload is said in the text, so the model doesn't answer about a file it never got.
@@ -149,8 +164,9 @@ export class ModelSession implements TurnSession {
     for (const url of images) {
       const isImage = !/^data:(?!image\/)/i.test(url);
       try {
-        annotations.push(isImage ? await uploadImage(token, this.conversationId, url) : await uploadFile(url));
+        annotations.push(await setup<ImageAnnotation | FileAnnotation>(isImage ? uploadImage(token, this.conversationId, url) : uploadFile(url)));
       } catch (err: any) {
+        if (strictSignal?.aborted) throw err;
         const what = isImage ? "image" : "file";
         log.info(`${isImage ? "Image" : "File"} upload failed: ${err.message}`);
         text += `
@@ -163,10 +179,11 @@ export class ModelSession implements TurnSession {
     // Resolve agent ID lazily (persists across resets), only when wanted.
     if (wantAgent && this.cachedAgentId === undefined) {
       try {
-        this.cachedAgentId = await getOrCreateAgent();
+        this.cachedAgentId = await setup(getOrCreateAgent());
         if (this.cachedAgentId) log.info(`Using agent: ${this.cachedAgentId}`);
         else log.info("No agent available");
-      } catch {
+      } catch (err) {
+        if (strictSignal?.aborted) throw err;
         this.cachedAgentId = null;
       }
     }
@@ -192,14 +209,15 @@ export class ModelSession implements TurnSession {
     try {
       return await this.copilotSession.chat(token, text, model, signal, turnOpts);
     } catch (err: any) {
-      if (signal?.aborted) throw err;
+      if (strictSignal?.aborted) throw err;
       // Session might be stale — reconnect with same IDs
       log.info("Session error, reconnecting:", err.message);
       // The reconnect is one more upstream turn, so it waits on the budget too:
       // otherwise it skips the wait and its recordTurn takes the grant of a turn
       // another request was let through for (#77). A token held through a long
       // wait may be near its end, so fetch it again.
-      if ((await waitForBudget()).waitedMs > 0) token = await this.resolveToken();
+      if ((await setup(waitForBudget())).waitedMs > 0) token = await setup(this.resolveToken());
+      if (strictSignal?.aborted) throw new Error("Request aborted");
       this.copilotSession = this.createCopilotSession(agentForTurn);
       this.currentAgentId = agentForTurn;
       return await this.copilotSession.chat(token, text, model, signal, turnOpts);

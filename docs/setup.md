@@ -39,6 +39,11 @@ usual tool early-stop, and rejects generated images rather than fetching them.
 Cowork/Code backends are unsupported in this mode. F22/Apology tool retries remain;
 an interrupted or refused attempt's content is not emitted. SSE errors follow the
 existing configured error-chunk or compatibility-text policy after HTTP 200.
+A terminal result is accepted only if it is the sole terminal record observed
+before the WebSocket closes. Contradictory or missing terminal records observed
+before closure fail closed; records sent only after closure cannot be observed.
+Setup waits honor the deadline, but third-party token, agent or upload operations
+that ignore cancellation may continue independently after the request fails.
 This is a per-request wire-byte limit, not a 2 MiB process-memory limit: the receiver,
 composer, queue and response encoding may keep multiple copies. Concurrent requests
 multiply memory use. SSE

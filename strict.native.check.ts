@@ -1,6 +1,13 @@
 import { afterAll, afterEach, expect, it, vi } from "vitest";
 import { createServer } from "node:http";
 
+const setupMocks = vi.hoisted(() => ({ agent: null as null | (() => Promise<any>), image: null as null | (() => Promise<any>) }));
+vi.mock("./packages/core/src/agent.js", async original => {
+  const real = await original<any>(); return { ...real, getOrCreateAgent: (...args: any[]) => setupMocks.agent ? setupMocks.agent() : real.getOrCreateAgent(...args) };
+});
+vi.mock("./packages/core/src/image-input.js", async original => {
+  const real = await original<any>(); return { ...real, uploadImage: (...args: any[]) => setupMocks.image ? setupMocks.image() : real.uploadImage(...args) };
+});
 const endpoint = vi.hoisted(() => ({ url: "" }));
 vi.mock("./node_modules/.pnpm/ws@8.20.0/node_modules/ws/wrapper.mjs", async (original) => {
   const real = await original<any>();
@@ -36,6 +43,8 @@ let confabSequence = false;
 let graphics = false;
 let completionError = false;
 let contradictoryTerminal = false;
+let terminalRecords: string[] | null = null;
+let separateRecords = false;
 let repeatedFrames = 1;
 let attempts = 0;
 let multipartSize = 0;
@@ -98,6 +107,14 @@ server.on("connection", (ws: any) => { ws.on("close", () => closed?.()); ws.on("
       }
       release = () => {
         if (terminal === "disconnect") { ws.terminate(); return; }
+        if (terminalRecords) {
+          const frames = terminalRecords.map(value => transport === "streamhub"
+            ? { type: 2, item: { type: "request_end", requestId: id, ...(value === "missing" ? {} : { outcome: { category: value } }) } }
+            : { type: 2, item: value === "missing" ? {} : { result: { value } } });
+          if (separateRecords) for (const frame of frames) ws.send(JSON.stringify(frame) + "\x1e");
+          else ws.send(frames.map(frame => JSON.stringify(frame) + "\x1e").join(""));
+          return;
+        }
         if (contradictoryTerminal && transport === "streamhub") {
           const end = (category: string) => ({ type: 2, item: { type: "request_end", requestId: id, outcome: { category } } });
           ws.send(JSON.stringify(end("Success")) + "\x1e" + JSON.stringify(end("ForbiddenRequest")) + "\x1e");
@@ -120,7 +137,7 @@ async function request(stream: boolean, tools = false, options: { signal?: Abort
   const body = ChatCompletionRequest.parse({ model: "claude-sonnet", stream, messages: [{ role: "user", content: "hello" }], ...(tools ? { tools: [{ type: "function", function: { name: "bash", description: "shell", parameters: { type: "object", properties: {} } } }] } : {}) });
   return handleChatCompletion(body, new SessionPool({ getToken: options.getToken ?? (async () => token), useAgent: false }), { signal: options.signal });
 }
-afterEach(() => { vi.unstubAllEnvs(); for (const c of server.clients) c.terminate(); release = undefined; payload = content; chunks = null; closed = undefined; retryApology = false; retrySequence = false; firstPadding = 0; f22Sequence = false; confabSequence = false; graphics = false; completionError = false; contradictoryTerminal = false; repeatedFrames = 1; attempts = 0; multipartSize = 0; multipartSent = []; multipartPrompts = []; });
+afterEach(() => { vi.unstubAllEnvs(); for (const c of server.clients) c.terminate(); release = undefined; payload = content; chunks = null; closed = undefined; retryApology = false; retrySequence = false; firstPadding = 0; f22Sequence = false; confabSequence = false; graphics = false; completionError = false; contradictoryTerminal = false; terminalRecords = null; separateRecords = false; repeatedFrames = 1; attempts = 0; multipartSize = 0; multipartSent = []; multipartPrompts = []; });
 afterAll(async () => { for (const c of server.clients) c.terminate(); await new Promise<void>(r => server.close(r)); await new Promise<void>(r => http.close(() => r())); });
 for (const wire of ["chathub", "streamhub"]) for (const streaming of [false, true]) for (const tools of [false, true]) {
   it(`strict refuses pending content: ${wire} stream=${streaming} tools=${tools}`, async () => {
@@ -148,6 +165,18 @@ for (const wire of ["chathub", "streamhub"]) for (const streaming of [false, tru
   chunks = ["prefix ", "middle ", "suffix "]; chunks[where] = content;
   const pending = request(streaming, tools); await started; release!();
   const text = await (await pending).text(); expect(text).not.toContain(content); expect(text).not.toContain("prefix "); expect(text).toContain("error");
+});
+for (const wire of ["chathub", "streamhub"]) for (const records of [["Success", "ForbiddenRequest"], ["ForbiddenRequest", "Success"], ["Success", "missing"]]) it(`separate WebSocket messages ${wire} ${records.join(",")}`, async () => {
+  vi.stubEnv("M365_STRICT_STREAM", "1"); vi.stubEnv("M365_TRANSPORT", wire); transport = wire; terminalRecords = records; separateRecords = true;
+  const pending = request(true); await started; release!(); const text = await (await pending).text();
+  expect(text).not.toContain(content); expect(text).toContain("error");
+});
+for (const wire of ["chathub", "streamhub"]) for (const streaming of [false, true]) for (const records of [["ForbiddenRequest", "Success"], ["Success", "ForbiddenRequest"], ["Success", "missing"], ["Success"]]) it(`sticky terminal ${wire} stream=${streaming} ${records.join(",")}`, async () => {
+  vi.stubEnv("M365_STRICT_STREAM", "1"); vi.stubEnv("M365_TRANSPORT", wire); transport = wire; terminalRecords = records;
+  const pending = request(streaming); await started; release!();
+  const text = await (await pending).text();
+  if (records.length === 1) expect(text).toContain(content);
+  else { expect(text).not.toContain(content); expect(text).toContain("error"); }
 });
 it("strict fails closed on a contradictory terminal refusal following success", async () => {
   vi.stubEnv("M365_STRICT_STREAM", "1"); vi.stubEnv("M365_TRANSPORT", "streamhub"); transport = "streamhub"; contradictoryTerminal = true;
@@ -298,6 +327,49 @@ it("deadline aborts a pending upstream response without exposing its content", a
     expect(result).not.toContain(content); expect(result).toContain("error");
   } finally { shorten.mockRestore(); }
 });
+for (const stage of ["agent", "image"] as const) it(`normal ${stage} setup reaches the native peer`, async () => {
+    vi.stubEnv("M365_STRICT_STREAM", "1"); vi.stubEnv("M365_TRANSPORT", "chathub"); transport = "chathub"; terminal = "Success";
+    if (stage === "agent") vi.stubEnv("M365_FORCE_AGENT", "1");
+    setupMocks[stage] = async () => stage === "agent" ? "synthetic-agent" : { type: "synthetic" };
+    const body = ChatCompletionRequest.parse({ model: "claude-sonnet", stream: true,
+      messages: [{ role: "user", content: stage === "image" ? [{ type: "text", text: "hi" }, { type: "image_url", image_url: { url: "data:image/png;base64,AA==" } }] : "hi" }],
+      ...(stage === "agent" ? { tools: [{ type: "function", function: { name: "bash", description: "shell", parameters: { type: "object", properties: {} } } }] } : {}) });
+    try {
+      started = new Promise(r => { seen = r; });
+      const pending = handleChatCompletion(body, new SessionPool({ getToken: async () => token, useAgent: stage === "agent" }));
+      await started; release!(); const text = await (await pending).text(); expect(text).toContain(content); expect(attempts).toBe(1);
+    } finally { setupMocks[stage] = null; }
+  });
+for (const stage of ["agent", "image"] as const) it(`strict deadline bounds an uncooperative ${stage} setup`, async () => {
+  vi.stubEnv("M365_STRICT_STREAM", "1"); vi.stubEnv("M365_TRANSPORT", "chathub");
+  const original = AbortSignal.timeout; const shorten = vi.spyOn(AbortSignal, "timeout").mockImplementation(ms => original(ms === 180_000 ? 30 : ms));
+  let releaseStage!: (value: any) => void; let entered!: () => void;
+  const ready = new Promise<void>(r => { entered = r; }); const wait = new Promise<any>(r => { releaseStage = r; });
+  setupMocks[stage] = () => { entered(); return wait; };
+  if (stage === "agent") vi.stubEnv("M365_FORCE_AGENT", "1");
+  const body = ChatCompletionRequest.parse({ model: "claude-sonnet", stream: false,
+    messages: [{ role: "user", content: stage === "image" ? [{ type: "text", text: "hi" }, { type: "image_url", image_url: { url: "data:image/png;base64,AA==" } }] : "hi" }],
+    ...(stage === "agent" ? { tools: [{ type: "function", function: { name: "bash", description: "shell", parameters: { type: "object", properties: {} } } }] } : {}) });
+  const bounded = <T>(p: Promise<T>) => Promise.race([p, new Promise<never>((_, reject) => setTimeout(() => reject(new Error("setup did not honor deadline")), 500))]);
+  try {
+    const pending = handleChatCompletion(body, new SessionPool({ getToken: async () => token, useAgent: stage === "agent" }));
+    await bounded(ready); const response = await bounded(pending); expect(response.status).toBe(502); expect(attempts).toBe(0);
+    releaseStage(null); await new Promise<void>(r => setTimeout(r, 30)); expect(attempts).toBe(0); expect(server.clients.size).toBe(0);
+  } finally { setupMocks[stage] = null; releaseStage(null); shorten.mockRestore(); }
+}, 2000);
+it("strict deadline bounds an uncooperative token resolver", async () => {
+  vi.stubEnv("M365_STRICT_STREAM", "1"); vi.stubEnv("M365_TRANSPORT", "chathub");
+  const original = AbortSignal.timeout;
+  const shorten = vi.spyOn(AbortSignal, "timeout").mockImplementation(ms => original(ms === 180_000 ? 30 : ms));
+  let releaseToken!: (s: string) => void; let entered!: () => void;
+  const enteredP = new Promise<void>(r => { entered = r; }); const tokenP = new Promise<string>(r => { releaseToken = r; });
+  const bounded = <T>(p: Promise<T>) => Promise.race([p, new Promise<never>((_, reject) => setTimeout(() => reject(new Error("token did not honor deadline")), 500))]);
+  try {
+    const pending = request(false, false, { getToken: () => { entered(); return tokenP; } }); await bounded(enteredP);
+    const response = await bounded(pending); expect(response.status).toBe(502); expect(attempts).toBe(0);
+    releaseToken(token); await new Promise<void>(r => setTimeout(r, 30)); expect(attempts).toBe(0); expect(server.clients.size).toBe(0);
+  } finally { shorten.mockRestore(); releaseToken(token); }
+}, 2000);
 it("abort before JSON headers while token resolution is pending dispatches no upstream turn", async () => {
   vi.stubEnv("M365_STRICT_STREAM", "1"); vi.stubEnv("M365_TRANSPORT", "chathub"); transport = "chathub";
   let releaseToken!: (value: string) => void; let entered!: () => void;
