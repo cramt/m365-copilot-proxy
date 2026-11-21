@@ -339,4 +339,5 @@ Each should create `hello.txt`. After a reboot, start the proxy, then copilot-ap
 | The Codex app shows the provider's name instead of your ChatGPT account | `requires_openai_auth = false` | Step 4 |
 | 429 `priority_access_exhausted` | Opus 5.5's or Sonnet 5.5's daily allowance | Another model, or wait for midnight UTC |
 | 429 `m365_throttled` | The account's turn budget | Wait; keep `M365_AVOID_THROTTLING=1` |
+| 403 `m365_model_not_licensed` / `m365_account_not_licensed` / `m365_forbidden` | M365 refused the request as `ForbiddenRequest`: the model isn't licensed for this account (`param` names it), the account has no Copilot licence, or an unknown code | Another model (`GET /v1/models`), or a licensed account; the proxy doesn't retry it |
 | The model says it's Microsoft Copilot and won't act | Harness identity text | `M365_HARNESS_PROMPT=lean` |

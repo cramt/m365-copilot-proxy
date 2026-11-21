@@ -1,0 +1,168 @@
+import { afterAll, afterEach, describe, expect, it, vi } from "vitest";
+import { rmSync } from "node:fs";
+
+const logging = await vi.hoisted(async () => {
+  const { mkdtempSync } = await import("node:fs");
+  const { tmpdir } = await import("node:os");
+  const { join } = await import("node:path");
+  const dir = mkdtempSync(join(tmpdir(), "m365-native-forbidden-"));
+  process.env.M365_DEBUG = "1";
+  process.env.M365_LOG_STDOUT = "1";
+  process.env.M365_LOG_FILE = join(dir, "debug.log");
+  return { dir };
+});
+afterAll(() => { rmSync(logging.dir, { recursive: true, force: true }); });
+
+// Only the transport is synthetic: real handler -> ModelSession -> CopilotSession
+// sends a SignalR handshake and chat_request, and consumes request_end.
+const peer = vi.hoisted(() => {
+  const state = { sockets: [] as any[], code: "", transport: "streamhub", kind: "request_end", category: "ForbiddenRequest", detail: true };
+  class Socket {
+    static OPEN = 1;
+    readyState = 1;
+    sent: any[] = [];
+    handlers: Record<string, ((...args: any[]) => void)[]> = {};
+    constructor() { state.sockets.push(this); setTimeout(() => this.emit("open"), 0); }
+    on(name: string, fn: (...args: any[]) => void) { (this.handlers[name] ??= []).push(fn); return this; }
+    emit(name: string, ...args: any[]) { for (const fn of this.handlers[name] ?? []) fn(...args); }
+    send(data: string) {
+      for (const raw of data.split("\x1e").filter(Boolean)) {
+        const frame = JSON.parse(raw); this.sent.push(frame);
+        if (frame.protocol === "json") setTimeout(() => this.emit("message", Buffer.from("{}\x1e")), 0);
+        if (frame.item?.type === "chat_request" || frame.target === "chat") {
+          const item = state.transport === "streamhub"
+            ? state.kind === "error"
+              ? { type: "error", requestId: frame.item.chatStreamRequest.requestId, errorCategory: state.category, errorCode: state.code, message: "synthetic private refusal detail", ...(state.detail ? { detail: "synthetic private error detail" } : {}) }
+              : { type: "request_end", requestId: frame.item.chatStreamRequest.requestId, outcome: { category: state.category, code: state.code, message: "synthetic private refusal detail" } }
+            : { result: { value: "ForbiddenRequest", errorCode: state.code, message: "synthetic private refusal detail" } };
+          setTimeout(() => { this.emit("message", Buffer.from(JSON.stringify({ type: 2, invocationId: "1", item }) + "\x1e")); if (state.transport === "chathub") this.close(); }, 0);
+        }
+      }
+    }
+    close() { if (this.readyState !== 3) { this.readyState = 3; this.emit("close"); } }
+  }
+  return { state, Socket };
+});
+vi.mock("ws", () => ({ default: peer.Socket }));
+vi.mock("@m365-copilot/core", async (importActual) => {
+  const core = await importActual<typeof import("@m365-copilot/core")>();
+  const source = "./model.ts";
+  const { ModelSession } = await import(source);
+  return { ...core, ModelSession };
+});
+
+const proxySource = "../../proxy-lib/src/index.ts";
+const { ChatCompletionRequest, handleChatCompletion, SessionPool } = await import(proxySource);
+const b64 = (o: object) => Buffer.from(JSON.stringify(o)).toString("base64url");
+const token = `${b64({ alg: "none" })}.${b64({ aud: "https://substrate.office.com/sydney", iss: "test", oid: "oid-1", tid: "tid-1", exp: 9999999999 })}.sig`;
+
+describe("native transport ForbiddenRequest", () => {
+  afterEach(() => { delete process.env.M365_TRANSPORT; peer.state.sockets.length = 0; peer.state.kind = "request_end"; peer.state.category = "ForbiddenRequest"; peer.state.detail = true; });
+  it.each([false, true].flatMap(stream => [false, true].flatMap(detail => ["PremiumModelUnavailableForLicense", "ClaudeUnavailableForLicense", "InvalidCopilotLicense", "syntheticPrivateCode_987654321"].map(code => [stream, detail, code] as const))))("does not log StreamHub forbidden error item details (stream=%s, detail=%s, code=%s)", async (stream, detail, code) => {
+    const secret = "syntheticPrivateCode_987654321";
+    const output: string[] = [];
+    const spy = vi.spyOn(process.stdout, "write").mockImplementation(((chunk: unknown) => { output.push(String(chunk)); return true; }) as typeof process.stdout.write);
+    try {
+      process.env.M365_TRANSPORT = "streamhub";
+      peer.state.transport = "streamhub";
+      peer.state.kind = "error";
+      peer.state.detail = detail;
+      {
+        peer.state.sockets.length = 0;
+        output.length = 0;
+        peer.state.code = code;
+        const body = ChatCompletionRequest.parse({ model: "claude-sonnet", stream, messages: [{ role: "user", content: "native error refusal" }] });
+        const response: Response = await handleChatCompletion(body, new SessionPool({ getToken: async () => token, useAgent: false }));
+        const text = await response.text();
+        const error = stream
+          ? text.split("\n").filter(l => l.startsWith("data: ") && l !== "data: [DONE]").map(l => JSON.parse(l.slice(6))).find(c => c.error)?.error
+          : JSON.parse(text).error;
+        expect(response.status).toBe(stream ? 200 : 403);
+        expect(error.code).toBe(code === secret ? "m365_forbidden" : code === "InvalidCopilotLicense" ? "m365_account_not_licensed" : "m365_model_not_licensed");
+        expect(error.m365_error_code).toBe(code === secret ? undefined : code);
+        expect(error.retryable).toBe(false);
+        expect(text).not.toContain(secret);
+        expect(text).not.toContain("synthetic private");
+        expect(peer.state.sockets).toHaveLength(1);
+        expect(peer.state.sockets[0].sent.filter((f: any) => f.item?.type === "chat_request")).toHaveLength(1);
+        const info = output.filter(line => line.includes("[INFO]")).join("");
+        expect(info).toContain("StreamHub error item: ForbiddenRequest");
+        expect(info).not.toContain(secret);
+        expect(info).not.toContain("synthetic private");
+        if (code !== secret) expect(info).toContain(`StreamHub error item: ForbiddenRequest ${code}`);
+      }
+    } finally { spy.mockRestore(); }
+  });
+
+  it("keeps ordinary StreamHub error diagnostics", async () => {
+    const output: string[] = [];
+    const spy = vi.spyOn(process.stdout, "write").mockImplementation(((chunk: unknown) => { output.push(String(chunk)); return true; }) as typeof process.stdout.write);
+    try {
+      process.env.M365_TRANSPORT = "streamhub";
+      peer.state.transport = "streamhub";
+      peer.state.kind = "error";
+      peer.state.category = "InvalidRequest";
+      peer.state.code = "OtherError";
+      const body = ChatCompletionRequest.parse({ model: "claude-sonnet", stream: false, messages: [{ role: "user", content: "ordinary error" }] });
+      const response: Response = await handleChatCompletion(body, new SessionPool({ getToken: async () => token, useAgent: false }));
+      expect(response.status).toBe(400);
+      expect(output.filter(line => line.includes("[INFO]")).join("")).toContain("StreamHub error item: InvalidRequest OtherError synthetic private error detail");
+    } finally { spy.mockRestore(); }
+  });
+  it.each([["streamhub", false], ["streamhub", true], ["chathub", false], ["chathub", true]] as const)("does not log unknown refusal codes at the real %s info sink (stream=%s)", async (transport, stream) => {
+    const secret = "syntheticPrivateCode_987654321";
+    const output: string[] = [];
+    const spy = vi.spyOn(process.stdout, "write").mockImplementation(((chunk: unknown) => { output.push(String(chunk)); return true; }) as typeof process.stdout.write);
+    try {
+      process.env.M365_TRANSPORT = transport;
+      peer.state.transport = transport;
+      for (const code of [secret, "PremiumModelUnavailableForLicense", "ClaudeUnavailableForLicense", "InvalidCopilotLicense"]) {
+        peer.state.sockets.length = 0;
+        output.length = 0;
+        peer.state.code = code;
+        const body = ChatCompletionRequest.parse({ model: "claude-sonnet", stream, messages: [{ role: "user", content: "native refusal" }] });
+        const response: Response = await handleChatCompletion(body, new SessionPool({ getToken: async () => token, useAgent: false }));
+        const text = await response.text();
+        const error = stream
+          ? text.split("\n").filter(l => l.startsWith("data: ") && l !== "data: [DONE]").map(l => JSON.parse(l.slice(6))).find(c => c.error)?.error
+          : JSON.parse(text).error;
+        expect(response.status).toBe(stream ? 200 : 403);
+        expect(error.code).toBe(code === secret ? "m365_forbidden" : code === "InvalidCopilotLicense" ? "m365_account_not_licensed" : "m365_model_not_licensed");
+        expect(error.m365_error_code).toBe(code === secret ? undefined : code);
+        expect(text).not.toContain(secret);
+        expect(text).not.toContain("synthetic private refusal detail");
+        expect(peer.state.sockets).toHaveLength(1);
+        const frames = peer.state.sockets[0].sent;
+        expect(frames.filter((f: any) => transport === "streamhub" ? f.item?.type === "chat_request" : f.target === "chat")).toHaveLength(1);
+        const info = output.filter(line => line.includes("[INFO]")).join("");
+        expect(info).toContain("Turn result: ForbiddenRequest");
+        expect(info).not.toContain(secret);
+        expect(info).not.toContain("synthetic private refusal detail");
+        if (code !== secret) expect(info).toContain(`Turn result: ForbiddenRequest (${code})`);
+      }
+    } finally { spy.mockRestore(); }
+  });
+
+  it.each([["streamhub", false], ["streamhub", true], ["chathub", false], ["chathub", true]] as const)("drives %s frames through the real protocol and handler (stream=%s)", async (transport, stream) => {
+    process.env.M365_TRANSPORT = transport;
+    peer.state.transport = transport;
+    peer.state.code = "ClaudeUnavailableForLicense";
+    const body = ChatCompletionRequest.parse({ model: "claude-sonnet", stream, messages: [{ role: "user", content: "native refusal" }] });
+    const response: Response = await handleChatCompletion(body, new SessionPool({ getToken: async () => token, useAgent: false }));
+    const text = await response.text();
+    expect(peer.state.sockets, text).toHaveLength(1);
+    const frames = peer.state.sockets[0].sent;
+    expect(frames.some((f: any) => f.protocol === "json")).toBe(true);
+    expect(frames.filter((f: any) => transport === "streamhub" ? f.item?.type === "chat_request" : f.target === "chat")).toHaveLength(1);
+    expect(text).not.toContain("synthetic private refusal detail");
+    if (!stream) {
+      expect(response.status).toBe(403);
+      expect(JSON.parse(text).error).toMatchObject({ code: "m365_model_not_licensed", m365_error_code: peer.state.code, retryable: false });
+    } else {
+      expect(response.status).toBe(200);
+      const chunks = text.split("\n").filter(l => l.startsWith("data: ") && l !== "data: [DONE]").map(l => JSON.parse(l.slice(6)));
+      expect(chunks.find(c => c.error)?.error).toMatchObject({ code: "m365_model_not_licensed", m365_error_code: peer.state.code, retryable: false });
+      expect(chunks.some(c => c.choices?.[0]?.finish_reason === "stop")).toBe(false);
+    }
+  });
+});
