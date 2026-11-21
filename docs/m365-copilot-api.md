@@ -366,38 +366,88 @@ back from disk without capturing traffic:
 2. Find the cache directory: for Edge on Windows, usually
    `%LOCALAPPDATA%\Microsoft\Edge\User Data\<profile>\Cache\Cache_Data`. The one reported
    reading found the bodies in `data_2` there; larger bodies may sit in the `f_*` files, so scan them all.
-3. Scan every file for gzip bodies and print only the menu items, nothing else from the cache (it
-   holds the page's other responses):
+3. Save the following as `scan-picker.mjs` and run `node scan-picker.mjs <Cache_Data dir>`.
+   It reads only regular files up to 8 MiB, tries at most 256 gzip signatures per file, and caps
+   each decompressed body at 1 MiB. Skipped files/members and unsupported cache layouts can hide
+   the menu. The cache is sensitive: run locally and review output before sharing it. Only `id`
+   and `menuItemTitle` strings are projected; those values themselves are untrusted and could
+   contain sensitive data. The scan never prints raw objects or error contents.
 
 ```js
 // node scan-picker.mjs <Cache_Data dir>
-import { readdirSync, readFileSync } from "node:fs";
-import { constants, inflateRawSync } from "node:zlib";
+import { readdirSync, openSync, fstatSync, readSync, closeSync, constants } from "node:fs";
+import { gunzipSync, inflateRawSync } from "node:zlib";
 import { join } from "node:path";
 
-const dir = process.argv[2];
+const MAX_FILE = 8 * 1024 * 1024, MAX_BODY = 1024 * 1024, MAX_HITS = 256;
 const found = new Set();
-for (const name of readdirSync(dir)) {
-  const buf = readFileSync(join(dir, name));
-  for (let i = buf.indexOf("\x1f\x8b\x08", 0, "latin1"); i >= 0; i = buf.indexOf("\x1f\x8b\x08", i + 1, "latin1")) {
-    let body;
-    try {
-      body = inflateRawSync(buf.subarray(i + 10), { finishFlush: constants.Z_SYNC_FLUSH }).toString("utf8");
-    } catch {
-      continue;
-    }
-    for (const m of body.matchAll(/\{[^{}]*"menuItemTitle"[^{}]*\}/g)) found.add(m[0]);
+function headerEnd(b, start) {
+  if (start + 10 > b.length || (b[start + 3] & 0xe0)) throw Error();
+  const flags = b[start + 3];
+  let p = start + 10;
+  if (flags & 4) {
+    if (p + 2 > b.length) throw Error();
+    const n = b.readUInt16LE(p); p += 2 + n;
+    if (p > b.length) throw Error();
   }
+  for (const flag of [8, 16]) if (flags & flag) {
+    p = b.indexOf(0, p);
+    if (p < 0) throw Error();
+    p++;
+  }
+  if (flags & 2) p += 2;
+  if (p > b.length) throw Error();
+  return p;
+}
+function collect(root) {
+  const todo = [root];
+  while (todo.length) {
+    const v = todo.pop();
+    if (!v || typeof v !== "object") continue;
+    if (typeof v.id === "string" && typeof v.menuItemTitle === "string" &&
+        v.id.length <= 256 && v.menuItemTitle.length <= 256) {
+      found.add(JSON.stringify({ id: v.id, menuItemTitle: v.menuItemTitle }));
+    }
+    for (const child of Object.values(v)) if (child && typeof child === "object") todo.push(child);
+  }
+}
+for (const name of readdirSync(process.argv[2])) {
+  const path = join(process.argv[2], name);
+  try {
+    const fd = openSync(path, constants.O_RDONLY | (constants.O_NOFOLLOW || 0));
+    let b;
+    try {
+      const stat = fstatSync(fd);
+      if (!stat.isFile() || stat.size > MAX_FILE) continue;
+      b = Buffer.alloc(MAX_FILE + 1);
+      let n = 0, got;
+      while (n < b.length && (got = readSync(fd, b, n, b.length - n, null)) > 0) n += got;
+      if (n > MAX_FILE) continue;
+      b = b.subarray(0, n);
+    } finally { closeSync(fd); }
+    let hits = 0;
+    for (let i = b.indexOf(Buffer.from([31, 139, 8])); i >= 0 && hits++ < MAX_HITS;
+         i = b.indexOf(Buffer.from([31, 139, 8]), i + 1)) {
+      try {
+        const p = headerEnd(b, i);
+        const inflated = inflateRawSync(b.subarray(p), { info: true, maxOutputLength: MAX_BODY });
+        const end = p + inflated.engine.bytesWritten + 8;
+        if (end > b.length) continue;
+        // Full member validation checks gzip header, CRC32 and ISIZE, unlike raw inflate.
+        const body = gunzipSync(b.subarray(i, end), { maxOutputLength: MAX_BODY });
+        collect(JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(body)));
+      } catch { /* invalid, incomplete, unsupported or over limit */ }
+    }
+  } catch { /* unreadable file */ }
 }
 for (const item of found) console.log(item);
 ```
 
-The scan assumes the usual 10-byte gzip header (no name or extra fields), skips what doesn't
-inflate, and prints a truncated body's complete items. It was run against a synthetic cache file
-here, not a real browser cache, so treat the file layout in step 2 as what one reading saw. No
-output means the cache doesn't hold the menu (it was evicted, or the picker wasn't opened), which
-is no evidence either way: capture the picker's requests as in hypotheses §45 F120, or probe with
-`scripts/tone-probe.mjs`.
+This scans embedded complete single gzip members, including optional gzip headers; it does not
+understand every browser cache format, concatenated members, other encodings, or bodies exceeding
+its limits. No output is inconclusive, not evidence the menu is absent. The scan has only been
+exercised against synthetic files, not a real browser cache; the location above is one reported
+reading. Capture the picker's requests as in hypotheses §45 F120 if needed.
 
 ### Code interpreter — a real server-side Python sandbox
 
