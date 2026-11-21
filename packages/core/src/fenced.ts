@@ -1162,6 +1162,7 @@ export function hasEarlierUnselectedAction(text: string, selected: ToolDef[], al
   const declared = new Set(all.map(t => t.function.name));
   const allSpecs = buildSpecMap(all);
   const selectedSpecs = buildSpecMap(selected, options);
+  const selectedFence = findFirstToolFence(text, selectedSpecs);
   const classify = (name: unknown): number => {
     if (typeof name !== "string") return 0;
     if (name === selectedName) return 1;
@@ -1192,6 +1193,9 @@ export function hasEarlierUnselectedAction(text: string, selected: ToolDef[], al
           if (obj && typeof obj === "object" && !Array.isArray(obj) &&
               (typeof obj.arguments === "string" || (obj.arguments && typeof obj.arguments === "object" && !Array.isArray(obj.arguments)))) {
             const action = classify(obj.tool);
+            // The parser prefers any fence over JSON. Never let a later fence
+            // silently overtake this earlier selected call: refuse the ambiguity.
+            if (action === 1 && selectedFence && i < selectedFence.start) return -1;
             if (action) return action;
           }
         } catch { /* not a valid legacy call */ }

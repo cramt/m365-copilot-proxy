@@ -33,7 +33,9 @@ A named `tool_choice` restricts emitted calls to that tool. Actual declared name
 precedence over shell aliases; JSON aliases are not translated for a named choice. The
 proxy refuses a recognizable earlier unselected top-level fence or line-start legacy JSON
 object before a later selected call, including shell aliases. JSON objects may span lines;
-objects inside fenced examples remain opaque. This is not a complete interpretation of
+objects inside fenced examples remain opaque. When an earlier selected JSON call precedes
+another selected fence, the proxy refuses the ambiguous mixed-format turn rather than
+letting the fence take precedence. This is not a complete interpretation of
 mixed prose, quoted JSON, or malformed calls. The selected call must have object arguments; required
 string properties and recognizable shell command string properties receive a narrow type
 check. This is **not JSON Schema validation**: nested schemas, other required types,

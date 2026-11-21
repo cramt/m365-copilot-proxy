@@ -2335,6 +2335,31 @@ describe("named choice parsing and emission", () => {
     });
   }
   for (const stream of [false, true]) {
+    it(`never executes a later fence over an earlier selected JSON call (${stream})`, async () => {
+      const first = '{"tool":"search_docs","arguments":{"input":"FIRST_UNIQUE"}}';
+      const later = "```search_docs\nSECOND_UNIQUE\n```";
+      for (const middle of ["", "```functions__exec\ndanger()\n```\n", "```sh\ndanger()\n```\n", '{"tool":"functions__exec","arguments":{"input":"danger()"}}\n']) {
+        const r = await ask(first + "\n" + middle + later, [search, exec], named("search_docs"), stream);
+        expect(r.raw).not.toContain("SECOND_UNIQUE");
+        if (!r.raw.includes("invalid_tool_call")) {
+          expect(r.raw).toContain('"name":"search_docs"');
+          expect(r.raw).toContain("FIRST_UNIQUE");
+        }
+      }
+    });
+    it(`preserves the first fence before later JSON (${stream})`, async () => {
+      const r = await ask("```search_docs\nFIRST_UNIQUE\n```\n" + '{"tool":"search_docs","arguments":{"input":"SECOND_UNIQUE"}}', [search, exec], named("search_docs"), stream);
+      expect(r.raw).toContain('"name":"search_docs"');
+      expect(r.raw).toContain("FIRST_UNIQUE");
+      expect(r.raw).not.toContain("SECOND_UNIQUE");
+    });
+    it(`keeps ordinary prose and quoted JSON before a selected fence (${stream})`, async () => {
+      const r = await ask('Example: "{\\"tool\\":\\"search_docs\\"}"\n```search_docs\nFIRST_UNIQUE\n```', [search, exec], named("search_docs"), stream);
+      expect(r.raw).toContain('"name":"search_docs"');
+      expect(r.raw).toContain("FIRST_UNIQUE");
+    });
+  }
+  for (const stream of [false, true]) {
     it(`retains selected schema and accepts same-tool batches (${stream})`, async () => {
       const text = "```bash\nprintf one\n```\n```bash\nprintf two\n```";
       const r = await ask(text, [exec, bash], named("bash"), stream);
