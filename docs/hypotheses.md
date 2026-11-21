@@ -6822,3 +6822,20 @@ and the text was there once: no F107 re-send, up to 5,418 characters. A Chathub 
 unchanged (`Success`, 4.8 s). No `network_info` item came in the 15 StreamHub turns whose item types
 were recorded. F142's other half, `Claude_Sonnet_5`'s sandbox (`sonnet5-native-tools-probe`, `pwd-none`),
 can't run on a non-premium account: it is refused by licence.
+
+### Reasoning-turn cap: provisional consumer report
+
+One consumer reported `OutOfCredits` / `ReasoningTurnExhausted` on GPT-5.5 and
+GPT-5.6 reasoning with both quick tones still serving. The shared wall is a
+hypothesis, not an independently reproduced result; the next UTC midnight is
+an estimated reset, not a confirmed upstream promise. Falsify with controlled
+sequential turns on both reasoning and quick routes before and after midnight.
+No live probe was run for this change.
+
+Refusal hints use process-local observations scoped by token claim hashes; these
+claims are routing hints, not authenticated identity. They do not make pooled
+conversations account-safe: main's pool can reuse a conversation after an account
+switch, and existing priority-access walls remain process-global. A cached
+reasoning wall is checked at dispatch, after attachment uploads and agent setup,
+so it does not prevent those earlier side effects. Default incremental streaming
+can expose refusal text before the final error; strict buffering is separate.
