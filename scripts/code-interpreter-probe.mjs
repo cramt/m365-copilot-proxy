@@ -18,7 +18,12 @@ import { mkdirSync, writeFileSync, appendFileSync } from "node:fs";
 import { join } from "node:path";
 import { createHash } from "node:crypto";
 import { getToken, decodeJwt } from "../packages/core/dist/index.mjs";
-import { oneTurn } from "./_probe-chat.mjs";
+import { oneTurn as defaultOneTurn } from "./_probe-chat.mjs";
+
+import { resolve as resolveEntrypoint } from "node:path";
+import { pathToFileURL as entrypointURL } from "node:url";
+
+export async function main({ oneTurn = defaultOneTurn } = {}) {
 
 const CONTROL = process.argv.includes("--control");
 
@@ -81,6 +86,7 @@ const r = await oneTurn({
     if (f?.item?.messages) for (const m of f.item.messages) if (m?.messageType) seenTypes.add(`msgType:${m.messageType}`);
   },
 });
+if (r.attempted === false) throw new Error(`Probe not attempted: ${r.error}`);
 
 const out = r.fullText || "";
 const correct = out.toLowerCase().includes(EXPECTED);
@@ -105,3 +111,6 @@ console.log(`[ci] CORRECT sha256 in reply: ${correct}  ${correct ? "✅ REAL EXE
 console.log(`[ci] transport=${r.transport} disengaged=${r.disengaged} origin=${r.contentOrigin} throttle=${JSON.stringify(r.throttle)} ${r.elapsedMs}ms ${r.error ? "ERR=" + r.error : ""}`);
 console.log(`[ci] --- reply (first 600 chars) ---\n${out.slice(0, 600)}`);
 console.log(`[ci] full frames: ${framesPath}`);
+
+}
+if (process.argv[1] && import.meta.url === entrypointURL(resolveEntrypoint(process.argv[1])).href) await main();

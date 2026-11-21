@@ -10,7 +10,12 @@
 process.env.M365_FRAMING_VARIANT = process.env.M365_FRAMING_VARIANT || "minimal";
 
 import { getToken, decodeJwt, formatMessages, getOrCreateAgent } from "../packages/core/dist/index.mjs";
-import { oneTurn } from "./_probe-chat.mjs";
+import { oneTurn as defaultOneTurn } from "./_probe-chat.mjs";
+
+import { resolve as resolveEntrypoint } from "node:path";
+import { pathToFileURL as entrypointURL } from "node:url";
+
+export async function main({ oneTurn = defaultOneTurn } = {}) {
 
 const REPEAT = Number(process.argv[2] || 3);
 const COOLDOWN_MS = 25_000;
@@ -53,6 +58,7 @@ for (const m of modes) {
     // Fresh convId per call so each is an independent turn-1.
     const text = formatMessages([{ role: "user", content: TASK }], BENCH_TOOLS, "auto", crypto.randomUUID());
     const r = await oneTurn({ token, claims, text, agentId: m.aid, tone: "magic" });
+    if (r.attempted === false) throw new Error(`Probe not attempted: ${r.error}`);
     const hasFence = FENCE.test(r.fullText || "");
     transports.add(r.transport);
     summary[m.key].n++; if (r.disengaged) summary[m.key].dis++; if (hasFence) summary[m.key].fence++;
@@ -66,3 +72,7 @@ for (const [k, s] of Object.entries(summary)) {
   console.log(`  ${k.padEnd(10)} disengaged ${s.dis}/${s.n}   emitted-tool-fence ${s.fence}/${s.n}`);
 }
 console.log("\nVIABLE mitigation iff agentless: disengaged 0/N AND fence ≈ N/N");
+
+}
+
+if (process.argv[1] && import.meta.url === entrypointURL(resolveEntrypoint(process.argv[1])).href) await main();

@@ -7,7 +7,12 @@
 // Usage: nix develop --command node scripts/claude-tools-probe.mjs [repeat]
 process.env.M365_FRAMING_VARIANT = process.env.M365_FRAMING_VARIANT || "softened";
 import { getToken, decodeJwt, formatMessages } from "../packages/core/dist/index.mjs";
-import { oneTurn } from "./_probe-chat.mjs";
+import { oneTurn as defaultOneTurn } from "./_probe-chat.mjs";
+
+import { resolve as resolveEntrypoint } from "node:path";
+import { pathToFileURL as entrypointURL } from "node:url";
+
+export async function main({ oneTurn = defaultOneTurn } = {}) {
 
 const REPEAT = Number(process.argv[2] || 4);
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -29,6 +34,7 @@ const TONES = (process.env.TONES || "Claude_Sonnet,Claude_Opus,Claude_Sonnet_Rea
 for (const tone of TONES) {
   // 1) self-id (no tools, agent-less) — confirm which model the tone routes to
   const id = await oneTurn({ token, claims, text: "In one short sentence, what AI model are you?", agentId: null, tone });
+    if (id.attempted === false) throw new Error(`Probe not attempted: ${id.error}`);
   console.log(`\n[${tone}] self-id: transport=${id.transport} origin=${id.contentOrigin} disengaged=${id.disengaged}\n   "${(id.fullText || "").replace(/\s+/g, " ").slice(0, 120)}"`);
   await sleep(6000);
   // 2) tool-call propensity (agent-less + softened framing on a coding task)
@@ -37,6 +43,7 @@ for (const tone of TONES) {
   for (let i = 0; i < REPEAT; i++) {
     const text = formatMessages([{ role: "user", content: TASK }], BENCH_TOOLS, "auto", crypto.randomUUID());
     const r = await oneTurn({ token, claims, text, agentId: null, tone });
+    if (r.attempted === false) throw new Error(`Probe not attempted: ${r.error}`);
     const f = FENCE.test(r.fullText || ""); if (f) fences++; if (r.disengaged) dis++;
     transports.add(r.transport);
     console.log(`   ${tone} #${i + 1}: transport=${r.transport} fence=${f} disengaged=${r.disengaged} origin=${r.contentOrigin} len=${(r.fullText || "").length}`);
@@ -45,3 +52,7 @@ for (const tone of TONES) {
   console.log(`[${tone}] => tool-fence ${fences}/${REPEAT}, disengaged ${dis}/${REPEAT}, transport=${[...transports].join("+")}`);
 }
 console.log("\nVIABLE Claude-for-tools iff Claude_Sonnet: self-id=Claude AND tool-fence ≈ REPEAT AND disengaged 0.");
+
+}
+
+if (process.argv[1] && import.meta.url === entrypointURL(resolveEntrypoint(process.argv[1])).href) await main();
