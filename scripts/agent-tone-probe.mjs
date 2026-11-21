@@ -357,7 +357,7 @@ function scanFrame(frame, acc) {
   walk(frame);
 }
 
-async function probeTurn({ oneTurn, token, claims, agentId, cell, framesFile, prompt = PROMPT }) {
+async function probeTurn({ oneTurn, token, claims, agentId, cell, framesFile, prompt = PROMPT, maxAttempts }) {
   // An unpinned cell goes out as the proxy would send it: over StreamHub under
   // one pair for every model (getStreamHubScenario), over Chathub by its tone.
   const transport = getTransport();
@@ -368,7 +368,7 @@ async function probeTurn({ oneTurn, token, claims, agentId, cell, framesFile, pr
   const frames = [];
   const r = await oneTurn({
     token, claims, agentId, transport, tone: cell.tone, scenario, licenseType,
-    timeoutMs: 90000, text: prompt,
+    timeoutMs: 90000, text: prompt, maxAttempts,
     onFrame: (f) => { frames.push(f); scanFrame(f, acc); },
   });
   writeFileSync(framesFile, frames.map((f) => JSON.stringify(f)).join("\n") + "\n");
@@ -430,18 +430,22 @@ async function main(argv) {
   console.log(`[agent-tone] ${CELLS.length} cells${BASELINE ? " × 2 (agent + agent-less baseline)" : ""}, cooldown ${COOLDOWN_MS}ms\n`);
 
   const sleep = (ms) => new Promise((res) => setTimeout(res, ms));
+  // One turn per cell, two with --baseline: over the helper's default cap of 20
+  // for the default list with --baseline. The sweep stops at a throttle itself,
+  // so the helper's own latch stays on.
+  const maxAttempts = CELLS.length * (BASELINE ? 2 : 1);
   const results = [];
   let stoppedEarly = false;
 
   for (const [i, cell] of CELLS.entries()) {
     const slug = `${String(i).padStart(2, "0")}-${cell.tone}-${cell.scenario ?? "default"}`;
     if (i > 0) await sleep(COOLDOWN_MS);
-    const agent = await probeTurn({ oneTurn, token, claims, agentId, cell, prompt, framesFile: join(OUT, `${slug}.agent.jsonl`) });
+    const agent = await probeTurn({ oneTurn, token, claims, agentId, cell, prompt, maxAttempts, framesFile: join(OUT, `${slug}.agent.jsonl`) });
 
     let baseline = null;
     if (BASELINE && agent.result?.value !== "Throttled") {
       await sleep(COOLDOWN_MS);
-      baseline = await probeTurn({ oneTurn, token, claims, agentId: null, cell, prompt, framesFile: join(OUT, `${slug}.agentless.jsonl`) });
+      baseline = await probeTurn({ oneTurn, token, claims, agentId: null, cell, prompt, maxAttempts, framesFile: join(OUT, `${slug}.agentless.jsonl`) });
     }
 
     const row = classifyRow(cell, agent, baseline);
