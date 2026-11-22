@@ -1550,6 +1550,29 @@ describe("Priority access (Opus 5.5, Sonnet 5.5): OutOfCredits, remembering it, 
     expect(Number(res.headers.get("Retry-After"))).toBeGreaterThan(0);
   });
 
+  it("reports the account's daily turns left in usage", async () => {
+    scripted.queue = [{ ...CALL, metering: { ...CALL.metering, TotalTurnUsageDaily: 7 } }];
+    const usage = (await (await send()).json()).usage;
+    expect(usage.x_m365_total_turns_daily_remaining).toBe(7);
+  });
+
+  it("429s the daily turn limit once for the whole account, with no fallback model", async () => {
+    process.env.M365_OPUS_FALLBACK_MODEL = "claude-opus-4.8";
+    const LIMIT = "You\u2019ve used your daily chat limit. Please try again tomorrow.";
+    scripted.queue = [{ fullText: LIMIT, result: { value: "OutOfCredits", message: LIMIT, errorCode: "TotalTurnDailyQuotaExhausted" } }];
+    const res = await send();
+    expect(res.status).toBe(429);
+    const err = (await res.json()).error;
+    expect(err.code).toBe("daily_turn_quota_exhausted");
+    expect(Number(res.headers.get("Retry-After"))).toBeGreaterThan(0);
+    expect(scripted.models).toEqual(["claude-opus"]); // no fallback turn
+    // Every chat model is refused alike, so the next request on another model stays local.
+    const next = await send("gpt-5.5", "another task");
+    expect(next.status).toBe(429);
+    expect((await next.json()).error.code).toBe("daily_turn_quota_exhausted");
+    expect(scripted.models).toEqual([]);
+  });
+
   it("then answers later metered Opus requests itself, without an M365 turn", async () => {
     scripted.queue = [REFUSAL];
     await send();

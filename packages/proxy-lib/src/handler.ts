@@ -23,6 +23,7 @@ import {
   priorityAccessExhaustionOf,
   notePriorityAccessExhausted,
   activePriorityAccessExhaustion,
+  DAILY_TURN_LIMIT_KEY,
   meteredAllowance,
   METERED_BUDGETS,
   type MeteredBudget,
@@ -694,8 +695,10 @@ export async function handleChatCompletion(
   // and often a fresh conversation — what the account's thread-rate throttle
   // counts.
   const requestedBudget = chat ? meteredBudgetOf(requestedModel) : null;
-  const knownExhaustion = chat ? activePriorityAccessExhaustion(requestedBudget ?? requestedModel) : null;
-  const fallbackModel = knownExhaustion && requestedBudget ? priorityAccessFallbackModel(requestedBudget) : null;
+  const knownExhaustion = chat
+    ? activePriorityAccessExhaustion(DAILY_TURN_LIMIT_KEY) ?? activePriorityAccessExhaustion(requestedBudget ?? requestedModel)
+    : null;
+  const fallbackModel = knownExhaustion && requestedBudget && knownExhaustion.scope !== "account" ? priorityAccessFallbackModel(requestedBudget) : null;
   if (knownExhaustion && !fallbackModel) {
     log.info(`Priority access exhausted (${knownExhaustion.window}) until ${knownExhaustion.resetsAt.toISOString()} — 429 without contacting M365`);
     return priorityAccessResponse(knownExhaustion, requestedModel);
@@ -1276,8 +1279,9 @@ export async function handleChatCompletion(
       const exhausted = chat && priorityAccessExhaustionOf(copilotStream.result, refused ? copilotStream.fullText : fullText);
       if (exhausted) {
         const budget = meteredBudgetOf(model);
-        if (budget || copilotStream.result?.value === "OutOfCredits") notePriorityAccessExhausted(budget ?? model, exhausted);
-        const fallback = budget && !priorityFallbackDone ? priorityAccessFallbackModel(budget) : null;
+        if (exhausted.scope === "account") notePriorityAccessExhausted(DAILY_TURN_LIMIT_KEY, exhausted);
+        else if (budget || copilotStream.result?.value === "OutOfCredits") notePriorityAccessExhausted(budget ?? model, exhausted);
+        const fallback = budget && !priorityFallbackDone && exhausted.scope !== "account" ? priorityAccessFallbackModel(budget) : null;
         if (fallback) {
           priorityFallbackDone = true;
           log.info(`Priority access exhausted (${exhausted.window}) — re-sending to ${fallback} (${PRIORITY_ACCESS_FALLBACK_ENV[budget!]}) in a fresh conversation`);
@@ -1945,6 +1949,8 @@ function buildUsage(
     if (left?.daily !== undefined) base[`x_m365_${usageKey}_daily_remaining`] = left.daily;
     if (left?.weekly !== undefined) base[`x_m365_${usageKey}_weekly_remaining`] = left.weekly;
   }
+  // The account's daily turn limit (§7): turns left today, after this one.
+  if (typeof metering?.TotalTurnUsageDaily === "number") base.x_m365_total_turns_daily_remaining = metering.TotalTurnUsageDaily;
   // The agent runtime (Cowork, Code) charges Copilot credits for every turn.
   if (typeof credits === "number") base.x_m365_credits = credits;
   return base;
@@ -1965,6 +1971,23 @@ function jsonResponse(status: number, body: unknown, headers: Record<string, str
  *  the model's answer. Resets at midnight UTC; the weekly budget on Monday. */
 function priorityAccessResponse(exhaustion: PriorityAccessExhaustion, model: string): Response {
   const retryAfter = secondsUntilReset(exhaustion);
+  if (exhaustion.scope === "account") {
+    return jsonResponse(
+      429,
+      {
+        error: {
+          message:
+            `M365 Copilot's daily chat limit for this account is used up: every model is refused ` +
+            `until ${exhaustion.resetsAt.toISOString()} (midnight UTC). Image generation still works. ` +
+            `Upstream said: ${exhaustion.message}`,
+          type: "rate_limit_error",
+          code: "daily_turn_quota_exhausted",
+          param: "day",
+        },
+      },
+      { "Retry-After": String(retryAfter) },
+    );
+  }
   const label = exhaustion.model ?? model;
   const when = exhaustion.window === "week" ? "this week" : "today";
   return jsonResponse(

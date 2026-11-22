@@ -28,6 +28,9 @@ export type PriorityAccessWindow = "day" | "week";
 
 export interface PriorityAccessExhaustion {
   window: PriorityAccessWindow;
+  /** "account": the account's daily turn limit (`TotalTurnDailyQuotaExhausted`),
+   *  which refuses every chat model alike; absent: one model's budget. */
+  scope?: "account";
   /** Model named in the refusal, when M365 names one (e.g. "Opus"). */
   model?: string;
   /** When the budget refills (midnight UTC / Monday midnight UTC). */
@@ -83,6 +86,8 @@ export function parsePriorityAccessExhaustion(
 // the refusal text reaches the client before the 429 does — the exact confusion
 // the 429 exists to prevent, delivered anyway.
 const GATE_PHRASES = [
+  "you've used your daily chat limit",
+  "you have used your daily chat limit",
   "you've used your available priority access",
   "you've used up all of your priority access",
   "you have used your available priority access",
@@ -169,16 +174,45 @@ export function meteredAllowance(
  * paths). Null for an ordinary turn.
  */
 export function priorityAccessExhaustionOf(
-  result: { value: string; message?: string } | null | undefined,
+  result: { value: string; message?: string; errorCode?: string; creditScenario?: string } | null | undefined,
   text: string | null | undefined,
   now: Date = new Date(),
 ): PriorityAccessExhaustion | null {
+  const daily = dailyTurnLimitOf(result, text, now);
+  if (daily) return daily;
   const fromText = parsePriorityAccessExhaustion(result?.message, now) ?? parsePriorityAccessExhaustion(text, now);
   if (fromText) return fromText;
   if (result?.value !== "OutOfCredits") return null;
   const message = (result.message ?? text ?? "").trim() || "OutOfCredits";
   const window: PriorityAccessWindow = /\bweek|monday/i.test(message) ? "week" : "day";
   return { window, resetsAt: window === "week" ? nextUtcMonday(now) : nextUtcMidnight(now), message };
+}
+
+// --- The account's daily turn limit (docs/m365-copilot-api.md §7) ----------
+//
+// A non-premium ("Basic") account gets 50 turns per UTC day across every model
+// (`TotalTurnUsageDaily` in `throttling.metering`). Past it M365 refuses each
+// turn from `BotConnection` with `result: {value: "OutOfCredits", errorCode:
+// "TotalTurnDailyQuotaExhausted", creditScenario: "TotalTurn"}` and the text
+// "You've used your daily chat limit. Please try again tomorrow." It refuses
+// every chat model alike, so it is remembered for the whole account, and no
+// fallback model helps. Image generation still works past it.
+
+/** Key the account-wide daily turn limit is remembered under. */
+export const DAILY_TURN_LIMIT_KEY = "account:total-turn-daily";
+
+const DAILY_LIMIT_RE = /(?:you.?ve|you have)\s+used\s+your\s+daily\s+chat\s+limit/i;
+
+function dailyTurnLimitOf(
+  result: { value: string; message?: string; errorCode?: string } | null | undefined,
+  text: string | null | undefined,
+  now: Date,
+): PriorityAccessExhaustion | null {
+  const byCode = result?.value === "OutOfCredits" && result.errorCode === "TotalTurnDailyQuotaExhausted";
+  const byText = !result?.errorCode && DAILY_LIMIT_RE.test(result?.message ?? text ?? "");
+  if (!byCode && !byText) return null;
+  const message = (result?.message ?? text ?? "").trim() || "TotalTurnDailyQuotaExhausted";
+  return { window: "day", scope: "account", resetsAt: nextUtcMidnight(now), message };
 }
 
 // --- Remembering it ----------------------------------------------------------
