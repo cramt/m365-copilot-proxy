@@ -7,12 +7,7 @@
 // Usage: nix develop --command node scripts/claude-tools-probe.mjs [repeat]
 process.env.M365_FRAMING_VARIANT = process.env.M365_FRAMING_VARIANT || "softened";
 import { getToken, decodeJwt, formatMessages } from "../packages/core/dist/index.mjs";
-import { oneTurn as defaultOneTurn } from "./_probe-chat.mjs";
-
-import { resolve as resolveEntrypoint } from "node:path";
-import { pathToFileURL as entrypointURL } from "node:url";
-
-export async function main({ oneTurn = defaultOneTurn } = {}) {
+import { oneTurn } from "./_probe-chat.mjs";
 
 const REPEAT = Number(process.argv[2] || 4);
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -31,10 +26,11 @@ const claims = decodeJwt(token);
 console.log(`[claude] framing=${process.env.M365_FRAMING_VARIANT} repeat=${REPEAT} (agent-less; tone is the model selector)`);
 
 const TONES = (process.env.TONES || "Claude_Sonnet,Claude_Opus,Claude_Sonnet_Reasoning").split(",");
+const maxAttempts = Math.max(20, TONES.length * (REPEAT + 1));
 for (const tone of TONES) {
   // 1) self-id (no tools, agent-less) — confirm which model the tone routes to
-  const id = await oneTurn({ token, claims, text: "In one short sentence, what AI model are you?", agentId: null, tone });
-    if (id.attempted === false) throw new Error(`Probe not attempted: ${id.error}`);
+  const id = await oneTurn({ token, claims, text: "In one short sentence, what AI model are you?", agentId: null, tone, maxAttempts });
+  if (id.attempted === false) throw new Error(`Probe not attempted: ${id.error}`);
   console.log(`\n[${tone}] self-id: transport=${id.transport} origin=${id.contentOrigin} disengaged=${id.disengaged}\n   "${(id.fullText || "").replace(/\s+/g, " ").slice(0, 120)}"`);
   await sleep(6000);
   // 2) tool-call propensity (agent-less + softened framing on a coding task)
@@ -42,7 +38,7 @@ for (const tone of TONES) {
   const transports = new Set([id.transport]);
   for (let i = 0; i < REPEAT; i++) {
     const text = formatMessages([{ role: "user", content: TASK }], BENCH_TOOLS, "auto", crypto.randomUUID());
-    const r = await oneTurn({ token, claims, text, agentId: null, tone });
+    const r = await oneTurn({ token, claims, text, agentId: null, tone, maxAttempts });
     if (r.attempted === false) throw new Error(`Probe not attempted: ${r.error}`);
     const f = FENCE.test(r.fullText || ""); if (f) fences++; if (r.disengaged) dis++;
     transports.add(r.transport);
@@ -52,7 +48,3 @@ for (const tone of TONES) {
   console.log(`[${tone}] => tool-fence ${fences}/${REPEAT}, disengaged ${dis}/${REPEAT}, transport=${[...transports].join("+")}`);
 }
 console.log("\nVIABLE Claude-for-tools iff Claude_Sonnet: self-id=Claude AND tool-fence ≈ REPEAT AND disengaged 0.");
-
-}
-
-if (process.argv[1] && import.meta.url === entrypointURL(resolveEntrypoint(process.argv[1])).href) await main();

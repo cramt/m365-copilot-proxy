@@ -29,12 +29,7 @@
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { getToken, getOrCreateAgent, decodeJwt } from "../packages/core/dist/index.mjs";
-import { oneTurn as defaultOneTurn } from "./_probe-chat.mjs";
-
-import { resolve as resolveEntrypoint } from "node:path";
-import { pathToFileURL as entrypointURL } from "node:url";
-
-export async function main({ oneTurn = defaultOneTurn } = {}) {
+import { oneTurn } from "./_probe-chat.mjs";
 
 const args = process.argv.slice(2);
 const has = (k) => args.includes(k);
@@ -83,7 +78,7 @@ const results = [];
 async function run(chars) {
   const text = makePrompt(chars);
   const r = await oneTurn({ token, claims, text, agentId, timeoutMs: 150000 });
-    if (r.attempted === false) throw new Error(`Probe not attempted: ${r.error}`);
+  if (r.attempted === false) { console.error(`Probe not attempted: ${r.error}`); return null; }
   const out = (r.fullText ?? "");
   const sawHead = out.includes(CANARY_HEAD);
   const sawTail = out.includes(CANARY_TAIL);
@@ -118,7 +113,7 @@ async function run(chars) {
 }
 
 for (const c of LADDER) {
-  await run(c);
+  if (!await run(c)) break;
 }
 
 writeFileSync(join(OUT, "results.json"), JSON.stringify({
@@ -142,7 +137,7 @@ const lastGood = [...results].reverse().find((r) => r.gotContent && r.sawTailCan
 if (firstBad) {
   console.log(`[in-probe] INPUT CEILING between ${lastGood ? lastGood.inputChars : "?"}c (last good) and ${firstBad.inputChars}c (first bad).`);
   console.log(`[in-probe] Next: bisect that range with --ladder.`);
-} else {
+} else if (results.length === LADDER.length) {
   console.log(`[in-probe] All ${LADDER.length} rungs OK up to ${Math.max(...LADDER)}c (~${Math.round(Math.max(...LADDER) / 4)}t). Ceiling is higher — extend the ladder.`);
 }
 // Did benign size move the classifier?
@@ -152,7 +147,3 @@ if (deas.length >= 2) {
   console.log(`[in-probe] dea_violation: ${lo.c}c=${lo.dea.toExponential(2)} → ${hi.c}c=${hi.dea.toExponential(2)} (does benign bulk raise the score?)`);
 }
 console.log(`[in-probe] full output: ${OUT}`);
-
-}
-
-if (process.argv[1] && import.meta.url === entrypointURL(resolveEntrypoint(process.argv[1])).href) await main();

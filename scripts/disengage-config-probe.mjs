@@ -8,12 +8,7 @@
 //
 // Usage: nix develop --command node scripts/disengage-config-probe.mjs [repeat]
 import { getToken, decodeJwt } from "../packages/core/dist/index.mjs";
-import { oneTurn as defaultOneTurn } from "./_probe-chat.mjs";
-
-import { resolve as resolveEntrypoint } from "node:path";
-import { pathToFileURL as entrypointURL } from "node:url";
-
-export async function main({ oneTurn = defaultOneTurn } = {}) {
+import { oneTurn } from "./_probe-chat.mjs";
 
 const REPEAT = Number(process.argv[2] || 2);
 const COOLDOWN_MS = 25_000; // gentle thread spacing
@@ -58,7 +53,3 @@ for (const [k, s] of Object.entries(byKey)) {
   const maxDea = s.deas.length ? Math.max(...s.deas).toExponential(1) : "?";
   console.log(`  ${k.padEnd(18)} DIS ${s.dis}/${s.n}   max_dea=${maxDea}`);
 }
-
-}
-
-if (process.argv[1] && import.meta.url === entrypointURL(resolveEntrypoint(process.argv[1])).href) await main();

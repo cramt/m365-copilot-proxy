@@ -10,12 +10,7 @@
 process.env.M365_FRAMING_VARIANT = process.env.M365_FRAMING_VARIANT || "minimal";
 
 import { getToken, decodeJwt, formatMessages, getOrCreateAgent } from "../packages/core/dist/index.mjs";
-import { oneTurn as defaultOneTurn } from "./_probe-chat.mjs";
-
-import { resolve as resolveEntrypoint } from "node:path";
-import { pathToFileURL as entrypointURL } from "node:url";
-
-export async function main({ oneTurn = defaultOneTurn } = {}) {
+import { oneTurn } from "./_probe-chat.mjs";
 
 const REPEAT = Number(process.argv[2] || 3);
 const COOLDOWN_MS = 25_000;
@@ -72,7 +67,3 @@ for (const [k, s] of Object.entries(summary)) {
   console.log(`  ${k.padEnd(10)} disengaged ${s.dis}/${s.n}   emitted-tool-fence ${s.fence}/${s.n}`);
 }
 console.log("\nVIABLE mitigation iff agentless: disengaged 0/N AND fence ≈ N/N");
-
-}
-
-if (process.argv[1] && import.meta.url === entrypointURL(resolveEntrypoint(process.argv[1])).href) await main();

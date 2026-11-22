@@ -13,14 +13,9 @@
 //   node scripts/mcp-agent-probe.mjs <tunnel-base-url> [--shape bareurl|connector|taskdialog]
 // Cost: ~2 chat messages + PowerPlatform create/publish/delete (no BizChat quota for those).
 
-import { randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { getToken, decodeJwt, getTokenForScope, getEnvironmentUrl } from "../packages/core/dist/index.mjs";
-import { oneTurn as defaultOneTurn } from "./_probe-chat.mjs";
-import { resolve } from "node:path";
-import { pathToFileURL } from "node:url";
-
-export async function main({ oneTurn = defaultOneTurn, fetcher = fetch, createTimeoutMs = 10000, ownershipTimeoutMs = 3000, ownershipRetryMs = 200 } = {}) {
+import { oneTurn } from "./_probe-chat.mjs";
 
 const TUNNEL = (process.argv[2] || readFileSync("/tmp/tunnel_url.txt", "utf8")).trim().replace(/\/$/, "");
 const SHAPE = (() => { const i = process.argv.indexOf("--shape"); return i >= 0 ? process.argv[i + 1] : "bareurl"; })();
@@ -29,10 +24,10 @@ const SENTINEL = readFileSync("scripts/sentinel-value.txt", "utf8").trim();
 
 const PP_SCOPES = ["https://api.powerplatform.com/.default"];
 const BAP_SCOPES = ["https://api.bap.microsoft.com/.default"];
-const NAME = `m365-mcp-probe-${randomUUID()}`;
+const NAME = `m365-mcp-probe-${Date.now().toString(36)}`;
 const ICON = "iVBORw0KGgoAAAANSUhEUgAAADAAAAAwCAIAAADYYG7QAAAAB3RJTUUH6AMbAAAoLbOJEAAAABl0RVh0Q29tbWVudABDcmVhdGVkIHdpdGggR0lNUFeBDhcAAAAoSURBVFjD7cExAQAAAMKg9U9tDB+gAAAAAAAAAAAAAAAAAAAAAAAA/BgwMAAB/0LuMgAAAABJRU5ErkJggg==";
 
-console.log(`[mcp] shape=${SHAPE}`);
+console.log(`[mcp] tunnel=${TUNNEL}  shape=${SHAPE}  sentinel=${SENTINEL}`);
 
 const ppToken = await getTokenForScope(PP_SCOPES);
 const bapToken = await getTokenForScope(BAP_SCOPES);
@@ -42,7 +37,7 @@ if (!ppToken || !bapToken) { console.error("missing PP/BAP token"); process.exit
 const envUrl = await getEnvironmentUrl(bapToken);
 console.log(`[mcp] env=${envUrl}`);
 
-const ppFetch = (url, opts = {}) => fetcher(url, { ...opts, headers: { "Content-Type": "application/json", Authorization: `Bearer ${ppToken}`, "x-ms-user-agent": "PVA-Portal/1.0.0 (Web; ReactNative: false)", ...(opts.headers || {}) } });
+const ppFetch = (url, opts = {}) => fetch(url, { ...opts, headers: { "Content-Type": "application/json", Authorization: `Bearer ${ppToken}`, "x-ms-user-agent": "PVA-Portal/1.0.0 (Web; ReactNative: false)", ...(opts.headers || {}) } });
 const API = `${envUrl}/copilotstudio/minimalBots/api?api-version=2022-03-01-preview`;
 
 // --- the tool DialogComponent (try shapes) ---
@@ -91,92 +86,35 @@ const createBody = {
   bot: { authorizedSecurityGroupIds: [], supportedLanguages: [], diagnostics: [], displayName: NAME, language: 1033, schemaName: ZERO, template: "gpt-1.1.0", $kind: "BotEntity", iconBase64: ICON },
 };
 
-console.log(`[mcp] creating temporary agent`);
-const createController = new AbortController();
-let createTimer;
-const createDeadline = new Promise((resolve) => { createTimer = setTimeout(() => { createController.abort(); resolve(null); }, createTimeoutMs); });
-const createOperation = (async () => {
-  try {
-    const response = await ppFetch(API, { method: "POST", body: JSON.stringify(createBody), signal: createController.signal });
-    if (!response.ok) return null;
-    const text = await response.text();
-    return { text };
-  } catch { return null; }
-})();
-let createResult;
-try { createResult = await Promise.race([createOperation, createDeadline]); }
-finally { clearTimeout(createTimer); createController.abort(); }
-if (!createResult) throw new Error("[mcp] create outcome unknown; temporary agent may remain. Inspect the probe-named agents in Copilot Studio; do not delete without verification.");
-let created;
-try { created = JSON.parse(createResult.text); } catch {
-  throw new Error("[mcp] invalid create response; temporary agent may remain. Inspect the probe-named agents in Copilot Studio; do not delete without verification.");
+console.log(`[mcp] creating agent ${NAME} with tool dialog:\n${toolDialogYaml().split("\n").map(l=>"      "+l).join("\n")}`);
+const createRes = await ppFetch(API, { method: "POST", body: JSON.stringify(createBody) });
+const createText = await createRes.text();
+console.log(`[mcp] create → ${createRes.status}`);
+if (!createRes.ok) {
+  console.log(`[mcp] create FAILED body:\n${createText.slice(0, 1200)}`);
+  process.exit(1);
 }
-if (!created || typeof created !== "object" || Array.isArray(created) || !created.bot || typeof created.bot !== "object" || Array.isArray(created.bot)) {
-  throw new Error("[mcp] invalid create response; temporary agent may remain. Inspect the probe-named agents in Copilot Studio; do not delete without verification.");
-}
-const schema = created.bot.schemaName;
-const cds = created.bot?.cdsBotId;
-const botId = schema ?? cds;
-// Existing code accepts either field, but does not establish equivalence between them.
-if ((schema != null && cds != null && schema !== cds) || typeof botId !== "string" || !/^[A-Za-z0-9_-][A-Za-z0-9_.-]{0,255}$/.test(botId)) {
-  throw new Error("Created agent response has invalid, ambiguous or no bot ID; temporary agent may remain. Inspect the probe-named agents in Copilot Studio; do not delete without verification.");
-}
+const created = JSON.parse(createText);
+const botId = created.bot?.schemaName || created.bot?.cdsBotId;
+console.log(`[mcp] created botId=${botId}`);
 
-// Bound the entire listing operation, including response-body consumption, even
-// if a transport ignores abort. No late listing can authorize a mutation.
-const controller = new AbortController();
-let timer;
-const timeout = new Promise((resolve) => { timer = setTimeout(() => { controller.abort(); resolve(false); }, ownershipTimeoutMs); });
-const verify = (async () => {
-  for (let i = 0; i < 3 && !controller.signal.aborted; i++) {
-    try {
-      const res = await ppFetch(API, { method: "GET", signal: controller.signal });
-      if (res.ok) {
-        const owners = await res.json();
-        if (!Array.isArray(owners)) return false;
-        const relevant = owners.filter((row) => row?.botId === botId || row?.shortBotName === NAME);
-        if (relevant.length === 1 && relevant[0]?.botId === botId && relevant[0]?.shortBotName === NAME) return true;
-        if (relevant.length) return false;
-      } else if (res.status !== 429 && res.status < 500) return false;
-    } catch {
-      if (controller.signal.aborted) return false;
-    }
-    if (i < 2) await new Promise((resolve) => setTimeout(resolve, ownershipRetryMs));
-  }
-  return false;
-})();
-let verified;
-try { verified = await Promise.race([verify, timeout]); }
-finally { clearTimeout(timer); controller.abort(); }
-if (!verified) {
-  throw new Error("[mcp] unable to verify agent ownership; temporary agent may remain. Inspect the probe-named agents in Copilot Studio; do not delete without verification.");
-}
-const botPath = `${envUrl}/copilotstudio/minimalBots/api/${encodeURIComponent(botId)}`;
-console.log(`[mcp] created temporary agent`);
-
-async function cleanup() {
-  let response;
-  try { response = await ppFetch(`${botPath}?api-version=2022-03-01-preview`, { method: "DELETE" }); }
-  catch { throw new Error("[mcp] cleanup failed (transport error)"); }
-  if (!response.ok) throw new Error(`[mcp] cleanup failed (HTTP ${response.status})`);
-  console.log(`[mcp] cleanup delete → ${response.status}`);
-}
-
-let hasPrimaryError = false;
-try {
 // publish
-const pubRes = await ppFetch(`${botPath}/publish?api-version=2022-03-01-preview`, { method: "POST" });
+const pubRes = await ppFetch(`${envUrl}/copilotstudio/minimalBots/api/${botId}/publish?api-version=2022-03-01-preview`, { method: "POST" });
 const pubText = await pubRes.text();
 console.log(`[mcp] publish → ${pubRes.status}`);
-if (!pubRes.ok) throw new Error(`[mcp] publish failed (HTTP ${pubRes.status})`);
+if (!pubRes.ok) { console.log(`[mcp] publish FAILED:\n${pubText.slice(0, 800)}`); }
 let titleId = null;
 try { titleId = JSON.parse(pubText).TitleId; } catch {}
-console.log(`[mcp] publish returned a title: ${!!titleId}`);
+console.log(`[mcp] titleId=${titleId}`);
 
-if (!titleId) throw new Error("[mcp] no titleId — cannot chat-test");
+async function cleanup() {
+  try { const d = await ppFetch(`${envUrl}/copilotstudio/minimalBots/api/${botId}?api-version=2022-03-01-preview`, { method: "DELETE" }); console.log(`[mcp] cleanup delete → ${d.status}`); } catch (e) { console.log(`[mcp] cleanup err ${e.message}`); }
+}
+
+if (!titleId) { console.log("[mcp] no titleId — cannot chat-test"); await cleanup(); process.exit(1); }
 
 const agentId = `${titleId}.${botId}.gpt.default`;
-console.log(`[mcp] agent ready for chat`);
+console.log(`[mcp] agentId=${agentId}`);
 
 // chat test — ask it to use the tool
 const token = await getToken();
@@ -188,25 +126,12 @@ const r = await oneTurn({
   extraAllowed: ["TriggerPlugin", "Progress", "InternalLoaderMessage"],
   timeoutMs: 90000,
 });
-if (r.attempted === false) throw new Error(`Probe not attempted: ${r.error}`);
 const got = (r.fullText || "");
 const calledTool = readFileSync("scripts/sentinel-hits.log", "utf8").includes("tools/call");
 const leaked = got.includes(SENTINEL);
 console.log(`\n[mcp] === RESULT ===`);
-console.log(`[mcp] reply received: ${got.length > 0}`);
+console.log(`[mcp] reply: ${JSON.stringify(got.slice(0, 300))}`);
 console.log(`[mcp] transport=${r.transport} msgTypes: ${r.messageTypes.join(",")} disengaged=${r.disengaged} ${r.elapsedMs}ms`);
 console.log(`[mcp] OUR MCP SERVER GOT A tools/call: ${calledTool}  ${calledTool ? "🎉 COPILOT CALLED OUR TOOL" : "❌ not called"}`);
 console.log(`[mcp] sentinel value present in reply: ${leaked}  ${leaked ? "🎉🎉 END-TO-END TOOL EXECUTION" : ""}`);
-} catch (error) {
-  hasPrimaryError = true;
-  throw error;
-} finally {
-  try { await cleanup(); }
-  catch (error) {
-    if (!hasPrimaryError) throw error;
-    console.log("[mcp] cleanup failed; temporary agent may remain");
-  }
-}
-
-}
-if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) await main();
+await cleanup();

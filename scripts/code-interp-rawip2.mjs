@@ -1,12 +1,7 @@
 // Lean retry: raw TCP SYN to public IPv4s (no DNS, no proxy, no subprocess).
 import { readFileSync, writeFileSync, mkdirSync } from "node:fs";
 import { getToken, decodeJwt } from "../packages/core/dist/index.mjs";
-import { oneTurn as defaultOneTurn } from "./_probe-chat.mjs";
-
-import { resolve as resolveEntrypoint } from "node:path";
-import { pathToFileURL as entrypointURL } from "node:url";
-
-export async function main({ oneTurn = defaultOneTurn } = {}) {
+import { oneTurn } from "./_probe-chat.mjs";
 
 const SENTINEL = readFileSync("scripts/sentinel-value.txt", "utf8").trim();
 const CODE_INTERP = ["cwc_code_interpreter", "cwc_code_interpreter_amsfix", "cwc_code_interpreter_citation_fix", "code_interpreter_interactive_charts", "code_interpreter_matplotlib_patching"];
@@ -44,6 +39,3 @@ const fp = `scripts/code-interp-out/rawip2-${new Date().toISOString().replace(/[
 writeFileSync(fp, out);
 console.log(`[rawip2] saved ${fp} (${out.length} chars)\n${out}`);
 console.log(`[rawip2] transport=${r.transport} msgTypes=${r.messageTypes.join(",")} elapsed=${r.elapsedMs}ms throttle=${JSON.stringify(r.throttle)} disengaged=${r.disengaged}`);
-
-}
-if (process.argv[1] && import.meta.url === entrypointURL(resolveEntrypoint(process.argv[1])).href) await main();

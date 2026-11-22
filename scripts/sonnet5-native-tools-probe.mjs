@@ -29,12 +29,7 @@
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { getToken, decodeJwt, getStreamHubScenario, getTransport } from "../packages/core/dist/index.mjs";
-import { oneTurn as defaultOneTurn } from "./_probe-chat.mjs";
-
-import { resolve as resolveEntrypoint } from "node:path";
-import { pathToFileURL as entrypointURL } from "node:url";
-
-export async function main({ oneTurn = defaultOneTurn } = {}) {
+import { oneTurn } from "./_probe-chat.mjs";
 
 // Mirrors of session.ts (not exported from core). Keep in sync if those change.
 const CODE_INTERPRETER = [
@@ -127,7 +122,7 @@ for (const name of pick) {
     transport: TRANSPORT, ...route, timeoutMs: 180000,
     onFrame: (f) => frames.push(f),
   });
-    if (r.attempted === false) throw new Error(`Probe not attempted: ${r.error}`);
+  if (r.attempted === false) { console.error(`Probe not attempted: ${r.error}`); break; }
   // Distinct bot messages (last snapshot per messageId wins), from Chathub's
   // `update` invocations or StreamHub's `message_part` items.
   const byId = new Map();
@@ -157,7 +152,3 @@ for (const name of pick) {
 
 writeFileSync(join(OUT, "results.json"), JSON.stringify(results, null, 2));
 console.log(`\n[probe] out: ${OUT}`);
-
-}
-
-if (process.argv[1] && import.meta.url === entrypointURL(resolveEntrypoint(process.argv[1])).href) await main();
