@@ -593,9 +593,44 @@ The final `type:2` frame carries the canonical state of the whole conversation i
 - This is why we **reuse one conversation** across an agent session and send **only new messages** on follow-up turns (delta mode) — every `Please continue.` retry also counts against the 600.
 - There is also opaque **account-level throttling** (rapid-fire requests can start returning empties). It recovers on its own.
 
-### A daily chat limit across the whole account (2026-11-22)
+### 50 turns a day across the whole account: `TotalTurnUsageDaily` (2026-11-22)
 
-After about 50 fresh conversations in an hour, every model on the account refused with "You've used your daily chat limit", with a reset at `2026-11-23T00:00:00.000Z`. It is not `PerUserThrottled` (that one clears in about an hour) and not priority access (that one is per model). Refusals ("no tool is available") showed up before the wall did. The proxy doesn't recognise it yet; it should become a 429 with `Retry-After` to midnight UTC, like `priority_access_exhausted`.
+Every turn's `throttling.metering` map now carries **`TotalTurnUsageDaily`**. It reads 49 after the first turn of the UTC day and drops by exactly 1 per turn, whatever the model, agent or not, follow-up turns included. That makes it **50 turns a day per account**. It reset between 23:53Z and 01:11Z, which fits midnight UTC. On 2026-11-22 a bench took it from 49 to 0 between 01:11:18Z and 01:20:53Z, one turn every ~5 s. The next turn was refused like this:
+
+```json
+"result": { "value": "OutOfCredits", "message": "You've used your daily chat limit. Please try again tomorrow.",
+            "errorCode": "TotalTurnDailyQuotaExhausted", "creditScenario": "TotalTurn", "serviceVersion": "1.0.03611.67938" }
+```
+
+The reply comes from `contentOrigin: "BotConnection"` with `turnState: "Failed"`, the same shape as the priority-access wall, and the message names no reset time. This is not `PerUserThrottled` (that one clears in about an hour) and not priority access (that one is per model). Refusals ("no tool is available") showed up before the wall did.
+
+For an agent harness this is the binding limit: every tool step is a turn, so 50 is a few tasks a day. The proxy doesn't handle it yet. It should:
+- return a 429 with `Retry-After` to midnight UTC on `errorCode: "TotalTurnDailyQuotaExhausted"`, the way it does for `priority_access_exhausted`;
+- surface the counter as `usage.x_m365_total_turns_daily_remaining`.
+
+The key wasn't in the log before 2026-11-21. The log doesn't go back far enough to say when Microsoft added it.
+
+### The API behind usage limits (2026-11-22)
+
+Found in the web client's bundles (all 2,356 rspack chunks, listed in `runtime.<hash>.js`, public on `res.public.onecdn.static.microsoft/midgard/versionless-v2/`). There are three channels. Only the first applies to this account.
+
+**1. In-band on the chat stream.** This is where the chat client reads limits. The client's parser (`meteringInfo` / `billing_info` handling in the Sydney client chunk) knows three frame kinds:
+- `throttling.metering`, every turn: `{<key>: {remainingAllowance}}`, as above. The full key list on 2026-11-22: `TenantDataAccess ImageAnalysis LLMOnly VisualCreator PersonalDataAccess GraphicArt CodeInterpreter FileReference DeepResearch CopilotTuning DeepWork WXPAgentMode NotebookCowork ImageGeneration ClaudeOpusQuery ClaudeOpusQuery75 ClaudeOpusQueryDev ClaudeOpusQueryC1 ClaudeOpusQueryC2 ClaudeOpusQueryDaily(…C1/C2) ClaudeOpusQueryHourlyDev ArtifactGeneration ReasoningModelTurnUsage ClaudeOpus(55)Query{Daily,Weekly}Word Gpt6Query{Daily,Weekly} GPT61SolQuery{Daily,Weekly}(Word) ClaudeSonnet55{Query,}{Daily,Weekly}(Word) TotalTurnUsageDaily GPT62SolQuery{Daily,Weekly}(Word) GPT62AstraQuery{Daily,Weekly}(Word) CostQuota`.
+- A `MeteringInfo` message carrying `meteringInfo: {meterError, meteredResource, hasAccess, remainingAllowance, totalAllowance, resetAt, serviceName, meteredModelInfo.modelId}`. The client shows its "limit reached" banners from this, behind the flag `enableMainlineDaybreakMeteringInfoBanners`. The enums are `meteredResource` ∈ `CostQuota TenantDataAccess ImageAnalysis LLMOnly VisualCreator PersonalDataAccess GraphicArt CodeInterpreter ClaudeOpusQuery FileReference VoiceRealTime VisionRealTime DeepResearch CopilotTuning DeepWork WXPAgentMode NotebookCowork ModelUsage ImageUpload AICredits` and `meterError` ∈ `None Limit Billing ImageGenInsufficientTokensThrottled`. The banner kinds are `ModelUsage` (a per-model limit), `CostQuota` and `ImageCapacity`. None has turned up in this proxy's logs yet.
+- A `billing_info` frame (StreamHub persistent stream) carrying `billingInfo: {usageBasedBillingUtilizationPercentage (-1..100), usageBasedBillingResetOn, serviceMeterName, status: creditInUse|creditNotInUse|outOfCredit}`, plus a `cost_info` frame. These feed the header's `creditStatus` meter, behind `enableUbbUsageState` / `enableAadUbbCreditBanners`. The model picker's options carry the same fields (`usageBasedBillingEnabled`, `usageBasedBillingUtilizationPercentage`) when a model is billed by usage.
+
+**2. AI-credits entitlement, GraphQL on `loki.delve.office.com/api/v2/graphql/`.** The request is a POST with `ConvertSimpleRequest=POST`; the auth headers go in the JSON body as `__request_headers`, not as real headers. The client sends `fetchAiCreditsQuery`:
+```graphql
+viewer { aiCredits {
+  evaluateAiCredits(input: {evaluationTypes: ["Usl","Capacity"], entitlements: ["AICredits"], context: {services: $services, operationType: "OR"}}) {
+    entitlements { hasAccess serviceName availableQuantity entitledQuantity uslDetails{evaluationResult licenseId} capacityDetails{billingPlanId evaluationResult billingPolicyEvaluationResult} } }
+  creditRequests { requestId state approvedCredits … } } }
+```
+Valid services: `PremiumModelsInM365Chat`, `M365CopilotChatAdvancedWork`, `ResearcherCritiqueAndCouncil`. A wrong service name gives "Neptune request failed". There are also mutations `creditRequestCreate` / `creditRequestUpdate` (asking the admin for more credits). On this account all three services return `hasAccess:false`, 0/0, USL `Skipped` and Capacity `Skipped`, which the client maps to `NotConfigured`: the tenant has no AI-credits plan. The same endpoint serves `PLGEnvironmentQuery` (upsell scenarios).
+
+**3. Cowork v2 ("Aether") REST**, base `aether-*.microsoft.com/api` or a routed `*.island.powerapps.com` gateway: `GET /users/me/cost` and `GET /users/me/creditRequest`, next to `/v1/tasks`, `/conversations` and `/projects`. That's Cowork's agentic billing, not chat.
+
+To call #2: take the `__request_headers` from the app's own `PLGEnvironmentQuery` POST, swap in the query and variables, and post to the same URL. It's read-only and costs no chat turn.
 
 ### What the web UI shows about usage (2026-11-22, a Basic account)
 
