@@ -24,10 +24,11 @@ tool (`bash`/`shell`/`run`/`run_command`/… — any name), the proxy injects "d
 by writing one ` ```bash ` block" framing and routes that block to the shell tool. This is
 what turns 0/5 into real multi-turn loops. See [hypotheses §9 F12](./hypotheses.md).
 
-In automatic mode, a named shell takes precedence, followed by a recognized Codex Code
-Mode executor and then the generic single-parameter heuristic. This changes the target
-of a shell fence when both Codex and an unrelated single-`input` search tool are present:
-it reaches Codex, wrapped as a nested shell invocation, rather than the search tool.
+In automatic mode, a named shell takes precedence, followed by the generic
+single-parameter heuristic and then a recognized Codex Code Mode executor. A named
+choice receives only aliases assigned to it by the full tool-set routing map; the
+heuristic can therefore select an input-shaped search tool if it is the full-map winner.
+When Codex is the winner, shell commands are wrapped as nested shell invocations.
 
 A named `tool_choice` restricts emitted calls to that tool. Actual declared names take
 precedence over shell aliases; JSON aliases are not translated for a named choice. The

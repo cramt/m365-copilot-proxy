@@ -269,17 +269,17 @@ export function isExplicitShellTool(tool: ToolDef): boolean {
 }
 
 /** The harness tool (if any) that runs a shell command — the target for ```bash routing.
- *  Recognized Codex Code Mode precedes the generic argument heuristic; shell
- *  fences reach it wrapped as a nested `exec_command` call (codeModeShellScript). */
+ *  Codex's Code Mode `exec` is the last resort: shell fences reach it wrapped as a
+ *  nested `exec_command` call (codeModeShellScript). */
 export function findShellTool(tools: ToolDef[]): ToolDef | undefined {
   const shells = tools.filter((t) => !isCodeModeExecTool(t));
   return shells.find((t) => SHELL_TOOL_NAME.test(t.function.name)) ??
-    // An explicitly identified Codex executor outranks the generic input heuristic.
-    tools.find(isCodeModeExecTool) ??
+    // fallback: a single-string-param tool whose param is command-ish
     shells.find((t) => {
       const props = Object.keys(t.function.parameters?.properties ?? {});
       return props.length === 1 && /^(command|cmd|script|input)$/i.test(props[0]);
-    });
+    }) ??
+    tools.find(isCodeModeExecTool);
 }
 
 // Claude Code on Windows offers a `PowerShell` tool next to `Bash`, which runs Git

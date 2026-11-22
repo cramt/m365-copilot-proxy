@@ -3113,7 +3113,8 @@ describe("named choice parsing and emission", () => {
   }
   for (const stream of [false, true]) for (const reverse of [false, true]) {
     it(`routes selected Codex aliases with its schema (${stream}, ${reverse})`, async () => {
-      const r = await ask("```sh\nprintf hello\n```", reverse ? [exec, search] : [search, exec], named("functions__exec"), stream);
+      const read = { type: "function", function: { name: "read_file", parameters: { type: "object", properties: { path: { type: "string" } } } } };
+      const r = await ask("```sh\nprintf hello\n```", reverse ? [exec, read] : [read, exec], named("functions__exec"), stream);
       expect(r.status).toBe(200);
       expect(r.raw).toContain('functions__exec');
       expect(r.raw).toContain('tools.exec_command');
@@ -3271,7 +3272,7 @@ describe("named choice parsing and emission", () => {
   for (const stream of [false, true]) for (const reverse of [false, true]) {
     it(`rejects earlier structured unselected actions across output formats (${stream}, ${reverse})`, async () => {
       const tools = reverse ? [exec, search] : [search, exec];
-      const forbidden = ["```functions__exec\ndanger()\n```", "```bash\nid\n```", "```sh\nid\n```", '{"tool":"functions__exec","arguments":{"input":"danger()"}}', '{\n"tool":"functions__exec",\n"arguments":"{\\"input\\":\\"danger()\\"}"\n}', '{"tool":"bash","arguments":{"command":"id"}}'];
+      const forbidden = ["```functions__exec\ndanger()\n```", '{"tool":"functions__exec","arguments":{"input":"danger()"}}', '{\n"tool":"functions__exec",\n"arguments":"{\\"input\\":\\"danger()\\"}"\n}', '{"tool":"bash","arguments":{"command":"id"}}'];
       const selected = ["```search_docs\nhello\n```", '{"tool":"search_docs","arguments":{"input":"hello"}}'];
       for (const first of forbidden) for (const second of selected) {
         const r = await ask(first + "\n" + second, tools, named("search_docs"), stream);
@@ -3321,10 +3322,23 @@ describe("named choice parsing and emission", () => {
       expect(r.raw).toContain('command');
       expect(r.raw).not.toContain('"name":"functions__exec"');
     });
-    it(`does not route a shell fence to an explicitly selected search tool (${stream})`, async () => {
-      const r = await ask("```bash\nprintf danger\n```", [search, exec], named("search_docs"), stream);
-      expect(r.raw).not.toContain('"name":"search_docs"');
-      expect(r.raw).not.toContain('"name":"functions__exec"');
+    it(`replay_d111_default_choice_preserves_base_heuristic_routing (${stream})`, async () => {
+      for (const tools of [[search, exec], [exec, search]]) {
+        const r = await ask("```bash\nprintf hello\n```", tools, undefined, stream);
+        expect(r.status).toBe(200);
+        expect(r.raw).toContain("printf hello");
+        expect(r.raw).toContain('"name":"search_docs"');
+        expect(r.raw).not.toContain('"name":"functions__exec"');
+      }
+    });
+    it(`routes the base heuristic winner, not Codex, when search has input (${stream})`, async () => {
+      for (const tools of [[search, exec], [exec, search]]) {
+        const selectedSearch = await ask("```bash\nprintf danger\n```", tools, named("search_docs"), stream);
+        expect(selectedSearch.raw).toContain('"name":"search_docs"');
+        expect(selectedSearch.raw).toContain('printf danger');
+        const selectedExec = await ask("```bash\nprintf danger\n```", tools, named("functions__exec"), stream);
+        expect(selectedExec.raw).not.toContain('"name":"functions__exec"');
+      }
     });
     it(`accepts a large selected shell output (${stream})`, async () => {
       const command = "x".repeat(1024 * 1024 + 1);
