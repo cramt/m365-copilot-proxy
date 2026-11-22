@@ -593,6 +593,21 @@ The final `type:2` frame carries the canonical state of the whole conversation i
 - This is why we **reuse one conversation** across an agent session and send **only new messages** on follow-up turns (delta mode) — every `Please continue.` retry also counts against the 600.
 - There is also opaque **account-level throttling** (rapid-fire requests can start returning empties). It recovers on its own.
 
+### A daily chat limit across the whole account (2026-11-22)
+
+After about 50 fresh conversations in an hour, every model on the account refused with "You've used your daily chat limit", with a reset at `2026-11-23T00:00:00.000Z`. It is not `PerUserThrottled` (that one clears in about an hour) and not priority access (that one is per model). Refusals ("no tool is available") showed up before the wall did. The proxy doesn't recognise it yet; it should become a 429 with `Retry-After` to midnight UTC, like `priority_access_exhausted`.
+
+### What the web UI shows about usage (2026-11-22, a Basic account)
+
+Read-only look at copilot.cloud.microsoft, no chat sent. The plan label under the account name reads **"M365 Copilot (Basic)"**, and its info tooltip says "Availability may be limited during peak demand." That is all there is: **no usage meter**, nothing in the model picker (Auto / Quick response / Think deeper / GPT ▸) and no usage page in Settings. The `PLGEnvironmentQuery` call (loki.delve.office.com) asks for the scenarios `ImageLimitsCapacityUpsell` and `ImageLimitsDailyLimitUpsell` but only gets an "Upgrade" button back, so the image-limit UI seems to show up only once a limit is hit.
+
+Microsoft has built a full meter UI, though. It's in the PLG SDK strings (`res.public.onecdn.static.microsoft/midgard/versionless-v2/plg-sdk-ui-strings/en-gb.<hash>.json`, 354 keys) and is waiting for a plan that turns it on:
+
+- **Consumer tier:** a *weekly AI limit*. There's a banner ("{0} of weekly AI limit remaining", "Weekly AI limit reached"), the fallback "continue with Copilot Chat until your limit resets on {0}", and Copilot Credits that take over once the limit is used up.
+- **Org tier (`consumptiveBilling`):** *monthly credits* set by an admin, per user or as a shared group pool. There are banners at 50% and 20% remaining, "{n} credits used for this chat", and a "Usage" dialog with a meter ("Your usage limit" / "Shared usage pool"), a daily bar chart of credits spent, and credits broken down by use case, chat, task and session. It covers Chat ("Advanced models in Chat"), Code, Cowork and Autopilot. "Limits reset on {0}" is the first of the month.
+
+None of those strings is "daily chat limit"; that text comes from the server. Watch for the **Usage dialog or credit banner appearing on this account**: it would mean the tenant moved onto metered credits, and the turn-count assumptions above stop holding.
+
 ### Account degradation under sustained use (observed June 13 2026)
 
 A full session of heavy use (~80+ messages across probes, bench runs, and logins
