@@ -80,7 +80,10 @@ it.each(["caller", "deadline"])("native slow-drip %s cancellation closes the pee
   });
   try {
     const controller = new AbortController();
-    const outcome = expect(fetchImageBytes(trusted, "synthetic-bearer", controller.signal)).rejects.toThrow(mode === "caller" ? "aborted" : "timed out");
+    // The deadline path uses an injected short timeout so the real OS-timer wait
+    // is milliseconds, not the production 60s; the caller path keeps the default.
+    const timeoutMs = mode === "deadline" ? 250 : undefined;
+    const outcome = expect(fetchImageBytes(trusted, "synthetic-bearer", controller.signal, timeoutMs)).rejects.toThrow(mode === "caller" ? "aborted" : "timed out");
     await receiving;
     if (mode === "caller") controller.abort(new Error("synthetic-private-reason"));
     await outcome;

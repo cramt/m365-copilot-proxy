@@ -118,6 +118,7 @@ export async function fetchImageBytes(
   url: string,
   artifactToken: string,
   signal?: AbortSignal,
+  timeoutMs = 60_000,
 ): Promise<{ data: Buffer; contentType: string }> {
   // Validate the raw authority before WHATWG URL parsing can normalize controls,
   // backslashes or userinfo. Only this host is evidenced in §14 F14.6; the token
@@ -144,8 +145,7 @@ export async function fetchImageBytes(
 
   // Timers cannot run while ready reads keep scheduling promise microtasks.
   // Enforce a monotonic deadline as well, through headers, EOF and assembly.
-  const deadline = performance.now() + 60_000;
-  // Cancellation reasons may contain secrets.
+  const deadline = performance.now() + timeoutMs;
   const configuredLimit = Number(process.env.M365_MAX_IMAGE_BYTES);
   const limit = Number.isSafeInteger(configuredLimit) && configuredLimit > 0
     ? configuredLimit : 20 * 1024 * 1024;
@@ -162,6 +162,8 @@ export async function fetchImageBytes(
   // A synchronous deadline check can abort before any race is listening (e.g.
   // fetch throws synchronously or the final buffer assembly exhausts the budget).
   void cancelled.catch(() => {});
+  // Cancellation reasons may contain secrets, so abort with a fixed internal
+  // message and never surface the caller's reason, the URL or transport errors.
   const abort = (message: string) => {
     if (controller.signal.aborted) return;
     failure = message;
@@ -175,7 +177,7 @@ export async function fetchImageBytes(
   };
   const callerAbort = () => abort("Image artifact fetch aborted");
   signal?.addEventListener("abort", callerAbort, { once: true });
-  const timer = setTimeout(() => abort("Image artifact fetch timed out"), 60_000);
+  const timer = setTimeout(() => abort("Image artifact fetch timed out"), timeoutMs);
   try {
     checkDeadline();
     const pending = fetch(url, {
