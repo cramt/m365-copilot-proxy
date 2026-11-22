@@ -207,6 +207,28 @@ describe("AetherSession", () => {
     }
   });
 
+  it("reports each tool call the runtime's agent starts as reasoning, and only this run's", async () => {
+    const { fetchImpl } = fakeRuntime([(mid) => [
+      ev("ts", { tid: "c0", tn: "Bash", d: "an earlier run's step" }),
+      ev("rl", { st: "started", mid }),
+      ev("tho", { kind: "tool_call", tool: "web_search" }),
+      ev("ts", { tid: "c1", tn: "mcp__core__web_search", d: "Node.js  LTS\nmajor", inp: "{}" }),
+      ev("tx", { tid: "c1", tn: "mcp__core__web_search", ok: true, dur: 400 }),
+      ev("ts", { tid: "c2", tn: "Bash", d: "x".repeat(300) }),
+      ev("ts", { tid: "c3", tn: "Read" }),
+      ev("dx", { t: "Done." }),
+      ev("fr", { stop: "end_turn", mid: `${mid}:2:abc`, content: "Done." }),
+      ev("rl", { st: "ok", tc: 3, mid }),
+    ]]);
+    vi.stubGlobal("fetch", fetchImpl);
+    const session = new AetherSession({ mode: "cowork", getToken: async () => token });
+    const steps: string[] = [];
+    const stream = await session.run("hi", "gpt-6.2-sol", undefined, false, [], undefined, { onReasoning: (d) => steps.push(d) });
+    expect(await drain(stream)).toEqual(["Done."]);
+    expect(steps).toEqual(["- web_search: Node.js LTS major\n", `- Bash: ${"x".repeat(199)}…\n`, "- Read\n"]);
+    expect(stream.agentToolCalls).toBe(3);
+  });
+
   it("keeps subscribing while each subscription brings something new", async () => {
     let events: string[] = [];
     // The stream closes after every second event: five subscriptions, more than a limit on all of them would allow.

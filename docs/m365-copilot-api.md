@@ -1102,7 +1102,10 @@ The server keeps the conversation: a follow-up sends only its new message, and i
 | `cq` | `{d, m, t, r}`: a charge, `d` Copilot credits for model `m` on message `r`. `t` is the message ID for the title call and the run's own ID for the model's calls; the run's charge lands within milliseconds of `rl ok`, before or after it |
 | `error` | `{code, err, retry, sev}`, e.g. `engine.v2_refusal` "This request couldn't be completed. Please send your message again." |
 | `uq` | `{b, r, k, rs}`: the monthly entitlement, after `rl` |
-| `ti`, `tk`, `ic`, `tst`, `co`, `ck`, `rh`, `rpc`, `cs`, `up` | title, task progress and the rest; the proxy ignores them |
+| `ts` | `{tid, tn, d, inp, it}`: the runtime's agent starts a tool call of its own: `tn` the tool (`mcp__core__web_search`, `mcp__core__web_fetch`, `Bash`, …), `d` what it's for (the query, the URL, a command's description), `inp` its JSON input. The proxy sends `tn` (prefix dropped) and `d` to the client as a `reasoning_content` line, from this run's `rl started` on |
+| `tx` | `{tid, tn, dur, ok, d, wr}`: that call ended; `wr` holds a web call's results |
+| `tho` | `{kind: "tool_call", tool}`: just ahead of a `ts` |
+| `ti`, `tk`, `ic`, `tst`, `co`, `ck`, `rh`, `rpc`, `cs`, `up`, `ci`, `cv` | title, task progress, citations and the rest; the proxy ignores them |
 
 **Other calls.** `GET /v1/models`: the catalog, the same for both tabs (`supported_effort_levels`,
 `usage_multiplier`, `llm_health_bucket`). It changes: on Nov 19 2026 it listed eight models in the

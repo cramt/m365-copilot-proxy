@@ -683,6 +683,11 @@ model there is labelled `_885k` ([hypotheses §48 H48a](docs/hypotheses.md)).
   `runtime_no_reply`; Cowork and Chat models answer in text. A runtime turn at high effort can take
   minutes, so give Codex `stream_idle_timeout_ms = 900000` (at 300000 it re-sent the whole request every
   5 minutes) ([hypotheses §48 F139](docs/hypotheses.md)).
+- **What the agent does there reaches the client as thinking.** Each tool call the runtime's agent starts
+  (a web search with its query, a command with what it's for, a page it reads) goes out as a line of
+  `reasoning_content`, which Codex shows under "Thinking" and pi as thinking, so a turn of several
+  minutes isn't blank. The work itself stays in the runtime's cloud workspace: it can't read your files
+  or run your commands, which only a tool call to your client does ([hypotheses §60](docs/hypotheses.md)).
 - The Code tab's **local** sessions, with their "Long context" switch, are a third service the proxy
   can't use: the Copilot app runs them through a bundled runtime on Office's LLM API, whose sign-in the
   proxy's app registration isn't consented for ([hypotheses §48 F136](docs/hypotheses.md)).
@@ -719,11 +724,14 @@ and a follow-up suggestion on a small model add about 0.005–0.01 each.
 | Cowork | Sonnet 5.5 | 2.0M characters, refused as too long | 0.01 |
 | Cowork or Code | GPT-6.2 Sol (`gpt-6.2-sol-substrate`, evening) | one line to 2.19M characters | 0.02–0.06 (n=6) |
 | Cowork | the same | 2.5M or 3.0M characters, refused as too long | 0.03–0.04 |
+| Cowork | GPT-6.2 Sol (`gpt-6.2-sol-substrate`), Nov 22 | one line, its agent making 3 tool calls | 24.0 |
+| Cowork | GPT-6.2 Astra, xhigh effort, Nov 22 | Codex: one question on a 603k-character history, new conversation, 8 tool calls of its agent | 853 |
+| Cowork | GPT-6.2 Astra, max effort, Nov 22 | Codex: a 70k-character task, 5 tool calls of its agent | 280 |
 
 Per 1,000 tokens of a long turn: GPT-6.2 Sol 0.28, GPT-6.1 Sol 0.29, Sonnet 5.5 0.37, GPT-5.5 0.63,
 Opus 5.5 0.75, GPT-6.2 Astra 1.15, measured in the morning. That evening `gpt-6.2-sol-substrate` charged
-only its title and suggestion calls, up to 2.19M characters, so prices change too; check a task's cost
-before relying on one. A new conversation pays for the runtime's own system prompt (Code's
+only its title and suggestion calls, up to 2.19M characters; by Nov 22 it charged 10–13 credits a step
+again, so prices change; check a task's cost before relying on one. A new conversation pays for the runtime's own system prompt (Code's
 is larger than Cowork's); a follow-up is cached. `usage.x_m365_credits` counts the charges that arrive
 by the end of the turn, so it can miss a late suggestion's (Sonnet 5.5: 0.038 reported, 0.042 in the
 task's total). The monthly budget the runtime reports (`/v1/entitlement`, 1,000,000) takes these

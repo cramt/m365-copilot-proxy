@@ -7354,3 +7354,33 @@ agent-cache tests put one there to force a failure, and a wait can't clear it): 
 each round up to 4.6 s. POSIX rename replaces an open file, so elsewhere nothing changes. The full suite
 passes on Windows (3 of 3 runs), with tests run under a temporary `USERPROFILE`: #142 stopped the
 agent-cache tests writing the real `~/.config/opencode-m365`, which they had overwritten on this machine too.
+
+## 60. Nov 22 2026 — A Cowork turn in Codex: blank for minutes, and what it costs now
+
+### F163 — the runtime streams its agent's tool calls, and the proxy now shows them as thinking 🟢
+The user's report: in Codex through the proxy a Cowork model showed only "Thinking" for minutes, where
+Codex on OpenAI's models narrates and lists each step. The log: `gpt-6.2-astra(cowork)` at xhigh, one
+question in a 121-message Codex thread, sent whole into a new conversation (603k characters); the
+runtime's agent made 8 tool calls of its own over 2 min 20 s, and nothing reached the client until the
+answer. A probe (Cowork, `gpt-6.2-sol-substrate`, "run Python to compute 2**100, then look up on the web
+what the current Node.js LTS major version is") read every event. Each of its agent's tool calls comes as
+`tho` `{kind: "tool_call", tool}`, then `ts` as it starts, `{tid, tn, d, inp}` (`tn`
+`mcp__core__web_search`, `Bash`, `mcp__core__web_fetch`; `d` the query, the command's description, the
+URL), then `tx` as it ends `{tid, tn, dur, ok, d, wr}`; around them `ic`, `ci` (citations) and `cv`. The
+proxy now sends a line per `ts` (`- web_search: <query>`) through the turn's `onReasoning` (§50), counted
+from this run's `rl started` like its text, so Codex shows the steps under "Thinking" (copilot-api 2.9.12
+turns `reasoning_content` into `response.reasoning_summary_text` deltas). The steps still run in the
+runtime's cloud workspace, not on the user's machine.
+
+### F164 — what those Cowork turns cost on Nov 22 🟢
+The tasks' `costCredits`: the 603k-character question (Astra, xhigh, 8 agent tool calls) 853; a
+70k-character Codex task (Astra, max effort, 5 calls) 280, which came back as a document with two code
+blocks, returned as text; the probe above (one line, 3 calls) 24.0. The probe's steps were charged 10.2
+and 12.8 as `gpt-6-2-sol`, where on Nov 19 the same model charged only its title calls (H48a). So a
+question in a long Codex thread on a Cowork model costs hundreds of credits; on Chat, GPT-6.2 Sol and the
+Claude models charge none.
+
+**Also seen, on Chat:** the same evening a Codex task on `gpt-6.2-astra(chat)` ended with a 2,892-character
+reply that opened a `powershell` fence and never closed it, so no call was read and the script reached the
+user as text. That proxy was a Nov 19 build; the fence re-ask (§51 F152, `unreadableToolFence`) covers this
+reply shape, one live case for its scripted evidence.

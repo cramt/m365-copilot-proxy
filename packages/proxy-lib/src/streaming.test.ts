@@ -119,9 +119,9 @@ vi.mock("@m365-copilot/core", async (importActual) => {
       super();
       this.mode = options.mode;
     }
-    override async run(text: string, model?: string, signal?: AbortSignal, useAgent?: boolean, images: string[] = [], waitForBudget?: () => Promise<unknown>, turn?: unknown) {
+    override async run(text: string, model?: string, signal?: AbortSignal, useAgent?: boolean, images: string[] = [], waitForBudget?: () => Promise<unknown>, turn?: { onReasoning?: (delta: string) => void }) {
       runtimeRuns.push({ mode: this.mode, model: model ?? "", useAgent, turn, text });
-      return Object.assign(await super.run(text, model, signal, useAgent, images, waitForBudget), { throttle: null, credits: 0.5, agentToolCalls: runtimeToolCalls });
+      return Object.assign(await super.run(text, model, signal, useAgent, images, waitForBudget, turn), { throttle: null, credits: 0.5, agentToolCalls: runtimeToolCalls });
     }
     close() { runtimeClosed.push(this.conversationId); }
   }
@@ -2874,6 +2874,19 @@ describe("the model's chain of thought as reasoning_content", () => {
     const call = deltas.findIndex((d) => d.tool_calls);
     expect(call).toBeGreaterThan(deltas.findIndex((d) => d.reasoning_content));
     expect(deltas.some((d) => d.content)).toBe(false);
+  });
+
+  it("streams a Cowork turn's steps, the tool calls of the runtime's own agent, as they start", async () => {
+    process.env.M365_BACKENDS = "chat,cowork";
+    try {
+      const steps = ["- web_search: Node.js LTS\n", "- Bash: Calculate the exact power of two\n"];
+      scripted.queue = [{ fullText: "Done.", reasoning: steps }];
+      const deltas = await deltasOf(await ask({ stream: true, model: "gpt-6.2-astra(cowork)" }));
+      expect(deltas.filter((d) => d.reasoning_content).map((d) => d.reasoning_content)).toEqual(steps);
+      expect(deltas.findIndex((d) => d.reasoning_content)).toBeLessThan(deltas.findIndex((d) => d.content));
+    } finally {
+      delete process.env.M365_BACKENDS;
+    }
   });
 
   it("returns it as message.reasoning_content when the request doesn't stream", async () => {
