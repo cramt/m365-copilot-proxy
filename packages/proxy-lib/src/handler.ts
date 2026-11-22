@@ -66,6 +66,7 @@ import {
 } from "@m365-copilot/core";
 import { ChatCompletionRequest } from "./schemas.js";
 import { toolTurnNarration } from "./narration.js";
+import { capResult } from "./refusal-suggestions.js";
 import { maxTurnParts, planFullPrompt, planText, turnChunkBytes } from "./replay.js";
 import { estimateTokens, reportsUsage } from "./usage.js";
 import {
@@ -1292,6 +1293,15 @@ export async function handleChatCompletion(
       // way remember it, so the next requests don't spend M365 turns on
       // refusals until the reset.
       // A part M365 refused carries its refusal text on the part's own stream.
+      //
+      // A reasoning-turn cap was reported as this pair of result fields (F181;
+      // a relayed consumer report, not a captured frame). Classify it before
+      // the generic priority-access path, which estimates and caches a reset.
+      if (chat && capResult(copilotStream.result)) {
+        noteOutcome(false, convId); // a refusal dressed as an answer, not a throttle
+        log.info("Reasoning turns exhausted (OutOfCredits / ReasoningTurnExhausted) — 429, reset unknown");
+        return { error: reasoningResponse() };
+      }
       const exhausted = chat && priorityAccessExhaustionOf(copilotStream.result, refused ? copilotStream.fullText : fullText);
       if (exhausted) {
         const budget = meteredBudgetOf(model);
@@ -2073,6 +2083,18 @@ function throttledResponse(result: { errorCode?: string; message?: string }): Re
       type: "rate_limit_error",
       code: "m365_throttled",
       ...(result.errorCode ? { param: result.errorCode } : {}),
+    },
+  });
+}
+
+/** The relayed report (F181) did not establish a reset. Do not estimate one. */
+function reasoningResponse(): Response {
+  return jsonResponse(429, {
+    error: {
+      message: "M365 Copilot reports this model's reasoning turns are exhausted. The reset time is unknown.",
+      type: "rate_limit_error",
+      code: "reasoning_turns_exhausted",
+      param: "ReasoningTurnExhausted",
     },
   });
 }

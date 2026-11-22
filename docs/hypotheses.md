@@ -7828,3 +7828,30 @@ Probe: the same prompts per tone, agent-less, without Bing, under the scenario t
 compared on what a self-ID doesn't control: the sandbox path in a code-interpreter answer,
 chain-of-thought summaries, and events of early 2026. Falsified for a tone if it matches its mapped
 counterpart in each of these comparisons.
+
+## 64. Nov 22 2026 — a reasoning-turn cap relayed as a consumer report (#138)
+
+### F181 — a reasoning turn reported as `OutOfCredits` / `ReasoningTurnExhausted`, reset unknown ❓
+**n=0 captured refusal frames here.** A consumer report relayed by the user on 2026-11-07 described
+`result.value: OutOfCredits` and `errorCode: ReasoningTurnExhausted`, and said GPT-5.5 and GPT-5.6
+Think deeper were walled while the corresponding Quick routes kept answering. The report proposed a shared
+reasoning-turn allowance and mentioned a `ReasoningModelTurnUsage` value of 10, but its relevance is
+speculative — a separate probe reported that counter sitting at 10 across requests without moving, so it is
+not an established countdown.
+
+The generic `OutOfCredits` path would classify this reported combination as priority access and
+estimate a reset. The report supplied no reset and no refusal frame was captured here. The current result
+DTO exposes `{value, errorCode?, message?}` and the metering parser retains numeric allowances; neither
+is proof that other fields cannot occur on the wire. The handler matches both reported fields and returns
+429 `reasoning_turns_exhausted` without `Retry-After` or a cached timed wall.
+
+Default streaming is incremental: content that does not match the existing hold-back prefixes may be
+sent before the final result is classified. Its error chunk carries the classification code but, on this
+base, does not carry the JSON error's `param`. Neither the content nor the timing of an actual reasoning
+refusal has been captured here.
+
+**Incomplete for the review ask:** the maintainer asked for a `Retry-After` on this 429. The source does
+not supply a reset, so none is asserted here rather than fabricated; adding one needs the evidence below
+first. **Falsify / complete** by capturing a redacted refusal frame for this errorCode and running
+controlled sequential reasoning vs Quick turns on one account, observing when (and whether) reasoning turns
+recover — only then can a real reset, and a grounded `Retry-After`, be added.
