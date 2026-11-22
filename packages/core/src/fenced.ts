@@ -1666,6 +1666,7 @@ function parseFencedInner(spec: FencedToolSpec, inner: string): Record<string, u
       if (m && spec.headerParams.includes(m[1])) {
         closeOpen();
         const key = m[1];
+        if (Object.prototype.hasOwnProperty.call(args, key)) return null;
         const type = spec.parameterTypes[key];
         if (m[2].trim() === "" && (type === "array" || type === "object")) {
           const end = yamlBlockEnd(lines, i + 1, type === "array");
@@ -1845,7 +1846,7 @@ export function unreadableToolFence(
     if (!spec) continue;
     const stripped = stripNativeCloser(block.inner, spec.name, block.info);
     if (parseFencedInner(spec, stripped ?? block.inner)) return null;
-    found ??= { name: block.info, reason: spec.editPair ? "its SEARCH/REPLACE markers are missing" : "it could not be read" };
+    return { name: block.info, reason: spec.editPair ? "its SEARCH/REPLACE markers are missing" : "it could not be read" };
   }
   const open = unclosedToolCall(scan, specs, text.length);
   if (open && parseFencedInner(open.spec, open.inner)) return null;
