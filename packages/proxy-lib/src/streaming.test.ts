@@ -3069,3 +3069,237 @@ describe("the model's chain of thought as reasoning_content", () => {
     }
   });
 });
+
+describe("explicit named tool choice authority", () => {
+  const search = { type: "function", function: { name: "search_docs", parameters: { type: "object", properties: { input: { type: "string" } } } } };
+  const exec = { type: "function", function: { name: "functions__exec", description: "Runs JavaScript", parameters: { type: "object", properties: { input: { type: "string" } } } } };
+  for (const stream of [false, true]) for (const reverse of [false, true]) {
+    it(`does not emit an unselected JSON call (stream=${stream}, reverse=${reverse})`, async () => {
+      scripted.queue = [];
+      scripted.fullText = '{"tool":"functions__exec","arguments":{"code":"danger()"}}';
+      scripted.deltas = [scripted.fullText];
+      const body = ChatCompletionRequest.parse({ model: "m365-copilot", stream, messages: [{ role: "user", content: "find documents" }], tools: reverse ? [exec, search] : [search, exec], tool_choice: { type: "function", function: { name: "search_docs" } } });
+      const res = await respond(body);
+      const raw = await res.text();
+      expect(raw).not.toContain('"name":"functions__exec"');
+    });
+  }
+});
+
+
+describe("named choice parsing and emission", () => {
+  const search = { type: "function", function: { name: "search_docs", parameters: { type: "object", properties: { input: { type: "string" } } } } };
+  const exec = { type: "function", function: { name: "functions__exec", description: "Runs JavaScript", parameters: { type: "object", properties: { input: { type: "string" } } } } };
+  const bash = { type: "function", function: { name: "bash", parameters: { type: "object", properties: { command: { type: "string" } } } } };
+  const write = { type: "function", function: { name: "write_file", parameters: { type: "object", properties: { path: { type: "string" }, content: { type: "string" } } } } };
+  async function ask(text: string, tools: any[], choice: any, stream: boolean, recovery = false) {
+    scripted.queue = recovery ? [{ fullText: "I cannot access your files." }, { fullText: text }] : [];
+    scripted.fullText = text;
+    scripted.deltas = [text];
+    const body = ChatCompletionRequest.parse({ model: "m365-copilot", stream, messages: [{ role: "user", content: "work" }], tools, tool_choice: choice });
+    const res = await respond(body);
+    return { status: res.status, raw: await res.text() };
+  }
+  const named = (name: string) => ({ type: "function", function: { name } });
+  for (const stream of [false, true]) for (const reverse of [false, true]) {
+    it(`routes selected Codex aliases with its schema (${stream}, ${reverse})`, async () => {
+      const r = await ask("```sh\nprintf hello\n```", reverse ? [exec, search] : [search, exec], named("functions__exec"), stream);
+      expect(r.status).toBe(200);
+      expect(r.raw).toContain('functions__exec');
+      expect(r.raw).toContain('tools.exec_command');
+      expect(r.raw).not.toContain('"name":"search_docs"');
+    });
+    it(`keeps an actual bash name distinct from the alias (${stream}, ${reverse})`, async () => {
+      const tools = reverse ? [exec, bash] : [bash, exec];
+      const r = await ask("```bash\nprintf hello\n```", tools, named("functions__exec"), stream);
+      expect(r.raw).not.toContain('"name":"bash"');
+      expect(r.raw).not.toContain('"name":"functions__exec"');
+      const ok = await ask("```bash\nprintf hello\n```", tools, named("bash"), stream);
+      expect(ok.raw).toContain('"name":"bash"');
+    });
+    it(`never returns a forbidden fenced or JSON batch (${stream}, ${reverse})`, async () => {
+      const tools = reverse ? [exec, search] : [search, exec];
+      for (const text of ["```search_docs\nquery\n```\n```functions__exec\nawait tools.exec_command({cmd: 'id'})\n```", '{"tool":"search_docs","arguments":{"input":"a"}} {"tool":"functions__exec","arguments":{"input":"b"}}']) {
+        const r = await ask(text, tools, named("search_docs"), stream);
+        expect(r.raw).not.toContain('"name":"functions__exec"');
+      }
+    });
+    it(`checks the retry too (${stream}, ${reverse})`, async () => {
+      const before = scripted.runs;
+      const r = await ask('{"tool":"functions__exec","arguments":{"input":"danger()"}}', reverse ? [exec, search] : [search, exec], named("search_docs"), stream, true);
+      expect(r.raw).not.toContain('"name":"functions__exec"');
+      expect(scripted.runs - before).toBe(2);
+    });
+    it(`does not emit invalid selected shell arguments (${stream}, ${reverse})`, async () => {
+      for (const args of ['{}', '{"command":3}']) {
+        const r = await ask(`{"tool":"bash","arguments":${args}}`, reverse ? [search, bash] : [bash, search], named("bash"), stream);
+        expect(r.raw).not.toContain('"name":"bash"');
+      }
+    });
+    it(`keeps none as text and routes an unknown named choice to recovery (${stream}, ${reverse})`, async () => {
+      const tools = reverse ? [exec, search] : [search, exec];
+      const no = await ask("```bash\nid\n```", tools, "none", stream);
+      expect(no.raw).not.toContain('"tool_calls"');
+      // An unknown tool_choice falls through to the existing recovery path
+      // (never fabricated into a tool call), rather than a hard rejection.
+      const missing = await ask("hello", tools, named("missing"), stream);
+      expect(missing.status).toBe(200);
+      expect(missing.raw).not.toContain('"tool_calls"');
+    });
+    it(`preserves prose and legacy JSON under auto and required (${stream}, ${reverse})`, async () => {
+      const tools = reverse ? [exec, search] : [search, exec];
+      for (const choice of ["auto", "required"]) {
+        const malformed = await ask('Example: {"tool":"x","arguments":{not json}}', tools, choice, stream);
+        expect(malformed.raw).toContain('Example:');
+        const legacy = await ask('First I will search. {"tool":"search_docs","arguments":{"input":"x"}}', tools, choice, stream);
+        expect(legacy.raw).toContain('"name":"search_docs"');
+      }
+    });
+  }
+  for (const stream of [false, true]) {
+    it(`does not emit arbitrary JSON actions for a named selection (${stream})`, async () => {
+      for (const name of ["unexpected", "functions__exec"]) {
+        const r = await ask(JSON.stringify({tool: name, arguments: {input: "danger"}}), [search, exec], named("search_docs"), stream);
+        expect(r.raw).not.toContain(`"name":"${name}"`);
+      }
+    });
+    it(`passes a selected nested Codex call through (${stream})`, async () => {
+      const r = await ask("```functions__exec\nawait tools.exec_command({cmd: 'pwd'})\n```", [search, exec], named("functions__exec"), stream);
+      expect(r.raw).toContain('"name":"functions__exec"');
+      expect(r.raw).toContain('tools.exec_command');
+    });
+    it(`keeps a selected truncated shell fence within its authority (${stream})`, async () => {
+      const r = await ask("```bash\nprintf hello", [bash, exec], named("bash"), stream);
+      expect(r.raw).not.toContain('"name":"functions__exec"');
+    });
+    it(`does not allow forbidden JSON calls in enabled batches (${stream})`, async () => {
+      const old = process.env.M365_ALLOW_MULTI_TOOL;
+      process.env.M365_ALLOW_MULTI_TOOL = "1";
+      try {
+        const r = await ask('{"tool":"search_docs","arguments":{"input":"a"}} {"tool":"functions__exec","arguments":{"input":"b"}}', [search, exec], named("search_docs"), stream);
+        expect(r.raw).not.toContain('"name":"functions__exec"');
+      } finally { if (old === undefined) delete process.env.M365_ALLOW_MULTI_TOOL; else process.env.M365_ALLOW_MULTI_TOOL = old; }
+    });
+  }
+  for (const stream of [false, true]) for (const reverse of [false, true]) {
+    it(`rejects JSON shell aliases for Codex but preserves exact JavaScript (${stream}, ${reverse})`, async () => {
+      const tools = reverse ? [exec, search] : [search, exec];
+      for (const alias of ["sh", "container.exec"]) {
+        const r = await ask(JSON.stringify({tool: alias, arguments: {input: "id"}}), tools, named("functions__exec"), stream);
+        expect(r.raw).toContain("invalid_tool_call");
+        expect(r.raw).not.toContain('"name":"functions__exec"');
+      }
+      const exact = await ask('{"tool":"functions__exec","arguments":{"input":"await tools.exec_command({cmd: \'pwd\'})"}}', tools, named("functions__exec"), stream);
+      expect(exact.raw).toContain('"name":"functions__exec"');
+      expect(exact.raw).toContain("tools.exec_command");
+    });
+    it(`does not skip an earlier unselected action (${stream}, ${reverse})`, async () => {
+      const tools = reverse ? [exec, search] : [search, exec];
+      for (const first of ["```functions__exec\nalert()\n```", '{"tool":"functions__exec","arguments":{"input":"danger()"}}']) {
+        const r = await ask(first + "\n```search_docs\nhello\n```", tools, named("search_docs"), stream);
+        expect(r.raw).not.toContain('"name":"search_docs"');
+        expect(r.raw).not.toContain('"name":"functions__exec"');
+        expect(r.raw).toContain('invalid_tool_call');
+      }
+    });
+    it(`preserves the earlier action on a recovery retry (${stream}, ${reverse})`, async () => {
+      const tools = reverse ? [exec, search] : [search, exec];
+      const text = "```functions__exec\ndanger()\n```\n```search_docs\nhello\n```";
+      const before = scripted.runs;
+      const r = await ask(text, tools, named("search_docs"), stream, true);
+      expect(scripted.runs - before).toBe(2);
+      expect(r.raw).toContain("invalid_tool_call");
+      expect(r.raw).not.toContain('"name":"search_docs"');
+    });
+    it(`emits a caller-defined reply tool (${stream}, ${reverse})`, async () => {
+      const reply = { type: "function", function: { name: "reply", parameters: { type: "object", properties: { text: { type: "string" } } } } };
+      const tools = reverse ? [reply, search] : [search, reply];
+      const r = await ask('{"tool":"reply","arguments":{"text":"hello"}}', tools, named("reply"), stream);
+      expect(r.raw).toContain('"name":"reply"');
+      expect(r.raw).toContain('tool_calls');
+    });
+  }
+  for (const stream of [false, true]) {
+    it(`preserves a nested code example before the selected action (${stream})`, async () => {
+      const r = await ask("```markdown\nExample:\n```functions__exec\nnot an action\n```\n```\n```search_docs\nhello\n```", [search, exec], named("search_docs"), stream);
+      expect(r.raw).toContain('"name":"search_docs"');
+    });
+  }
+  for (const stream of [false, true]) for (const reverse of [false, true]) {
+    it(`rejects earlier structured unselected actions across output formats (${stream}, ${reverse})`, async () => {
+      const tools = reverse ? [exec, search] : [search, exec];
+      const forbidden = ["```functions__exec\ndanger()\n```", "```bash\nid\n```", "```sh\nid\n```", '{"tool":"functions__exec","arguments":{"input":"danger()"}}', '{\n"tool":"functions__exec",\n"arguments":"{\\"input\\":\\"danger()\\"}"\n}', '{"tool":"bash","arguments":{"command":"id"}}'];
+      const selected = ["```search_docs\nhello\n```", '{"tool":"search_docs","arguments":{"input":"hello"}}'];
+      for (const first of forbidden) for (const second of selected) {
+        const r = await ask(first + "\n" + second, tools, named("search_docs"), stream);
+        expect(r.raw, first + " => " + second).toContain("invalid_tool_call");
+        expect(r.raw).not.toContain('"name":"search_docs"');
+      }
+    });
+    it(`retains a selected action after ordinary prose or a quoted example (${stream}, ${reverse})`, async () => {
+      const tools = reverse ? [exec, search] : [search, exec];
+      for (const prefix of ["I will search first.", 'Example: "{\\"tool\\":\\"functions__exec\\"}"', "```markdown\nexample\n```"] ) {
+        const r = await ask(prefix + "\n```search_docs\nhello\n```", tools, named("search_docs"), stream);
+        expect(r.raw).toContain('"name":"search_docs"');
+      }
+    });
+  }
+  for (const stream of [false, true]) {
+    it(`never executes a later fence over an earlier selected JSON call (${stream})`, async () => {
+      const first = '{"tool":"search_docs","arguments":{"input":"FIRST_UNIQUE"}}';
+      const later = "```search_docs\nSECOND_UNIQUE\n```";
+      for (const middle of ["", "```functions__exec\ndanger()\n```\n", "```sh\ndanger()\n```\n", '{"tool":"functions__exec","arguments":{"input":"danger()"}}\n']) {
+        const r = await ask(first + "\n" + middle + later, [search, exec], named("search_docs"), stream);
+        expect(r.raw).not.toContain("SECOND_UNIQUE");
+        if (!r.raw.includes("invalid_tool_call")) {
+          expect(r.raw).toContain('"name":"search_docs"');
+          expect(r.raw).toContain("FIRST_UNIQUE");
+        }
+      }
+    });
+    it(`preserves the first fence before later JSON (${stream})`, async () => {
+      const r = await ask("```search_docs\nFIRST_UNIQUE\n```\n" + '{"tool":"search_docs","arguments":{"input":"SECOND_UNIQUE"}}', [search, exec], named("search_docs"), stream);
+      expect(r.raw).toContain('"name":"search_docs"');
+      expect(r.raw).toContain("FIRST_UNIQUE");
+      expect(r.raw).not.toContain("SECOND_UNIQUE");
+    });
+    it(`keeps ordinary prose and quoted JSON before a selected fence (${stream})`, async () => {
+      const r = await ask('Example: "{\\"tool\\":\\"search_docs\\"}"\n```search_docs\nFIRST_UNIQUE\n```', [search, exec], named("search_docs"), stream);
+      expect(r.raw).toContain('"name":"search_docs"');
+      expect(r.raw).toContain("FIRST_UNIQUE");
+    });
+  }
+  for (const stream of [false, true]) {
+    it(`retains selected schema and accepts same-tool batches (${stream})`, async () => {
+      const text = "```bash\nprintf one\n```\n```bash\nprintf two\n```";
+      const r = await ask(text, [exec, bash], named("bash"), stream);
+      expect(r.status).toBe(200);
+      expect(r.raw).toContain('"name":"bash"');
+      expect(r.raw).toContain('command');
+      expect(r.raw).not.toContain('"name":"functions__exec"');
+    });
+    it(`does not route a shell fence to an explicitly selected search tool (${stream})`, async () => {
+      const r = await ask("```bash\nprintf danger\n```", [search, exec], named("search_docs"), stream);
+      expect(r.raw).not.toContain('"name":"search_docs"');
+      expect(r.raw).not.toContain('"name":"functions__exec"');
+    });
+    it(`accepts a large selected shell output (${stream})`, async () => {
+      const command = "x".repeat(1024 * 1024 + 1);
+      const r = await ask("```bash\n" + command + "\n```", [bash], named("bash"), stream);
+      expect(r.status).toBe(200);
+      expect(r.raw).toContain('"name":"bash"');
+      expect(r.raw).toContain(command);
+    });
+  }
+  it("does not rewrite a selected Windows shell call to an unselected write tool", async () => {
+    const descriptor = Object.getOwnPropertyDescriptor(process, "platform")!;
+    Object.defineProperty(process, "platform", { value: "win32", configurable: true });
+    try {
+      const text = "```bash\ncat > a.txt <<'EOF'\n" + "x".repeat(8100) + "\nEOF\n```";
+      const r = await ask(text, [bash, write], named("bash"), false);
+      expect(r.status).toBe(502);
+      expect(r.raw).toContain('invalid_tool_call');
+      expect(r.raw).not.toContain('"name":"write_file"');
+    } finally { Object.defineProperty(process, "platform", descriptor); }
+  });
+});

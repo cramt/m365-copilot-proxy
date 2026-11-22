@@ -104,6 +104,8 @@ export {
   longHeredocAsWrite,
   longCommandAsScript,
   harnessWorkingDirectory,
+  isExplicitShellTool,
+  hasEarlierUnselectedAction,
   strippedTypeMember,
   findRecognizedShellTool,
   toolsBlock,
