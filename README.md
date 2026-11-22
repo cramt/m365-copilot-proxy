@@ -773,8 +773,21 @@ write-up: [docs/hypotheses.md §14](docs/hypotheses.md).
 > `ImageGenerationError` with `reason: "quota_exceeded"` (map it to HTTP 429); a plain
 > chat turn instead returns M365's "can't generate any more images today" message as text.
 
-An OpenAI-compatible `POST /v1/images/generations` endpoint on top of this is the
-next step — the core API it needs is already in place.
+The proxy serves it as OpenAI's `POST /v1/images/generations`:
+
+```sh
+curl -s localhost:4141/v1/images/generations -H content-type:application/json \
+  -d '{"prompt":"a green ceramic teapot","size":"1792x1024"}' \
+  | jq -r '.data[0].b64_json' | base64 -d > teapot.png
+```
+
+It returns one image as `b64_json` (the artifact URL needs the designerappservice
+token, so `response_format: "url"` is refused, as is `n` above 1). `size` only picks
+the orientation; M365 chooses the resolution. Two extensions map onto
+`generateImage()`'s options: `orientation` (wins over `size`) and `style`. Failures
+come back as 429 (daily image quota), 503 (capacity), 400 (content filter) or 502
+(the model answered in words instead of drawing). `model` is accepted and ignored.
+A call takes about a minute.
 
 ## Authentication
 

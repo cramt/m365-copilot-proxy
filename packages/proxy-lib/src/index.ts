@@ -1,11 +1,13 @@
 import { type ModelSessionOptions, enabledBackends, formatModelId, getAvailableModels, listModelEntries, runtimeCatalog } from "@m365-copilot/core";
 import { ChatCompletionRequest } from "./schemas.js";
 import { SessionPool, handleChatCompletion } from "./handler.js";
+import { ImageGenerationRequest, handleImageGeneration } from "./images.js";
 import { checkAccess, corsHeaders, corsPolicy } from "./access.js";
 import { RequestBodyError, readRequestText } from "./request-body.js";
 
 export { SessionPool, handleChatCompletion } from "./handler.js";
 export { RequestBodyError, readRequestJson } from "./request-body.js";
+export { ImageGenerationRequest, handleImageGeneration, orientationForSize } from "./images.js";
 export { ChatCompletionRequest, ChatMessage, ToolCall, ToolDefinition } from "./schemas.js";
 export {
   isAgentHarnessUserAgent,
@@ -93,6 +95,23 @@ function json(status: number, body: unknown): Response {
 }
 
 /** A minimal Web fetch handler — the same shape Hono exposed via `app.fetch`. */
+/** Fetch JSON uses replacement decoding and native JSON.parse errors. */
+async function readFetchJson(req: Request): Promise<unknown> {
+  const reader = req.body?.getReader();
+  if (!reader) return JSON.parse("");
+  let text: string;
+  try {
+    text = await readRequestText({ [Symbol.asyncIterator]: () => ({ next: () => reader.read() }) }, req.headers.get("content-length"), false);
+  } catch (err) {
+    // Cancellation must not delay a refusal if the producer never settles.
+    void reader.cancel().catch(() => {});
+    reader.releaseLock();
+    throw err;
+  }
+  reader.releaseLock();
+  return JSON.parse(text);
+}
+
 export interface FetchApp {
   fetch(req: Request): Promise<Response>;
 }
@@ -145,23 +164,7 @@ export function createApp(sessionOptions: ModelSessionOptions = {}): FetchApp {
     if (method === "POST" && pathname === "/v1/chat/completions") {
       let body: ReturnType<typeof ChatCompletionRequest.parse>;
       try {
-        // Fetch JSON uses replacement decoding and native JSON.parse errors.
-        const reader = req.body?.getReader();
-        let text: string;
-        if (reader) {
-          try {
-            text = await readRequestText({ [Symbol.asyncIterator]: () => ({ next: () => reader.read() }) }, req.headers.get("content-length"), false);
-          } catch (err) {
-            // Cancellation must not delay a refusal if the producer never settles.
-            void reader.cancel().catch(() => {});
-            reader.releaseLock();
-            throw err;
-          }
-          reader.releaseLock();
-        } else {
-          text = "";
-        }
-        body = ChatCompletionRequest.parse(JSON.parse(text));
+        body = ChatCompletionRequest.parse(await readFetchJson(req));
       } catch (err: any) {
         return withCors(
           json(err instanceof RequestBodyError ? err.status : 400, { error: { message: err.message, type: "invalid_request_error" } }),
@@ -172,6 +175,18 @@ export function createApp(sessionOptions: ModelSessionOptions = {}): FetchApp {
         signal: req.signal,
         userAgent: req.headers.get("user-agent"),
       }));
+    }
+
+    if (method === "POST" && pathname === "/v1/images/generations") {
+      let body: ImageGenerationRequest;
+      try {
+        body = ImageGenerationRequest.parse(await readFetchJson(req));
+      } catch (err: any) {
+        return withCors(
+          json(err instanceof RequestBodyError ? err.status : 400, { error: { message: err.message, type: "invalid_request_error" } }),
+        );
+      }
+      return withCors(await handleImageGeneration(body, { signal: req.signal }));
     }
 
     return withCors(
