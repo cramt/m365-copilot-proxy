@@ -1,4 +1,4 @@
-import { type ModelSessionOptions, enabledBackends, formatModelId, getAvailableModels, listModelEntries, runtimeCatalog } from "@m365-copilot/core";
+import { type ModelSessionOptions, enabledBackends, formatModelId, getAvailableModels, listModelEntries, resolveModelRoute, runtimeCatalog } from "@m365-copilot/core";
 import { ChatCompletionRequest } from "./schemas.js";
 import { SessionPool, handleChatCompletion } from "./handler.js";
 import { checkAccess, corsHeaders, corsPolicy } from "./access.js";
@@ -67,6 +67,7 @@ export async function buildModelsPayload() {
     max_context_length: window,
     max_input_tokens: window,
     max_output_tokens: MAX_OUTPUT_TOKENS,
+    input_modalities: resolveModelRoute(id).backend === "chat" ? ["text", "image"] : ["text"],
     ...extra,
   });
   return {

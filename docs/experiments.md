@@ -22,6 +22,18 @@ pnpm build && pnpm run proxy 4141          # one shell; add env flags per experi
 
 Bench scorecards land in `scripts/bench/out/<label>-<ts>.json` — diff them.
 
+### E-RUNTIME-ATTACHMENTS — Cowork/Code files (hypotheses §48 H48b)
+
+- **Read-only discovery:** `M365_AUTH_MODE=wam node scripts/runtime-attachments-probe.mjs`.
+  Prints route status and any exposed attachment/message schemas, never tokens or file listings.
+- **Verify:** `M365_AUTH_MODE=wam node scripts/runtime-attachments-probe.mjs --verify --out=results.json`.
+  Uses system Chrome (`CHROMIUM_PATH` overrides it), uploads synthetic PNG, TXT, PDF, DOCX and XLSX
+  files, then asks for random codes absent from the prompt. One turn on Cowork, a 30-second gap,
+  then one on Code. Deletes both probe conversations; prints and optionally saves results.
+  Exit 0 requires every code to be read on both backends.
+- **Cost:** discovery uses no chat turns; verification consumes Copilot credits (~77 total in the
+  Nov 21 sample). Default model `gpt-6.2-sol-substrate`; `--model=ID` overrides it.
+
 ### E-AUTH-WAM — Native Windows broker (hypotheses §44)
 
 - **Hypothesis:** WAM can satisfy token protection for the existing client and

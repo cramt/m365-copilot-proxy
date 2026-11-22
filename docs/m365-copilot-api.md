@@ -226,6 +226,11 @@ Nothing else is needed: no GPT-V `optionsSets` on the turn, and it works with th
 (hypotheses §33 F86). `core/src/image-input.ts`; the handler sends the OpenAI `image_url` (data URL)
 parts of the messages a turn carries.
 
+`GET /v1/models` advertises `input_modalities: ["text", "image"]` for models routed
+to Chat, so clients such as Codex allow image attachments. Cowork and Code stay
+text-only: their current adapter does not forward attachments. Plain aliases
+follow `M365_DEFAULT_BACKEND` when determining their advertised capabilities.
+
 ### Documents in a turn
 
 A document doesn't go to `UploadFile`. The web client puts it in the user's OneDrive and points the
@@ -1012,6 +1017,25 @@ user's cluster, `{"endpoint": "https://mcsaetherruntime-eus2.us-ia302.gateway.pr
    keep-alive comes every 30 s.
 
 The server keeps the conversation: a follow-up sends only its new message, and is cheaper (cached).
+
+### Attachments on Cowork and Code
+
+The first-party client uploads files with multipart field `file` to
+`POST /v1/conversations/<conversationId>/files?conflict=error`, using the same
+conversation/config/auth headers as its messages. `<conversationId>` is the full
+Cowork `tid:oid:uuid` or Code `code-uuid`, not Cowork's short session key.
+The HTTP 200 reply includes `file_id`, `filename`, `size_bytes` and `workspace_url`.
+The next `/v1/messages` request includes `{type: "attachment", workspaceUrl: <workspace_url>}`
+alongside its text item. Images are uploaded as files too, not inline `image_url` items.
+
+Verified Nov 21 on one premium account with GPT-6.2 Sol (`gpt-6.2-sol-substrate`):
+PNG, TXT, PDF, DOCX and XLSX all uploaded and their hidden validation codes were
+read correctly on both backends (one turn each, 5/5 files per turn; hypotheses §48 H48b).
+This verifies file ingestion, not direct native vision on every model or arbitrary
+file-format support. `AetherSession.run` still does not forward these inputs, so
+the proxy continues advertising Cowork/Code as text-only until that adapter is implemented.
+
+### Turn events
 
 | event | `data` |
 |---|---|

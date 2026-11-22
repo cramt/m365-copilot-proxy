@@ -6476,6 +6476,24 @@ turn (F133). The long tier itself belongs to the Code tab's local sessions, on a
 send its turns there, and what does that buy: a longer window than Chat's (H47a), no Chat throttle, at what
 price? One premium account; one probe per cell (n=1) unless noted. Wire details: [API doc §14](m365-copilot-api.md).
 
+### H48b — the runtime may support attachments the proxy doesn't forward
+
+Confirmed Nov 21 on one premium account, GPT-6.2 Sol (`gpt-6.2-sol-substrate`),
+one turn per backend. All five synthetic files (PNG, TXT, PDF, DOCX, XLSX) uploaded
+with HTTP 200, and both Cowork and Code recovered all five random codes absent
+from the prompt (5/5 each). Cowork ran 14 tools and charged ~64.93 credits; Code
+ran 5 and charged ~12.04. This proves attachment ingestion on these two routes,
+not every model's native vision or every document format. The proxy still drops
+attachments; its adapter, not the runtime, is the limitation.
+
+Promoted wire shape to [API doc §14](m365-copilot-api.md#14-the-agent-runtime--cowork-and-code-nov-2026).
+Evidence: `scripts/runtime-attachments-probe.mjs --verify`; session
+`441eae51-e454-4c6a-8e84-ad63a6f68a51`, `files/runtime-attachments-result.json`.
+First-party bundle `24463.9796d05d.js` supplied the upload and message shape.
+The initial read-only probe found no OpenAPI schema and `/v1/files` required a
+`path` query; that route is not the upload endpoint. Both synthetic conversations
+were deleted (204); Cowork's first delete returned a transient 503.
+
 ### F132 — a turn is three calls, on the proxy's own token 🟢
 The proxy's MSAL client gets the runtime's scope (`6ab48b67-…/access_as_user`) silently. A turn is
 `POST /v1/prewarm`, `POST /v1/messages` (202, with the message's place in the event stream as `id`) and
