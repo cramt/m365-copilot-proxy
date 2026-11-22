@@ -269,17 +269,17 @@ export function isExplicitShellTool(tool: ToolDef): boolean {
 }
 
 /** The harness tool (if any) that runs a shell command — the target for ```bash routing.
- *  Codex's Code Mode `exec` is the last resort: shell fences reach it wrapped as a
- *  nested `exec_command` call (codeModeShellScript). */
+ *  Recognized Codex Code Mode precedes the generic argument heuristic; shell
+ *  fences reach it wrapped as a nested `exec_command` call (codeModeShellScript). */
 export function findShellTool(tools: ToolDef[]): ToolDef | undefined {
   const shells = tools.filter((t) => !isCodeModeExecTool(t));
   return shells.find((t) => SHELL_TOOL_NAME.test(t.function.name)) ??
-    // fallback: a single-string-param tool whose param is command-ish
+    // An explicitly identified Codex executor outranks the generic input heuristic.
+    tools.find(isCodeModeExecTool) ??
     shells.find((t) => {
       const props = Object.keys(t.function.parameters?.properties ?? {});
       return props.length === 1 && /^(command|cmd|script|input)$/i.test(props[0]);
-    }) ??
-    tools.find(isCodeModeExecTool);
+    });
 }
 
 // Claude Code on Windows offers a `PowerShell` tool next to `Bash`, which runs Git
@@ -411,9 +411,18 @@ export function deriveFencedSpec(tool: ToolDef): FencedToolSpec {
   };
 }
 
-export function buildSpecMap(tools: ToolDef[], options?: { reservedNames?: Set<string>; strictShell?: boolean }): Map<string, FencedToolSpec> {
+export function buildSpecMap(tools: ToolDef[], options?: { reservedNames?: Set<string>; strictShell?: boolean; framingTools?: ToolDef[] }): Map<string, FencedToolSpec> {
   const m = new Map<string, FencedToolSpec>();
   for (const t of tools) m.set(t.function.name, deriveFencedSpec(t));
+
+  // A named choice gets only aliases that the full framing assigns to it.
+  if (options?.framingTools) {
+    const selectedNames = new Set(tools.map(t => t.function.name));
+    for (const [name, spec] of buildSpecMap(options.framingTools)) {
+      if (!m.has(name) && !options.reservedNames?.has(name) && selectedNames.has(spec.name)) m.set(name, spec);
+    }
+    return m;
+  }
 
   // Shell aliasing: route the model's reflexive ```bash / ```sh / ```shell blocks
   // to the harness's shell tool even when it's named `run`/`run_command`/etc., so
@@ -1370,7 +1379,7 @@ function resolveSpec(specs: Map<string, FencedToolSpec>, info: string): FencedTo
 
 /** Compare recognizable top-level actions in order before emitting a named call.
  * Standalone JSON objects may span lines; nested code fences remain opaque. */
-export function hasEarlierUnselectedAction(text: string, selected: ToolDef[], all: ToolDef[], options: { reservedNames?: Set<string>; strictShell?: boolean }): boolean {
+export function hasEarlierUnselectedAction(text: string, selected: ToolDef[], all: ToolDef[], options: { reservedNames?: Set<string>; strictShell?: boolean; framingTools?: ToolDef[] }): boolean {
   const selectedName = selected[0]?.function.name;
   const declared = new Set(all.map(t => t.function.name));
   const allSpecs = buildSpecMap(all, { strictShell: options.strictShell });

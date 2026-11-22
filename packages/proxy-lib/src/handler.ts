@@ -692,7 +692,7 @@ export async function handleChatCompletion(
   const selectedName = selected ? choiceName : undefined;
   const parseTools = selected ?? body.tools;
   const parseOptions = selected ? {
-    strictShell: true,
+    framingTools: body.tools,
     rejectJsonAliases: true,
     reservedNames: new Set(body.tools?.filter(t => t.function.name !== selectedName).map(t => t.function.name)),
   } : undefined;
@@ -1588,7 +1588,7 @@ export async function handleChatCompletion(
       if ("error" in retry) return failedRequest(retry.error);
       conv.sentMessageCount = body.messages.length;
       fullText = stopAtFabricatedResult(retry.fullText);
-      ({ parsed, judged } = parseReply(fullText, body.tools));
+      ({ parsed, judged } = parseReply(fullText, parseTools, parseOptions));
       log.info(`After asking again: hasToolCalls=${parsed.hasToolCalls}, count=${parsed.toolCalls.length}`);
     }
 

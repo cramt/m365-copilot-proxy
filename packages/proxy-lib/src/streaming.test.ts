@@ -3101,6 +3101,16 @@ describe("named choice parsing and emission", () => {
     return { status: res.status, raw: await res.text() };
   }
   const named = (name: string) => ({ type: "function", function: { name } });
+  for (const stream of [false, true]) {
+    it(`replay_b9e0731_named_heuristic_shell (${stream})`, async () => {
+      const terminal = { type: "function", function: { name: "terminal_run", parameters: { type: "object", properties: { command: { type: "string" } }, required: ["command"] } } };
+      const read = { type: "function", function: { name: "read_file", parameters: { type: "object", properties: { path: { type: "string" } } } } };
+      const r = await ask("```bash\nprintf hello\n```", [terminal, read], named("terminal_run"), stream);
+      expect(r.status).toBe(200);
+      expect(r.raw).toContain('"name":"terminal_run"');
+      expect(r.raw).toContain('printf hello');
+    });
+  }
   for (const stream of [false, true]) for (const reverse of [false, true]) {
     it(`routes selected Codex aliases with its schema (${stream}, ${reverse})`, async () => {
       const r = await ask("```sh\nprintf hello\n```", reverse ? [exec, search] : [search, exec], named("functions__exec"), stream);
@@ -3157,6 +3167,39 @@ describe("named choice parsing and emission", () => {
     });
   }
   for (const stream of [false, true]) {
+    it(`restricts aliases to full-framing ownership and reserves actual names (${stream})`, async () => {
+      const terminal = { type: "function", function: { name: "terminal_run", parameters: { type: "object", properties: { command: { type: "string" } }, required: ["command"] } } };
+      const read = { type: "function", function: { name: "read_file", parameters: { type: "object", properties: { path: { type: "string" } } } } };
+      const sh = { type: "function", function: { name: "sh", parameters: { type: "object", properties: { query: { type: "string" } } } } };
+      for (const tools of [[terminal, search, read], [search, terminal, read]]) {
+        // Both input-shaped tools are heuristic candidates: full framing chooses the first.
+        const winner = tools[0].function.name;
+        const loser = winner === "terminal_run" ? "search_docs" : "terminal_run";
+        const ok = await ask("```bash\nid\n```", tools, named(winner), stream);
+        expect(ok.raw).toContain(`"name":"${winner}"`);
+        const no = await ask("```bash\nid\n```", tools, named(loser), stream);
+        expect(no.raw).not.toContain(`"name":"${loser}"`);
+      }
+      const reserved = await ask("```sh\nid\n```", [terminal, sh, read], named("terminal_run"), stream);
+      expect(reserved.raw).not.toContain('"name":"terminal_run"');
+      const codexLoses = await ask("```sh\nid\n```", [bash, exec], named("functions__exec"), stream);
+      expect(codexLoses.raw).not.toContain('"name":"functions__exec"');
+    });
+    it(`preserves PowerShell ownership and damaged-command refusal (${stream})`, async () => {
+      const ps = { type: "function", function: { name: "PowerShell", parameters: { type: "object", properties: { command: { type: "string" } }, required: ["command"] } } };
+      const tools = [bash, ps];
+      const good = await ask("```pwsh\nGet-Location\n```", tools, named("PowerShell"), stream);
+      expect(good.raw).toContain('"name":"PowerShell"');
+      const no = await ask("```pwsh\nGet-Location\n```", tools, named("bash"), stream);
+      expect(no.raw).not.toContain('"name":"bash"');
+      const damaged = "```bash\n$u = :Replace($c, 'a', 'b')\n```";
+      scripted.queue = [{ fullText: damaged }, { fullText: damaged }];
+      scripted.fullText = damaged;
+      scripted.deltas = [damaged];
+      const body = ChatCompletionRequest.parse({ model: "m365-copilot", stream, messages: [{ role: "user", content: "work" }], tools: [{ ...bash, function: { ...bash.function, description: "Runs a PowerShell command" } }], tool_choice: named("bash") });
+      const res = await respond(body);
+      expect(await res.text()).toContain("damaged_tool_call");
+    });
     it(`does not emit arbitrary JSON actions for a named selection (${stream})`, async () => {
       for (const name of ["unexpected", "functions__exec"]) {
         const r = await ask(JSON.stringify({tool: name, arguments: {input: "danger"}}), [search, exec], named("search_docs"), stream);
