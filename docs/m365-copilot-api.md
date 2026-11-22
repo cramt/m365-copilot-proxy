@@ -604,11 +604,39 @@ Every turn's `throttling.metering` map now carries **`TotalTurnUsageDaily`**. It
 
 The reply comes from `contentOrigin: "BotConnection"` with `turnState: "Failed"`, the same shape as the priority-access wall, and the message names no reset time. This is not `PerUserThrottled` (that one clears in about an hour) and not priority access (that one is per model). Refusals ("no tool is available") showed up before the wall did.
 
-For an agent harness this is the binding limit: every tool step is a turn, so 50 is a few tasks a day. The proxy doesn't handle it yet. It should:
-- return a 429 with `Retry-After` to midnight UTC on `errorCode: "TotalTurnDailyQuotaExhausted"`, the way it does for `priority_access_exhausted`;
-- surface the counter as `usage.x_m365_total_turns_daily_remaining`.
+For an agent harness this is the binding limit: every tool step is a turn, so 50 is a few tasks a day. Since ba10843 the proxy handles it: the first refusal is remembered for the whole account, and every chat model gets a 429 `daily_turn_quota_exhausted` with `Retry-After` to midnight UTC, without an M365 turn and without falling back to another model (all of them are refused alike). `usage.x_m365_total_turns_daily_remaining` carries the counter on every answered turn. Image generation is not blocked, because it still works past the limit (below).
 
 The key wasn't in the log before 2026-11-21. The log doesn't go back far enough to say when Microsoft added it.
+
+### How the daily turn limit behaves (measured 2026-11-22)
+
+Data: `docs/quota/` (`direct.jsonl` for turns sent straight to M365, `sent.jsonl` for turns sent through the proxy, and the proxy log extracted with `scripts/quota-log.mjs`). Tooling: `scripts/quota-direct.mjs`, `scripts/quota-probe.sh`, `scripts/quota-day.sh`.
+
+**Cost per turn.** 49 consecutive think-deeper turns (01:11–01:21Z, prompts from 300 to 56,000 characters, first turns and follow-ups alike) each took the counter down by exactly 1. An image turn at 01:14Z (`tone: magic`, temporary chat, a `GraphicArt` result) cost **0** and moved no key, `ImageGeneration` (100) included. `ReasoningModelTurnUsage` stayed at 10 through all 49 reasoning turns, so this path doesn't spend it. The client knows an errorCode `ReasoningTurnExhausted` for it, which hasn't been seen yet.
+
+**What 0 refuses.** Every tone tried (`Gpt_5_5_Chat`, `Gpt_5_5_Reasoning`, `Gpt_5_4_Reasoning`, `Gpt_5_6_Reasoning`, `magic`), on Chathub, on StreamHub (included scenario; StreamHub carries no metering at all), and in the web UI. Claude (all tones) and GPT-6.x never reach the meter on this license: they come back `ForbiddenRequest` / `ClaudeUnavailableForLicense` / `PremiumModelUnavailableForLicense`, at any count.
+
+**Two kinds of refusal.**
+- *Fast* (~1.2 s): almost every refusal. The gate is checked before the model runs.
+- *Slow* (10–13 s): the turn right after the one that reached 0 (01:21Z), and one after 23 minutes of silence (01:44Z). The model ran and the turn was judged at the end.
+
+**Images get past it.** At 0, `/v1/images/generations` still produced and delivered the image (12:06Z). The `ImageGeneration` progress frame streams it, and only the final frame turns the turn into `Failed` / `OutOfCredits` / `TotalTurnDailyQuotaExhausted`. The proxy takes the image from the stream and returns 200.
+
+**The wall leaks about 8 %.** Of ~155 text turns the server judged at 0, **12 succeeded** with a normal answer and still reported `TotalTurnUsageDaily: 0`. A run of 120 fresh-conversation `Gpt_5_5_Chat` pongs, one a minute from 13:41Z to 15:41Z, got 10 passes, spread evenly (0–3 per 10 minutes). Passes take 3.5 s on average and refusals 1.8 s. The leak doesn't depend on:
+- the model or tone (`quick` and `gpt-5.5` send the same `Gpt_5_5_Chat` payload);
+- `isStartOfSession`;
+- new conversation or follow-up (one pass was turn 9 of a conversation with 8 refusals in it);
+- idle time (probes after 3, 5, 7, 10, 15, 20 and 30 minutes of silence were all refused).
+
+It looks like the gate failing open now and then. The proxy doesn't use it: hammering for a ~1-in-12 pass costs thread-rate budget (F58) and is working around the limit.
+
+**Web UI at 0.** The same refusal text, plus a card "**Upgrade to keep going** — You've reached your daily chat limit. Upgrade your plan to get more Copilot features and usage." with an Upgrade button. The client builds it from the final frame's `result.errorCode` (`TotalTurnDailyLimitUpsell`, behind the flag `enableTotalTurnDailyLimitUpsell`, AAD accounts only). No `MeteringInfo` frame, no `throttling.meteringLimitAlerts`. Adding the web client's opt-in variants `feature.EnableMeteringThrottleChatRequest` and `feature.EnableFreeMSA_AADUser100TurnLimit` to the WS query doesn't change the refusal.
+
+**Not this limit.** `PerUserThrottled` ("We're temporarily unable to respond to this volume of requests") is the thread-rate bucket of hypotheses §24 F58 (~100 turns, refilling ~1.6 a minute, then a ~1 h hold). All 25 occurrences in this proxy's log came in one burst on 2026-10-14 (11:28–12:01Z). None have come since.
+
+**Other limits the client knows about** (bundles from 2026-11-22). Upsell reasons: `MaxTotalTurn TotalTurnDailyLimit ReasoningTurnLimit ConversationTurnLimit MaxDailyUsage MaxPromptPerSession MaxCharactersPerQuery MaxOneFileUploadPerPrompt FileSizeLimit MaxGPTImageAnalysis MaxGPTImageAnalysisUpgrade`. Result codes: `TotalTurnDailyQuotaExhausted`, `ReasoningTurnExhausted`, `ConversationTurnLimitReached` (also `turns >= maxTurns` on the conversation), and `creditScenario` values `TotalTurn` and `ImageKnowledge` ("Max GPT Image analysis per account"). The flag `enableFreeAadUser100TurnLimit` adds the variant `feature.EnableFreeMSA_AADUser100TurnLimit`, which suggests a 100-turn per-conversation cap for free AAD users. The tenant's loki config has the consumptive-billing flags on (`PLGSDKConsumptiveBilling`, `EnableConsumptiveBillingCostCommand`, `EnableConsumptiveBillingCreditRequestScenarios`).
+
+**Still open** (day 2, `scripts/quota-day.sh`): the exact reset instant; what a cancelled turn, a license refusal, an oversize input, a web-UI turn, a StreamHub turn and a search turn cost; whether the web UI warns before 0; whether concurrent turns overshoot 0.
 
 ### The API behind usage limits (2026-11-22)
 

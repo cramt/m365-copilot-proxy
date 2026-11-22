@@ -13,9 +13,16 @@ import { appendFileSync, readFileSync, existsSync } from "node:fs";
 import { getTokenSilent, decodeJwt } from "../packages/core/dist/index.mjs";
 import { oneTurn } from "./_probe-chat.mjs";
 
-const [label = "adhoc", tone = "magic", text = "Reply with the single word pong."] = process.argv.slice(2).filter((a, i, all) => !a.startsWith("--") && all[i - 1] !== "--transport");
-const ti = process.argv.indexOf("--transport");
-const transport = ti > 0 ? process.argv[ti + 1] : undefined;
+//   flags: --transport streamhub, --timeout <ms> (cancel the turn by closing the socket),
+//          --variants-add a,b (extra WS-query variants, e.g. the web client's opt-ins)
+const argv = process.argv.slice(2);
+const flag = (k) => { const i = argv.indexOf(k); return i >= 0 ? argv[i + 1] : undefined; };
+const positional = argv.filter((a, i) => !a.startsWith("--") && !argv[i - 1]?.startsWith("--"));
+const [label = "adhoc", tone = "magic", text = "Reply with the single word pong."] = positional;
+const transport = flag("--transport");
+const timeoutMs = flag("--timeout") ? Number(flag("--timeout")) : undefined;
+const variantsAdd = flag("--variants-add");
+const BASE_VARIANTS = ["EnableMcpServerWidgets", "feature.EnableMcpServerWidgets", "feature.IsStreamingModeInChatRequestEnabled", "DeveloperLogs", "Agt_bizchat_enableGpt5ForHelix"];
 const OUT = new URL("../docs/quota/direct.jsonl", import.meta.url).pathname;
 
 const token = await getTokenSilent();
@@ -23,11 +30,21 @@ if (!token) throw new Error("no cached token; refusing to log in interactively")
 const claims = decodeJwt(token);
 
 const interesting = [];
+// Everything in the final frame's `throttling` except the counts and `metering`:
+// the client reads `meteringLimitAlerts` from here, which nothing has logged yet.
+let throttlingExtra;
 const t0 = new Date().toISOString();
 const r = await oneTurn({
   token, claims, text, tone,
   ...(transport ? { transport } : {}),
+  ...(timeoutMs ? { timeoutMs } : {}),
+  ...(variantsAdd ? { variants: [...BASE_VARIANTS, ...variantsAdd.split(",")].join(",") } : {}),
   onFrame: (raw) => {
+    const th = raw?.item?.throttling;
+    if (th) {
+      const { metering, numUserMessagesInConversation, maxNumUserMessagesInConversation, ...rest } = th;
+      if (Object.keys(rest).length) throttlingExtra = rest;
+    }
     const s = typeof raw === "string" ? raw : JSON.stringify(raw);
     if (/meteringInfo|MeteringInfo|billing_?[iI]nfo|cost_?info|resetAt|creditStatus/.test(s)) interesting.push(s.slice(0, 20000));
   },
@@ -45,6 +62,8 @@ if (meter) for (const [k, v] of Object.entries(meter)) if (k !== "TotalTurnUsage
 
 const row = {
   exp: label, t0, t1: new Date().toISOString(), tone, transport: r.transport, text_chars: text.length,
+  ...(timeoutMs ? { timeoutMs } : {}), ...(variantsAdd ? { variantsAdd } : {}),
+  throttlingExtra,
   result: r.result?.value ?? null, errorCode: r.result?.errorCode ?? null, creditScenario: r.result?.creditScenario ?? null,
   ttud: meter?.TotalTurnUsageDaily ?? null, convMsgs: r.throttle?.current ?? null,
   delta: Object.keys(delta).length ? delta : undefined,
