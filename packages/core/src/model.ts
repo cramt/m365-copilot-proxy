@@ -40,7 +40,8 @@ export interface ModelSessionOptions {
 export interface TurnOptions {
   /** The request's `reasoning_effort` (the agent runtime's `reasoningEffort`). Chat has no such setting. */
   reasoningEffort?: string;
-  /** Called with each piece of the model's chain of thought as it arrives (Chat). */
+  /** Called with each piece of the model's chain of thought as it arrives (Chat), and on the agent
+   *  runtime (Cowork, Code) with a line for each tool call its agent starts. */
   onReasoning?: (delta: string) => void;
 }
 

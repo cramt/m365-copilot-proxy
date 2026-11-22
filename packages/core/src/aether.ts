@@ -333,6 +333,25 @@ interface TurnContext {
   eventId: string;
   promptChars: number;
   signal?: AbortSignal;
+  /** Gets a line for each tool call the runtime's agent starts (`ts`): its thinking, as the client shows it. */
+  onReasoning?: (delta: string) => void;
+}
+
+/** The longest description of an agent's tool call that goes to the client. */
+const STEP_DETAIL_CHARS = 200;
+
+/**
+ * A line for one tool call of the runtime's agent (a `ts` event): the tool,
+ * without its `mcp__<server>__` prefix, and what the agent said it's for, the
+ * query or the URL (`d`). The agent works in its own cloud workspace, so these
+ * are all a client can see of a turn that takes minutes (§48 F139, §60).
+ */
+export function runtimeStepLine(tool: unknown, detail: unknown): string | null {
+  if (typeof tool !== "string" || !tool.trim()) return null;
+  const name = tool.trim().replace(/^mcp__[^_]+__/, "");
+  const text = typeof detail === "string" ? detail.replace(/\s+/g, " ").trim() : "";
+  const shown = text.length > STEP_DETAIL_CHARS ? `${text.slice(0, STEP_DETAIL_CHARS - 1)}…` : text;
+  return `- ${name}${shown ? `: ${shown}` : ""}\n`;
 }
 
 /** One run's events as Chat's CopilotStream. */
@@ -447,6 +466,12 @@ class RuntimeTurn implements CopilotStream {
                 yield j.t;
               }
               break;
+            case "ts": {
+              // The agent starting one of its own tools; like text, only this run's.
+              const line = started ? runtimeStepLine(j.tn, j.d) : null;
+              if (line) this.ctx.onReasoning?.(line);
+              break;
+            }
             case "fr":
               if (String(j.mid ?? "").startsWith(mid) && typeof j.content === "string") {
                 this.finals.push(j.content);
@@ -637,6 +662,7 @@ export class AetherSession implements TurnSession {
       eventId: accepted.id,
       promptChars: text.length,
       signal,
+      onReasoning: turn.onReasoning,
       subscribe: (lastEventId, subscribeSignal) =>
         fetch(`${base}/v1/subscribe`, {
           headers: headers({ accept: "text/event-stream", "last-event-id": lastEventId, "cache-control": "no-cache" }),
