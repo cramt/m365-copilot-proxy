@@ -201,6 +201,9 @@ pnpm test:live      # M365_LIVE=1; live tests that hit real M365 (uses quota)
 - **M365 disengages on large tool payloads.** Keep injected toolsets lean. This is why
   pi works and heavy harnesses (opencode) don't. The proxy also enforces one tool call per
   turn and strips M365's invented `{confidence}`/`{final}` JSON (`M365_ALLOW_MULTI_TOOL` to opt out).
+  What the model writes before a tool block (or the comments opening it) goes out as the reply's
+  `content` beside the call, Codex's commentary (`M365_NO_NARRATION=1` off); text after the block is
+  stripped, since it's written before the call ran (§60 F165).
 - **`claude-opus` is entitlement-gated and separately metered.** The WS `scenario` decides which
   model serves: `Claude_Opus` is Opus 5.5 on `OfficeWebPaidCopilot` and another model, Opus 4.8 (below), on
   `OfficeWebIncludedCopilot` (`getScenarioForModel`, derived per-turn from the model ID).
