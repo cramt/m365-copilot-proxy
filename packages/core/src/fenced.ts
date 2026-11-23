@@ -263,6 +263,11 @@ export function findRecognizedShellTool(tools: ToolDef[]): ToolDef | undefined {
   return tools.find((t) => SHELL_TOOL_NAME.test(t.function.name) || isCodeModeExecTool(t));
 }
 
+/** True for a named shell or Codex Code Mode, without the single-input heuristic. */
+export function isExplicitShellTool(tool: ToolDef): boolean {
+  return SHELL_TOOL_NAME.test(tool.function.name) || isCodeModeExecTool(tool);
+}
+
 /** The harness tool (if any) that runs a shell command — the target for ```bash routing.
  *  Codex's Code Mode `exec` is the last resort: shell fences reach it wrapped as a
  *  nested `exec_command` call (codeModeShellScript). */
@@ -406,15 +411,26 @@ export function deriveFencedSpec(tool: ToolDef): FencedToolSpec {
   };
 }
 
-export function buildSpecMap(tools: ToolDef[]): Map<string, FencedToolSpec> {
+export function buildSpecMap(tools: ToolDef[], options?: { reservedNames?: Set<string>; strictShell?: boolean; framingTools?: ToolDef[] }): Map<string, FencedToolSpec> {
   const m = new Map<string, FencedToolSpec>();
   for (const t of tools) m.set(t.function.name, deriveFencedSpec(t));
+
+  // A named choice gets only aliases that the full framing assigns to it.
+  if (options?.framingTools) {
+    const selectedNames = new Set(tools.map(t => t.function.name));
+    for (const [name, spec] of buildSpecMap(options.framingTools)) {
+      if (!m.has(name) && !options.reservedNames?.has(name) && selectedNames.has(spec.name)) m.set(name, spec);
+    }
+    return m;
+  }
 
   // Shell aliasing: route the model's reflexive ```bash / ```sh / ```shell blocks
   // to the harness's shell tool even when it's named `run`/`run_command`/etc., so
   // the model can "just write bash" (the behavior M365 reliably permits) and the
   // harness still receives a structured tool_call under its own tool's name.
-  const shell = findShellTool(tools);
+  const shell = options?.strictShell
+    ? tools.find(isExplicitShellTool)
+    : findShellTool(tools);
   if (shell) {
     const own = m.get(shell.function.name)!;
     // A ```bash fence is a shell command by definition: Code Mode always wraps it.
@@ -423,7 +439,7 @@ export function buildSpecMap(tools: ToolDef[]): Map<string, FencedToolSpec> {
     const pwsh = findPowerShellTool(tools);
     const pwshSpec = pwsh && pwsh !== shell ? m.get(pwsh.function.name) : undefined;
     for (const lang of SHELL_LANGS) {
-      if (!m.has(lang)) m.set(lang, pwshSpec && POWERSHELL_LANGS.has(lang) ? pwshSpec : shellSpec);
+      if (!m.has(lang) && !options?.reservedNames?.has(lang)) m.set(lang, pwshSpec && POWERSHELL_LANGS.has(lang) ? pwshSpec : shellSpec);
     }
   }
   return m;
@@ -1359,6 +1375,73 @@ function resolveSpec(specs: Map<string, FencedToolSpec>, info: string): FencedTo
   const lower = info.toLowerCase();
   const hits = new Set([...specs].filter(([k]) => k.toLowerCase() === lower).map(([, v]) => v));
   return hits.size === 1 ? [...hits][0] : undefined;
+}
+
+/** Compare recognizable top-level actions in order before emitting a named call.
+ * Standalone JSON objects may span lines; nested code fences remain opaque. */
+export function hasEarlierUnselectedAction(text: string, selected: ToolDef[], all: ToolDef[], options: { reservedNames?: Set<string>; strictShell?: boolean; framingTools?: ToolDef[] }): boolean {
+  const selectedName = selected[0]?.function.name;
+  const declared = new Set(all.map(t => t.function.name));
+  const allSpecs = buildSpecMap(all, { strictShell: options.strictShell });
+  const selectedSpecs = buildSpecMap(selected, options);
+  const selectedFence = findFirstToolFence(text, selectedSpecs);
+  const classify = (name: unknown): number => {
+    if (typeof name !== "string") return 0;
+    if (name === selectedName) return 1;
+    if (declared.has(name)) return -1;
+    return allSpecs.has(name) ? -1 : 0;
+  };
+  // Scan only JSON objects starting at the beginning of a line. Quoted/prose
+  // examples and objects embedded in another fenced block are not actions here.
+  const jsonActions = (begin: number, end: number): number => {
+    let start = -1, depth = 0, inString = false, escaped = false, lineStart = true;
+    for (let i = begin; i < end; i++) {
+      const c = text[i];
+      if (start < 0) {
+        if (lineStart && (c === " " || c === "\t" || c === "\r")) continue;
+        if (lineStart && c === "{") { start = i; depth = 1; lineStart = false; continue; }
+        lineStart = c === "\n";
+        continue;
+      }
+      if (inString) {
+        if (escaped) escaped = false;
+        else if (c === "\\") escaped = true;
+        else if (c === '"') inString = false;
+      } else if (c === '"') inString = true;
+      else if (c === "{") depth++;
+      else if (c === "}" && --depth === 0) {
+        try {
+          const obj = JSON.parse(text.slice(start, i + 1));
+          if (obj && typeof obj === "object" && !Array.isArray(obj) &&
+              (typeof obj.arguments === "string" || (obj.arguments && typeof obj.arguments === "object" && !Array.isArray(obj.arguments)))) {
+            const action = classify(obj.tool);
+            // The parser prefers any fence over JSON. Never let a later fence
+            // silently overtake this earlier selected call: refuse the ambiguity.
+            if (action === 1 && selectedFence && i < selectedFence.start) return -1;
+            if (action) return action;
+          }
+        } catch { /* not a valid legacy call */ }
+        start = -1;
+      }
+      lineStart = c === "\n";
+    }
+    return 0;
+  };
+  const isActionFence = (info: string): boolean =>
+    resolveSpec(allSpecs, info) !== undefined || resolveSpec(selectedSpecs, info) !== undefined;
+  let pos = 0;
+  for (const block of scanFences(text, isActionFence).blocks) {
+    const before = jsonActions(pos, block.start);
+    if (before) return before < 0;
+    // Exact declared names take priority; otherwise honor an authorized alias
+    // before consulting the full-tool routing map.
+    const resolved = declared.has(block.info) ? block.info : (selectedSpecs.get(block.info)?.name ?? allSpecs.get(block.info)?.name);
+    const action = classify(resolved);
+    if (action < 0) return true;
+    if (selectedSpecs.has(block.info) && resolved === selectedName) return false;
+    pos = block.end;
+  }
+  return jsonActions(pos, text.length) < 0;
 }
 
 const SEARCH_REPLACE_REGEX =

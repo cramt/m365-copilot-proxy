@@ -24,6 +24,26 @@ tool (`bash`/`shell`/`run`/`run_command`/… — any name), the proxy injects "d
 by writing one ` ```bash ` block" framing and routes that block to the shell tool. This is
 what turns 0/5 into real multi-turn loops. See [hypotheses §9 F12](./hypotheses.md).
 
+In automatic mode, a named shell takes precedence, followed by the generic
+single-parameter heuristic and then a recognized Codex Code Mode executor. A named
+choice receives only aliases assigned to it by the full tool-set routing map; the
+heuristic can therefore select an input-shaped search tool if it is the full-map winner.
+When Codex is the winner, shell commands are wrapped as nested shell invocations.
+
+A named `tool_choice` restricts emitted calls to that tool. Actual declared names take
+precedence over shell aliases; JSON aliases are not translated for a named choice. The
+proxy refuses a recognizable earlier unselected top-level fence or line-start legacy JSON
+object before a later selected call, including shell aliases. JSON objects may span lines;
+objects inside fenced examples remain opaque. When an earlier selected JSON call precedes
+another selected fence, the proxy refuses the ambiguous mixed-format turn rather than
+letting the fence take precedence. This is not a complete interpretation of
+mixed prose, quoted JSON, or malformed calls. The selected call must have object arguments; required
+string properties and recognizable shell command string properties receive a narrow type
+check. This is **not JSON Schema validation**: nested schemas, other required types,
+constraints and optional properties are not fully validated. Clients must validate tool
+arguments before execution. An oversized Windows heredoc that would need rewriting to a
+different, unselected write tool is refused rather than sent as a truncated command.
+
 ## Enforcement
 
 The contract is enforced at three layers:
