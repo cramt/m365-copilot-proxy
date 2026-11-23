@@ -4,12 +4,35 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 vi.mock("./auth.js", () => ({ getTokenForScope: vi.fn().mockResolvedValue("synthetic-token") }));
-vi.mock("node:fs", async (importOriginal) => ({
-  ...(await importOriginal<typeof import("node:fs")>()),
-  existsSync: vi.fn().mockReturnValue(false),
-  readFileSync: vi.fn(),
-  writeFileSync: vi.fn(),
+// What agent.ts logs, kept here instead of in a debug log (the #156 tests read it).
+const logLines = vi.hoisted(() => [] as string[]);
+vi.mock("./log.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("./log.js")>()),
+  createLogger: () => ({
+    info: (...args: unknown[]) => { logLines.push(args.map(String).join(" ")); },
+    error: (...args: unknown[]) => { logLines.push(args.map(String).join(" ")); },
+    debug: () => {},
+  }),
 }));
+// No agent cache is written or read, unless a #156 test lets agent.ts write the real
+// `agent-id.json` under its temporary HOME and read it back (`real`), with `hash` in place
+// of the hash it holds when one is set.
+const cacheFile = vi.hoisted(() => ({ real: false, hash: undefined as string | undefined }));
+vi.mock("node:fs", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("node:fs")>();
+  const isCache = (path: unknown) => cacheFile.real && String(path).endsWith("agent-id.json");
+  return {
+    ...actual,
+    existsSync: vi.fn((path: string) => isCache(path) && actual.existsSync(path)),
+    readFileSync: vi.fn((path: string) => {
+      if (!isCache(path)) return undefined;
+      const cached = JSON.parse(actual.readFileSync(path, "utf-8"));
+      return JSON.stringify(cacheFile.hash ? { ...cached, instructionsHash: cacheFile.hash } : cached);
+    }),
+    // The cache's contents go through writeFileSync(fd, …) (atomicWritePrivate).
+    writeFileSync: vi.fn((...args: Parameters<typeof actual.writeFileSync>) => (cacheFile.real ? actual.writeFileSync(...args) : undefined)),
+  };
+});
 import { environmentUrlFromName } from "./agent.js";
 
 describe("environmentUrlFromName", () => {
@@ -91,5 +114,61 @@ describe("agent provisioning policy", () => {
     const { getOrCreateAgent } = await import("./agent.js");
     expect(await getOrCreateAgent()).toBe("synthetic-title.synthetic-bot.gpt.default");
     expect(calls).toEqual(["list", "create", "publish", "delete", "create", "publish"]);
+  });
+});
+
+describe("the log line of a forced agent refresh (#156)", () => {
+  let root: string;
+  beforeEach(() => {
+    vi.resetModules(); vi.clearAllMocks();
+    logLines.length = 0;
+    root = mkdtempSync(join(tmpdir(), "m365-agent-"));
+    vi.stubEnv("HOME", root);
+    vi.stubEnv("USERPROFILE", root);
+    vi.stubGlobal("fetch", vi.fn(async (input: string, init: RequestInit = {}) => {
+      const method = init.method ?? "GET";
+      if (input.includes("api.bap.microsoft.com")) return Response.json({ name: "Default-12345678-abcd-4ef0-9876-0123456789ab" });
+      if (method === "HEAD") return new Response(null, { status: 200 });
+      if (method === "GET") return Response.json([]);
+      if (input.includes("/publish?")) return Response.json({ TitleId: "synthetic-title" });
+      return Response.json({ bot: { schemaName: "synthetic-bot" } });
+    }));
+  });
+  afterEach(() => {
+    cacheFile.real = false;
+    cacheFile.hash = undefined;
+    vi.unstubAllGlobals(); vi.unstubAllEnvs();
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  /** Provisions the agent with no cache yet, which writes the real `agent-id.json` under
+   *  the temporary HOME; later reads of it get `cachedHash` in place of the hash it holds
+   *  when one is given. */
+  async function provisioned(cachedHash?: string) {
+    cacheFile.real = true;
+    const agent = await import("./agent.js");
+    expect(await agent.getOrCreateAgent()).toBe("synthetic-title.synthetic-bot.gpt.default");
+    cacheFile.hash = cachedHash;
+    logLines.length = 0;
+    return agent;
+  }
+
+  /** The agent name and hash the call worked with, from its own log. */
+  const wanted = () => logLines.join("\n").match(/agent name: (m365-tool-agent-([0-9a-f]{8}))/)?.slice(1) ?? [];
+
+  it("calls a forced refresh of an up-to-date agent a re-validation, not stale", async () => {
+    const agent = await provisioned();
+    expect(await agent.getOrCreateAgent({ forceRefresh: true })).toBe("synthetic-title.synthetic-bot.gpt.default");
+    const [name, hash] = wanted();
+    expect(logLines).toContain(`Forced agent refresh: re-validating ${name} against the tenant (instructions ${hash} unchanged)`);
+    expect(logLines.join("\n")).not.toContain("stale");
+  });
+
+  it.each([false, true])("still calls a cache with another hash stale (forceRefresh: %s)", async (forceRefresh) => {
+    const agent = await provisioned("00000000");
+    await agent.getOrCreateAgent({ forceRefresh });
+    const [, hash] = wanted();
+    expect(logLines).toContain(`Cached agent instructions stale (00000000 != ${hash}), rebuilding`);
+    expect(logLines.join("\n")).not.toContain("Forced agent refresh");
   });
 });
