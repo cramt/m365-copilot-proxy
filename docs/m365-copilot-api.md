@@ -293,10 +293,10 @@ There is no `model` parameter. The `tone` string on the chat message picks the m
 | `claude-fable` / `claude-fable-5.1` | `Claude_Fable` | **Claude Fable 5.1** ("Fable 5.1" in the web client, marked "Uses credits"), mapped since 2026-11-18 — see the `Claude_Fable` note below. Serves on the included scenario; agent-less like every Claude tone but Opus. Its StreamHub turns are charged to the user's Copilot credits. Default framing `relay_batch`, unbenched (hypotheses §45) |
 | `gpt-5.5` / `gpt-5.5-quick` | `Gpt_5_5_Chat` | current GPT generation |
 | `gpt-5.5-think-deeper` | `Gpt_5_5_Reasoning` | |
-| `gpt-5.6-think-deeper` | `Gpt_5_6_Reasoning` | confirmed live 2026-08-06; reported picker label "GPT-5.6 Sol Think deeper" (hypotheses H-SOL56) |
-| `gpt-5.6` / `gpt-5.6-quick` | `Gpt_5_6_Chat` | reported picker label "GPT-5.6 Sol Quick response" (hypotheses H-SOL56). Live on the **included** scenario since 2026-09-24 — it was entitlement-gated before that (§18), which §12.15 misread as dead |
+| `gpt-5.6-think-deeper` | `Gpt_5_6_Reasoning` | confirmed live 2026-08-06; "GPT-5.6 Sol Think deeper" in the web client's model selector (hypotheses §63 F179) |
+| `gpt-5.6` / `gpt-5.6-quick` | `Gpt_5_6_Chat` | "GPT-5.6 Sol Quick response" in the web client's model selector (hypotheses §63 F179). Live on the **included** scenario since 2026-09-24 — it was entitlement-gated before that (§18), which §12.15 misread as dead |
 | `gpt-6-think-deeper` | `Gpt_6_Reasoning` | GPT-6 Think deeper. Reachable ONLY under `scenario=OfficeWebPaidCopilot` (see below), like Opus — but **not** separately metered. No chat variant: `Gpt_6_Chat` is rejected. Doesn't serve with the tool agent, so its tool requests go agent-less with a user-voice relay framing, `relay_batch` since hypotheses §25 (§22, #41) |
-| `gpt-6-sol` | `Gpt_6_Sol_Reasoning` | "GPT 6.0 Sol" in the web client (not called Think Deeper). Self-IDs as the GPT-6 reasoning model. **Not** gated on a premium account: serves on the included scenario there. A non-premium account is refused it by licence (`PremiumModelUnavailableForLicense`, hypotheses §49 F146), where it served on 2026-10-07 (§29). Takes the tool agent only on a **premium** account (non-premium: dead route, before the licence refusal), which the proxy learns at runtime; agent-less it has a sandbox of its own. Default framing `relay_batch` on both paths (hypotheses §23, §28, #23). `Gpt_6_Sol_Chat` is accepted but serves the GPT-5 chat model, so it isn't mapped |
+| `gpt-6-sol` | `Gpt_6_Sol_Reasoning` | "GPT 6.0 Sol" in the web client (not called Think Deeper). Self-IDs as the GPT-6 reasoning model. **Not** gated on a premium account: serves on the included scenario there. A non-premium account is refused it by licence (`PremiumModelUnavailableForLicense`, hypotheses §49 F146), where it served on 2026-10-07 (§29). Takes the tool agent only on a **premium** account (non-premium: dead route, before the licence refusal), which the proxy learns at runtime; agent-less it has a sandbox of its own. Default framing `relay_batch` on both paths (hypotheses §23, §28, #23). `Gpt_6_Sol_Chat` is accepted and unmapped: it self-IDs as the GPT-5 chat model on the included scenario, and as GPT-6 reasoning on the paid scenario and over StreamHub's `officeweb`, where the web client's "GPT-6" item sends it (hypotheses §63 F179, F180, H63a) |
 | `gpt-6.1-sol` | `Gpt_61_Sol_Reasoning` | "GPT-6.1 Sol" in the web client. Self-IDs as the GPT-6 reasoning model. Serves on the included scenario on a premium account (a non-premium account is refused it by licence, `PremiumModelUnavailableForLicense`, hypotheses §49 F146); the paid scenario serves it too but spends the `GPT61Sol*` budget (40/day, 75/week), so the proxy stays on the included one. Like `gpt-6-sol`, it serves with the tool agent attached only on a **premium** account (non-premium: dead route, so the proxy goes agent-less there), and agent-less it has the same kind of sandbox, though unlike `gpt-6-sol` it stays out of it under the user-voice framings (hypotheses §29). Default framing `relay_batch` on both paths (hypotheses §27). Every sibling (`Gpt_61_Sol`, `Gpt_61_Sol_Chat`, `Gpt_61_Reasoning`, `Gpt_61_Chat`, `Gpt_61`) is rejected |
 | `gpt-6.2-sol` | `Gpt_62_Sol_Reasoning` | "GPT-6.2 Sol" in the web client (since 2026-11-17; picking it sends this tone and no other model field). Self-IDs as the GPT-6 reasoning model, as in the web client. Serves on the included scenario (2026-11-18, n=1) and over StreamHub; the paid scenario's metering carries `GPT62SolQuery*` budgets, so the proxy stays on the included one, like `gpt-6.1-sol`. Default framing `relay_batch`, unbenched (hypotheses §45) |
 | `gpt-6.2-astra` | `Gpt_62_Astra_Reasoning` | "GPT-6.2 Astra" in the web client, marked "Uses credits": its StreamHub turns reported a `billing_info` charge to the user's Copilot credits (`PremiumModelsInM365Chat`, `creditInUse`) on Nov 17–18, and none on Nov 20 (hypotheses §49 F143). Otherwise routed like `gpt-6.2-sol` (`GPT62AstraQuery*` budgets on the paid scenario). The near misses `Gpt_61_Astra_Reasoning`, `Gpt_62_Luna_Reasoning` and `Gpt_63_Astra_Reasoning` are rejected (hypotheses §45) |
@@ -421,12 +421,15 @@ Prompt size doesn't matter to this budget — it counts turns (above). So the pr
 When the web client's model picker shows a label that matches no known tone, the cheapest first
 check is the picker's own data, which costs no chat turn and no quota.
 
-**The selector's own request (2026-11-23, hypotheses §62 F177).** The web client gets its model selector
-with `POST https://copilot.cloud.microsoft/resources/app-shell-action`, body `{"action":"RefreshNavPane"}`.
-Sent from the signed-in browser, it returns JSON. The items are in
+**The selector's own request (2026-11-23, hypotheses §62 F177, F178).** The web client gets its model
+selector with `POST https://copilot.cloud.microsoft/resources/app-shell-action`, body
+`{"action":"RefreshNavPane"}`. `scripts/chathub-tones.mjs` sends it and prints the items as a table
+with `Tone` and `Title` columns; given the path of a saved reply, it reads that file and sends nothing.
+The items are in
 `store.bizchatAsAgentGpt.clientPreferences.modelSelectorMetadata.availableModelSelectionOptions`, and again
 under `store.bizchatAsAgentGptWebTab`: an object with `type: "item"`, `id` (the tone the item sends) and
-`menuItemTitle`, or a group whose `itemGroup` array contains such objects. Saved to a file, this lists them:
+`menuItemTitle`, or a group whose `itemGroup` array contains such objects. Saved to a file, this jq
+filter lists the same items, one line each:
 
 ```sh
 jq -r '([.store.bizchatAsAgentGpt.clientPreferences.modelSelectorMetadata.availableModelSelectionOptions[]] +
@@ -435,9 +438,24 @@ jq -r '([.store.bizchatAsAgentGpt.clientPreferences.modelSelectorMetadata.availa
   "Tone: " + .id + ", Title: " + .menuItemTitle' RefreshNavPane.json | sort -u
 ```
 
-On a premium account on 2026-11-23 its Claude items were `Claude_Sonnet` (Sonnet 5.5) and `Claude_Opus`
-(Opus 5.5), and none was `Claude_Auto`. The proxy's Sydney token as a bearer header gets the app's HTML
-page from the same request (200, `text/html`), not the JSON, so read it from the browser session.
+The server answers with JSON only when the request sends `Accept: application/json`; without that header
+it returns the app's HTML page (200, `text/html`). The browser's request carries no `Authorization`
+header: the site's session cookies (`OhpAuth`, `OhpToken`, `OH.SID` and others) authenticate it. The
+server accepts a bearer token too, and the token decides what the store holds. With a token for
+`https://m365.cloud.microsoft/v2/M365Copilot.Read.All`, the scope the web app's own sign-in asks for, the
+reply is the whole store, and the proxy's MSAL client gets that token from its cached refresh token; the
+script sends it. With the proxy's Sydney token the reply holds only `store.notebooks`, with
+`"errorMessage": "HTTP 401: "`. With no credentials the server answers 302, to the web app's sign-in page.
+
+On a premium account on 2026-11-23 it listed `Magic` (Auto), `Chat` (Quick response), `Reasoning` (Think
+deeper), `Gpt_5_6_Chat` (GPT-5.6 Sol Quick response), `Gpt_5_6_Reasoning` (GPT-5.6 Sol Think deeper),
+`Gpt_6_Sol_Chat` (GPT-6), `Gpt_61_Sol_Reasoning` (GPT-6.1 Sol), `Claude_Sonnet` (Sonnet 5.5) and
+`Claude_Opus` (Opus 5.5) (hypotheses §63 F179), and no `Claude_Auto`. On a non-premium account the same
+day it had 5 items (`Magic`, `Chat`, `Reasoning`, `Gpt_5_6_Chat`, `Gpt_5_6_Reasoning`) and no Claude or
+GPT-6.x item, so read the list on the kind of account in question. Each Claude item names a policy in
+`policyExpression`, with `policyFailureBehavior: "disable"` and `policyDisabledInfoMessage: "Your
+organization did not enable this model."`; the GPT items have `policyExpression: null`. So a Claude item
+in the list can still show as disabled in the client.
 
 **From the browser's HTTP cache.** The same items can be read without making the request: the client's
 menu JSON pairs a tone `id` with a `menuItemTitle`, for example

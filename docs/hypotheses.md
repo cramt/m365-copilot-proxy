@@ -143,7 +143,13 @@ than "we eyeballed one run." See §M (Methods) for the experimental rig.
   without reporting it, and of `Claude_Auto` (Opus 5.5 by self-ID) to none (F173); the evidence for Opus
   5.5, and a test that doesn't distinguish it from Sonnet 5.5 (F174); refused on a non-premium account
   (F175); `claude-auto` through the proxy (F176); the web client's selector: "Opus 5.5" is `Claude_Opus`,
-  and no item is `Claude_Auto` (F177)
+  and no item is `Claude_Auto` (F177); the selector's request answers JSON only to
+  `Accept: application/json`, `scripts/chathub-tones.mjs` reads it with the proxy's MSAL client, and a
+  non-premium account's list has no Claude items (F178)
+- §63 — the web client's model selector and the GPT tones: its nine items, "GPT-5.6 Sol" answers H-SOL56,
+  "GPT-6" is `Gpt_6_Sol_Chat` (F179); `Gpt_6_Sol_Chat` self-IDs as GPT-6 reasoning off the included
+  scenario (F180); whether `Gpt_6_Sol_Chat`, `Chat` and `Reasoning` serve other models than the tones the
+  proxy maps (H63a, open)
 
 ---
 
@@ -3191,7 +3197,7 @@ this table to measure what it recovers.
 
 ---
 
-### H-SOL56 — "GPT-5.6 Sol" in the web picker is `Gpt_5_6_Chat` / `Gpt_5_6_Reasoning` ❓
+### H-SOL56 — "GPT-5.6 Sol" in the web picker is `Gpt_5_6_Chat` / `Gpt_5_6_Reasoning` 🟢
 **Reported, not re-run.** One tenant (non-premium), 2026-11-03, n=1 per cell. The picker shows
 "GPT-5.6 Sol Quick response" / "GPT-5.6 Sol Think deeper". Seven guessed tone names (`Gpt_56_Sol_*`,
 `Gpt_5_6_Sol_*`, …) were **REJECTED** (`type:3`), and the picker's menu JSON, read from the browser's
@@ -3203,6 +3209,9 @@ isn't in the repo, so this stays ❓ until the picker data is read again and the
 re-swept (E-SOL56 in `experiments.md`; the cells are in `scripts/tone-probe.mjs`).
 **Falsifier:** a `*_Sol_*` guess that serves (`DeepLeo`), or picker JSON that gives the "GPT-5.6 Sol"
 items another `id`.
+**Confirmed 2026-11-23 (§63 F179):** the selector's data on a premium account, read from the web
+client's `RefreshNavPane` request, gives "GPT-5.6 Sol Quick response" the `id` `Gpt_5_6_Chat` and "GPT-5.6
+Sol Think deeper" `Gpt_5_6_Reasoning`, so the labels need no tone of their own.
 The same sweep also saw `Grok_Auto`, `Grok_Reasoning`, `Muse_Spark` and `Gpt_5_2_Auto`, named in the
 web client's tone enum, accepted, each self-identifying as "the GPT-5 chat model", and `Gpt_6_Astra`
 REJECTED (n=1). Self-ID can't tell a real model from a fallback (§18, §27 H27a), so those four are
@@ -3664,6 +3673,9 @@ it is **not** entitlement-gated and stays out of `PAID_SCENARIO_TONES`.
 (4/4); premium with the agent and non-premium agent-less "2024-06" (4/4, 2/2). A self-reported cutoff
 is weak evidence (a different system prompt would do it), but it is consistent within each cell.
 Probe idea: ask about a dated 2025 event with web grounding off, per cell.
+**Nov 23 2026 (§63 F180):** it self-IDed as the GPT-5 chat model on the included scenario only. On
+Chathub's paid scenario and on StreamHub's `officeweb`, `Gpt_6_Sol_Chat` self-IDed as "GPT-6 reasoning"
+(cutoff 2025-12, n=1 each), and the web client's "GPT-6" item sends this tone.
 
 ### F49 — with the agent: premium serves it, non-premium gets the dead route 🟢
 `agent-tone-probe`: premium `SUPPORTED` 4/4 (both scenarios, `3PDeclarativeAgent`, self-ID GPT-6);
@@ -7702,8 +7714,7 @@ and again under `store.bizchatAsAgentGptWebTab`: each is an object with `type: "
 2026-11-23, the two lists contain nine tones between them. Two are Claude tones, `Claude_Sonnet` ("Sonnet
 5.5") and `Claude_Opus` ("Opus 5.5"), and none is `Claude_Auto`. So the web client's "Opus 5.5" sends
 `Claude_Opus`, whose StreamHub turns are charged to Opus's budget (F173), and `claude-auto` uses a tone the
-web client didn't offer on the account it was read on. With the proxy's Sydney token as a bearer header,
-the same request returned the app's HTML page (200, `text/html`), not the JSON.
+web client didn't offer on the account it was read on.
 
 **Shipped:** `claude-auto` → `Claude_Auto` in `MODEL_TONES`, the tone in `PAID_SCENARIO_TONES`, and a set
 of models that are sent over StreamHub whatever `M365_TRANSPORT` says (`STREAMHUB_MODELS`,
@@ -7712,6 +7723,36 @@ of models that are sent over StreamHub whatever `M365_TRANSPORT` says (`STREAMHU
 tool requests go agent-less. `meteredBudgetOf` returns null for it: no 429 once Opus's budget is used up,
 no `x_m365_opus_*` usage fields. Default framing `relay_batch`, as for `Claude_Opus`. The probe is
 `scripts/metering-probe.mjs`, and `docs/experiments.md` E-METER re-runs the check in 7 turns.
+
+### F178 — the reply is JSON only with `Accept: application/json`, the proxy's MSAL client can read the selector, and a non-premium account's list has no Claude items 🟢
+The server picks the reply's format from the `Accept` header: with `Accept: application/json` a request
+with credentials gets JSON, and without it the app's HTML page (200, `text/html`), both with the
+browser's session cookies and with the Sydney token. The web client's own request sends
+`Accept: application/json` and no `Authorization` header: the site's session cookies (`OhpAuth`,
+`OhpToken`, `OH.SID` and others) authenticate it. With `Accept: application/json`, the body
+`{"action":"RefreshNavPane"}` got these replies on a premium account on 2026-11-23:
+
+| credentials | reply |
+|---|---|
+| none | 302 to the web app's sign-in page: `login.microsoftonline.com`, client `4765445b-32c6-49b0-83e6-1d93765276ca`, scope `https://m365.cloud.microsoft/v2/M365Copilot.Read.All` |
+| the proxy's Sydney token | 200 JSON, 146 bytes: only `store.notebooks`, with `"errorMessage": "HTTP 401: "` |
+| a token for `https://m365.cloud.microsoft/v2/M365Copilot.Read.All` | 200 JSON, 23–25 KB: the whole store, the selector included (5 requests, the same 9 items in each) |
+
+The proxy's MSAL client gets the last token from its cached refresh token (`getTokenForScope`), so the
+new `scripts/chathub-tones.mjs` sends the request from Node, with no browser and no M365 turn, in about
+1 s. It prints the items the F177 jq filter lists, as a table with `Tone` and `Title` columns, and given
+the path of a saved reply it reads that file instead; on a reply the web client had fetched itself, it
+listed the same items as the jq filter.
+Between replies to the same token `store.notebooks` differed (the notebooks in some, `"HTTP 401: "` in
+others), and the selector didn't.
+
+**The list differs by account.** On a non-premium account, the same day, the script printed 5 items:
+`Magic`, `Chat`, `Reasoning`, `Gpt_5_6_Chat` and `Gpt_5_6_Reasoning`. Its reply has no Claude group, no
+`Gpt_6_Sol_Chat` and no `Gpt_61_Sol_Reasoning`: those items are absent, not listed as disabled. In the
+replies on a premium account each Claude item names a policy in `policyExpression`, with
+`policyFailureBehavior: "disable"` and `policyDisabledInfoMessage: "Your organization did not enable this
+model."`, and the GPT items have `policyExpression: null`. So a Claude item in a premium account's list
+can still show as disabled in the client.
 
 ### H62a — does `claude-auto` still answer once Opus's daily budget is used up? 🔴
 If it does, `M365_OPUS_FALLBACK_MODEL=claude-auto` serves a `claude-opus` client Opus 5.5 (by self-ID)
@@ -7733,3 +7774,48 @@ credits and no Cowork, so there is nothing to charge the turns to. Open for an a
 web client sends `Claude_Auto` for it, the web client's own Opus turns over StreamHub aren't charged to the
 budget either. Probe: pick Opus 5.5 with the send blocked, as F120 did.
 **Answered 2026-11-23 (F177):** `Claude_Opus`, read from the selector's own data, not from a sent turn.
+
+## 63. Nov 23 2026 — the web client's model selector and the GPT tones
+
+§62 F177 read the web client's model selector (`RefreshNavPane`) for its Claude items, and F178 how to
+request it. Its GPT items answer §19 H-SOL56 and differ from the proxy's map.
+
+### F179 — the selector's nine tones: "GPT-5.6 Sol" is `Gpt_5_6_Chat` / `Gpt_5_6_Reasoning`, "GPT-6" is `Gpt_6_Sol_Chat` 🟢 (n=1)
+Both of the selector's lists (§62 F177) on a premium account on 2026-11-23, nine tones between them:
+
+| `id` (tone) | `menuItemTitle` |
+|---|---|
+| `Magic` | Auto |
+| `Chat` | Quick response |
+| `Reasoning` | Think deeper |
+| `Gpt_5_6_Chat` | GPT-5.6 Sol Quick response |
+| `Gpt_5_6_Reasoning` | GPT-5.6 Sol Think deeper |
+| `Gpt_6_Sol_Chat` | GPT-6 |
+| `Gpt_61_Sol_Reasoning` | GPT-6.1 Sol |
+| `Claude_Sonnet` | Sonnet 5.5 |
+| `Claude_Opus` | Opus 5.5 |
+
+The two "GPT-5.6 Sol" items send `Gpt_5_6_Chat` and `Gpt_5_6_Reasoning`, which the proxy maps, so §19
+H-SOL56 is confirmed and the labels need no tone of their own. The list differs from the proxy's map in three
+places: "GPT-6" sends `Gpt_6_Sol_Chat`, which the proxy doesn't map (F180), while its `gpt-6-think-deeper`
+sends `Gpt_6_Reasoning`; "Quick response" and "Think deeper" send the unversioned `Chat` and `Reasoning`,
+while `quick` and `think-deeper` send `Gpt_5_5_Chat` and `Gpt_5_5_Reasoning`; "Auto" sends `Magic`, while
+the proxy sends `magic`. GPT-6.2 Sol, GPT-6.2 Astra and Fable 5.1, in the picker on Nov 17–18 (§45 F120),
+aren't in it.
+
+### F180 — `Gpt_6_Sol_Chat` self-IDs as GPT-6 reasoning off the included scenario 🟢 (n=1 per route)
+§23 F48 left `Gpt_6_Sol_Chat` unmapped because it self-IDed as the GPT-5 chat model. On 2026-11-23, asked
+"Reply with only your model name and version, a semicolon, the full company that made you, a semicolon,
+and your knowledge cutoff date (YYYY-mm)" (`tone-probe.mjs`, agent-less), it did so on Chathub's included
+scenario only ("Microsoft Copilot powered by GPT-5 chat model;OpenAI;2024-06"). On Chathub's paid scenario
+it answered "GPT-6 reasoning; OpenAI; 2025-12", and on StreamHub's `officeweb`, the web client's route,
+"GPT-6 reasoning; OpenAI, Inc.; 2025-12". `Gpt_6_Reasoning` and `Gpt_6_Sol_Reasoning` self-ID as the GPT-6
+reasoning model too (§23 F48), so this says which family answers there, not which of those models.
+
+### H63a — do the selector's `Gpt_6_Sol_Chat` ("GPT-6"), `Chat` and `Reasoning` serve other models than the tones the proxy maps? 🔴
+F179's selector sends these three where the proxy sends `Gpt_6_Reasoning` (`gpt-6-think-deeper`),
+`Gpt_5_5_Chat` (`quick`) and `Gpt_5_5_Reasoning` (`think-deeper`). Self-ID doesn't decide it (F180).
+Probe: the same prompts per tone, agent-less, without Bing, under the scenario the web client uses,
+compared on what a self-ID doesn't control: the sandbox path in a code-interpreter answer,
+chain-of-thought summaries, and events of early 2026. Falsified for a tone if it matches its mapped
+counterpart in each of these comparisons.

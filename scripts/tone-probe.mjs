@@ -88,10 +88,12 @@ const TONES = [
   // GPT-6 Sol ("GPT 6.0 Sol" in the web client, #23). NOT gated: LIVE on the
   // included scenario on premium and non-premium accounts alike — the
   // included cell is the regression detector if Microsoft gates it. The chat
-  // sibling is accepted too but self-IDs as the GPT-5 chat model, so it isn't
-  // mapped; keep it here to notice if that changes.
+  // sibling is accepted too and unmapped: here it self-IDs as the GPT-5 chat
+  // model, while on the paid scenario and over StreamHub's `officeweb` it
+  // self-IDs as GPT-6 reasoning, and the web client's "GPT-6" item sends it
+  // (§63 F179, F180, H63a). Keep it here to notice if that changes.
   { tone: "Gpt_6_Sol_Reasoning", note: "gpt-6-sol — included scenario: expect DeepLeo on every account", ...INCLUDED },
-  { tone: "Gpt_6_Sol_Chat", note: "unmapped: self-IDs as the GPT-5 chat model", ...INCLUDED },
+  { tone: "Gpt_6_Sol_Chat", note: "unmapped: self-IDs as the GPT-5 chat model here, as GPT-6 reasoning on the paid scenario", ...INCLUDED },
 
   // GPT-6.1 Sol ("GPT-6.1 Sol" in the web client, §27). Same shape as GPT-6
   // Sol: LIVE on the included scenario on every account. The paid scenario
@@ -128,11 +130,11 @@ const TONES = [
   { tone: "Grok_Reasoning", note: "unmapped: in the web client's tone enum", ...INCLUDED },
   { tone: "Muse_Spark", note: "unmapped: in the web client's tone enum", ...INCLUDED },
   { tone: "Gpt_5_2_Auto", note: "unmapped: in the web client's tone enum", ...INCLUDED },
-  { tone: "Chat", note: "unversioned guess (`Gpt_Chat` is REJECTED, §19 F34)", ...INCLUDED },
-  { tone: "Reasoning", note: "unversioned guess (`Gpt_Reasoning` is REJECTED, §19 F34)", ...INCLUDED },
-  // Guessed names for the picker's "GPT-5.6 Sol" items, reported in one
-  // reading to map to Gpt_5_6_Chat / Gpt_5_6_Reasoning (H-SOL56), not re-read.
-  // A guess that comes back LIVE would be news.
+  { tone: "Chat", note: "the web client's \"Quick response\" item (§63 F179); `Gpt_Chat` is REJECTED (§19 F34)", ...INCLUDED },
+  { tone: "Reasoning", note: "the web client's \"Think deeper\" item (§63 F179); `Gpt_Reasoning` is REJECTED (§19 F34)", ...INCLUDED },
+  // Guessed names for the picker's "GPT-5.6 Sol" items, which the web client's
+  // selector data maps to Gpt_5_6_Chat / Gpt_5_6_Reasoning (H-SOL56, confirmed
+  // 2026-11-23, §63 F179). A guess that comes back LIVE would be news.
   { tone: "Gpt_56_Sol_Chat", note: "guess for GPT-5.6 Sol Quick response: expect REJECTED", ...INCLUDED },
   { tone: "Gpt_56_Sol_Reasoning", note: "guess for GPT-5.6 Sol Think deeper: expect REJECTED", ...INCLUDED },
   { tone: "Gpt_5_6_Sol_Chat", note: "guess for GPT-5.6 Sol Quick response: expect REJECTED", ...INCLUDED },
