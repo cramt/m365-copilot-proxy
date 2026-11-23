@@ -6,7 +6,9 @@ import { AetherSession, containerConfig, resetRuntimeEndpoint, resetRuntimeTrack
 import { RuntimeLedger } from "./runtime-ledger.js";
 
 const RUNTIME = "https://runtime.test";
-const token = `h.${Buffer.from(JSON.stringify({ tid: "t1", oid: "o1" })).toString("base64url")}.s`;
+const tenant = "11111111-1111-1111-1111-111111111111";
+const user = "22222222-2222-2222-2222-222222222222";
+const token = `h.${Buffer.from(JSON.stringify({ tid: tenant, oid: user })).toString("base64url")}.s`;
 
 interface Call {
   url: string;
@@ -106,7 +108,7 @@ describe("AetherSession", () => {
     expect(session.turnCount).toBe(1);
 
     const message = calls.find((c) => c.url.endsWith("/v1/messages"))!;
-    expect(message.body).toMatchObject({ content: [{ text: "hi", type: "text" }], conversationId: `t1:o1:${session.conversationId}`, queue: true, role: "user" });
+    expect(message.body).toMatchObject({ content: [{ text: "hi", type: "text" }], conversationId: `${tenant}:${user}:${session.conversationId}`, queue: true, role: "user" });
     expect(message.headers["x-container-config"]).toBe("renderUi=true;durableArtifactsEnabled=true;acceptLanguage=en-us;model=gpt-6.2-sol:copilot");
     expect(message.headers["x-container-type"]).toBeUndefined();
     // The stream is read from the message on, so only this turn comes back.
