@@ -3588,9 +3588,9 @@ included scenario. The probe classifies it as `UNLICENSED`.
 **Exception: `Gpt_6_Reasoning`.** On the same account and scenario it returns its dead-route
 `InternalError` instead (2/2). With the agent attached, GPT-6's dead route answers before any licence
 check does, so an `InternalError` on the paid scenario doesn't mean the account is licensed.
-**Open:** (a) agent-less on the same account — expected identical, since it is the scenario that's
-refused, but unmeasured; (b) what the proxy does with it. It used to special-case only `Throttled` (`handler.ts`), and
-this refusal carries reply text, so the licence message probably reached the client as a 200
+**Open:** agent-less on the same account — expected identical, since it is the scenario that's
+refused, but unmeasured at the time (see update below). The proxy used to special-case only `Throttled`
+(`handler.ts`), and this refusal carries reply text, so the licence message probably reached the client as a 200
 "answer", the same failure class as the Opus quota refusal (F27). It is now a 403 (API doc §5,
 "What the proxy does with a licence refusal"), checked by the unit tests with a scripted result.
 
