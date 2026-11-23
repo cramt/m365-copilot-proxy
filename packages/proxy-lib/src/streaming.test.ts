@@ -564,6 +564,59 @@ describe("an explicitly Throttled turn (result.value = Throttled)", () => {
   });
 });
 
+describe("a reasoning-turn cap (result.value = OutOfCredits / ReasoningTurnExhausted)", () => {
+  // Synthetic result based on the relayed consumer report (F181), not a frame.
+  const CAP = {
+    value: "OutOfCredits",
+    errorCode: "ReasoningTurnExhausted",
+    message: "UNTRUSTED_UPSTREAM_SENTINEL",
+  };
+  afterEach(() => { scripted.result = null; });
+
+  it("surfaces a distinct 429 reasoning_turns_exhausted, no retry storm, no invented Retry-After", async () => {
+    scripted.deltas = [];
+    scripted.fullText = "";
+    scripted.result = CAP;
+    scripted.runs = 0;
+    const body = ChatCompletionRequest.parse({
+      model: "gpt-5.6-think-deeper",
+      stream: false,
+      messages: [{ role: "user", content: "reason hard" }],
+    });
+    const res = await handleChatCompletion(body, new SessionPool());
+    expect(res.status).toBe(429);
+    const err = (await res.json()).error;
+    expect(err.type).toBe("rate_limit_error");
+    expect(err.code).toBe("reasoning_turns_exhausted");
+    expect(err.param).toBe("ReasoningTurnExhausted");
+    expect(err.message).toBe("M365 Copilot reports this model's reasoning turns are exhausted. The reset time is unknown.");
+    expect(err.message).not.toContain(CAP.message);
+    expect(res.headers.get("Retry-After")).toBeNull();
+    expect(scripted.runs).toBe(1); // a refusal, not something to retry into
+    scripted.result = null;
+  });
+
+  it("carries the reasoning cap through the streaming path as an error chunk", async () => {
+    scripted.result = CAP;
+    const { contents, errors } = await streamRaw([], "");
+    expect(contents).toHaveLength(0);
+    expect(errors).toHaveLength(1);
+    expect(errors[0].code).toBe("reasoning_turns_exhausted");
+    expect(errors[0].message).not.toContain(CAP.message);
+    expect(errors[0].param).toBeUndefined(); // base SSE projection does not carry param
+    expect(errors[0].retry_after).toBeUndefined();
+  });
+
+  it("characterizes an early synthetic delta before the final error", async () => {
+    scripted.result = CAP;
+    const prefix = "Synthetic early content.";
+    const { contents, errors } = await streamRaw([prefix], prefix);
+    expect(contents.join("")).toBe(prefix);
+    expect(errors).toHaveLength(1);
+    expect(errors[0].code).toBe("reasoning_turns_exhausted");
+  });
+});
+
 describe("a prompt over the model's input limit (result.value = InvalidRequest)", () => {
   // Live, GPT-6.1 Sol on a Codex first turn: no content, only this final result.
   const TOO_LONG = { value: "InvalidRequest", errorCode: "InputTokenLimitExceeded" };
