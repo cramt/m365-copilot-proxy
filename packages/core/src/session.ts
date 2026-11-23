@@ -16,10 +16,8 @@ import {
 } from "./schemas.js";
 import {
   decodeJwt,
-  getScenarioForModel,
-  getStreamHubScenario,
   getToneForModel,
-  getTransport,
+  getTurnRouting,
   toneUsesWebSearch,
   type CopilotStream,
   type CapturedImage,
@@ -620,9 +618,8 @@ export class CopilotSession {
     // the paid one only.
     // See getScenarioForModel / docs §5.
     const tone = getToneForModel(model);
-    const transport = getTransport();
+    const { transport, scenario, licenseType } = getTurnRouting(model);
     const streamHub = transport === "streamhub";
-    const { scenario, licenseType } = streamHub ? getStreamHubScenario() : getScenarioForModel(model);
     log.info(`Routing: tone=${tone}, scenario=${scenario}, licenseType=${licenseType}, transport=${transport}`);
 
     const params = streamHub
