@@ -51,6 +51,8 @@ export {
   isPremiumOnlyModel,
   requestUsesAgent,
   getTransport,
+  getTransportForModel,
+  STREAMHUB_MODELS,
   getStreamHubScenario,
   getTurnRouting,
   INCLUDED_SCENARIO,

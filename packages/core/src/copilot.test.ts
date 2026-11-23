@@ -8,6 +8,8 @@ import {
   getStreamHubScenario,
   getToneForModel,
   getTransport,
+  getTransportForModel,
+  getTurnRouting,
   INCLUDED_SCENARIO_MODELS,
   isIncludedOpusModel,
   meteredBudgetOf,
@@ -22,6 +24,7 @@ import {
   PREMIUM_ONLY_AGENT_TONES,
   requestUsesAgent,
   resetAgentRoutes,
+  STREAMHUB_MODELS,
   toneUsesToolAgent,
   toolRequestUsesAgent,
 } from "./copilot.js";
@@ -500,5 +503,53 @@ describe("StreamHub transport routing (§40)", () => {
     expect(getStreamHubScenario()).toEqual({ scenario: "officeweb", licenseType: "Premium" });
     process.env.M365_SCENARIO = "SomeOtherScenario";
     expect(getStreamHubScenario().scenario).toBe("SomeOtherScenario");
+  });
+});
+
+describe("Claude_Auto routing (§62)", () => {
+  afterEach(() => {
+    delete process.env.M365_TRANSPORT;
+    delete process.env.M365_SCENARIO;
+    delete process.env.M365_FORCE_AGENT;
+  });
+
+  it("maps claude-auto to Claude_Auto, advertises it, and treats the tone as paid", () => {
+    expect(getToneForModel("claude-auto")).toBe("Claude_Auto");
+    expect(getAvailableModels()).toContain("claude-auto");
+    expect(PAID_SCENARIO_TONES.has("Claude_Auto")).toBe(true);
+    expect(getScenarioForModel("claude-auto")).toEqual(PAID);
+  });
+
+  it("sends claude-auto over StreamHub under the paid scenario, whatever M365_TRANSPORT says", () => {
+    expect(STREAMHUB_MODELS.has("claude-auto")).toBe(true);
+    for (const transport of [undefined, "chathub", "streamhub"]) {
+      if (transport) process.env.M365_TRANSPORT = transport;
+      expect(getTransportForModel("claude-auto")).toBe("streamhub");
+      expect(getTurnRouting("claude-auto")).toEqual({ transport: "streamhub", ...PAID });
+    }
+  });
+
+  it("leaves every other model on M365_TRANSPORT's transport and scenario", () => {
+    expect(getTurnRouting("claude-opus")).toEqual({ transport: "chathub", ...PAID });
+    expect(getTransportForModel("claude-opus")).toBe("chathub");
+    process.env.M365_TRANSPORT = "streamhub";
+    expect(getTurnRouting("claude-opus")).toEqual({ transport: "streamhub", scenario: "officeweb", licenseType: "Premium" });
+  });
+
+  it("lets M365_SCENARIO win, as for every model", () => {
+    process.env.M365_SCENARIO = "officeweb";
+    expect(getTurnRouting("claude-auto")).toEqual({ transport: "streamhub", scenario: "officeweb", licenseType: "Premium" });
+  });
+
+  it("sends claude-auto agent-less, even under M365_FORCE_AGENT=1: StreamHub carries no agent", () => {
+    expect(requestUsesAgent("claude-auto", true)).toBe(false);
+    process.env.M365_FORCE_AGENT = "1";
+    expect(requestUsesAgent("claude-auto", true)).toBe(false);
+    expect(requestUsesAgent("claude-opus", true)).toBe(true);
+  });
+
+  it("doesn't count claude-auto against Opus 5.5's budget", () => {
+    expect(meteredBudgetOf("claude-auto")).toBeNull();
+    expect(meteredBudgetOf("claude-opus")).toBe("opus");
   });
 });

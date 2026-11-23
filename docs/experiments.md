@@ -195,6 +195,19 @@ All run with `scripts/_probe-chat.mjs` overrides; no license needed.
 - **Run:** `frame-dump-probe.mjs --many-tools` style, escalating tool count, watch
   `dea_violation` + `messageType`.  **Cost:** ~1 msg/step.
 
+### E-METER — are StreamHub `Claude_Auto` turns still not charged to Opus's budget? (§62 F173)
+- **Hypothesis:** over StreamHub's paid scenario a `Claude_Opus` turn lowers `ClaudeOpusQueryDaily`
+  and `ClaudeOpusQuery75` by 1 and a `Claude_Auto` turn lowers neither. `claude-auto` relies on the
+  second half.
+- **Run** (premium account, inside `nix develop`): `node scripts/metering-probe.mjs --plan
+  read,streamhub@paid:Claude_Opus,read,streamhub@paid:Claude_Auto,read,streamhub@paid:Claude_Auto,read`.
+  A `read` is a Chathub paid-scenario `Gpt_5_5_Chat` turn, which lowers no budget; StreamHub reports none.
+- **Read:** the "since the last reading" lines. The `Claude_Opus` cell must show both Opus keys −1
+  (the control: it shows that the readings include StreamHub turns). A `Claude_Auto` cell should show
+  "no budget key changed". If either Opus key drops after a `Claude_Auto` cell, M365 now charges those
+  turns to Opus's budget: take `claude-auto` out of `STREAMHUB_MODELS` and say so in the docs.
+- **Cost:** 7 turns, one of them from Opus's 40-a-day budget (three if `Claude_Auto` turns are charged too).
+
 ### E-SOL56 — do the picker's "GPT-5.6 Sol" labels need a tone of their own? (H-SOL56)
 - **Hypothesis:** the reported "GPT-5.6 Sol" labels use the existing `Gpt_5_6_Chat` /
   `Gpt_5_6_Reasoning` tones, not a new `*_Sol_*` tone.

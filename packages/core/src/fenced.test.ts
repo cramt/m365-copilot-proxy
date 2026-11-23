@@ -772,6 +772,11 @@ describe("defaultFramingForTone", () => {
     }
   });
 
+  it("gives claude-auto (Opus 5.5 by self-ID, over StreamHub, agent-less) Opus's relay_batch (§62)", () => {
+    expect(defaultFramingForTone("Claude_Auto")).toBe("relay_batch");
+    expect(defaultFramingForModel("claude-auto")).toBe("relay_batch");
+  });
+
   it("asks for batching in relay_batch, and keeps relay's sandbox note and user voice", () => {
     const out = formatFencedToolDefinitions([bash, readFile], "relay_batch");
     expect(out).toContain("put as much as you can into one block");

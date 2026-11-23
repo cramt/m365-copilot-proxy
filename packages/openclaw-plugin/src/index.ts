@@ -65,6 +65,8 @@ const MODEL_DISPLAY_NAMES: Record<string, string> = {
   "claude-opus-5": "Claude Opus 5.5",
   "claude-opus-4.8": "Claude Opus 4.8 (premium, unmetered)",
   "claude-opus-4.5": "Claude Opus 4.8 (premium, unmetered)",
+  // `Claude_Auto` over StreamHub: Opus 5.5 by self-ID, not counted in Opus's budget.
+  "claude-auto": "Claude Opus 5.5 via Claude_Auto (premium, unmetered)",
 };
 
 const REASONING_MODELS = new Set([
