@@ -715,9 +715,16 @@ export function currentFramingVariant(toneDefault?: string): string {
  *  benched best on it, and the harness runs used it — Codex on GPT-6.2 Sol 3/3,
  *  Claude Code and Codex on Fable 3/3 each, over StreamHub (docs §45 F123).
  *
+ *  `Claude_Auto` (`claude-auto`, Opus 5.5 by self-ID, over StreamHub) defaults to
+ *  `relay_batch`, Opus's own default: it runs agent-less, next to M365's code
+ *  interpreter, which the user-voice note tells it not to use. 10/10 on the
+ *  bench at 2.1 turns per task and 5/5 in real pi, with no sandbox turn in 37
+ *  (docs §62 F176).
+ *
  *  Every other tone keeps the bench-tuned `baseline` byte-for-byte. */
 export function defaultFramingForTone(tone?: string): string | undefined {
   if (tone === "Claude_Opus") return "relay_batch";
+  if (tone === "Claude_Auto") return "relay_batch";
   if (tone === "Claude_Sonnet") return "relay_batch";
   if (tone === "Claude_Sonnet_5") return SONNET_5_DEFAULT_FRAMING;
   if (tone === "Gpt_6_Reasoning") return "relay_batch";

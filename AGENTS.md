@@ -241,6 +241,18 @@ pnpm test:live      # M365_LIVE=1; live tests that hit real M365 (uses quota)
   as you can into one block" cut turns per task 37% (F60), which is what Opus 5.5's budget counts. Opus 4.5 sometimes ended a tool fence with its native call
   markup (`</invoke>`, `</parameter>`…); the parser strips it (F57), on its own line or glued to the last one (Sonnet 5.5 too), don't "simplify" that away. A call the model writes again as a correction ("Oops… here is the same command") replaces the first copy rather than counting as two. Only a premium account can
   bench it. See docs/hypotheses.md §24, §36.
+- **`claude-auto` (`Claude_Auto`) answers as Opus 5.5, and M365 doesn't charge its StreamHub turns to
+  Opus's budget.** The tone self-IDs as Opus 5.5 on the paid scenario. Over Chathub's paid scenario each
+  turn lowers `ClaudeOpusQuery*` by 1, as `Claude_Opus` does; over StreamHub it lowered nothing (0 of 47
+  turns, 37 of them through the proxy), while StreamHub's `Claude_Opus` and `Claude_Sonnet` turns still
+  spent their budgets (7 of 7, 3 of 3).
+  StreamHub reports no `metering`, so the allowances were read with Chathub paid-scenario turns before
+  and after (`scripts/metering-probe.mjs`). So `claude-auto` is sent over StreamHub whatever
+  `M365_TRANSPORT` says (`STREAMHUB_MODELS`, `getTransportForModel`), under the paid scenario
+  (`PAID_SCENARIO_TONES`), agent-less, and isn't in `meteredBudgetOf`. Don't route it over Chathub.
+  The web client's own "Opus 5.5" item sends `Claude_Opus`, and its selector has no `Claude_Auto` item
+  (F177). Microsoft can start charging these turns at any time without notice: re-run the probe before
+  relying on it. See docs/hypotheses.md §62.
 - **Entitlement-gated ≠ metered.** `gpt-6-think-deeper` (`Gpt_6_Reasoning`) and `claude-sonnet-5`
   (`Claude_Sonnet_5`) need the same paid
   scenario as Opus but carry **no** priority-access budget and throttle like everything else,

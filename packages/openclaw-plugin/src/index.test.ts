@@ -79,6 +79,8 @@ describe("generateOpenClawConfig", () => {
     expect(models.find((m) => m.id === "claude-opus-4.8")?.name).toMatch(/^Claude Opus 4\.8/);
     // The legacy ID reaches the same route, so it names the model that answers.
     expect(models.find((m) => m.id === "claude-opus-4.5")?.name).toMatch(/^Claude Opus 4\.8/);
+    // Claude_Auto over StreamHub answers as Opus 5.5, not counted in Opus's budget (§62).
+    expect(models.find((m) => m.id === "claude-auto")?.name).toMatch(/^Claude Opus 5\.5 via Claude_Auto/);
   });
 });
 

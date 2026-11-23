@@ -383,6 +383,7 @@ without NixOS: `nix run github:cramt/m365-copilot-proxy -- 4141`.
 | `claude-sonnet-think-deeper` | Claude_Sonnet_Reasoning | Claude reasoning |
 | `claude-opus` / `claude-opus-5.5` | Claude_Opus (paid scenario) | Claude Opus 5.5. **Needs a paid/premium Copilot seat** and has a small separate quota: 40 turns a day (see below). 10/10 on the bench with `relay`; defaults to `relay_batch`. `claude-opus-5` is kept as an alias |
 | `claude-opus-4.8` | Claude_Opus (included scenario) | Claude Opus 4.8. **Premium accounts only**, but **no** priority-access quota. With its default `relay_batch` framing and the tool agent: 30/30 on the bench at 2.5 turns per task, 10/10 driving real pi. `claude-opus-4.5` is kept as an alias (it was Opus 4.5 until October 2026) |
+| `claude-auto` | Claude_Auto (paid scenario, over StreamHub) | Self-identifies as Claude Opus 5.5. **Premium accounts only.** Its StreamHub turns aren't counted in Opus's 40-a-day quota, so the proxy always sends it over StreamHub, whatever `M365_TRANSPORT` says (see below). Agent-less, `relay_batch`: 10/10 on the bench, 5/5 driving real pi |
 | `claude-fable` / `claude-fable-5.1` | Claude_Fable | Claude Fable 5.1 ("Fable 5.1" in the web UI, marked "Uses credits"): **its turns are charged to the user's Copilot credits.** Serves on the included scenario, agent-less like every Claude but Opus. Defaults to `relay_batch`, not yet benched; Claude Code and Codex 3/3 each over StreamHub ([hypotheses §45](docs/hypotheses.md)) |
 | `gpt-5.4` / `gpt-5.4-quick` | Gpt_5_4_* | GPT-5.4 |
 | `gpt-5.3` / `gpt-5.3-think-deeper` | Gpt_5_3_* | GPT-5.3 |
@@ -583,6 +584,19 @@ What the proxy does about it:
   per tool call, and avoids the jailbreak-filter retries that cost `claude-opus`'s old default framing
   a wasted turn on about 40% of tasks.
 
+**`claude-auto` answers as Opus 5.5 without spending that quota.** It sends the `Claude_Auto` tone,
+which self-identifies as Claude Opus 5.5 on the paid scenario. Over Chathub every `Claude_Auto` turn
+costs one unit of Opus's quota, as `claude-opus` does. Over StreamHub, the new web client's transport,
+none of its turns did, while `claude-opus` turns sent over StreamHub still did
+([hypotheses §62](docs/hypotheses.md)). So the proxy sends `claude-auto` over StreamHub, under the paid
+scenario and agent-less, whatever `M365_TRANSPORT` says. Premium accounts only. No field in the
+frames M365 sends names the model that answers. The web client's own "Opus 5.5" item sends `Claude_Opus`,
+and its model selector has no item that sends `Claude_Auto` ([hypotheses §62 F177](docs/hypotheses.md)).
+An account without Copilot credits has no credits these turns could be charged to; on an account with
+credits that hasn't been measured, since StreamHub has sent no billing frames for any model since Nov
+20. This depends on how Microsoft meters StreamHub today, which can change without notice:
+`scripts/metering-probe.mjs` checks it in a few turns (`docs/experiments.md`, E-METER).
+
 **Both use the tool agent and the `relay_batch` framing.** On the bench Opus 4.5 solved nearly every
 task whatever the framing, so two other things decided it. M365's jailbreak classifier: the proxy's
 older `<system>`-tagged framings tripped it on a third of the tasks (each one a wasted turn and a
@@ -630,6 +644,9 @@ harness prompt, `relay_batch`, no code interpreter), Codex on `gpt-6.1-sol` over
 managed 5/8. Under
 `officeweb` the scenario no longer picks between models, so `claude-sonnet` is Sonnet 5.5 there, and
 StreamHub turns carry no priority-access `metering`, so the proxy can't log or pre-empt those budgets.
+They are still spent: `claude-opus` turns over StreamHub lowered Opus's budget, under `officeweb` and
+under the paid scenario, and `Claude_Sonnet` turns under StreamHub's paid scenario lowered Sonnet 5.5's
+([hypotheses §62](docs/hypotheses.md)).
 Wire details: [API doc §13](docs/m365-copilot-api.md).
 
 ### Backends: Chat, Cowork and Code
@@ -888,7 +905,7 @@ not an exemption from your organization's Conditional Access policy.
 | `M365_OPUS_FALLBACK_MODEL` | Model to serve `claude-opus` (Opus 5.5) requests with once its priority-access budget is used up, instead of returning a 429 — typically `claude-opus-4.8`, which isn't metered (premium accounts only). Applies until the budget resets; the response's `model` field names the model that answered. Unset by default. |
 | `M365_SONNET_FALLBACK_MODEL` | The same for `claude-sonnet-5.5` (Sonnet 5.5) once its priority-access budget is used up — e.g. `claude-sonnet-5` (unmetered) or `claude-sonnet` (Sonnet 4.6, any account). A fallback naming a metered model is ignored. Unset by default. |
 | `M365_SCENARIO` / `M365_LICENSE_TYPE` | Override the entitlement the WebSocket is opened under (defaults: `OfficeWebIncludedCopilot` / `Starter`, switching to `OfficeWebPaidCopilot` / `Premium` for the entitlement-gated models — `claude-opus`, `gpt-6-think-deeper`, `claude-sonnet-5` and `claude-sonnet-5.5`; `claude-opus-4.8` and `gpt-6.1-sol` stay on the included one). `scenario` is what gates the model list (and picks Sonnet 4.6 vs 5.5 for the `Claude_Sonnet` tone, Sonnet 4.6 vs 5 for `Claude_Sonnet_5`, Opus 4.8 vs 5.5 for `Claude_Opus`); `licenseType` rides along and unlocks nothing by itself. Forcing the paid scenario on `gpt-6.1-sol` spends its separate GPT-6.1 Sol allowance (40 turns a day, 75 a week), which the proxy doesn't track. |
-| `M365_TRANSPORT` | `streamhub` sends every model over StreamHub, the new web client's WebSocket (`copilot.cloud.microsoft`), under its `officeweb` scenario and without the tool agent; unset, every model uses Chathub. For accounts whose Chathub refuses GPT-6 (`InputTokenLimitExceeded` on any prompt). Under it the scenario no longer picks between models: `claude-sonnet` is Sonnet 5.5 there. A non-premium account needs `M365_SCENARIO=OfficeWebIncludedCopilot` with it: `officeweb` gives it no answer on any model (the proxy returns a 502 `scenario_not_served` that names this setting), and the included scenario serves it no more models than Chathub does. See [StreamHub](#streamhub-the-new-web-clients-transport). |
+| `M365_TRANSPORT` | `streamhub` sends every model over StreamHub, the new web client's WebSocket (`copilot.cloud.microsoft`), under its `officeweb` scenario and without the tool agent; unset, every model uses Chathub. It doesn't apply to `claude-auto`, which is always sent over StreamHub, under the paid scenario. For accounts whose Chathub refuses GPT-6 (`InputTokenLimitExceeded` on any prompt). Under it the scenario no longer picks between models: `claude-sonnet` is Sonnet 5.5 there. A non-premium account needs `M365_SCENARIO=OfficeWebIncludedCopilot` with it: `officeweb` gives it no answer on any model (the proxy returns a 502 `scenario_not_served` that names this setting), and the included scenario serves it no more models than Chathub does. See [StreamHub](#streamhub-the-new-web-clients-transport). |
 | `M365_BACKENDS` | Comma list of the backends whose models `/v1/models` lists and requests may name: `chat`, `cowork`, `code` (default: all three). Cowork and Code run on Copilot's agent runtime and **charge every turn to your Copilot credits**; `M365_BACKENDS=chat` keeps a proxy off them, and a request naming one that isn't listed then gets a 400. Chat requests are always served. See [Backends](#backends-chat-cowork-and-code). |
 | `M365_DEFAULT_BACKEND` | Where a model ID without a `(backend)` goes when that backend is in `M365_BACKENDS` and serves the model (default `chat`). `cowork` moves `claude-sonnet-5.5` and the other runtime models there; every other ID stays on Chat. |
 | `M365_AETHER_ENDPOINT` | The agent runtime's endpoint for `cowork` and `code`. Unset, the proxy asks the runtime's routing service once per process. |

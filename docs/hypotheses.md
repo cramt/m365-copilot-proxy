@@ -139,6 +139,11 @@ than "we eyeballed one run." See §M (Methods) for the experimental rig.
   and run it whole without an extra M365 turn (F158)
 - §58 — GPT-5.6 Think Deeper through pi: its give-up is an instruction conflict that `relay` dissolves,
   and `relay_batch` too at baseline's turn count (F159); a pile of global skills (F160)
+- §62 — `Claude_Auto`: M365 charges StreamHub turns of `Claude_Opus` and `Claude_Sonnet` to their budgets
+  without reporting it, and of `Claude_Auto` (Opus 5.5 by self-ID) to none (F173); the evidence for Opus
+  5.5, and a test that doesn't distinguish it from Sonnet 5.5 (F174); refused on a non-premium account
+  (F175); `claude-auto` through the proxy (F176); the web client's selector: "Opus 5.5" is `Claude_Opus`,
+  and no item is `Claude_Auto` (F177)
 
 ---
 
@@ -6135,6 +6140,10 @@ the gateway now runs a source build of v2.9.12. On it Codex passed on `gpt-6.1-s
 - **H41a** — StreamHub meters these turns as Chathub does but doesn't report it. **Falsify:** an Opus
   5.5 turn over StreamHub carries `metering`, or leaves Opus's daily key (read on Chathub's paid
   scenario before and after) unchanged.
+  **Confirmed 2026-11-23 (§62 F173), with one exception:** every StreamHub `Claude_Opus` turn lowered
+  Opus's keys by 1 (paid scenario and `officeweb`), every StreamHub `Claude_Sonnet` turn under the paid
+  scenario lowered Sonnet 5.5's, and none carried `metering`. `Claude_Auto`, Opus 5.5 by self-ID,
+  lowered nothing over StreamHub.
 - **H41b** — A model the web client marks as using Copilot credits draws on the account's Copilot credit
   balance, one charge per M365 turn. **Probe:** read the balance in the web client before and after one
   proxy turn on such a model.
@@ -7591,3 +7600,136 @@ and its Basic account gets 50 turns a day. The F167 account, in another tenant, 
 those flags what turn it on? Falsified if an account in a tenant with the flags off gets 50, or an
 account in a tenant with them on gets 999. Probe: read the same three flags in the loki config of a
 tenant whose account gets 999.
+
+## 62. Nov 23 2026 — `Claude_Auto`: Opus 5.5 by self-ID, and M365 doesn't charge its StreamHub turns to Opus's budget
+
+A report from proxy runs on a premium account, all under `OfficeWebPaidCopilot`: `Claude_Opus` over
+StreamHub serves Opus 5.5 and lowers `ClaudeOpusQueryDaily` and `ClaudeOpusQuery75`; `Claude_Auto` over
+Chathub serves Opus 5.5 and lowers both; `Claude_Auto` over StreamHub serves Opus 5.5 and lowers neither.
+The proxy didn't map `Claude_Auto`. §41 H41a had asked whether StreamHub meters Opus turns without
+reporting it.
+
+**Prediction, from the report:** with the allowances read on Chathub's paid scenario before and after,
+each StreamHub `Claude_Opus` turn and each Chathub `Claude_Auto` turn lowers both keys by exactly 1, and
+no StreamHub `Claude_Auto` turn lowers either. Falsified by a StreamHub `Claude_Auto` turn after which
+either key is lower, or by one of the other two that leaves both unchanged.
+
+### F173 — M365 charges StreamHub turns of `Claude_Opus` and `Claude_Sonnet` to their budgets, and of `Claude_Auto` to none 🟢 (n=24 turns)
+The probe: `scripts/metering-probe.mjs` (new) runs a plan of cells one at a time, each an agent-less turn
+in a fresh conversation, 40–45 s apart. A StreamHub turn carries no `metering` map, under
+`OfficeWebPaidCopilot` too, so a `read` cell reads the allowances: a Chathub paid-scenario turn on
+`Gpt_5_5_Chat` ("pong"), whose final item carries the whole map and which lowers no budget (two reads in
+a row: 38/73, then 38/73). Premium account, 07:33–08:17Z and 09:15–09:19Z, service 1.0.03611.67938; a
+self-ID prompt, a 400-word story, seven questions on recent events, or "pong", with the Bing plugin and
+without. The first two runs read after every metered cell; the third ran three `Claude_Auto` and three
+`Claude_Opus` turns alternately, then one `Claude_Sonnet`, between two reads; a fourth, at 09:15Z, read
+after each of two `Claude_Auto` turns.
+
+| route | turns read one by one | Opus daily / weekly | Sonnet 5.5 daily / weekly |
+|---|---|---|---|
+| StreamHub, paid, `Claude_Opus` | 4 | −1 / −1 after each | unchanged |
+| StreamHub, `officeweb`, `Claude_Opus` | 1 | −1 / −1 | unchanged |
+| StreamHub, paid, `Claude_Sonnet` (Sonnet 5.5 by self-ID) | 2 | unchanged | −1 / −1 after each |
+| Chathub, paid, `Claude_Auto` (its own final item) | 2 | −1 / −1 after each | unchanged |
+| StreamHub, paid, `Claude_Auto` | 7 | unchanged after each | unchanged |
+| StreamHub, `officeweb`, `Claude_Auto` | 1 | unchanged | unchanged |
+
+The third run's block (3 `Claude_Auto`, 3 `Claude_Opus`, 1 `Claude_Sonnet`, StreamHub, paid) took Opus's
+keys from 31/66 to 28/63 and Sonnet 5.5's from 78/148 to 77/147: three and one, the count of `Claude_Opus`
+and `Claude_Sonnet` turns. Over StreamHub's paid scenario that makes `Claude_Opus` 7 of 7 turns charged,
+`Claude_Sonnet` 3 of 3, and `Claude_Auto` 0 of 10.
+
+The first two StreamHub `Claude_Auto` turns sat between two charged StreamHub `Claude_Opus` turns, so a
+charge that arrived late would have shown: the reading after the second `Claude_Opus` turn was 35/70,
+one below the reading before it, not three. One of the five was sent without Bing, and one of the two
+Chathub `Claude_Auto` turns was "pong", so neither the plugin nor a long prompt decides the charge. No
+StreamHub turn carried a `billing_info` item. Every reading was current: none repeated an earlier value
+after a charge, unlike F167's `TotalTurnUsageDaily` readings. So M365 meters StreamHub `Claude_Opus`
+turns (paid scenario and `officeweb`) and paid-scenario `Claude_Sonnet` turns as it meters Chathub's
+paid-scenario turns, without reporting it on StreamHub (H41a), and doesn't meter StreamHub `Claude_Auto`
+turns.
+
+### F174 — the evidence that `Claude_Auto` is Opus 5.5, and a test that doesn't distinguish it from Sonnet 5.5 🟡
+No field in any frame M365 sent, on either transport, names a model, and no turn carried `billing_info`.
+The evidence that it is Opus 5.5:
+- **Self-ID.** Asked for its model, `Claude_Auto` named Claude Opus 5.5 with a 2026-06 cutoff on every
+  turn: 4 of 4 here (Chathub paid 1, StreamHub paid 3), and 4 of 4 in earlier tone-probe runs (Nov 20:
+  StreamHub `officeweb`; Nov 23 07:10–07:14Z: Chathub paid, StreamHub `officeweb` twice). It says so as its
+  configuration ("My configuration says I'm based on Claude Opus 5.5, but I can't check that
+  independently"), as `Claude_Opus` does. On Chathub's included scenario it named a GPT model (3 of 3).
+- **Chathub's meter.** The same tone on Chathub's paid scenario is charged to Opus's keys (F173).
+- **A 400-word story over StreamHub's paid scenario** (n=2, 1, 1): `Claude_Auto` and `Claude_Opus` sent
+  chain-of-thought summaries first, then the first answer text at 3.1–3.4 s and `answer_complete` at
+  14.6–14.9 s; `Claude_Sonnet` (Sonnet 5.5) sent none, its text at 2.0 s and `answer_complete` at 13.1 s.
+  Each of the three tones streamed the ~2,300 characters at 249–265 a second, which looks like the
+  server's pacing, not the model's. One or two turns per tone are too few to measure a difference.
+
+What doesn't distinguish them: what the models know. Seven questions from October 2025 to April 2026, from
+memory without the Bing plugin, over StreamHub's paid scenario: `Claude_Opus` answered all seven in 3 of
+3 turns, `Claude_Sonnet` in 1 of 1, and `Claude_Auto` in 1 of 3, each time with the same answers (Alcaraz
+over Djokovic; Seattle 29–13; Norway; *One Battle After Another*; Tisza). In the other two `Claude_Auto`
+answered the 2025 pair and wrote Unknown for the rest, while its chain of thought recalled Alcaraz beating
+Djokovic "but my confidence there is only moderate". The two February 2026 questions in the self-ID
+prompt had mixed results too (`Claude_Auto` named both in 3 of 4 turns, `Claude_Opus` in 0 of 2, Sonnet
+5.5 in 0 of 1). Each of the three has the early-2026 events in its training data and sometimes declines
+to state them, so a recent-events prompt doesn't distinguish Opus 5.5 from Sonnet 5.5.
+
+### F175 — a non-premium account is refused `Claude_Auto`, as every Claude tone 🟢 (n=2)
+Under `OfficeWebPaidCopilot`, agent-less, 08:12Z: `ForbiddenRequest` / `ClaudeUnavailableForLicense`
+("Claude isn't available with your current license…") over StreamHub (2.6 s, a `request_end` alone) and
+over Chathub (0.9 s), with no `metering` map, as §61 F171 found for the other Claude tones.
+
+### F176 — `claude-auto` through the proxy: bench 10/10, real pi 5/5, Opus's keys unchanged over 37 turns 🟢
+The proxy with the change below, built, with `M365_TRANSPORT` and `M365_SCENARIO` unset and
+`M365_AVOID_THROTTLING=1`, 08:20–08:28Z. Each of its 37 upstream turns logged `Routing: tone=Claude_Auto,
+scenario=OfficeWebPaidCopilot, licenseType=Premium, transport=streamhub`, and each ended `Success`.
+- **Bench** (`run.mjs`, 10 tasks, the default `relay_batch`, agent-less): 10/10 solved, 1.1 tool calls
+  and 2.1 M365 turns per task (`scripts/bench/out/claude-auto-streamhub-relay_batch-2026-11-23T08-20-17-531Z.json`).
+- **Real pi** (`pi-reliability.sh`, fix-bug, N=5): 5/5 solved, 21–27 s a run.
+- **Opus's keys** read 28/63 before the first turn and after the last.
+- **No sandbox:** none of the 37 turns sent a code-interpreter message; 4 sent chain-of-thought summaries.
+
+On the same 10 tasks `claude-opus` solved 10/10 with the tool agent and `relay`, at 3.3 turns per task,
+each turn charged to the budget (§24 F59); the framing and the agent differ, so the turn counts don't
+compare directly.
+
+### F177 — the web client's model selector sends `Claude_Opus` for "Opus 5.5" and has no `Claude_Auto` item 🟢 (n=1)
+The web client gets its model selector from `POST https://copilot.cloud.microsoft/resources/app-shell-action`
+with the body `{"action":"RefreshNavPane"}`, which returns JSON when sent from the signed-in browser. The
+items are in `store.bizchatAsAgentGpt.clientPreferences.modelSelectorMetadata.availableModelSelectionOptions`
+and again under `store.bizchatAsAgentGptWebTab`: each is an object with `type: "item"`, `id` (the tone) and
+`menuItemTitle`, or a group whose `itemGroup` array contains such objects. Read on a premium account on
+2026-11-23, the two lists contain nine tones between them. Two are Claude tones, `Claude_Sonnet` ("Sonnet
+5.5") and `Claude_Opus` ("Opus 5.5"), and none is `Claude_Auto`. So the web client's "Opus 5.5" sends
+`Claude_Opus`, whose StreamHub turns are charged to Opus's budget (F173), and `claude-auto` uses a tone the
+web client didn't offer on the account it was read on. With the proxy's Sydney token as a bearer header,
+the same request returned the app's HTML page (200, `text/html`), not the JSON.
+
+**Shipped:** `claude-auto` → `Claude_Auto` in `MODEL_TONES`, the tone in `PAID_SCENARIO_TONES`, and a set
+of models that are sent over StreamHub whatever `M365_TRANSPORT` says (`STREAMHUB_MODELS`,
+`getTransportForModel`, `copilot.ts`): such a model goes under its own scenario pair
+(`getScenarioForModel`, so `M365_SCENARIO` still wins), and `requestUsesAgent` reads its transport, so its
+tool requests go agent-less. `meteredBudgetOf` returns null for it: no 429 once Opus's budget is used up,
+no `x_m365_opus_*` usage fields. Default framing `relay_batch`, as for `Claude_Opus`. The probe is
+`scripts/metering-probe.mjs`, and `docs/experiments.md` E-METER re-runs the check in 7 turns.
+
+### H62a — does `claude-auto` still answer once Opus's daily budget is used up? 🔴
+If it does, `M365_OPUS_FALLBACK_MODEL=claude-auto` serves a `claude-opus` client Opus 5.5 (by self-ID)
+after Opus's budget is used up; the proxy already accepts it as a fallback, since it isn't metered.
+Falsified by an `OutOfCredits` turn on `claude-auto` while `ClaudeOpusQueryDaily` reads 0. The probe
+spends the rest of the day's Opus budget, and as much of the week's, so it needs the account owner's
+go-ahead; shortly before 00:00 UTC it costs the least.
+
+### H62b — is a StreamHub `Claude_Auto` turn charged to the user's Copilot credits instead? 🟡
+The web client's picker marks Fable and the Astra models as using credits, and not Opus (§45 F120). No
+`Claude_Auto` turn carried a `billing_info` item, but no turn of any model has carried one since Nov 20
+(§49 F143), so that says nothing. Probe: read the AI-credits entitlement (`fetchAiCreditsQuery`, API doc
+§7) before and after a batch of `claude-auto` turns, with `Claude_Fable` turns as the positive control.
+**Answered for an account without credits (2026-11-23):** the account these runs used has no Copilot
+credits and no Cowork, so there is nothing to charge the turns to. Open for an account that has credits.
+
+### H62c — which tone does the web client's "Opus 5.5" send now? 🟢
+§45 F120 captured the tones the GPT-6.2 picker items send, not the one Opus 5.5's item sends. If the new
+web client sends `Claude_Auto` for it, the web client's own Opus turns over StreamHub aren't charged to the
+budget either. Probe: pick Opus 5.5 with the send blocked, as F120 did.
+**Answered 2026-11-23 (F177):** `Claude_Opus`, read from the selector's own data, not from a sent turn.

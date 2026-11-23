@@ -279,3 +279,36 @@ describe("CopilotSession over Chathub (#134 Cause 1)", () => {
     expect(second.streamed.join("")).toBe("<document>notlar.docx</document>");
   });
 });
+
+describe("claude-auto is sent over StreamHub without M365_TRANSPORT (§62)", () => {
+  afterEach(() => {
+    fake.state.sockets.length = 0;
+    delete process.env.M365_TRANSPORT;
+  });
+
+  it("opens StreamHub under the paid scenario with the Claude_Auto tone, whatever M365_TRANSPORT says", async () => {
+    for (const transport of [undefined, "chathub"]) {
+      if (transport) process.env.M365_TRANSPORT = transport;
+      fake.state.script = [restate("m1"), part({ w: "pong" }), end];
+      const stream = await new CopilotSession().chat(TOKEN, "hi", "claude-auto");
+      for await (const _ of stream) { /* drain */ }
+      const ws = fake.state.sockets[fake.state.sockets.length - 1];
+      const url = new URL(ws.url);
+      expect(url.pathname).toContain("/m365Copilot/StreamHub/");
+      expect(url.searchParams.get("scenario")).toBe("OfficeWebPaidCopilot");
+      expect(url.searchParams.get("licenseType")).toBe("Premium");
+      const request = ws.sent.find((f: any) => f.item?.type === "chat_request").item.chatStreamRequest;
+      expect(request.tone).toBe("Claude_Auto");
+      expect(request.gpts).toEqual([{ id: "bizchat-as-gpt-scenario", source: "BuiltInAgents" }]);
+      expect(stream.fullText).toBe("pong");
+    }
+  });
+
+  it("keeps another model on Chathub", async () => {
+    fake.state.script = [{ type: 2, item: { result: { value: "Success" }, messages: [{ author: "bot", text: "pong", messageId: "m1" }] } }];
+    const stream = await new CopilotSession().chat(TOKEN, "hi", "claude-opus");
+    for await (const _ of stream) { /* drain */ }
+    const ws = fake.state.sockets[fake.state.sockets.length - 1];
+    expect(new URL(ws.url).pathname).toContain("/m365Copilot/Chathub/");
+  });
+});

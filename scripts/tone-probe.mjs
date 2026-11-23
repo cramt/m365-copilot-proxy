@@ -71,6 +71,14 @@ const TONES = [
   { tone: "Claude_Opus", note: "included scenario: expect DeepLeo + Opus 4.8 on a premium account, the BotConnection apology on a non-premium one", ...INCLUDED },
   { tone: "Claude_Opus", note: "PAID scenario: expect DeepLeo + Opus 5.5 (spends priority access)", ...PAID },
 
+  // Claude_Auto (`claude-auto`, §62), paired too: on the paid scenario it
+  // self-IDs as Opus 5.5, on the included one as a GPT model. Its paid turns
+  // spend Opus's priority-access budget over Chathub, as Claude_Opus's do, and
+  // none over StreamHub, which is why the proxy always sends `claude-auto` over
+  // StreamHub. A non-premium account gets ClaudeUnavailableForLicense.
+  { tone: "Claude_Auto", note: "included scenario: expect DeepLeo + a GPT model by self-ID", ...INCLUDED },
+  { tone: "Claude_Auto", note: "claude-auto — PAID scenario: expect DeepLeo + Opus 5.5 by self-ID (over Chathub spends priority access; over StreamHub doesn't)", ...PAID },
+
   // GPT-6, likewise paired. Entitlement-gated exactly like Opus but NOT
   // separately metered, so these two cells are cheap — they spend one ordinary
   // message each and can stay in a sweep that drops the Opus cells.
