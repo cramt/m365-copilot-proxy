@@ -153,9 +153,10 @@ pnpm test:live      # M365_LIVE=1; live tests that hit real M365 (uses quota)
 - **Run inside the Nix dev shell**: `nix develop --command bash -c '...'`. It provides
   `CHROMIUM_PATH` (a system Chromium; Playwright's bundled one is broken on NixOS), pi, python3
   and curl. Run the bench scripts in it too: `nix develop --command bash scripts/bench/phase-sweep.sh`.
-- Auth uses `~/.config/opencode-m365/secrets.json` (email/password/mfaSecret) +
-  `msal-cache.json`. **This data dir keeps the legacy `opencode-m365` name** — do not
-  rename it or you orphan working credentials.
+- Auth uses `~/.config/opencode-m365/secrets.json` (email/password/mfaSecret, plus an optional
+  client certificate: `clientCertPath`/`clientCertPassword`, README step 2) + `msal-cache.json`.
+  **This data dir keeps the legacy `opencode-m365` name** — do not rename it or you orphan
+  working credentials.
 - Set `M365_DEBUG=1` to log to `~/.config/opencode-m365/debug.log` (`M365_LOG_FILE` renames it and
   `M365_FRAME_DIR` moves the `M365_DUMP_FRAMES` dumps, both relative to that directory). There is **no
   interactive login** — auth is silent-refresh → automated (secrets.json) → fail loudly.

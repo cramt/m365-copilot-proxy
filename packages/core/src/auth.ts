@@ -6,10 +6,12 @@ import {
   mkdirSync,
 } from "node:fs";
 import { execSync } from "node:child_process";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { homedir } from "node:os";
 import { createWamAuth } from "./wam-auth.js";
 import { atomicWritePrivate, CachePersistenceError } from "./storage.js";
+import { clientCertificatesFrom, type ClientCertificate } from "./client-cert.js";
+import { nativeclientRedirectCode, traceLoginPage } from "./login-page.js";
 
 const CLIENT_ID = "c0ab8ce9-e9a0-42e7-b064-33d422df41f1";
 const AUTHORITY = "https://login.microsoftonline.com/common";
@@ -157,6 +159,10 @@ const BROWSER_PROFILE_DIR = resolveFile("M365_BROWSER_PROFILE", "browser-profile
 // login.microsoftonline.com's device-fingerprinting reads. We override it at the context
 // level (fixes both layers). Deliberately NOT spoofing a different OS: a Windows UA on a
 // Linux navigator.platform is itself an incoherent, flaggable fingerprint (F25 Config-B).
+// The exception is a device certificate (secrets.json `clientCertPath`): Entra does not
+// ask a Linux browser for it (the device shows as "Unregistered" on Linux, and a policy
+// that requires a registered device refuses the sign-in), so that sign-in needs a macOS
+// or Windows M365_LOGIN_UA.
 const LOGIN_USER_AGENT =
   process.env.M365_LOGIN_UA ??
   "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.0.0 Safari/537.36";
@@ -189,6 +195,67 @@ function resolveChromiumPath(): string | undefined {
     }
   }
   return undefined;
+}
+
+/**
+ * The TLS client certificate secrets.json names (`clientCertPath`, `clientCertPassword`),
+ * as Playwright `clientCertificates`. Read on each login, apart from the credential fields
+ * (`loadSecrets`), so the visible login gets it too. Throws when the file is missing.
+ */
+function loginClientCertificates(): ClientCertificate[] | undefined {
+  if (!existsSync(SECRETS_FILE)) return undefined;
+  let data: Record<string, unknown>;
+  try {
+    data = JSON.parse(readFileSync(SECRETS_FILE, "utf-8"));
+  } catch {
+    return undefined; // an unreadable secrets.json gives loadSecrets() nothing either
+  }
+  return clientCertificatesFrom(data, dirname(SECRETS_FILE));
+}
+
+/** Selenium's remote Chrome has no way to take the certificate from us. */
+function warnIfClientCertificateUnused(): void {
+  if (!loginClientCertificates()) return;
+  log.error(
+    "secrets.json names a client certificate, but only the Playwright logins present one; the Selenium browser signs in without it",
+  );
+}
+
+/**
+ * Launch the login browser on the persistent profile (H-R3): the AAD session and
+ * device cookies survive, so later logins are SSO-silent and look like a familiar
+ * device. Hardening: remove the automation signals the AAD fingerprinter reads (the
+ * AutomationControlled blink feature and navigator.webdriver) and present a coherent
+ * Chrome UA (`LOGIN_USER_AGENT`) instead of the default `HeadlessChrome` string.
+ *
+ * With a client certificate configured, Playwright sends all of the browser's traffic
+ * through a local proxy that makes each TLS connection itself and presents the
+ * certificate when one of `CLIENT_CERT_ORIGINS` asks for it.
+ */
+async function launchLoginContext(chromium: any, headless: boolean): Promise<any> {
+  const clientCertificates = loginClientCertificates();
+  if (clientCertificates) {
+    log.info(`Client certificate: offered to ${clientCertificates.map((c) => c.origin).join(", ")}`);
+  }
+  const context = await chromium.launchPersistentContext(BROWSER_PROFILE_DIR, {
+    headless,
+    executablePath: resolveChromiumPath(),
+    args: [
+      "--no-sandbox",
+      "--disable-dev-shm-usage",
+      "--disable-blink-features=AutomationControlled",
+    ],
+    userAgent: LOGIN_USER_AGENT,
+    locale: LOGIN_LOCALE,
+    timezoneId: LOGIN_TIMEZONE,
+    viewport: { width: 1280, height: 800 },
+    ...(clientCertificates ? { clientCertificates } : {}),
+  });
+  await context.addInitScript(() => {
+    // navigator.webdriver === true is the single loudest automation signal.
+    Object.defineProperty(navigator, "webdriver", { get: () => undefined });
+  });
+  return context;
 }
 
 async function capture(page: any, label: string): Promise<void> {
@@ -443,6 +510,7 @@ async function runSeleniumLoginFlow(
     driveSeleniumAzureLogin,
     waitForSeleniumOAuthCode,
   } = await loadSeleniumAuth();
+  warnIfClientCertificateUnused();
   const { authUrl, verifier } = await buildAuthUrlForScopes(app, scopes);
   const serverUrl = seleniumServerUrl();
   const browser = await createSeleniumAuthDriver({
@@ -532,49 +600,12 @@ async function runBrowserLogin(
 
   for (let attempt = 1; attempt <= attempts; attempt++) {
     const { authUrl, verifier } = await buildAuthUrlForScopes(app, scopes);
-    // Persistent context (H-R3): reuse one on-disk profile so AAD session/device
-    // cookies survive → later logins are SSO-silent + look like a familiar device.
-    // Hardening: kill the automation tells the AAD fingerprinter reads — the
-    // AutomationControlled blink feature and navigator.webdriver — and present a
-    // coherent Linux Chrome UA instead of the default `HeadlessChrome` string.
-    const context = await chromium.launchPersistentContext(BROWSER_PROFILE_DIR, {
-      headless: true,
-      executablePath: resolveChromiumPath(),
-      args: [
-        "--no-sandbox",
-        "--disable-dev-shm-usage",
-        "--disable-blink-features=AutomationControlled",
-      ],
-      userAgent: LOGIN_USER_AGENT,
-      locale: LOGIN_LOCALE,
-      timezoneId: LOGIN_TIMEZONE,
-      viewport: { width: 1280, height: 800 },
-    });
-    await context.addInitScript(() => {
-      // navigator.webdriver === true is the single loudest automation signal.
-      Object.defineProperty(navigator, "webdriver", { get: () => undefined });
-    });
+    const context = await launchLoginContext(chromium, true);
     const page = context.pages()[0] ?? (await context.newPage());
+    traceLoginPage(page);
     await addEmptyAuthenticator(context, page);
 
-    // The nativeclient redirect URI is meant for embedded native hosts to
-    // intercept; a real browser follows it one hop further to /common/wrongplace,
-    // so the ?code= only exists transiently. Capture it from the navigation
-    // request itself rather than waiting for the URL to settle.
-    let resolveCode: (code: string) => void;
-    const codePromise = new Promise<string>((res) => {
-      resolveCode = res;
-    });
-    page.on("request", (req: any) => {
-      const u = req.url();
-      if (u.includes("/oauth2/nativeclient") && u.includes("code=")) {
-        const c = new URL(u).searchParams.get("code");
-        if (c) {
-          log.info("Captured auth code from nativeclient redirect");
-          resolveCode(c);
-        }
-      }
-    });
+    const codePromise = nativeclientRedirectCode(page, "");
 
     try {
       log.info(`Browser login attempt ${attempt}/${attempts} for [${scopes.join(", ")}]`);
@@ -701,40 +732,12 @@ async function loginInteractiveForScopes(scopes: string[]): Promise<string> {
   const timeoutMs = interactiveTimeoutMs();
   const { authUrl, verifier } = await buildAuthUrlForScopes(app, scopes);
 
-  const context = await chromium.launchPersistentContext(BROWSER_PROFILE_DIR, {
-    headless: false, // the entire point: a human has to see and drive this
-    executablePath: resolveChromiumPath(),
-    args: [
-      "--no-sandbox",
-      "--disable-dev-shm-usage",
-      "--disable-blink-features=AutomationControlled",
-    ],
-    userAgent: LOGIN_USER_AGENT,
-    locale: LOGIN_LOCALE,
-    timezoneId: LOGIN_TIMEZONE,
-    viewport: { width: 1280, height: 800 },
-  });
-  await context.addInitScript(() => {
-    Object.defineProperty(navigator, "webdriver", { get: () => undefined });
-  });
+  // Not headless: the entire point is that a human sees and drives this window.
+  const context = await launchLoginContext(chromium, false);
   const page = context.pages()[0] ?? (await context.newPage());
+  traceLoginPage(page);
 
-  // Same transient-code capture as the automated path: a real browser follows
-  // nativeclient one hop further, so the ?code= only exists on the navigation.
-  let resolveCode: (code: string) => void;
-  const codePromise = new Promise<string>((res) => {
-    resolveCode = res;
-  });
-  page.on("request", (req: any) => {
-    const u = req.url();
-    if (u.includes("/oauth2/nativeclient") && u.includes("code=")) {
-      const c = new URL(u).searchParams.get("code");
-      if (c) {
-        log.info("Captured auth code from nativeclient redirect (interactive)");
-        resolveCode(c);
-      }
-    }
-  });
+  const codePromise = nativeclientRedirectCode(page, " (interactive)");
 
   try {
     // console.error, not log: this is a blocking instruction to a human and must
