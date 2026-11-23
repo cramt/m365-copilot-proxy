@@ -136,6 +136,47 @@ Store it somewhere that will give it back (see above) so this is a one-time chor
 new entry sits alongside your existing sign-in methods; you don't have to remove
 Microsoft Authenticator.
 
+#### If sign-in asks for a client certificate
+
+Some organizations sign users in with a certificate (Entra certificate-based authentication),
+or admit only registered devices and read the device's certificate during sign-in. In both
+cases Microsoft's sign-in server asks the browser for a TLS client certificate. Give the
+proxy the certificate as a PKCS#12 bundle (`.p12` / `.pfx`) in `secrets.json`:
+
+```json
+{
+  "email": "you@company.com",
+  "password": "your-password",
+  "mfaSecret": "YOUR_TOTP_BASE32_SECRET",
+  "clientCertPath": "/path/to/client-cert.p12",
+  "clientCertPassword": "the-bundle-password"
+}
+```
+
+The Playwright logins, headless and visible (`M365_ENABLE_INTERACTIVE_APPROVAL=1`), pass it
+to Playwright's `clientCertificates` option for each of these origins. Which of them asks
+for it depends on the tenant:
+
+- `https://certauth.login.microsoftonline.com`
+- `https://certauth.login.microsoftonline.us`
+- `https://device.login.microsoftonline.com`
+
+A relative `clientCertPath` is read from `~/.config/opencode-m365/`, and `~/` is your home
+directory. A missing file stops the login with an error that names the path. The Selenium
+login can't present a certificate.
+
+For a **device certificate** (issuer `MS-Organization-Access`, subject the device ID), also
+set `M365_LOGIN_UA` to a macOS or Windows Chrome user agent, for example:
+
+```sh
+export M365_LOGIN_UA='Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/156.0.0.0 Safari/537.36'
+```
+
+Entra doesn't ask a Linux browser for a device certificate. With the proxy's default Linux
+user agent the sign-in page shows the device as "Unregistered" on Linux, and a policy that
+requires a registered device refuses the sign-in. Only the browser login uses the
+certificate: the silent token refresh from `msal-cache.json` doesn't open a browser.
+
 #### If your tenant has no TOTP option
 
 Plenty of tenants can't do the above, and then there is no seed to extract:
@@ -889,7 +930,7 @@ not an exemption from your organization's Conditional Access policy.
 | `M365_AVOID_THROTTLING` | Set to `1` to keep the account clear of M365's `PerUserThrottled` throttle. A long pi session or a bench sweep trips it by running the account's turn budget dry (~100 turns, refilled at ~1.6 a minute, [hypotheses §24 F58](docs/hypotheses.md)), and it then refuses every turn for about an hour. With this set, the proxy waits before each upstream turn until the budget holds that turn plus a reserve of 20. A streamed request waits on its keepalive chunks, so pi doesn't time out, and the session runs at ~1.6 turns a minute once the budget is low. After a throttled turn the proxy holds new turns for 75 minutes and answers them with a 429 (`m365_throttle_hold`, with `Retry-After`) instead of sending them: each one would keep the throttle alive. The budget is read from the debug logs under `~/.config/opencode-m365`, so with `M365_DEBUG=1` it also counts the bench's and other proxies' turns and survives a restart. Without it, only this process's turns since it started count. The bench uses the same variable ([scripts/bench/README.md](scripts/bench/README.md)). Off by default. [Hypotheses §37](docs/hypotheses.md). |
 | `M365_BUDGET_MAX_WAIT_MIN` | The longest `M365_AVOID_THROTTLING` holds a streamed request (default `15`, enough to refill an empty budget). A longer wait, usually a throttle hold, gets the 429 instead. A request that isn't streamed waits at most 2 minutes, since it sends nothing until the answer and clients give up on it after 5. Both limits count the time a request spends behind others waiting their turn. A larger value (e.g. `90`) lets a streamed request sit out a throttle hold instead of failing: pi has no time limit on a stream that keeps sending data. |
 | `M365_BUDGET_CAPACITY` / `M365_BUDGET_REFILL` / `M365_BUDGET_RESERVE` / `M365_BUDGET_HOLD_MIN` / `M365_BUDGET_LOGS` | Tune `M365_AVOID_THROTTLING`'s budget model: its size (default `100` turns), refill rate (`1.6` a minute), the reserve kept back (`20`), the hold after a throttled turn (`75` minutes), and more log files or directories to read (`:`-separated). |
-| `M365_BROWSER_PROFILE` / `M365_LOGIN_UA` | Override the persistent browser-profile dir and the login User-Agent used for browser authentication (**Playwright only**; the Selenium path never uses a profile). The persistent profile keeps AAD SSO/device cookies so repeat logins are silent and look like a familiar device ([§11 H-R3](docs/hypotheses.md)). |
+| `M365_BROWSER_PROFILE` / `M365_LOGIN_UA` | Override the persistent browser-profile dir and the login User-Agent used for browser authentication (**Playwright only**; the Selenium path never uses a profile). The persistent profile keeps AAD SSO/device cookies so repeat logins are silent and look like a familiar device ([§11 H-R3](docs/hypotheses.md)). A sign-in with a device certificate needs a macOS or Windows `M365_LOGIN_UA` (step 2, *If sign-in asks for a client certificate*). |
 | `M365_BROWSER_PROVIDER` | Browser driver for automated and interactive login: `playwright` (default) or `selenium`. Selenium requires a reachable Grid and `selenium-webdriver` installed next to the built `.output` (the proxy keeps it external to avoid shipping selenium-manager binaries for every platform). |
 | `M365_SELENIUM_URL` | Selenium WebDriver/Grid endpoint (default `http://localhost:4444`); used only with `M365_BROWSER_PROVIDER=selenium`. |
 | `M365_SELENIUM_BROWSER` | Browser name requested from Selenium Grid (default `chrome`). Only `chrome` is supported — the code capture reads Chrome performance logs. |
@@ -976,7 +1017,7 @@ All stored in `~/.config/opencode-m365/`:
 
 | File | Description |
 |---|---|
-| `secrets.json` | Login credentials (email, password, mfaSecret) |
+| `secrets.json` | Login credentials (email, password, mfaSecret) and an optional client certificate (clientCertPath, clientCertPassword) |
 | `msal-cache.json` | MSAL token cache (auto-managed) |
 | `agent-id.json` | Cached Copilot Studio agent ID |
 | `debug.log` | Debug log (when `M365_DEBUG=1`; renamed by `M365_LOG_FILE`) |

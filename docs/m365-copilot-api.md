@@ -139,6 +139,26 @@ history tests do not establish compatibility with every live Edge profile or ten
 - Field selectors: email `input[name="loginfmt"]`, password `input[name="passwd"]`, TOTP `input[name="otc"]`.
 - On NixOS, Playwright's bundled `chrome-headless-shell` fails (`libglib-2.0.so.0`); point it at a system Chromium via `CHROMIUM_PATH` (`resolveChromiumPath()`).
 - TOTP codes are single-use per 30s window — space retries past the window.
+- **Client certificates.** With `clientCertPath` (and `clientCertPassword`) in `secrets.json`, both
+  Playwright logins pass the PKCS#12 bundle as Playwright's `clientCertificates` for
+  `https://certauth.login.microsoftonline.com`, `https://certauth.login.microsoftonline.us` and
+  `https://device.login.microsoftonline.com` (`CLIENT_CERT_ORIGINS`, `client-cert.ts`). Which of them asks
+  for it depends on the tenant. Playwright implements the option with a local SOCKS proxy: all of the
+  login browser's traffic goes through it, Node makes each TLS connection and presents the certificate to
+  an origin that asks for one, and Chromium is told to accept the proxy's own certificate. So the servers
+  see Node's TLS handshake, not Chromium's. `DEBUG=pw:client-certificates` logs each connection the proxy
+  makes.
+- **A device certificate needs a macOS or Windows user agent.** For a Linux user agent Entra's sign-in page
+  config says `sDevicePlatformForUi: "Linux"` and `sDeviceState: "Unregistered"`, and Entra doesn't ask for
+  the certificate, so a policy that requires a registered device refuses the sign-in. Set `M365_LOGIN_UA` to
+  a macOS or Windows Chrome user agent. Playwright derives the client hints (`Sec-CH-UA-Platform`) from it;
+  `navigator.platform` keeps the real value. A token from a sign-in that presented a device certificate
+  carries the device's ID in its `deviceid` claim.
+- **An OAuth error ends the login at once.** The `nativeclient` redirect can carry `error`, `error_subcode`
+  and `error_description` instead of a code (a Conditional Access block, a cancel). The login fails with
+  them right away (`nativeclientRedirectCode()`, `login-page.ts`) instead of waiting for its 45 s
+  timeout. With `M365_DEBUG=1` the log also lists each page the login browser loads (`Login page:`, origin
+  and path only, since the query strings carry the OAuth state, the code and the login hint).
 - **Managed Windows PCs (Entra-joined, Intune) can sign in silently with Chrome.** With the Chrome
   policy `CloudAPAuthEnabled=1`, Chrome signs in with the Windows PRT. The interactive path
   (`M365_ENABLE_INTERACTIVE_APPROVAL=1`, `CHROMIUM_PATH` set to chrome.exe, a Windows

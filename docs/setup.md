@@ -82,8 +82,10 @@ What the settings do:
   from one, through a browser that presents it. The proxy signs in with its own Chrome profile
   (`~/.config/opencode-m365/browser-profile`), where extensions don't run: on Windows Chrome presents
   the device through `CloudAPAuthEnabled`, and on a Mac only if IT has enabled Chrome for Microsoft's
-  Enterprise SSO. A refusal at this step is your organization's policy; nothing in the proxy changes
-  it, so use a device it admits.
+  Enterprise SSO. If you have the device's certificate as a PKCS#12 file, the proxy can present it
+  itself, with a macOS or Windows user agent (README step 2, *If sign-in asks for a client
+  certificate*). Otherwise a refusal at this step is your organization's policy; nothing in the proxy
+  changes it, so use a device it admits.
 - **`M365_HARNESS_PROMPT=lean`** strips the Codex and Claude Code identity lines and reminders that
   M365's models refuse as injections.
 - **`M365_AVOID_THROTTLING=1`** paces turns before the account's throttle trips.
