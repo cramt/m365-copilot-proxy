@@ -38,8 +38,10 @@ export interface PriorityAccessExhaustion {
   model?: string;
   /** When the budget refills (midnight UTC / Monday midnight UTC). */
   resetsAt: Date;
-  /** The upstream text, verbatim. */
+  /** Refusal text, or a sanitized local summary when reconstructed from storage. */
   message: string;
+  /** Persisted account facts do not retain upstream refusal text. */
+  source?: "local-policy";
 }
 
 // Anchored on "priority access" + a budget window. Deliberately not matching a
@@ -258,7 +260,7 @@ export function activePriorityAccessExhaustion(key: string, now: Date = new Date
     const fact = readAccountFact("priority", dimension, +now);
     if (!fact) return null;
     if (fact.value !== "day" && fact.value !== "week" && fact.value !== "account-day") throw new AccountPolicyError(503, "account_policy_unavailable", 1);
-    return { window: fact.value === "account-day" ? "day" : fact.value, ...(fact.value === "account-day" ? { scope: "account" as const } : {}), resetsAt: new Date(fact.expires), message: "Priority access is exhausted for this account budget" };
+    return { window: fact.value === "account-day" ? "day" : fact.value, ...(fact.value === "account-day" ? { scope: "account" as const } : {}), resetsAt: new Date(fact.expires), message: "Priority access is exhausted for this account budget", source: "local-policy" };
   }
   const known = exhaustions.get(key);
   if (known && known.resetsAt <= now) exhaustions.delete(key);

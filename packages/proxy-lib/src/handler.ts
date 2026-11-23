@@ -2207,6 +2207,7 @@ function jsonResponse(status: number, body: unknown, headers: Record<string, str
  *  the model's answer. Resets at midnight UTC; the weekly budget on Monday. */
 function priorityAccessResponse(exhaustion: PriorityAccessExhaustion, model: string): Response {
   const retryAfter = secondsUntilReset(exhaustion);
+  const detail = exhaustion.source === "local-policy" ? `Local policy: ${exhaustion.message}` : `Upstream said: ${exhaustion.message}`;
   if (exhaustion.scope === "account") {
     return jsonResponse(
       429,
@@ -2215,7 +2216,7 @@ function priorityAccessResponse(exhaustion: PriorityAccessExhaustion, model: str
           message:
             `M365 Copilot's daily chat limit for this account is used up: every model is refused ` +
             `until ${exhaustion.resetsAt.toISOString()} (midnight UTC). Image generation still works. ` +
-            `Upstream said: ${exhaustion.message}`,
+            detail,
           type: "rate_limit_error",
           code: "daily_turn_quota_exhausted",
           param: "day",
@@ -2235,7 +2236,7 @@ function priorityAccessResponse(exhaustion: PriorityAccessExhaustion, model: str
           `(resets ${exhaustion.resetsAt.toISOString()}, i.e. midnight UTC` +
           `${exhaustion.window === "week" ? " on Monday" : ""}). ` +
           `Switch to another model (e.g. claude-sonnet or gpt-5.5-think-deeper) or wait. ` +
-          `Upstream said: ${exhaustion.message}`,
+          detail,
         type: "rate_limit_error",
         code: "priority_access_exhausted",
         param: exhaustion.window,

@@ -48,6 +48,27 @@ it("replaces account-bound physical placement and fully replays unchanged logica
   expect(wire.texts[1]).toContain("second synthetic question");
 });
 
+it.each(["daily", "priority"] as const)("distinguishes direct upstream %s refusal from persisted local policy", async kind => {
+  wire.hold = true;
+  const upstream = kind === "daily" ? "Synthetic daily refusal" : "Synthetic priority refusal";
+  wire.onChat = () => queueMicrotask(() => wire.sockets.at(-1)!.frame({ type: 2, item: { result: { value: "OutOfCredits", ...(kind === "daily" ? { errorCode: "TotalTurnDailyQuotaExhausted" } : {}), message: upstream } } }));
+  const request = body(undefined, false, "claude-opus");
+  const direct = await handleChatCompletion(request, new SessionPool(options));
+  expect(direct.status).toBe(429);
+  const first = (await direct.json()).error;
+  expect(first.code).toBe(kind === "daily" ? "daily_turn_quota_exhausted" : "priority_access_exhausted");
+  expect(first.message).toContain(`Upstream said: ${upstream}`);
+  const before = wire.sockets.length;
+  const reopened = await handleChatCompletion(request, new SessionPool(options));
+  expect(reopened.status).toBe(429);
+  const cached = (await reopened.json()).error;
+  expect(cached.code).toBe(first.code); expect(cached.param).toBe(first.param);
+  expect(Number(reopened.headers.get("retry-after"))).toBeGreaterThan(0);
+  expect(cached.message).not.toContain("Upstream said:");
+  expect(cached.message).toContain("Local policy:");
+  expect(wire.sockets).toHaveLength(before);
+});
+
 it("cleans pre-SSE quota refusals for stream:true and allows exact retries", async () => {
   await withAccountContext(options, async () => { notePriorityAccessExhausted(meteredBudgetOf("claude-opus")!, { window: "day", resetsAt: new Date(Date.now() + 60000), message: "synthetic" }); });
   const pool = new SessionPool(options);
