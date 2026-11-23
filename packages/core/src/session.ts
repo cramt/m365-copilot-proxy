@@ -461,6 +461,8 @@ export interface CopilotSessionOptions {
   sessionId?: string;
   /** Reuse an existing conversation ID so M365 finds the same server-side conversation. */
   conversationId?: string;
+  /** Number of prior turns in the same conversation. */
+  turnCount?: number;
   /**
    * Ask M365 for a temporary chat by adding `disableMemory=1` to the Chathub URL.
    * Temporary chats retain context for their live ConversationId but are not
@@ -583,6 +585,7 @@ export class CopilotSession {
   constructor(options?: CopilotSessionOptions) {
     this.sessionId = options?.sessionId ?? crypto.randomUUID();
     this.conversationId = options?.conversationId ?? crypto.randomUUID();
+    this._turnCount = options?.turnCount ?? 0;
     this.agentId = options?.agentId;
     this.nativeActions = options?.nativeActions;
     this.temporaryChat = options?.temporaryChat ?? true;
@@ -600,6 +603,7 @@ export class CopilotSession {
    * Session/conversation IDs are reused so M365 maintains server-side context.
    */
   async chat(token: string, text: string, model: string = "m365-copilot", signal?: AbortSignal, opts?: ChatTurnOptions): Promise<CopilotStream> {
+    signal?.throwIfAborted();
     if (!currentAccountContext()) return withAccountContext({ getToken: async () => token }, () => this.chat(token, text, model, signal, opts));
     assertAccountToken(token);
     const key = currentAccountContext()!.key;
@@ -608,6 +612,7 @@ export class CopilotSession {
     const isFirst = this._turnCount === 0;
     const admissionStart = Date.now();
     for (;;) {
+      signal?.throwIfAborted();
       try { admitAccountAttempt(isFirst); break; }
       catch (error) {
         const enabled = process.env.M365_AVOID_THROTTLING && process.env.M365_AVOID_THROTTLING !== "0";

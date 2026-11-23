@@ -1,5 +1,7 @@
 import { describe, it, expect, vi, afterEach, beforeEach } from "vitest";
 
+const accountLifecycle = { active: 0 };
+
 // Replace core's ModelSession with a scripted fake so we can exercise the handler's
 // streaming path with no auth/WebSocket. Everything else in core stays real.
 const scripted: {
@@ -127,7 +129,7 @@ vi.mock("@m365-copilot/core", async (importActual) => {
     }
     close() { runtimeClosed.push(this.conversationId); }
   }
-  return { ...actual, ModelSession: FakeModelSession, AetherSession: FakeAetherSession, awaitTurnBudget };
+  return { ...actual, ModelSession: FakeModelSession, AetherSession: FakeAetherSession, awaitTurnBudget, withAccountContext: async (_opts: unknown, callback: (key: string) => unknown) => { accountLifecycle.active++; try { return await callback("synthetic-account"); } finally { accountLifecycle.active--; } } };
 });
 
 /** Every run() on a fake agent-runtime session, in order. */
@@ -136,6 +138,11 @@ const runtimeRuns: Array<{ mode: string; model: string; useAgent?: boolean; turn
 let runtimeToolCalls = 0;
 /** The conversation of every fake agent-runtime session the pool dropped (close()), in order. */
 const runtimeClosed: string[] = [];
+vi.mock("../../proxy/server-pool", async () => {
+  const { SessionPool } = await import("./handler.js");
+  return { pool: new SessionPool() };
+});
+vi.mock("@m365-copilot/proxy-lib", async () => import("./index.js"));
 
 /** Which fake ModelSession (by creation order) served every run() call, in order. */
 const servedBy: number[] = [];
@@ -189,6 +196,108 @@ async function streamContents(deltas: string[], fullText?: string): Promise<stri
   }
   return contents;
 }
+
+describe("ownership and explicit idempotency", () => {
+  it("forwards explicit idempotency and affinity through the native Nitro route", async () => {
+    vi.stubGlobal("defineEventHandler", (handler: unknown) => handler);
+    vi.stubGlobal("readBody", (event: any) => event.body);
+    vi.stubGlobal("getHeader", (event: any, name: string) => event.headers[name]);
+    try {
+      const routePath = "../../proxy/routes/v1/chat/completions.post.js";
+      const { default: route } = await import(routePath);
+      scripted.deltas = ["visible"]; scripted.fullText = "visible";
+      const event = (body: object) => ({ headers: { "x-opencode-session": "native", "idempotency-key": "native-key" }, node: { req: { headers: {}, async *[Symbol.asyncIterator]() { yield Buffer.from(JSON.stringify(body)); } } } });
+      const body = { messages: [{ role: "user", content: "native" }] };
+      const before = scripted.runs;
+      const first = await route(event(body)); const second = await route(event(body));
+      expect(await second.text()).toBe(await first.text());
+      expect(scripted.runs).toBe(before + 1);
+      expect((await route(event({ ...body, session_id: "conflicting" }))).status).toBe(400);
+    } finally { vi.unstubAllGlobals(); }
+  });
+  it("routes validated headers through createApp and allows CORS preflight", async () => {
+    const { createApp } = await import("./index.js");
+    const app = createApp();
+    vi.stubEnv("M365_CORS_ORIGIN", "https://example.invalid");
+    const options = await app.fetch(new Request("http://local/v1/chat/completions", { method: "OPTIONS", headers: { origin: "https://example.invalid" } }));
+    expect(options.headers.get("Access-Control-Allow-Headers")).toContain("Idempotency-Key");
+    vi.unstubAllEnvs();
+    const conflict = await app.fetch(new Request("http://local/v1/chat/completions", { method: "POST", headers: { "x-opencode-session": "B", "Content-Type": "application/json" }, body: JSON.stringify({ session_id: "A", messages: [{ role: "user", content: "x" }] }) }));
+    expect(conflict.status).toBe(400);
+  });
+  it("waits for producer completion, and aborts an independent queued waiter", async () => {
+    scripted.deltas = ["visible"]; scripted.fullText = "visible";
+    let release!: () => void;
+    scripted.gate = new Promise<void>(r => { release = r; });
+    const pool = new SessionPool();
+    const body = ChatCompletionRequest.parse({ stream: true, messages: [{ role: "user", content: "same" }] });
+    const before = scripted.runs;
+    try {
+      const first = await handleChatCompletion(body, pool, { sessionHint: "owner" });
+      const abort = new AbortController();
+      const second = handleChatCompletion(body, pool, { sessionHint: "owner", signal: abort.signal });
+      abort.abort();
+      expect((await second).status).toBe(499);
+      expect(scripted.runs).toBe(before);
+      release(); scripted.gate = null;
+      await first.text();
+      expect(scripted.runs).toBe(before + 1);
+      const third = await handleChatCompletion(body, pool, { sessionHint: "owner" });
+      await third.text();
+      expect(scripted.runs).toBe(before + 2);
+    } finally { release(); scripted.gate = null; }
+  });
+  it("does not cache canceled producer output or oversized streaming replies", async () => {
+    scripted.deltas = ["visible"]; scripted.fullText = "visible";
+    let release!: () => void; scripted.gate = new Promise<void>(r => { release = r; });
+    const pool = new SessionPool();
+    const body = ChatCompletionRequest.parse({ stream: true, messages: [{ role: "user", content: "same" }] });
+    try {
+      const first = await handleChatCompletion(body, pool, { idempotencyKey: "canceled" });
+      await first.body!.cancel();
+      release(); scripted.gate = null;
+      await new Promise(r => setTimeout(r, 0));
+      expect(pool.receipts.size).toBe(0);
+      scripted.deltas = ["x".repeat(1024 * 1024 + 1)]; scripted.fullText = scripted.deltas[0];
+      const big = await handleChatCompletion(body, pool, { idempotencyKey: "big" });
+      expect((await big.text()).length).toBeGreaterThan(1024 * 1024);
+      expect(pool.receipts.size).toBe(0);
+    } finally { release(); scripted.gate = null; }
+  });
+  it("replays an explicit completed key, rejects mismatch, and never implicitly deduplicates", async () => {
+    scripted.deltas = ["visible"]; scripted.fullText = "visible";
+    const pool = new SessionPool();
+    const body = ChatCompletionRequest.parse({ messages: [{ role: "user", content: "same" }] });
+    const before = scripted.runs;
+    const first = await handleChatCompletion(body, pool, { idempotencyKey: "retry-one" });
+    const text = await first.text();
+    const replay = await handleChatCompletion(body, pool, { idempotencyKey: "retry-one" });
+    expect(await replay.text()).toBe(text);
+    expect(scripted.runs - before).toBe(1);
+    const mismatch = await handleChatCompletion({ ...body, temperature: 0.4 }, pool, { idempotencyKey: "retry-one" });
+    expect(mismatch.status).toBe(409);
+    await handleChatCompletion(body, pool);
+    expect(scripted.runs - before).toBe(2);
+  });
+  it("reserves ownership until the full streaming producer completes", async () => {
+    scripted.deltas = ["visible"]; scripted.fullText = "visible";
+    let release!: () => void;
+    scripted.gate = new Promise<void>(r => { release = r; });
+    const pool = new SessionPool();
+    const body = ChatCompletionRequest.parse({ stream: true, messages: [{ role: "user", content: "same" }] });
+    try {
+      const first = await handleChatCompletion(body, pool, { idempotencyKey: "pending" });
+      expect(accountLifecycle.active).toBeGreaterThan(0); // headers do not close core policy resources
+      const pending = await handleChatCompletion(body, pool, { idempotencyKey: "pending" });
+      expect(pending.status).toBe(409);
+      expect(pending.headers.get("Retry-After")).toBe("1");
+      release(); scripted.gate = null;
+      const text = await first.text();
+      const replay = await handleChatCompletion(body, pool, { idempotencyKey: "pending" });
+      expect(await replay.text()).toBe(text);
+    } finally { release(); scripted.gate = null; }
+  });
+});
 
 describe("incremental streaming (non-tool path)", () => {
   it("forwards deltas as separate chunks, not one buffered blob", async () => {
@@ -655,7 +764,8 @@ describe("M365_AVOID_THROTTLING holds a turn it would have to wait too long for"
     const body = ChatCompletionRequest.parse({ model: "m365-copilot", stream: false, messages: [{ role: "user", content: "hi" }] });
     await handleChatCompletion(body, new SessionPool(), { signal: ac.signal });
     expect(scripted.awaitTurnBudgetCalls.map((c) => c.maxWaitMs)).toEqual([undefined, 2 * 60_000]);
-    expect(scripted.awaitTurnBudgetCalls[1]!.signal).toBe(ac.signal);
+    ac.abort();
+    expect(scripted.awaitTurnBudgetCalls[1]!.signal?.aborted).toBe(true);
   });
 
   it("makes the forcing retry wait for the budget too: every upstream turn goes through awaitTurnBudget", async () => {
@@ -687,7 +797,8 @@ describe("M365_AVOID_THROTTLING holds a turn it would have to wait too long for"
     expect(scripted.awaitTurnBudgetCalls).toHaveLength(2);
     expect(scripted.awaitTurnBudgetCalls[1]).toEqual(scripted.awaitTurnBudgetCalls[0]);
     expect(scripted.awaitTurnBudgetCalls[1]!.maxWaitMs).toBe(2 * 60_000);
-    expect(scripted.awaitTurnBudgetCalls[1]!.signal).toBe(ac.signal);
+    ac.abort();
+    expect(scripted.awaitTurnBudgetCalls[1]!.signal?.aborted).toBe(true);
   });
 });
 
@@ -1348,7 +1459,7 @@ describe("a new harness session that shares the first user message", () => {
     scripted.queue = [];
   });
 
-  it("still continues when the client rewrote the reply it echoes", async () => {
+  it("forks when the client rewrites the assistant reply it echoes", async () => {
     scripted.result = null;
     scripted.texts = [];
     scripted.convs = [];
@@ -1357,8 +1468,8 @@ describe("a new harness session that shares the first user message", () => {
     const prompt = `hello ${Math.random()}`;
     const m1 = await ask([{ role: "user", content: prompt }], pool);
     await ask([{ role: "user", content: prompt }, { role: "assistant", content: `${m1.content} (trimmed)` }, { role: "user", content: "and now?" }], pool);
-    expect(scripted.convs[1]).toBe(scripted.convs[0]);
-    expect(scripted.texts[1]).not.toContain(prompt); // a delta, not a fresh full prompt
+    expect(scripted.convs[1]).not.toBe(scripted.convs[0]);
+    expect(scripted.texts[1]).toContain(prompt); // replay the full rewritten history
     scripted.queue = [];
   });
 
@@ -1936,7 +2047,7 @@ describe("stopping a turn that writes its own <tool_response> (early stop)", () 
 
   it("leaves a request without tools alone", async () => {
     await toolTurn(runaway, false);
-    expect(scripted.signals.at(-1)).toBeUndefined();
+    expect(scripted.signals.at(-1)?.aborted).toBe(false); // owns cancellation without early-stopping ordinary prose
     expect(scripted.stoppedAfter).toBeNull();
   });
 
@@ -2333,7 +2444,9 @@ describe("a conversation M365 has lost (§46)", () => {
       pool.resolve(messages(`conversation ${i}`));
     }
     vi.setSystemTime(start + 1000);
-    expect(pool.resolve(messages("conversation 0"))).toBe(oldest); // least recently used, and kept
+    const input = ChatCompletionRequest.parse({ model: "claude-sonnet", messages: messages("conversation 0") });
+    pool.commit(oldest, input, { role: "assistant", content: "answer" });
+    expect(pool.resolve([...input.messages, { role: "assistant", content: "answer" }, { role: "user", content: "next" }])).toBe(oldest); // exact continuation keeps it
     expect(pool.size).toBe(1000);
     pool.resolve(messages("conversation 1000"));
     expect(pool.size).toBe(1000);

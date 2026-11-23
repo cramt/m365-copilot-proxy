@@ -18,7 +18,8 @@ vi.mock("./agent.js", () => ({ getOrCreateAgent: async () => { wire.resolutions+
 
 vi.mock("./session.js", () => ({
   CopilotSession: class {
-    turnCount = 0;
+    turnCount: number;
+    constructor(options?: { turnCount?: number }) { this.turnCount = options?.turnCount ?? 0; }
     chat(token: string) {
       admitAccountAttempt(this.turnCount === 0);
       wire.counts.push(this.turnCount++);
@@ -97,6 +98,24 @@ describe("ModelSession.run's reconnect", () => {
     } finally {
       if (saved !== undefined) process.env.M365_AVOID_THROTTLING = saved;
     }
+  });
+});
+
+describe("conversation recovery continuity", () => {
+  it("preserves attempted turns across reconnect, agent switches, refresh and reset; new conversation starts over", async () => {
+    const s = new ModelSession({ getToken: async () => jwt("token") });
+    wire.failures = 1;
+    await s.run("first", "m365-copilot", undefined, true, [], async () => ({ waitedMs: 0 }));
+    await s.run("second", "m365-copilot", undefined, false);
+    await s.run("third", "m365-copilot", undefined, true);
+    wire.agent = "agent-b";
+    expect(await s.refreshAgent()).toBe(true);
+    await s.run("fourth");
+    s.reset();
+    await s.run("fifth");
+    s.newConversation();
+    await s.run("new");
+    expect(wire.counts).toEqual([0, 1, 2, 3, 4, 5, 0]);
   });
 });
 

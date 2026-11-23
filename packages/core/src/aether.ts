@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { getTokenForScope } from "./auth.js";
+import { AccountPolicyError, accountKeyFromToken, assertAccountToken, currentAccountContext } from "./account-policy.js";
 import { runtimeModelFor } from "./backends.js";
 import type { CopilotStream, CapturedImage } from "./copilot.js";
 import { createLogger, trunc } from "./log.js";
@@ -526,6 +527,7 @@ export class AetherSession implements TurnSession {
   private session: string;
   private turns = 0;
   private prewarmed = false;
+  private runtimeAccountKey?: string;
   private readonly discardDelayMs: number;
 
   constructor(options: AetherSessionOptions) {
@@ -579,7 +581,9 @@ export class AetherSession implements TurnSession {
     if (process.env.M365_SAVE_HISTORY === "1") return;
     const mode = this.mode;
     const remove = () => void (async () => {
-      if (await deleteConversation(session, mode, await this.resolveToken())) ledger?.remove(session);
+      const token = await this.resolveToken();
+      if (this.runtimeAccountKey && accountKeyFromToken(token) !== this.runtimeAccountKey) return;
+      if (await deleteConversation(session, mode, token)) ledger?.remove(session);
     })().catch((err) => log.info(`Deleting agent runtime conversation ${session} failed: ${err?.message ?? err}`));
     if (this.discardDelayMs <= 0) return remove();
     setTimeout(remove, this.discardDelayMs).unref?.();
@@ -602,6 +606,10 @@ export class AetherSession implements TurnSession {
       text += `\n\n(Note: ${images.length === 1 ? "an attached file" : `${images.length} attached files`} could not be passed on: this backend doesn't take attachments. Don't describe ${images.length === 1 ? "it" : "them"}; say ${images.length === 1 ? "it" : "they"} didn't arrive.)`;
     }
     const token = await this.resolveToken();
+    assertAccountToken(token);
+    const accountKey = currentAccountContext()?.key;
+    if (this.runtimeAccountKey && accountKey !== this.runtimeAccountKey) throw new AccountPolicyError(409, "account_changed");
+    if (accountKey) this.runtimeAccountKey = accountKey;
     const ids = tokenIds(token);
     const base = await runtimeEndpoint(token, ids);
     const runtimeModel = runtimeModelFor(model);

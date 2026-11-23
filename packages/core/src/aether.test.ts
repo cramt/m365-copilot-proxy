@@ -80,6 +80,20 @@ beforeEach(() => {
 afterEach(() => vi.unstubAllGlobals());
 
 describe("AetherSession", () => {
+  it("rejects a runtime service credential from a different scoped account before any HTTP", async () => {
+    const { withAccountContext } = await import("./account-policy.js");
+    const tid = "11111111-1111-1111-1111-111111111111";
+    const jwt = (oid: string) => `h.${Buffer.from(JSON.stringify({ tid, oid })).toString("base64url")}.s`;
+    const a = jwt(tid), b = jwt("22222222-2222-2222-2222-222222222222");
+    const dir = mkdtempSync(join(tmpdir(), "runtime-owner-"));
+    vi.stubEnv("M365_ACCOUNT_POLICY_PATH", join(dir, "state.sqlite"));
+    const fetch = vi.fn(); vi.stubGlobal("fetch", fetch);
+    try {
+      const session = new AetherSession({ mode: "cowork", getToken: async () => b });
+      await expect(withAccountContext({ getToken: async () => a }, () => session.run("private"))).rejects.toMatchObject({ code: "account_changed" });
+      expect(fetch).not.toHaveBeenCalled();
+    } finally { vi.unstubAllEnvs(); rmSync(dir, { recursive: true, force: true }); }
+  });
   it("streams a Cowork run's text, with its credits, and nothing from an earlier run", async () => {
     const { calls, fetchImpl } = fakeRuntime([answered(["Hel", "lo"])]);
     vi.stubGlobal("fetch", fetchImpl);

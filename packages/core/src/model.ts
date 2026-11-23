@@ -92,6 +92,7 @@ export class ModelSession implements TurnSession {
   private temporaryChat: boolean;
   private copilotSession: CopilotSession | null = null;
   private cachedAgentId: string | null | undefined = undefined;
+  private savedTurnCount = 0;
   private accountKey: string | undefined;
   private options: ModelSessionOptions;
 
@@ -109,6 +110,7 @@ export class ModelSession implements TurnSession {
   newConversation(): void {
     this._conversationId = crypto.randomUUID();
     this.reset();
+    this.savedTurnCount = 0;
   }
 
   constructor(options: ModelSessionOptions = {}) {
@@ -121,7 +123,7 @@ export class ModelSession implements TurnSession {
 
   /** Number of turns completed in this session */
   get turnCount(): number {
-    return this.copilotSession?.turnCount ?? 0;
+    return this.copilotSession?.turnCount ?? this.savedTurnCount;
   }
 
   /** Agent id baked into the current copilotSession (undefined = no agent). */
@@ -132,6 +134,7 @@ export class ModelSession implements TurnSession {
       agentId,
       sessionId: this.sessionId,
       conversationId: this.conversationId,
+      turnCount: this.turnCount,
       temporaryChat: this.temporaryChat,
     });
   }
@@ -265,6 +268,7 @@ export class ModelSession implements TurnSession {
       if (fresh !== this.cachedAgentId) {
         log.info(`Agent refreshed: ${this.cachedAgentId ?? "none"} -> ${fresh ?? "none"}`);
         this.cachedAgentId = fresh;
+        this.savedTurnCount = this.turnCount;
         this.copilotSession = null; // reconnect so the new agent id takes effect
         this.currentAgentId = undefined;
         return true;
@@ -282,6 +286,7 @@ export class ModelSession implements TurnSession {
    * re-resolves it (cheap cache fast-path in the normal case).
    */
   reset() {
+    this.savedTurnCount = this.turnCount;
     this.copilotSession = null;
     this.cachedAgentId = undefined;
     this.currentAgentId = undefined;

@@ -1,17 +1,19 @@
-import { ChatCompletionRequest, RequestBodyError, handleChatCompletion, readRequestJson } from "@m365-copilot/proxy-lib";
+import { ChatCompletionRequest, RequestBodyError, handleChatCompletion, readRequestJson, requestContext, RequestContextError, validateCanonicalInput } from "@m365-copilot/proxy-lib";
 import { pool } from "../../../server-pool";
 
 export default defineEventHandler(async (event) => {
   const req = event.node.req;
   let body: ReturnType<typeof ChatCompletionRequest.parse>;
   try {
-    body = ChatCompletionRequest.parse(await readRequestJson(req, req.headers["content-length"]));
+    const raw = await readRequestJson(req, req.headers["content-length"]);
+    validateCanonicalInput(raw);
+    body = ChatCompletionRequest.parse(raw);
   } catch (err: any) {
     // The cors.ts middleware has already set the CORS headers; h3 keeps them on a returned Response.
     // After a 413 or 408 the client may still be sending, so the connection closes.
-    const status = err instanceof RequestBodyError ? err.status : 400;
+    const status = err instanceof RequestBodyError || err instanceof RequestContextError ? err.status : 400;
     return new Response(
-      JSON.stringify({ error: { message: err.message, type: "invalid_request_error" } }),
+      JSON.stringify({ error: { message: err.message, type: "invalid_request_error", ...(err instanceof RequestContextError ? { code: err.code } : {}) } }),
       { status, headers: { "Content-Type": "application/json", ...(status > 400 && { Connection: "close" }) } },
     );
   }
@@ -32,8 +34,15 @@ export default defineEventHandler(async (event) => {
 
   // handleChatCompletion returns a Web Response (JSON or an SSE ReadableStream
   // when stream:true). Returning it directly lets h3 forward it untouched.
-  return handleChatCompletion(body, pool, {
-    signal: ac.signal,
-    userAgent: req.headers["user-agent"],
-  });
+  const headers = new Headers();
+  for (const name of ["x-claude-code-session-id", "x-opencode-session", "idempotency-key"]) {
+    const value = getHeader(event, name);
+    if (value !== undefined) headers.set(name, value);
+  }
+  try {
+    return await handleChatCompletion(body, pool, { ...requestContext(body, headers), signal: ac.signal, userAgent: req.headers["user-agent"] });
+  } catch (err) {
+    if (err instanceof RequestContextError) return new Response(JSON.stringify({ error: { message: err.message, type: "invalid_request_error", code: err.code } }), { status: err.status, headers: { "Content-Type": "application/json" } });
+    throw err;
+  }
 });

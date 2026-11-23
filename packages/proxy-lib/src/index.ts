@@ -4,10 +4,14 @@ import { SessionPool, handleChatCompletion } from "./handler.js";
 import { ImageGenerationRequest, handleImageGeneration } from "./images.js";
 import { checkAccess, corsHeaders, corsPolicy } from "./access.js";
 import { RequestBodyError, readRequestText } from "./request-body.js";
+import { requestContext, RequestContextError } from "./request-context.js";
+import { validateCanonicalInput } from "./canonical-hash.js";
 
 export { SessionPool, handleChatCompletion } from "./handler.js";
 export { RequestBodyError, readRequestJson } from "./request-body.js";
 export { ImageGenerationRequest, handleImageGeneration, orientationForSize } from "./images.js";
+export { requestContext, RequestContextError, type RequestContext } from "./request-context.js";
+export { validateCanonicalInput } from "./canonical-hash.js";
 export { ChatCompletionRequest, ChatMessage, ToolCall, ToolDefinition } from "./schemas.js";
 export {
   isAgentHarnessUserAgent,
@@ -164,17 +168,21 @@ export function createApp(sessionOptions: ModelSessionOptions = {}): FetchApp {
     if (method === "POST" && pathname === "/v1/chat/completions") {
       let body: ReturnType<typeof ChatCompletionRequest.parse>;
       try {
-        body = ChatCompletionRequest.parse(await readFetchJson(req));
+        const raw = await readFetchJson(req);
+        validateCanonicalInput(raw);
+        body = ChatCompletionRequest.parse(raw);
       } catch (err: any) {
         return withCors(
-          json(err instanceof RequestBodyError ? err.status : 400, { error: { message: err.message, type: "invalid_request_error" } }),
+          json(err instanceof RequestBodyError || err instanceof RequestContextError ? err.status : 400, { error: { message: err.message, type: "invalid_request_error", ...(err instanceof RequestContextError ? { code: err.code } : {}) } }),
         );
       }
       // req.signal aborts when the client disconnects → cancels the M365 turn.
-      return withCors(await handleChatCompletion(body, pool, {
-        signal: req.signal,
-        userAgent: req.headers.get("user-agent"),
-      }));
+      try {
+        return withCors(await handleChatCompletion(body, pool, { ...requestContext(body, req.headers), signal: req.signal, userAgent: req.headers.get("user-agent") }));
+      } catch (err) {
+        if (err instanceof RequestContextError) return withCors(json(err.status, { error: { message: err.message, type: "invalid_request_error", code: err.code } }));
+        throw err;
+      }
     }
 
     if (method === "POST" && pathname === "/v1/images/generations") {
