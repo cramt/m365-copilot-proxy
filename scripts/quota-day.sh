@@ -24,7 +24,8 @@ reset)
   until [ "$(date -u +%H%M)" = 2358 ]; do sleep 5; done
   for _ in $(seq 1 25); do
     row=$(D reset Gpt_5_5_Chat); echo "$row"
-    [[ $row == *Success* ]] && break
+    # A Success at 0 can be the ~8% leak; the reset is the first one with turns left.
+    [[ $row == *Success* && $(cut -f6 <<<"$row") != 0 ]] && break
     sleep 20
   done ;;
 cost)

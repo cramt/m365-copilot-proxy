@@ -595,7 +595,7 @@ The final `type:2` frame carries the canonical state of the whole conversation i
 
 ### 50 turns a day across the whole account: `TotalTurnUsageDaily` (2026-11-22)
 
-Every turn's `throttling.metering` map now carries **`TotalTurnUsageDaily`**. It reads 49 after the first turn of the UTC day and drops by exactly 1 per turn, whatever the model, agent or not, follow-up turns included. That makes it **50 turns a day per account**. It reset between 23:53Z and 01:11Z, which fits midnight UTC. On 2026-11-22 a bench took it from 49 to 0 between 01:11:18Z and 01:20:53Z, one turn every ~5 s. The next turn was refused like this:
+Every turn's `throttling.metering` map now carries **`TotalTurnUsageDaily`**. It reads 49 after the first turn of the UTC day and drops by exactly 1 per Chathub turn, whatever the model, agent or not, follow-up turns included. That makes it **50 turns a day per account**, shared with the web UI. It resets at 00:00 UTC (measured to ±25 s on 2026-11-23). Images, license refusals and StreamHub turns cost nothing, and concurrent turns can overshoot it (see the day-2 subsection below). On 2026-11-22 a bench took it from 49 to 0 between 01:11:18Z and 01:20:53Z, one turn every ~5 s. The next turn was refused like this:
 
 ```json
 "result": { "value": "OutOfCredits", "message": "You've used your daily chat limit. Please try again tomorrow.",
@@ -636,7 +636,39 @@ It looks like the gate failing open now and then. The proxy doesn't use it: hamm
 
 **Other limits the client knows about** (bundles from 2026-11-22). Upsell reasons: `MaxTotalTurn TotalTurnDailyLimit ReasoningTurnLimit ConversationTurnLimit MaxDailyUsage MaxPromptPerSession MaxCharactersPerQuery MaxOneFileUploadPerPrompt FileSizeLimit MaxGPTImageAnalysis MaxGPTImageAnalysisUpgrade`. Result codes: `TotalTurnDailyQuotaExhausted`, `ReasoningTurnExhausted`, `ConversationTurnLimitReached` (also `turns >= maxTurns` on the conversation), and `creditScenario` values `TotalTurn` and `ImageKnowledge` ("Max GPT Image analysis per account"). The flag `enableFreeAadUser100TurnLimit` adds the variant `feature.EnableFreeMSA_AADUser100TurnLimit`, which suggests a 100-turn per-conversation cap for free AAD users. The tenant's loki config has the consumptive-billing flags on (`PLGSDKConsumptiveBilling`, `EnableConsumptiveBillingCostCommand`, `EnableConsumptiveBillingCreditRequestScenarios`).
 
-**Still open** (day 2, `scripts/quota-day.sh`): the exact reset instant; what a cancelled turn, a license refusal, an oversize input, a web-UI turn, a StreamHub turn and a search turn cost; whether the web UI warns before 0; whether concurrent turns overshoot 0.
+### Day 2 (2026-11-23): reset, cost per kind of turn, overshoot
+
+Run with `scripts/quota-day.sh` (rows `reset`, `c*`, `sh-*`, `web-*`, `burn`, `race-*`, `zero-d2` in `direct.jsonl`). Anything that doesn't report a value of its own was bracketed by control pongs.
+
+**Reset: midnight UTC.** A probe every 20 s was refused at 23:59:43Z and answered at 00:00:08Z with `TotalTurnUsageDaily: 49`. No frame carries a `resetAt`.
+
+| Turn | Cost |
+|------|------|
+| Chathub text turn, any included tone (`Gpt_5_5_Chat`, `Gpt_5_5_Reasoning`, `Gpt_5_4_Reasoning`, `Gpt_5_6_Reasoning`, `magic`) | 1 |
+| 60,000-character prompt; 400,035-character prompt (accepted, answered) | 1 |
+| Turn with a web search (weather) | 1 |
+| Follow-up turn in a conversation (proxy, delta mode) | 1 |
+| Web-UI turn (copilot.cloud.microsoft, which goes over Chathub) | 1, same counter (the web turn read 27, between API turns reading 28 and 26) |
+| Cancelled turn (socket closed 2.5 s in, mid-answer) | 1 |
+| Image generation (`/v1/images/generations`) | **0** (also seen 3× on day 1 and in the other thread's run) |
+| `ForbiddenRequest` license refusal (Claude) | **0** |
+| **StreamHub text turn**, with a real answer, on `Gpt_5_5_Chat`, `Gpt_5_5_Reasoning` and `magic` | **0** (6 turns; a control 16 minutes later showed no delayed charge) |
+
+StreamHub turns aren't charged, but they are refused at 0 (day 1). They don't get around the wall; they just don't count toward it. StreamHub carries no `throttling.metering` and no `billing_info`. The proxy uses Chathub by default (`M365_TRANSPORT=streamhub` switches it, with the agent caveats in hypotheses §49 F144). Switching the proxy to save quota is a decision for a person, not a default: it relies on a metering gap that Microsoft can close at any time.
+
+**Concurrent turns overshoot 0.** With 1 turn left, 6 turns were started within 2.6 s. **5 succeeded** (the 4 that started within 0.5 s of each other, plus the first). Only the one that started last was refused. The check before the turn isn't atomic with the decrement, so turns already in flight all pass. The counter stops at 0, so it doesn't show the overshoot.
+
+**The counter is read from somewhere that can lag.** At 01:00:44Z one turn reported `TotalTurnUsageDaily: 29`, which is the value from 48 minutes earlier (00:12:05). The true value was 23, and the next turn, 5 s later, reported 22. Every other key in the map was the same. A lagging, replicated count would also explain the ~8 % of turns that get through at 0 (day 1).
+
+**The web UI gives no warning before 0.** Screenshots after web turns at 5, 2 and 1 turns left show only the answer. No banner, and no `meteringLimitAlerts`, `MeteringInfo` or `billing_info` in the frames. The only UI is the "Upgrade to keep going" card at 0.
+
+**Refusals at 0.** After today's 0, the refusals were fast (1.8 s; 2.5 s inside the race). Both of day 1's slow (10–13 s) refusals were on large requests: a think-deeper agent follow-up and a 24k-character prompt. So the slow kind is more likely the cost of loading the request than the model running. That isn't settled.
+
+**What's still unknown**
+- Why `ReasoningModelTurnUsage` (10) never moves, and what triggers `ReasoningTurnExhausted`.
+- Whether the free AAD 100-turn per-conversation limit applies to this account (no conversation here went past 9 turns).
+- What the ~8 % leak at 0 is exactly (a lagging replica fits but isn't proven).
+- Whether Teams and the Office apps (other surfaces) share the counter. Only the web UI was tested.
 
 ### The API behind usage limits (2026-11-22)
 

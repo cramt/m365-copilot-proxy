@@ -18,7 +18,9 @@ import { oneTurn } from "./_probe-chat.mjs";
 const argv = process.argv.slice(2);
 const flag = (k) => { const i = argv.indexOf(k); return i >= 0 ? argv[i + 1] : undefined; };
 const positional = argv.filter((a, i) => !a.startsWith("--") && !argv[i - 1]?.startsWith("--"));
-const [label = "adhoc", tone = "magic", text = "Reply with the single word pong."] = positional;
+const [label = "adhoc", tone = "magic", argText = "Reply with the single word pong."] = positional;
+// --text-file: inputs past Linux's 128 KiB per-argument limit can't go on the command line.
+const text = flag("--text-file") ? readFileSync(flag("--text-file"), "utf8") : argText;
 const transport = flag("--transport");
 const timeoutMs = flag("--timeout") ? Number(flag("--timeout")) : undefined;
 const variantsAdd = flag("--variants-add");
