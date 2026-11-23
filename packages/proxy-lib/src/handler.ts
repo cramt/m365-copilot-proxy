@@ -63,6 +63,7 @@ import {
   type ParsedToolCall,
 } from "@m365-copilot/core";
 import { ChatCompletionRequest } from "./schemas.js";
+import { toolTurnNarration } from "./narration.js";
 import { maxTurnParts, planFullPrompt, planText, turnChunkBytes } from "./replay.js";
 import { estimateTokens, reportsUsage } from "./usage.js";
 import {
@@ -1484,7 +1485,7 @@ export async function handleChatCompletion(
   type Produced =
     | { kind: "error"; resp: Response }
     | { kind: "text"; text: string }
-    | { kind: "tools"; toolCalls: ReturnType<typeof parseToolCalls>["toolCalls"] };
+    | { kind: "tools"; toolCalls: ReturnType<typeof parseToolCalls>["toolCalls"]; narration?: string | null };
 
   // `onDelta` streams text to the client live (non-tool path only — see produce's
   // caller). Tool mode ignores it: the raw text is parsed for tool-call fences and
@@ -1703,7 +1704,10 @@ export async function handleChatCompletion(
       conv.pendingNote = notes.length ? notes.join("\n") : null;
       const fixed = parsed.toolCalls.map((c) => millisecondArgsFixed(c, body.tools));
       if (fixed.some((c, i) => c !== parsed.toolCalls[i])) log.info("A millisecond argument under 1000 read as seconds (e.g. Bash timeout: 30)");
-      return { kind: "tools", toolCalls: fixed };
+      // What the model said it's doing goes beside the call, as Codex shows its own
+      // models' commentary; the text after the call stays stripped (above).
+      const narration = process.env.M365_NO_NARRATION ? null : toolTurnNarration(fullText);
+      return { kind: "tools", toolCalls: fixed, narration };
     }
     return { kind: "text", text: plainFileNames(fullText) };
   } else {
@@ -1773,7 +1777,7 @@ export async function handleChatCompletion(
     if (p.kind === "tools") {
       return jsonResponse(200, {
         id: completionId, object: "chat.completion", created, model: responseModel(),
-        choices: [{ index: 0, message: { role: "assistant", content: null, ...thought, tool_calls: p.toolCalls }, finish_reason: "tool_calls" }],
+        choices: [{ index: 0, message: { role: "assistant", content: p.narration ?? null, ...thought, tool_calls: p.toolCalls }, finish_reason: "tool_calls" }],
         usage: usage(callsText(p.toolCalls)),
       });
     }
@@ -1870,6 +1874,7 @@ export async function handleChatCompletion(
             send({ ...base, error: { message, type, ...(code ? { code } : {}), ...(retryAfter ? { retry_after: Number(retryAfter) } : {}) } });
           }
         } else if (p.kind === "tools") {
+          if (p.narration) send({ ...base, choices: [{ index: 0, delta: { content: p.narration }, finish_reason: null }] });
           p.toolCalls.forEach((tc, i) => {
             log.debug(`Tool call: ${tc.function.name} ${trunc(tc.function.arguments, 200)}`);
             send({ ...base, choices: [{ index: 0, delta: { tool_calls: [{ index: i, id: tc.id, type: "function", function: { name: tc.function.name, arguments: tc.function.arguments } }] }, finish_reason: null }] });

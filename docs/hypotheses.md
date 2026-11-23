@@ -7384,3 +7384,15 @@ Claude models charge none.
 reply that opened a `powershell` fence and never closed it, so no call was read and the script reached the
 user as text. That proxy was a Nov 19 build; the fence re-ask (§51 F152, `unreadableToolFence`) covers this
 reply shape, one live case for its scripted evidence.
+
+### F165 — what the models say before a tool call was stripped, so Codex showed no commentary 🟢
+Codex on OpenAI's models shows a sentence of commentary before each step; through the proxy it showed only
+the steps. The proxy stripped any text beside a call ("Mixed output detected"). Its tool-mode replies in the
+debug log (Nov 10–22, the reply as M365 sent it): Claude Fable wrote prose before the block on 9 of 12
+calls, Claude Sonnet (4.6) 7 of 10, Sonnet 5 27 of 34; GPT-6.2 Astra opened the command with a `#` comment
+on 15 of 21 (`# Read-only first pass: map each form to its PDF pages…`), GPT-6 Astra 3 of 3; GPT-6.2 Sol
+did either on 7 of 91, GPT-6.1 Sol 1 of 19, GPT-5.6 Think Deeper 0 of 25. That text now goes out as the
+reply's `content` beside the call (`toolTurnNarration`, cut at 800 characters; `M365_NO_NARRATION=1` off),
+the prose before the block or else its opening comments. Text after the block stays stripped: it's written
+before the call has run, and is often a guess at its result. A follow-up never sends it back to M365
+(`formatDeltaMessages` skips assistant messages, which M365 already holds).

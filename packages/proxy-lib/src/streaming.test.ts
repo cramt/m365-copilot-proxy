@@ -2876,6 +2876,24 @@ describe("the model's chain of thought as reasoning_content", () => {
     expect(deltas.some((d) => d.content)).toBe(false);
   });
 
+  it("puts what the model says it's doing beside the call, as Codex shows its own models' commentary", async () => {
+    const reply = "I'll list the files first.\n\n```bash\nls\n```\n\nThat will show a.txt.";
+    scripted.queue = [{ fullText: reply }];
+    const deltas = await deltasOf(await ask({ stream: true, tools }));
+    expect(deltas.filter((d) => d.content).map((d) => d.content)).toEqual(["I'll list the files first."]);
+    expect(deltas.findIndex((d) => d.content)).toBeLessThan(deltas.findIndex((d) => d.tool_calls));
+    scripted.queue = [{ fullText: "```bash\n# Check what's here\nls\n```" }];
+    const { message } = (await (await ask({ tools })).json()).choices[0];
+    expect(message).toMatchObject({ content: "Check what's here", tool_calls: [expect.objectContaining({ type: "function" })] });
+    process.env.M365_NO_NARRATION = "1";
+    try {
+      scripted.queue = [{ fullText: reply }];
+      expect((await (await ask({ tools })).json()).choices[0].message.content).toBeNull();
+    } finally {
+      delete process.env.M365_NO_NARRATION;
+    }
+  });
+
   it("streams a Cowork turn's steps, the tool calls of the runtime's own agent, as they start", async () => {
     process.env.M365_BACKENDS = "chat,cowork";
     try {
