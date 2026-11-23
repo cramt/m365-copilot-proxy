@@ -334,7 +334,11 @@ export async function getOrCreateAgent(
     log.info(`Using cached agent: ${cached.agentId} (instructions ${wantHash})`);
     return cached.agentId;
   }
-  if (cached) {
+  // A forced refresh skips the fast path above even when the cache is up to
+  // date, so only a different hash means stale (#156).
+  if (opts.forceRefresh && cached?.instructionsHash === wantHash) {
+    log.info(`Forced agent refresh: re-validating ${wantName} against the tenant (instructions ${wantHash} unchanged)`);
+  } else if (cached) {
     log.info(
       `Cached agent instructions stale (${cached.instructionsHash ?? "none"} != ${wantHash}), rebuilding`,
     );
