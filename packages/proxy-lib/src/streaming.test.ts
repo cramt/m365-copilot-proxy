@@ -1573,6 +1573,19 @@ describe("Priority access (Opus 5.5, Sonnet 5.5): OutOfCredits, remembering it, 
     expect(scripted.models).toEqual([]);
   });
 
+  it("doesn't take an answer that quotes the daily-limit refusal for the refusal", async () => {
+    const LIMIT = "You\u2019ve used your daily chat limit. Please try again tomorrow.";
+    const quoting = "```bash\necho \"" + LIMIT + "\"\n```";
+    scripted.queue = [{ fullText: quoting, result: { value: "Success", message: quoting } }, CALL];
+    const res = await send("gpt-5.5");
+    expect(res.status).toBe(200);
+    expect((await res.json()).choices[0].message.tool_calls).toHaveLength(1);
+    // Nothing was remembered: the next request still reaches M365.
+    const next = await send("gpt-5.5", "another task");
+    expect(next.status).toBe(200);
+    expect(scripted.models).toEqual(["gpt-5.5"]);
+  });
+
   it("then answers later metered Opus requests itself, without an M365 turn", async () => {
     scripted.queue = [REFUSAL];
     await send();

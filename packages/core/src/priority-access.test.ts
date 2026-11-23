@@ -217,6 +217,12 @@ describe("the account's daily turn limit (TotalTurnDailyQuotaExhausted, §7)", (
     expect(priorityAccessExhaustionOf(null, LIMIT, WED)!.scope).toBe("account");
   });
 
+  it("reads the text alone only on a turn that didn't succeed", () => {
+    const answer = `That message means: ${LIMIT} It resets at 00:00 UTC.`;
+    expect(priorityAccessExhaustionOf({ value: "Success", message: answer }, answer, WED)).toBeNull();
+    expect(priorityAccessExhaustionOf({ value: "InternalError" }, LIMIT, WED)!.scope).toBe("account");
+  });
+
   it("leaves a model's priority-access cap model-scoped", () => {
     expect(priorityAccessExhaustionOf({ value: "OutOfCredits", message: DAILY }, "", WED)!.scope).toBeUndefined();
   });

@@ -213,7 +213,11 @@ function dailyTurnLimitOf(
   now: Date,
 ): PriorityAccessExhaustion | null {
   const byCode = result?.value === "OutOfCredits" && result.errorCode === "TotalTurnDailyQuotaExhausted";
-  const byText = !result?.errorCode && DAILY_LIMIT_RE.test(result?.message ?? text ?? "");
+  // The refusal has always come with its errorCode, on Chathub and StreamHub. The
+  // text alone counts only when the turn didn't succeed: an answer that quotes the
+  // refusal (a tool call that edits this file, say) would otherwise 429 every
+  // chat model until 00:00 UTC, which is most of a day on a 999-turn account.
+  const byText = result?.value !== "Success" && !result?.errorCode && DAILY_LIMIT_RE.test(result?.message ?? text ?? "");
   if (!byCode && !byText) return null;
   const message = (result?.message ?? text ?? "").trim() || "TotalTurnDailyQuotaExhausted";
   return { window: "day", scope: "account", resetsAt: nextUtcMidnight(now), message };
