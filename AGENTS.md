@@ -252,8 +252,9 @@ pnpm test:live      # M365_LIVE=1; live tests that hit real M365 (uses quota)
   `M365_TRANSPORT` says (`STREAMHUB_MODELS`, `getTransportForModel`), under the paid scenario
   (`PAID_SCENARIO_TONES`), agent-less, and isn't in `meteredBudgetOf`. Don't route it over Chathub.
   The web client's own "Opus 5.5" item sends `Claude_Opus`, and its selector has no `Claude_Auto` item
-  (F177). Microsoft can start charging these turns at any time without notice: re-run the probe before
-  relying on it. See docs/hypotheses.md §62.
+  (F177; `scripts/chathub-tones.mjs` lists the selector's items with no chat turn, F178). Microsoft can
+  start charging these turns at any time without notice: re-run the probe before relying on it. See
+  docs/hypotheses.md §62.
 - **Entitlement-gated ≠ metered.** `gpt-6-think-deeper` (`Gpt_6_Reasoning`) and `claude-sonnet-5`
   (`Claude_Sonnet_5`) need the same paid
   scenario as Opus but carry **no** priority-access budget and throttle like everything else,

@@ -209,6 +209,8 @@ All run with `scripts/_probe-chat.mjs` overrides; no license needed.
 - **Cost:** 7 turns, one of them from Opus's 40-a-day budget (three if `Claude_Auto` turns are charged too).
 
 ### E-SOL56 — do the picker's "GPT-5.6 Sol" labels need a tone of their own? (H-SOL56)
+- **Answered 2026-11-23 (hypotheses §63 F179): no.** The web client's selector data gives the two items the
+  `id`s `Gpt_5_6_Chat` and `Gpt_5_6_Reasoning`. The recipe below stays for a later label that matches no tone.
 - **Hypothesis:** the reported "GPT-5.6 Sol" labels use the existing `Gpt_5_6_Chat` /
   `Gpt_5_6_Reasoning` tones, not a new `*_Sol_*` tone.
 - **Inspect offline:** `env -u M365_TRANSPORT node scripts/tone-probe.mjs --only=Gpt_56_Sol_Chat --included --dry-run`.

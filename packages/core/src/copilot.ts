@@ -123,8 +123,11 @@ const MODEL_TONES: Record<string, string> = {
   // the included scenario on premium and non-premium accounts alike (#23,
   // tone-probe 2026-10-02, 4/4 + 2/2), so it stays out of PAID_SCENARIO_TONES.
   // What depends on the account is the tool agent — see
-  // PREMIUM_ONLY_AGENT_TONES. `Gpt_6_Sol_Chat` is accepted too but self-IDs
-  // as the GPT-5 chat model on both accounts, agent or not, so it isn't mapped.
+  // PREMIUM_ONLY_AGENT_TONES. `Gpt_6_Sol_Chat` is accepted too and unmapped: on
+  // the included scenario it self-IDs as the GPT-5 chat model on both accounts,
+  // agent or not; on the paid scenario and over StreamHub's `officeweb` it
+  // self-IDs as GPT-6 reasoning, and the web client's "GPT-6" item sends it
+  // (docs §63 F179, F180, H63a).
   "gpt-6-sol": "Gpt_6_Sol_Reasoning",
 
   // GPT-6.1 Sol ("GPT-6.1 Sol" in the web client). Routed like GPT-6 Sol: the
