@@ -7544,6 +7544,16 @@ throttle (F13) and started degradation backoff (level 1, pacing new turns for ~9
 gets names the scenario. `M365_SCENARIO=OfficeWebIncludedCopilot` makes StreamHub serve the account
 (F169, §49 F145). Over Chathub the proxy uses `officeweb` only when `M365_SCENARIO` names it.
 
+**Shipped (#150):** `progressOnlyTurn` in `handler.ts` recognises this turn (`Success`, no error code,
+no text, the last bot origin `EarlyProgress`) on an agent-less chat turn off the included scenario
+(`getTurnRouting`), and the handler stops there with a 502 `scenario_not_served` that names
+`M365_SCENARIO=OfficeWebIncludedCopilot`. It doesn't call `noteOutcome(true, …)`, and the empty-reply
+path re-checks the tool agent only for a turn that carried it. The same three requests, on the same
+account at 02:32–02:33Z: 1 turn each, 2.3–2.8 s (they took 3 turns and 15–24 s before), with no "Please
+continue.", no agent re-check and no degradation backoff in the log. Under
+`M365_SCENARIO=OfficeWebIncludedCopilot` the three answered (200), and on a premium account under
+`officeweb` too, without the check firing.
+
 ### F171 — the paid scenario on a non-premium account: no `InvalidCopilotLicense` either, and every tone the proxy routes there gets its model refusal 🟢 (n=1 per tone)
 §22 F46 (Oct 1) found every tone tried on `OfficeWebPaidCopilot` (`Gpt_5_6_Chat`, `Claude_Sonnet`,
 `Claude_Opus`, agent attached) refused with `ForbiddenRequest` / `InvalidCopilotLicense`. On the F167

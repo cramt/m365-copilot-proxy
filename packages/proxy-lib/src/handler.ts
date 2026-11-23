@@ -9,6 +9,8 @@ import {
   createLogger,
   trunc,
   getToneForModel,
+  getTurnRouting,
+  INCLUDED_SCENARIO,
   requestUsesAgent,
   isPremiumOnlyModel,
   noteAgentRouteDead,
@@ -542,6 +544,19 @@ function turnLimit(pool: SessionPool, model: string, chat = true): number {
  *  §47 F128; Chathub untested). */
 function turnFailed(stream: { result?: { value: string } | null; turnState?: string | null }): boolean {
   return stream.result?.value === "InternalError" && stream.turnState === "Failed";
+}
+
+/** M365 ended the turn `Success` without answering: no text, no error code, and
+ *  no bot message after its early progress line ("Sorting it out…"). It is all a
+ *  non-premium account gets, on either transport, for a model without a licence
+ *  gate of its own under a scenario the account isn't licensed for: `officeweb`
+ *  (StreamHub's default) or the paid scenario. Sent again it comes back the same
+ *  (11 of 11 turns over StreamHub, 5 of 5 over Chathub, Nov 23 2026; hypotheses
+ *  §61 F170, F171, issue #150). */
+function progressOnlyTurn(stream: TurnStream): boolean {
+  return stream.result?.value === "Success" && !stream.result.errorCode &&
+    !stream.hasContent && !stream.fullText && (stream.images?.length ?? 0) === 0 &&
+    !stream.reasoning && stream.contentOrigin === "EarlyProgress";
 }
 
 /** Could the head of a live stream still be that canned text? Like
@@ -1410,6 +1425,19 @@ export async function handleChatCompletion(
         return { error: jsonResponse(502, { error: { message: failure, type: "upstream_error" } }) };
       }
 
+      // A scenario the account isn't licensed for: M365 ends the turn `Success`
+      // with nothing but a progress line, and does the same to every retry.
+      // Before #150 this went down the empty-reply path below: the prompt sent
+      // again and a "Please continue.", a 502 that blamed a content filter, and
+      // the empties counted as the thread-rate throttle (degradation backoff).
+      // Agent-less turns only: an agent's empty reply keeps the deleted-agent
+      // recovery below. Not counted toward the backoff: it isn't a throttle.
+      const routing = chat ? getTurnRouting(model) : null;
+      if (routing && !useToolAgent && routing.scenario !== INCLUDED_SCENARIO && progressOnlyTurn(copilotStream)) {
+        log.info(`${model} got no answer under ${routing.scenario} (${routing.transport}): a progress message and nothing else — 502, no retry (#150)`);
+        return { error: scenarioNotServedResponse(model, routing) };
+      }
+
       // A part M365 didn't acknowledge, and none of the above recovers it. It
       // can't be continued: the conversation holds part of a turn (failedRequest).
       if (refused) {
@@ -1440,7 +1468,10 @@ export async function handleChatCompletion(
         // A dead/deleted agent returns an instant empty reply (throttle: null).
         // Re-resolve the agent once before retrying so a long-lived host
         // self-heals from the deleted-agent trap instead of looping on empties.
-        if (!agentRefreshed) {
+        // Only when this turn carried the agent: for an agent-less one the
+        // re-check cost a Power Platform round trip, and the agent ID it
+        // returned counted as a change, so the whole prompt went again (#150).
+        if (!agentRefreshed && useToolAgent) {
           agentRefreshed = true;
           const agentChanged = await session.refreshAgent();
           if (agentChanged) {
@@ -2122,6 +2153,23 @@ function emptyResponseResponse(throttle: { current: number; max: number } | null
     error: {
       message: `M365 Copilot returned an empty response${detail} — likely a content filter, an invalid agent/session, or a transient upstream error.`,
       type: "upstream_empty_response",
+    },
+  });
+}
+
+/** A scenario the account isn't licensed for answered with nothing but a progress
+ *  line (progressOnlyTurn). Retrying gets the same, so say what to change. */
+function scenarioNotServedResponse(model: string, routing: { scenario: string; transport: string }): Response {
+  const via = routing.transport === "streamhub" ? "StreamHub" : "Chathub";
+  return jsonResponse(502, {
+    error: {
+      message:
+        `M365 Copilot gave no answer to ${model} under the ${routing.scenario} scenario over ${via}: the turn ` +
+        `ended as a success with only a progress message, no text and no error. A non-premium account gets ` +
+        `this under a scenario it isn't licensed for. Set M365_SCENARIO=${INCLUDED_SCENARIO}, the scenario ` +
+        `such an account is served under.`,
+      type: "upstream_error",
+      code: "scenario_not_served",
     },
   });
 }

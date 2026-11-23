@@ -107,7 +107,7 @@ hypothesis that teaches us something.
   proxy's values over StreamHub (`getStreamHubScenario()`, `streamhub11`,
   `ConciseV2`): the proxy doesn't use Chathub's included/paid split there. A non-premium account gets
   no answer under that pair (`officeweb`): since Nov 23 2026 a tone without its own licence gate gets
-  an empty `Success` turn, which the proxy reports as a 502 `upstream_empty_response`, and a Claude or
+  an empty `Success` turn, which the proxy answers with a 502 `scenario_not_served`, and a Claude or
   GPT-6.x tone gets its model refusal (`InvalidCopilotLicense` before, docs/hypotheses.md §61 F170).
   There, run StreamHub probes with `M365_SCENARIO=OfficeWebIncludedCopilot`, which the helper's own
   default reads too.
@@ -345,6 +345,13 @@ pnpm test:live      # M365_LIVE=1; live tests that hit real M365 (uses quota)
   agent route, which has no text. The live stream holds the text back. `usage`
   carries estimated tokens (4 UTF-8 bytes a token; `M365_REPORT_USAGE=0` for zeros), so a client sees its
   context fill and compacts.
+- **An empty `Success` off the included scenario is the account's licence, not a transient.** Under
+  `officeweb` or the paid scenario a non-premium account gets `Success`, no text and only an EarlyProgress
+  message for a model without its own licence gate, every time (docs/hypotheses.md §61 F170, F171).
+  `progressOnlyTurn` in `handler.ts` stops there with a 502 `scenario_not_served` that names
+  `M365_SCENARIO`. Don't send it down the empty-reply retries, and don't count it with `noteOutcome(true)`:
+  it isn't the thread-rate throttle. The empty-reply path re-checks the tool agent only for a turn that
+  carried it (#150).
 - **Cowork and Code are another service, and every turn there costs credits.** A model ID with `(cowork)` or
   `(code)` (`<model>(<backend>)[_<window>][_credit]`, `core/src/backends.ts`) runs on Copilot's agent
   runtime (`aether.ts`, API doc §14), not Chat, when `M365_BACKENDS` lists the backend (all three by

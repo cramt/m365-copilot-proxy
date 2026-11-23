@@ -538,6 +538,20 @@ export function getStreamHubScenario(): ScenarioRouting {
   };
 }
 
+/** The included scenario: the one a non-premium account is served under. */
+export const INCLUDED_SCENARIO = DEFAULT_SCENARIO;
+
+/**
+ * The transport and `scenario`/`licenseType` pair a turn for this model goes
+ * out under: StreamHub's pair (`getStreamHubScenario`) under
+ * `M365_TRANSPORT=streamhub`, the model's own (`getScenarioForModel`) on
+ * Chathub. The session logs it as its "Routing:" line.
+ */
+export function getTurnRouting(model: string): ScenarioRouting & { transport: Transport } {
+  const transport = getTransport();
+  return { transport, ...(transport === "streamhub" ? getStreamHubScenario() : getScenarioForModel(model)) };
+}
+
 /**
  * Whether this model ID is served only on a premium account (a paid Microsoft
  * 365 Copilot seat), on either path: on any other account every turn is the

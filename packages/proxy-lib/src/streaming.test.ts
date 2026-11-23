@@ -41,7 +41,9 @@ const scripted: {
   partQueue: Array<{ fullText: string; messageType?: string | null; contentOrigin?: string; apology?: boolean; result?: { value: string; errorCode?: string; message?: string }; throttle?: { current: number; max: number } | null; turnState?: string; reasoning?: string[] }>;
   /** The chain of thought a turn without a queue entry hands to `onReasoning`, piece by piece. */
   reasoning: string[];
-} = { reasoning: [], deltas: [], runs: 0, texts: [], queue: [], agentFlags: [], newConversations: 0, models: [], images: [], gate: null, signals: [], stoppedAfter: null, budgetHold: null, awaitTurnBudgetCalls: [], budgetWaits: [], convs: [], ids: 0, partQueue: [] };
+  /** How many times the handler re-checked the tool agent (refreshAgent). */
+  refreshAgents: number;
+} = { reasoning: [], deltas: [], runs: 0, texts: [], queue: [], agentFlags: [], newConversations: 0, models: [], images: [], gate: null, signals: [], stoppedAfter: null, budgetHold: null, awaitTurnBudgetCalls: [], budgetWaits: [], convs: [], ids: 0, partQueue: [], refreshAgents: 0 };
 
 vi.mock("@m365-copilot/core", async (importActual) => {
   const actual = await importActual<typeof import("@m365-copilot/core")>();
@@ -52,7 +54,7 @@ vi.mock("@m365-copilot/core", async (importActual) => {
     conversationId = `conv-${++scripted.ids}`;
     reset() {}
     newConversation() { this.conversationId = `conv-${++scripted.ids}`; this.turnCount = 0; scripted.newConversations++; }
-    async refreshAgent() { return false; }
+    async refreshAgent() { scripted.refreshAgents++; return false; }
     async run(text: string, model?: string, signal?: AbortSignal, useAgent?: boolean, images: string[] = [], waitForBudget?: () => Promise<unknown>, turn?: { onReasoning?: (delta: string) => void }) {
       if (scripted.gate) await scripted.gate;
       scripted.budgetWaits.push(waitForBudget);
@@ -139,7 +141,7 @@ const runtimeClosed: string[] = [];
 const servedBy: number[] = [];
 
 const { handleChatCompletion, SessionPool, ChatCompletionRequest } = await import("./index.js");
-const { resetAgentRoutes, resetPriorityAccessState, noteRequestOutcome, TurnBudgetHold, noteWebSearchOverflow, toneUsesWebSearch, resetWebSearchOverflow } = await import("@m365-copilot/core");
+const { resetAgentRoutes, resetPriorityAccessState, noteRequestOutcome, isDegradationBackoff, TurnBudgetHold, noteWebSearchOverflow, toneUsesWebSearch, resetWebSearchOverflow } = await import("@m365-copilot/core");
 
 // The proxy remembers a priority-access wall and degradation backoff for the
 // process; reset both between tests so one test's refusal/throttle doesn't
@@ -1501,6 +1503,98 @@ describe("Opus 4.8 on an account that can't serve it (§24, §36)", () => {
     const res = await respond(body);
     expect(res.status).toBe(502);
     expect((await res.json()).error.type).toBe("upstream_empty_response");
+  });
+});
+
+describe("A scenario the account isn't licensed for: a progress line and nothing else (#150)", () => {
+  // What a non-premium account gets for an ungated model under `officeweb` or the
+  // paid scenario: `Success`, no text, an EarlyProgress message (hypotheses §61 F170).
+  const PROGRESS_ONLY = { fullText: "", contentOrigin: "EarlyProgress", messageType: "Progress" };
+  const tools = [{ type: "function", function: { name: "bash", parameters: { type: "object", properties: { command: { type: "string" } } } } }];
+  const ENV = ["M365_TRANSPORT", "M365_SCENARIO", "M365_NO_BACKOFF", "M365_NO_AUTO_REAUTH"] as const;
+  const saved = Object.fromEntries(ENV.map((k) => [k, process.env[k]]));
+
+  beforeEach(() => {
+    for (const k of ENV) delete process.env[k]; // the backoff must be live to show it isn't started
+    scripted.refreshAgents = 0;
+  });
+  afterEach(() => {
+    for (const k of ENV) {
+      if (saved[k] === undefined) delete process.env[k];
+      else process.env[k] = saved[k];
+    }
+    scripted.queue = [];
+    noteRequestOutcome(false, "");
+  });
+
+  async function send(model: string, { stream = false, withTools = false } = {}) {
+    scripted.result = null;
+    scripted.models = [];
+    scripted.agentFlags = [];
+    scripted.queue = [PROGRESS_ONLY, PROGRESS_ONLY, PROGRESS_ONLY];
+    return respond(ChatCompletionRequest.parse({
+      model, stream, ...(withTools ? { tools } : {}),
+      messages: [{ role: "user", content: `hello ${Math.random()}` }],
+    }));
+  }
+
+  it("stops after one turn over StreamHub's default scenario, says what to set, and doesn't start the throttle backoff", async () => {
+    process.env.M365_TRANSPORT = "streamhub";
+    for (let i = 0; i < 3; i++) {
+      const res = await send("gpt-5.5");
+      expect(res.status).toBe(502);
+      const err = (await res.json()).error;
+      expect(err.code).toBe("scenario_not_served");
+      expect(err.message).toContain("under the officeweb scenario over StreamHub");
+      expect(err.message).toContain("M365_SCENARIO=OfficeWebIncludedCopilot");
+      expect(scripted.models).toEqual(["gpt-5.5"]);
+    }
+    expect(scripted.refreshAgents).toBe(0);
+    expect(isDegradationBackoff()).toBe(false);
+  });
+
+  it("…a tool request over StreamHub too, which never carries the agent there", async () => {
+    process.env.M365_TRANSPORT = "streamhub";
+    const res = await send("gpt-5.5", { withTools: true });
+    expect((await res.json()).error.code).toBe("scenario_not_served");
+    expect(scripted.agentFlags).toEqual([false]);
+  });
+
+  it("streams it as an error chunk", async () => {
+    process.env.M365_TRANSPORT = "streamhub";
+    const res = await send("m365-copilot", { stream: true });
+    expect(res.status).toBe(200);
+    const raw = await res.text();
+    const chunks = raw.split("\n").filter((l) => l.startsWith("data: ") && l !== "data: [DONE]").map((l) => JSON.parse(l.slice(6)));
+    expect(chunks.find((c) => c.error)?.error.code).toBe("scenario_not_served");
+    expect(scripted.models).toEqual(["m365-copilot"]);
+  });
+
+  it("does the same over Chathub when M365_SCENARIO names a scenario other than the included one", async () => {
+    process.env.M365_SCENARIO = "OfficeWebPaidCopilot";
+    const err = (await (await send("gpt-5.6")).json()).error;
+    expect(err.code).toBe("scenario_not_served");
+    expect(err.message).toContain("under the OfficeWebPaidCopilot scenario over Chathub");
+    expect(scripted.models).toEqual(["gpt-5.6"]);
+  });
+
+  it("keeps the empty-reply retries under the included scenario, and re-checks no agent for an agent-less request", async () => {
+    for (let i = 0; i < 3; i++) {
+      const res = await send("gpt-5.5");
+      expect((await res.json()).error.type).toBe("upstream_empty_response");
+      expect(scripted.models).toHaveLength(3);
+    }
+    expect(scripted.refreshAgents).toBe(0);
+    // The control: on this path three empty conversations do start the backoff.
+    expect(isDegradationBackoff()).toBe(true);
+  });
+
+  it("leaves a request that carries the agent on the empty-reply path, with its one agent re-check", async () => {
+    process.env.M365_SCENARIO = "officeweb";
+    const res = await send("gpt-5.5", { withTools: true });
+    expect((await res.json()).error.type).toBe("upstream_empty_response");
+    expect(scripted.agentFlags).toEqual([true, true, true]);
+    expect(scripted.refreshAgents).toBe(1);
   });
 });
 

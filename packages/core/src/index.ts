@@ -52,6 +52,8 @@ export {
   requestUsesAgent,
   getTransport,
   getStreamHubScenario,
+  getTurnRouting,
+  INCLUDED_SCENARIO,
   type Transport,
   noteWebSearchOverflow,
   toneUsesWebSearch,
