@@ -47,7 +47,7 @@ vi.mock("ws", () => ({ default: fake.FakeWs }));
 import { CopilotSession } from "./session.js";
 
 const b64 = (o: object) => Buffer.from(JSON.stringify(o)).toString("base64url");
-const TOKEN = `${b64({ alg: "none" })}.${b64({ aud: "https://substrate.office.com/sydney", iss: "test", oid: "oid-1", tid: "tid-1", exp: 9999999999 })}.sig`;
+const TOKEN = `${b64({ alg: "none" })}.${b64({ aud: "https://substrate.office.com/sydney", iss: "test", oid: "11111111-1111-1111-1111-111111111111", tid: "22222222-2222-2222-2222-222222222222", exp: 9999999999 })}.sig`;
 
 const cursor = (id: string) => ({ j: `$['${id}'].adaptiveCards[0].body[0].text`, p: -1 });
 const thought = (text: string, id = "cot-1") => ({

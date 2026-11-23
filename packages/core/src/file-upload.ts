@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { getTokenForScope } from "./auth.js";
+import { assertAccountToken } from "./account-policy.js";
 import { createLogger } from "./log.js";
 import type { Message } from "./tools.js";
 
@@ -80,6 +81,7 @@ export async function uploadFile(dataUrl: string, token?: string): Promise<FileA
   const name = safeName(rawName, mime);
   token ??= (await getTokenForScope(GRAPH_SCOPES)) ?? undefined;
   if (!token) throw new Error("no Graph token");
+  assertAccountToken(token);
   const auth = { Authorization: `Bearer ${token}` };
 
   const res = await fetch(`${GRAPH}/me/drive/special/copilotuploads:/${encodeURIComponent(name)}:/createUploadSession`, {

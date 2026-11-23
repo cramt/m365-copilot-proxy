@@ -65,7 +65,7 @@ describe("native auth cache publication", () => {
     const chat = vi.spyOn(CopilotSession.prototype, "chat").mockResolvedValue({} as never);
     const fetch = vi.fn(() => { throw new Error("unexpected network"); });
     vi.stubGlobal("fetch", fetch);
-    const model = new ModelSession({ getToken: async () => "synthetic-chat-token", useAgent: false });
+    const model = new ModelSession({ getToken: async () => `e30.${Buffer.from(JSON.stringify({ tid: "11111111-1111-1111-1111-111111111111", oid: "22222222-2222-2222-2222-222222222222" })).toString("base64url")}.sig`, useAgent: false });
     await expect(model.run("read document", "m365-copilot", undefined, false, ["data:application/pdf;base64,JVBERi0="]))
       .rejects.toMatchObject({ name: "CachePersistenceError" });
     expect(identity.serializations).toBe(1);
