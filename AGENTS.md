@@ -105,9 +105,12 @@ hypothesis that teaches us something.
   probe saves or prints: the variable changes it without a change to the probe.
   A probe that sets its own scenario, `variants` or `streamingMode` sends the
   proxy's values over StreamHub (`getStreamHubScenario()`, `streamhub11`,
-  `ConciseV2`): the proxy doesn't use Chathub's included/paid split there. A non-premium account is
-  refused under that pair (`officeweb`, `InvalidCopilotLicense`): there, run StreamHub probes with
-  `M365_SCENARIO=OfficeWebIncludedCopilot`, which the helper's own default reads too.
+  `ConciseV2`): the proxy doesn't use Chathub's included/paid split there. A non-premium account gets
+  no answer under that pair (`officeweb`): since Nov 23 2026 a tone without its own licence gate gets
+  an empty `Success` turn, which the proxy reports as a 502 `upstream_empty_response`, and a Claude or
+  GPT-6.x tone gets its model refusal (`InvalidCopilotLicense` before, docs/hypotheses.md §61 F170).
+  There, run StreamHub probes with `M365_SCENARIO=OfficeWebIncludedCopilot`, which the helper's own
+  default reads too.
 - **Quantify with the benchmark** — `scripts/bench/` (Terminal-Bench-style) scores
   real agentic coding tasks objectively, executing every tool call in a
   `--network none` Docker sandbox. To compare *any* lever (tool format, model/tone,

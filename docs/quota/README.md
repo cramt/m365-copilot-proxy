@@ -2,7 +2,10 @@
 
 Raw data behind docs/m365-copilot-api.md §7. The account is the re-zip.com work
 account, "M365 Copilot (Basic)" (`licenseType: Starter`, scenario
-`OfficeWebIncludedCopilot`).
+`OfficeWebIncludedCopilot`). Its daily turn allowance (`TotalTurnUsageDaily`) is
+50. The 50 is the study account's own number, not that of non-premium accounts in
+general: a non-premium account in another tenant gets 999 (docs/hypotheses.md §61
+F167).
 
 | File | What | Written by |
 |------|------|------------|
