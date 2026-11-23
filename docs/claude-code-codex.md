@@ -119,6 +119,9 @@ GPT models need more care ([F105](hypotheses.md), §40):
   instead of yours: `M365_FRAMING_VARIANT=relay_batch M365_NO_CODE_INTERPRETER=1 M365_NO_IMAGE_GEN=1`.
 - In Codex, don't name a GPT-5.5 model: Codex then adds its hosted `tool_search` tool, which copilot-api
   rejects. `m365/think-deeper` is the same tone under a name Codex doesn't know.
+- For Codex's commentary between steps (the sentence its own models write before a command), set
+  `M365_NARRATE=sentence`: the framings otherwise ask for the command alone, and GPT-6.2 Sol then rarely
+  writes any ([hypotheses §60 F166](hypotheses.md)).
 - For a long context, the Cowork and Code backends (on by default) read about three times as much per
   turn as Chat's GPT-6.x, at a charge to your Copilot credits on every turn:
   `m365/claude-opus-5.5(cowork)_640k_credit`, and `m365/gpt-6.2-sol-substrate(cowork)_885k_credit` while the

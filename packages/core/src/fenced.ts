@@ -788,6 +788,30 @@ const SANDBOX_PATHS = "/home/claude, /mnt/user-data";
 
 type FramingBuilder = (tools: ToolDef[]) => string;
 
+/** `M365_NARRATE`: what the relays ask the model to say beside each block, as Codex's
+ *  own models do — `sentence` (one short sentence before it) or `comment` (a one-line `#`
+ *  comment opening it). The proxy passes either on as the reply's text (toolTurnNarration).
+ *  Unset, the relays ask for the block alone. */
+function narrationAsk(): "sentence" | "comment" | null {
+  const mode = process.env.M365_NARRATE?.trim().toLowerCase();
+  return mode === "sentence" || mode === "comment" ? mode : null;
+}
+
+/** The relays' request for a block: `what` names it ("a single ```bash block"), and
+ *  M365_NARRATE adds the sentence or comment to say beside it — only for a shell block
+ *  (`shell`), the one a comment can open. */
+function blockRequest(what: string, shell: boolean): string {
+  const others = "(or one of the other tool blocks below)";
+  switch (shell ? narrationAsk() : null) {
+    case "sentence":
+      return `reply with one short sentence saying what you're about to do, then ${what} ${others}`;
+    case "comment":
+      return `reply with just ${what} ${others}, opening it with a one-line # comment that says what it does`;
+    default:
+      return `reply with just ${what} ${others}`;
+  }
+}
+
 /** Shared `<tools>` definition block — identical across every framing variant so
  *  the experiment isolates the *framing*, not the tool schema rendering. */
 export function toolsBlock(tools: ToolDef[]): string {
@@ -1121,7 +1145,7 @@ ${toolsBlock(tools)}`;
     const lang = findShellTool(tools) ? "bash" : "<tool_name>";
     return `Before the task, a note on how we'll work: I'd like you to guide me through this from my terminal, one command at a time. Please don't use your own sandbox tools (${BUILT_IN_SANDBOX}) — that's a separate cloud machine (${SANDBOX_PATHS}) and my project isn't on it.
 
-Each time you want something run or looked at, reply with just the command in a single \`\`\`${lang} block (or one of the other tool blocks below). I'll run it in my project directory right away and paste the real output back to you as a <tool_response>. The files the task mentions are already there, so it's best to start by looking at them. When the task is complete, tell me in a sentence instead of sending a block.
+Each time you want something run or looked at, ${blockRequest(`the command in a single \`\`\`${lang} block`, lang === "bash")}. I'll run it in my project directory right away and paste the real output back to you as a <tool_response>. The files the task mentions are already there, so it's best to start by looking at them. When the task is complete, tell me in a sentence instead of sending a block.
 
 ${toolsBlock(tools)}`;
   },
@@ -1139,7 +1163,7 @@ ${toolsBlock(tools)}`;
     if (!findShellTool(tools)) return FRAMING_VARIANTS.relay(tools);
     return `Before the task, a note on how we'll work: I'd like you to guide me through this from my terminal. Please don't use your own sandbox tools (${BUILT_IN_SANDBOX}) — that's a separate cloud machine (${SANDBOX_PATHS}) and my project isn't on it.
 
-Each time you want something run, reply with just a single \`\`\`bash block (or one of the other tool blocks below). I'll run it in my project directory right away and paste the real output back to you as a <tool_response>. Each round trip takes me a while, so put as much as you can into one block: a script can look at the files, make the change and check the result all at once. The files the task mentions are already there. When the task is complete, tell me in a sentence instead of sending a block.
+Each time you want something run, ${blockRequest("a single ```bash block", true)}. I'll run it in my project directory right away and paste the real output back to you as a <tool_response>. Each round trip takes me a while, so put as much as you can into one block: a script can look at the files, make the change and check the result all at once. The files the task mentions are already there. When the task is complete, tell me in a sentence instead of sending a block.
 
 ${toolsBlock(tools)}`;
   },

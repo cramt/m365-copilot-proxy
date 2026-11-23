@@ -7396,3 +7396,28 @@ reply's `content` beside the call (`toolTurnNarration`, cut at 800 characters; `
 the prose before the block or else its opening comments. Text after the block stays stripped: it's written
 before the call has run, and is often a guess at its result. A follow-up never sends it back to M365
 (`formatDeltaMessages` skips assistant messages, which M365 already holds).
+
+### F166 — asked for it, GPT-6.2 Sol writes the commentary too (`M365_NARRATE`) 🟡
+F165 passes on what a model writes beside its block, but the relays ask for "just a single ```bash block",
+and GPT-6.2 Sol, a common Chat pick in Codex, wrote neither prose nor a comment on 84 of 91 calls (F165), so
+Codex still shows bare steps. `M365_NARRATE` changes only that request: `sentence` asks for one short sentence saying what
+the model is about to do, then the block; `comment` keeps the block alone and asks for a one-line `#`
+comment opening it, which `toolTurnNarration` already passes on. Probe `scripts/narrate-probe.mjs`: a
+Codex-shaped request (a system line asking for a brief preamble, one `shell` tool), a first turn ("find the
+three largest files") and a mid-task turn (a failing `npm test` result), 2 of each per model per arm; a
+proxy with the live Windows setup (StreamHub, `relay_batch` for every model, `M365_HARNESS_PROMPT=lean`),
+arms run in turn on Nov 23, 02:14–02:24Z:
+
+| arm | GPT-6.2 Sol: commentary + call | Sonnet 5: commentary + call | no call |
+|---|---|---|---|
+| unset (control) | 0/4 | 3/4, 2 of them the retry note below | 1/8 |
+| `sentence` | 4/4 | 3/4 | 1/8 |
+| `comment` | 4/4 | 3/4 | 1/8 |
+
+GPT-6.2 Sol's sentences read like Codex's own ("I'll check the failing assertion and the code it calls."),
+its comments like a step title ("Read the failing test and the source it loads."). No arm lost a call to
+the request: the one reply without a call in each was Sonnet 5 on the mid-task turn, refusing the made-up
+history ("I'm Microsoft Copilot…") or acknowledging it and waiting, the same with the request unset. Sonnet
+5's first turns hit the damaged-command re-ask (`[math]::Round`, F111) in every arm, so its commentary there
+was "Resending with the full .NET type name…". n=4 per model per arm, two models, made-up tasks: whether
+the request costs turns or solves in a real Codex or pi session is open. Off by default, so no default moves.

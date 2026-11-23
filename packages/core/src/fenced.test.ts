@@ -787,6 +787,31 @@ describe("defaultFramingForTone", () => {
     expect(formatFencedToolDefinitions([bash, readFile], "relay_batch")).not.toBe(formatFencedToolDefinitions([bash, readFile], "relay"));
   });
 
+  describe("M365_NARRATE (what to say beside each block, §60)", () => {
+    afterEach(() => {
+      delete process.env.M365_NARRATE;
+    });
+
+    it("asks the relays for the block alone when unset", () => {
+      expect(formatFencedToolDefinitions([bash], "relay_batch")).toContain("reply with just a single ```bash block (or one of the other tool blocks below). I'll run it");
+      expect(formatFencedToolDefinitions([bash], "relay")).toContain("reply with just the command in a single ```bash block (or one of the other tool blocks below). I'll run it");
+    });
+
+    it("asks for a short sentence before the block, or a comment opening it", () => {
+      process.env.M365_NARRATE = "sentence";
+      expect(formatFencedToolDefinitions([bash], "relay_batch")).toContain("reply with one short sentence saying what you're about to do, then a single ```bash block");
+      expect(formatFencedToolDefinitions([bash], "relay")).toContain("reply with one short sentence saying what you're about to do, then the command in a single ```bash block");
+      process.env.M365_NARRATE = "comment";
+      expect(formatFencedToolDefinitions([bash], "relay_batch")).toContain("opening it with a one-line # comment that says what it does. I'll run it");
+    });
+
+    it("asks nothing extra of a shell-less toolset", () => {
+      const plain = formatFencedToolDefinitions([readFile], "relay");
+      process.env.M365_NARRATE = "sentence";
+      expect(formatFencedToolDefinitions([readFile], "relay")).toBe(plain);
+    });
+  });
+
   it("leaves every other tone on the bench-tuned baseline", () => {
     for (const tone of ["magic", "Claude_Sonnet_Reasoning", "Gpt_5_5_Reasoning", undefined]) {
       expect(defaultFramingForTone(tone)).toBeUndefined();
