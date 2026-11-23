@@ -654,6 +654,7 @@ Override with `M365_FRAMING_VARIANT` as usual. Details: [hypotheses §24, §36](
 ### StreamHub, the new web client's transport
 
 The new web client (`copilot.cloud.microsoft`) reaches Copilot over a second WebSocket, StreamHub.
+Not every user gets the new client: some users' client at the same address still uses Chathub.
 The proxy speaks both: `M365_TRANSPORT=streamhub` sends every model over StreamHub, under the web
 client's own `officeweb` scenario and without the tool agent (sent there, it isn't applied:
 [hypotheses §49 F144](docs/hypotheses.md)).

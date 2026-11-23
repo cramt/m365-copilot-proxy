@@ -103,10 +103,11 @@ than "we eyeballed one run." See §M (Methods) for the experimental rig.
   upload (F97, shipped in `file-upload.ts`)
 - §43 — a give-up no detector caught, "I can't generate files in the current session": two first-person
   English patterns catch it and nothing else in 334 replies with no tool call (F118)
-- §45 — GPT-6.2 Sol, GPT-6.2 Astra, GPT-6 Astra and Claude Fable: the picker sends only the tone (F120);
-  all four serve on both transports, GPT-6 Astra gated like GPT-6 (F121); credits, and `Claude_Fable` is
-  Fable now (F122); harness runs and what shipped (F123); whether included `gpt-6.2-*` turns spend the
-  `GPT62*` budgets (H45a, open)
+- §45 — GPT-6.2 Sol, GPT-6.2 Astra, GPT-6 Astra and Claude Fable: the picker sends only the tone, and
+  some users get a StreamHub web client while some still get a Chathub one (F120); all four serve on both
+  transports, GPT-6 Astra gated like GPT-6 (F121); credits, and `Claude_Fable` is Fable now (F122);
+  harness runs and what shipped (F123); whether included `gpt-6.2-*` turns spend the `GPT62*` budgets
+  (H45a, open)
 - §46 — M365 answers an opening prompt of about 500k characters but doesn't keep it, so the turn after a
   long replay has no context (F125); it keeps a conversation for at least 21 h, while the pool evicted
   one after 30 min, forcing that replay (F126); the fix: a 24-h pool, a lost history caught and re-sent,
@@ -6263,11 +6264,19 @@ GPT-6.2 Astra ("Uses credits") under GPT; Sonnet 5.5, Opus 5.5 and Fable 5.1 ("U
 GPT-6 Astra is gone. With the send blocked (Playwright), picking GPT-6.2 Sol sent `tone:
 Gpt_62_Sol_Reasoning` and GPT-6.2 Astra `Gpt_62_Astra_Reasoning`; no other field named a model. Picking
 Fable 5.1 sent no `tone` at all (twice): the request was the GPT ones minus the tone, and the JS loaded on
-the page has no `Claude_Fable`, so the client's Fable route couldn't be captured. The client no longer
+the page has no `Claude_Fable`, so the client's Fable route couldn't be captured. This client no longer
 opens StreamHub itself: after a `warmup` frame, a turn goes up a same-origin socket,
 `wss://copilot.cloud.microsoft/conversation/session/ws`, as `{type: "chatRequest", transportHint:
 "streamhub", body: {type: "chat_request", chatStreamRequest}}`, and the reply comes back on it. The
 proxy's direct StreamHub connection still works.
+
+**Not every user gets this client (Nov 23).** Some users get the StreamHub client above, and some still
+get a client that sends its turns over Chathub, from the same address. A HAR of one user's web client at
+`copilot.cloud.microsoft/chat`, recorded on Nov 23, holds a SignalR socket to
+`wss://substrate.office.com/m365Copilot/Chathub/<oid>@<tid>` and no `conversation/session/ws` socket. On
+that socket the client sent a `type: 4` `chat` invocation with `tone: "Gpt_6_Sol_Chat"` (GPT-6 in the
+picker) and `source: "officeweb"`, and got `update` frames and a final item with `result: Success`. So
+the page's address doesn't show which transport a user's client uses; the client's WebSocket URL shows it.
 
 ### F121 — all four serve on both transports; GPT-6 Astra is gated 🟢
 Chathub cells with `_probe-chat.mjs` (agent-less, no Bing, "Reply with the single word: pong"); StreamHub

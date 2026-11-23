@@ -25,7 +25,7 @@ If you read nothing else:
 6. Auth uses **MSAL PKCE with the `nativeclient` redirect**, which a real browser bounces to `/common/wrongplace` — you must scrape the auth code from the *navigation request*, not wait for the redirect to land.
 7. **Tool calling is not native.** It only works reliably if you create a **Copilot Studio agent** and reference it per request; otherwise M365 ignores tool instructions and answers in prose / hallucinates.
 8. M365 has a **"Disengaged" safety filter**: large or jailbreak-looking prompts get a `messageType:"Disengaged"` message with **empty content** — which is easy to mistake for rate limiting.
-9. The **new web client (`copilot.cloud.microsoft`) uses StreamHub**, a second endpoint with the same SignalR protocol but item-based framing; `M365_TRANSPORT=streamhub` makes the proxy use it (§13).
+9. The **new web client (`copilot.cloud.microsoft`) uses StreamHub**, a second endpoint with the same SignalR protocol but item-based framing; `M365_TRANSPORT=streamhub` makes the proxy use it (§13). Not every user gets the new client: some users' client at the same address still uses Chathub.
 10. The web app's **Cowork and Code tabs are a different service**: an agent runtime with a REST + SSE API, its own token scope, longer turns (2M characters on GPT) and a charge in Copilot credits on every turn. The proxy's `cowork` and `code` backends use it (§14).
 
 ---
@@ -1065,7 +1065,9 @@ from `m365.cloud.microsoft` (browser devtools → WS frames) and diff against th
 
 ## 13. StreamHub — the new web client's transport (Nov 2026)
 
-The new web client (`copilot.cloud.microsoft`) doesn't use Chathub. It talks to
+The new web client (`copilot.cloud.microsoft`) doesn't use Chathub. Not every user gets it: on Nov 23
+2026 some users' client at the same address still sent its turns over Chathub (hypotheses §45 F120).
+The new client talks to
 
 ```
 wss://substrate.svc.cloud.microsoft/m365Copilot/StreamHub/{oid}@{tid}?{query}
