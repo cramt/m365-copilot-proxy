@@ -81,6 +81,7 @@ const results = [];
 async function run(target, mode) {
   const prompt = makePrompt(target);
   const r = await oneTurn({ token, claims, text: prompt, agentId, transport: TRANSPORT, streamingMode: mode });
+  if (r.attempted === false) { console.error(`Probe not attempted: ${r.error}`); return false; }
   const a = analyze(r.fullText);
   const row = {
     target, mode, agent: USE_AGENT, transport: r.transport,
@@ -107,16 +108,17 @@ async function run(target, mode) {
 }
 
 // 1) Sweep targets at the default mode.
+let stopped = false;
 for (const t of TARGETS) {
-  await run(t, DEFAULT_MODE);
+  if (!await run(t, DEFAULT_MODE)) { stopped = true; break; }
 }
 
 // 2) Optionally sweep modes at a fixed (large) target.
-if (SWEEP_MODES) {
+if (SWEEP_MODES && !stopped) {
   console.log(`\n[out-probe] --- streamingMode sweep at target=${SWEEP_TARGET} ---`);
   for (const m of MODES) {
     if (m === DEFAULT_MODE) continue; // already covered above if in TARGETS
-    await run(SWEEP_TARGET, m);
+    if (!await run(SWEEP_TARGET, m)) break;
   }
 }
 
@@ -132,7 +134,7 @@ console.log(`\n[out-probe] === VERDICT (mode=${DEFAULT_MODE}, transport=${[...ne
 for (const r of def) console.log(`  ${r.target}: reached ${r.contiguousTo} (${r.reached_pct}%) chars=${r.chars}`);
 if (firstTrunc) {
   console.log(`[out-probe] OUTPUT CAP: first truncation at target=${firstTrunc.target}, capped near ${firstTrunc.contiguousTo} ints / ${firstTrunc.chars} chars (~${Math.round(firstTrunc.chars / 4)} tokens).`);
-} else {
+} else if (!stopped && def.length) {
   console.log(`[out-probe] No truncation up to target=${Math.max(...def.map((r) => r.target))}. Output capacity exceeds that.`);
 }
 console.log(`[out-probe] full output: ${OUT}`);

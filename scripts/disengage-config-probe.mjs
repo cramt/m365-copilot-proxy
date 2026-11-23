@@ -33,6 +33,7 @@ const rows = [];
 for (const v of VARIANTS) {
   for (let i = 0; i < REPEAT; i++) {
     const r = await oneTurn({ token, claims, text: v.text, agentId: null, tone: "magic" });
+    if (r.attempted === false) throw new Error(`Probe not attempted: ${r.error}`);
     const dea = r.scores?.dea_violation;
     rows.push({ key: v.key, transport: r.transport, disengaged: r.disengaged, dea, origin: r.contentOrigin, mtypes: r.messageTypes.join("|"), err: r.error });
     console.log(`  ${v.key.padEnd(18)} #${i + 1}  transport=${r.transport}  disengaged=${r.disengaged}  dea=${dea ?? "?"}  origin=${r.contentOrigin ?? "?"}  ${r.error ? "ERR:" + r.error : ""}`);

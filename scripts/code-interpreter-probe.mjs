@@ -81,6 +81,7 @@ const r = await oneTurn({
     if (f?.item?.messages) for (const m of f.item.messages) if (m?.messageType) seenTypes.add(`msgType:${m.messageType}`);
   },
 });
+if (r.attempted === false) throw new Error(`Probe not attempted: ${r.error}`);
 
 const out = r.fullText || "";
 const correct = out.toLowerCase().includes(EXPECTED);

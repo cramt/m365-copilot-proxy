@@ -103,6 +103,10 @@ hypothesis that teaches us something.
   `M365_TRANSPORT=streamhub`, as for the proxy) and copy an existing probe rather
   than starting from scratch. Record the result's `transport` with every turn a
   probe saves or prints: the variable changes it without a change to the probe.
+  Direct probe dispatches are counted per principal in this process, default cap 20;
+  `M365_PROBE_MAX_ATTEMPTS` sets a positive finite cap. Explicit throttling stops
+  further turns by default. Purpose-built throttle probes set their own caps and
+  opt out of the throttle latch; local refusals have `attempted: false`.
   A probe that sets its own scenario, `variants` or `streamingMode` sends the
   proxy's values over StreamHub (`getStreamHubScenario()`, `streamhub11`,
   `ConciseV2`): the proxy doesn't use Chathub's included/paid split there. A non-premium account gets

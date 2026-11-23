@@ -33,6 +33,7 @@ mkdirSync("scripts/code-interp-out", { recursive: true });
 const token = await getToken();
 const claims = decodeJwt(token);
 const r = await oneTurn({ token, claims, agentId: null, optionsSets: CODE_INTERP, extraAllowed: ["GeneratedCode", "GenerateContentQuery", "Progress"], text: prompt, timeoutMs: 150000 });
+if (r.attempted === false) throw new Error(`Probe not attempted: ${r.error}`);
 const out = r.fullText || "";
 const fp = `scripts/code-interp-out/rawip2-${new Date().toISOString().replace(/[:.]/g, "-")}.txt`;
 writeFileSync(fp, out);

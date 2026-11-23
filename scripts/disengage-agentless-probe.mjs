@@ -53,6 +53,7 @@ for (const m of modes) {
     // Fresh convId per call so each is an independent turn-1.
     const text = formatMessages([{ role: "user", content: TASK }], BENCH_TOOLS, "auto", crypto.randomUUID());
     const r = await oneTurn({ token, claims, text, agentId: m.aid, tone: "magic" });
+    if (r.attempted === false) throw new Error(`Probe not attempted: ${r.error}`);
     const hasFence = FENCE.test(r.fullText || "");
     transports.add(r.transport);
     summary[m.key].n++; if (r.disengaged) summary[m.key].dis++; if (hasFence) summary[m.key].fence++;

@@ -88,6 +88,7 @@ const hitsBefore = (() => { try { return readFileSync("scripts/sentinel-hits.log
 
 console.log(`[proxy] tunnel=${TUNNEL}`);
 const r = await oneTurn({ token, claims, agentId: null, optionsSets: CODE_INTERP, extraAllowed: ["GeneratedCode", "GenerateContentQuery", "Progress"], text: prompt, timeoutMs: 150000 });
+if (r.attempted === false) throw new Error(`Probe not attempted: ${r.error}`);
 const out = r.fullText || "";
 
 const stamp = new Date().toISOString().replace(/[:.]/g, "-");

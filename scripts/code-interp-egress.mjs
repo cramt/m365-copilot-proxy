@@ -32,6 +32,7 @@ const hitsBefore = (() => { try { return readFileSync("scripts/sentinel-hits.log
 
 console.log(`[egress] tunnel=${TUNNEL} sentinel=${SENTINEL}`);
 const r = await oneTurn({ token, claims, agentId: null, optionsSets: CODE_INTERP, extraAllowed: ["GeneratedCode", "GenerateContentQuery", "Progress"], text: prompt, timeoutMs: 120000 });
+if (r.attempted === false) throw new Error(`Probe not attempted: ${r.error}`);
 const out = r.fullText || "";
 
 const hitsAfter = (() => { try { return readFileSync("scripts/sentinel-hits.log", "utf8"); } catch { return ""; } })();

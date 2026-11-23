@@ -122,6 +122,7 @@ for (const name of pick) {
     transport: TRANSPORT, ...route, timeoutMs: 180000,
     onFrame: (f) => frames.push(f),
   });
+  if (r.attempted === false) { console.error(`Probe not attempted: ${r.error}`); break; }
   // Distinct bot messages (last snapshot per messageId wins), from Chathub's
   // `update` invocations or StreamHub's `message_part` items.
   const byId = new Map();
