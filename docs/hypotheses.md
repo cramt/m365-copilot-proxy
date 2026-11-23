@@ -3579,6 +3579,11 @@ refused, but unmeasured; (b) what the proxy does with it. It only special-cases 
 `gpt-6-think-deeper` on a non-premium account probably return the licence message to the client as
 a 200 "answer". That's the same failure class as the Opus quota refusal (F27). Untested.
 
+**Update (Nov 23, §61 F171):** agent-less on the same kind of account, the paid scenario no longer sends
+`InvalidCopilotLicense`: `Claude_Opus`, `Claude_Sonnet` and `Claude_Sonnet_5` got
+`ClaudeUnavailableForLicense`, `Gpt_6_Reasoning` and `Gpt_6_Astra_Reasoning`
+`PremiumModelUnavailableForLicense`, and `Gpt_5_6_Chat` an empty `Success` turn (n=1 each).
+
 ### F47 — agent-less GPT-6 needs `relay`: baseline 0/30, relay 30/30 🟢
 **Trigger.** With the #41 routing in place, `proxy-verify.mjs --tools --multiturn
 --model=gpt-6-think-deeper` on the default `baseline` framing returned no tool call. GPT-6 had run
@@ -6773,6 +6778,12 @@ So a non-premium seat isn't licensed for `officeweb`, as for the paid scenario (
 `m365-copilot`) such an account got HTTP 200 with the refusal as the answer (`finish_reason: stop`);
 with `M365_SCENARIO=OfficeWebIncludedCopilot` the same request answered "4".
 
+**Update (Nov 23, §61 F170):** under `officeweb`, a non-premium account's turn now ends as a `Success`
+with no text on either transport, not with `InvalidCopilotLicense` (StreamHub 11 of 11 turns, Chathub 4
+of 4 with `Premium` and with `Starter`; `Gpt_5_5_Chat` and `magic`); a Claude or GPT-6.x tone gets its
+model refusal instead. Through the proxy the request above now gets HTTP 502 `upstream_empty_response`
+after 3 turns, not the refusal as its answer.
+
 `tone-probe`, `agent-tone-probe` and `sonnet5-native-tools-probe` take that variable over StreamHub
 (`getStreamHubScenario()`). The helper's own StreamHub default didn't, so `code-interpreter-probe` and
 `output-ceiling-probe` couldn't leave `officeweb`: with `M365_SCENARIO` set, `code-interpreter-probe` was
@@ -7421,3 +7432,152 @@ history ("I'm Microsoft Copilot…") or acknowledging it and waiting, the same w
 5's first turns hit the damaged-command re-ask (`[math]::Round`, F111) in every arm, so its commentary there
 was "Resending with the full .NET type name…". n=4 per model per arm, two models, made-up tasks: whether
 the request costs turns or solves in a real Codex or pi session is open. Off by default, so no default moves.
+
+## 61. Nov 22–23 2026 — `TotalTurnUsageDaily` on other accounts: 999 a day, none on a premium account
+
+The usage-limit study (API doc §7, `docs/quota/`) measured 50 turns a day on a Basic account
+(`licenseType: Starter`) in one tenant. The debug logs of proxies run on other accounts had never shown
+`TotalTurnUsageDaily` or `TotalTurnDailyQuotaExhausted`. Do the key and the refusal exist on other
+accounts, and with what allowance?
+
+**Prediction, from the study:** every turn's `throttling.metering` carries `TotalTurnUsageDaily`, which
+reads 49 after the first turn of the UTC day, and at 0 the next turn is refused with `OutOfCredits` /
+`TotalTurnDailyQuotaExhausted`. Falsified if the key is missing, or if the first turn of a UTC day reads
+anything but 49.
+
+### F167 — a non-premium account in another tenant gets 999 turns a day; a premium account has no such key 🟢
+The probe: one turn through `_probe-chat.mjs` (Chathub, `OfficeWebIncludedCopilot` + `Starter`,
+`Gpt_5_5_Chat`, agent-less, "Reply with the single word pong."), printing the final item's whole
+`throttling` block; service version 1.0.03611.67938.
+- **A non-premium account**, in a tenant other than the study's: a 48-key map. 47 keys equal the study's
+  map value for value (`LLMOnly` 100, `ReasoningModelTurnUsage` 10, `FileReference` 999, …).
+  `TotalTurnUsageDaily` read 998 at 23:29Z, 997 at 23:31Z, 996 at 23:34Z (through the proxy at `ad001f4`,
+  as `usage.x_m365_total_turns_daily_remaining`) and 995 at 23:59:20Z. At 00:00:16Z it read **998**: the
+  counter resets at 00:00 UTC (between 23:59:24Z and 00:00:16Z), and the first turn of the day reads 998,
+  so the account's allowance is **999 turns a day**, not 50.
+- Follow-up turns count. Through the proxy (`gpt-5.5`, agent-less, one request at a time), one
+  conversation's 50 turns took it from 997 to 948 (`x_m365_conversation_messages` 1 → 50).
+- **A turn can report a stale value.** Of 120 turns through the proxy (00:01–00:26Z on 2026-11-23), 12
+  read higher than a value already reported and 1 repeated the reading before it: 981 between 951 and
+  949, 946 between 936 and 933, 904 between 902 and 900, and nine more. The readings return to the
+  line after each one (the 100th turn read 898, 99 below the first), so the count drops by 1 per turn
+  and only the reading lags. Frame dumps of the first 102 turns show nothing in the final item that
+  separates a stale reading from a current one: the same `serviceVersion`, the same 47 other keys, and
+  a `conversationTransferToken` that holds only `type` and `conversationId`. A client should keep the
+  lowest value of the UTC day. The study's 54 nonzero readings have one repeat (34, 34).
+- **A premium account:** an included-scenario turn's map has 5 keys (`DeepResearch` and the four
+  `GPT62SolQuery*` keys), where §27 F67 saw no map at all on Oct 6; a paid-scenario turn's
+  (`OfficeWebPaidCopilot` + `Premium`) has 26. Neither has `TotalTurnUsageDaily` (n=1 each, 2026-11-22
+  23:30Z).
+
+So 50 is the study account's allowance, not M365's: the allowance differs between accounts, and a premium
+account's turns don't report one.
+
+### F168 — why the debug logs never showed the key 🟢
+Three reasons, and any one of them is enough:
+- `M365_DEBUG=1` writes every WS frame cut to 500 characters (`trunc(raw, 500)` in `session.ts`). The
+  final item's `throttling` comes after its `messages` array, so `metering` never reaches `debug.log`.
+  On the proxy above, `grep TotalTurn` found nothing in its debug log after the turn that reported 996,
+  while that turn's frame dump (`M365_DUMP_FRAMES=1`) has the key. `M365_TRACE=1` logs frames whole, and
+  `scripts/quota-log.mjs` needs that.
+- A premium account's map doesn't carry the key (F167).
+- Frame dumps kept from non-premium accounts outside the study's tenant hold no turn with a `metering`
+  map after 2026-10-24 (40 keys then, without `TotalTurnUsageDaily`). Their turns from Nov 20 ran on
+  StreamHub, which carries no metering at all (API doc §7), or were Claude licence refusals
+  (`ClaudeUnavailableForLicense`), which carry no map either.
+
+### H61a — does a 999-turn account get `TotalTurnDailyQuotaExhausted` at 0? 🔴
+Not settled. A run that spent the F167 account's allowance through the proxy (`M365_AVOID_THROTTLING=1`,
+`gpt-5.5`, agent-less, 50 turns per conversation, one request at a time) was stopped at 00:26Z on
+2026-11-23 after 120 turns, every one answered, with the counter at 879. In its last 30 turns the
+proxy's pacing allowed one turn every ~37 s, so reaching 0 takes about 9 more hours, and if H61a holds
+the account then has no chat until 00:00 UTC.
+
+### F169 — StreamHub's included scenario serves a non-premium account in either tenant 🟢 (n=1 per tenant)
+Does StreamHub separate the study's tenant from the F167 account's? On the study's account, at 0, a
+StreamHub turn under `OfficeWebIncludedCopilot` got the daily-limit refusal (`OutOfCredits` /
+`TotalTurnDailyQuotaExhausted`, `zero-streamhub-included` in `docs/quota/direct.jsonl`); its other
+StreamHub turn (`zero-streamhub`, whose row doesn't record the scenario) got `InternalError` and "Sorry,
+I wasn't able to respond to that". On the F167 account at 00:40Z (`Gpt_5_5_Chat`, agent-less, "Reply
+with the single word pong.", through `_probe-chat.mjs`), StreamHub under `OfficeWebIncludedCopilot` +
+`Starter` answered "pong" in 6.0 s, with no metering. So under the included scenario StreamHub serves a
+non-premium account in either tenant, and StreamHub does not separate them.
+
+### F170 — `officeweb` now gives a non-premium account an empty turn, or a gated tone's model refusal, and the proxy reports an empty reply 🟢 (n=17)
+§49 F145 (Nov 20) found a non-premium account refused under `officeweb` on either transport and with
+either `licenseType`, with `ForbiddenRequest` / `InvalidCopilotLicense` and a licence message. Through
+the proxy over StreamHub, whose default pair is `officeweb` + `Premium`, the message came back as the
+answer (HTTP 200). On the F167 account on 2026-11-23 the scenario sent no `InvalidCopilotLicense` at
+all, on either transport: a tone without its own licence gate got an empty turn, and a Claude or GPT-6.x
+tone got its model refusal.
+- **StreamHub, `officeweb` + `Premium`:** 11 of 11 turns (`Gpt_5_5_Chat` and `magic`, with and without
+  tools) went `request_pending`, `request_start`, one bot message (EarlyProgress's "Sorting it out…"),
+  the conversation counter, `answer_complete`, and `request_end` with `outcome: {category: "Success"}`:
+  no answer text and no error code. 2 were direct probes (00:40–00:41Z, 2.9 and 3.2 s); 9 came from the
+  three requests through the proxy below.
+- **Chathub, `officeweb` + `Premium` and `officeweb` + `Starter`:** 4 of 4 direct turns (01:44Z,
+  `Gpt_5_5_Chat` and `magic` with each, 2.6–4.0 s) ended with `result: {value: "Success"}` and no
+  `errorCode`. The only bot messages were an EarlyProgress one ("Queuing things up…", "Lining things
+  up…", …) and an empty `ReferencesListComplete` one. Unlike the StreamHub turns, the final item carries
+  the metering map, `TotalTurnUsageDaily` included.
+- **StreamHub, `officeweb` + `Premium`, a gated tone:** `Claude_Sonnet` got `ForbiddenRequest` /
+  `ClaudeUnavailableForLicense` and `Gpt_61_Sol_Reasoning` got `ForbiddenRequest` /
+  `PremiumModelUnavailableForLicense` (01:52Z, direct, 2.5 and 2.2 s, a `request_end` and no other
+  item): the refusals these tones get on the included scenario (§49 F146).
+
+The three requests through the proxy ran at 01:09–01:10Z (`ad001f4`, in-process through `createApp()`
+with the server's defaults, so with the tool agent on, `M365_TRANSPORT=streamhub` without
+`M365_SCENARIO`, `M365_AVOID_THROTTLING=1`, one at a time):
+
+| request | HTTP | what the client got |
+|---|---|---|
+| `m365-copilot`, no tools (F145's request) | 502 after 24 s | `upstream_empty_response`: "M365 Copilot returned an empty response (throttle 3/600) — likely a content filter, an invalid agent/session, or a transient upstream error." |
+| `gpt-5.5`, streamed | 200, 15 s | a role chunk, an empty delta, then the same message as an error chunk before `[DONE]` |
+| `gpt-5.5`, `bash` tool | 502 after 15 s | the same as the first |
+
+Each request spent 3 turns in one conversation. After the first empty reply the proxy re-checked the
+tool agent through Power Platform, as its empty-reply path does for a deleted agent (3–11 s, logged as
+"Cached agent instructions stale (8dd4e74e != 8dd4e74e)"), although the requests ran agent-less. The
+agent ID it got back counted as a change, so it re-sent the whole prompt; the second empty reply got
+"Please continue.". After the third request the proxy took the empty replies for the thread-rate
+throttle (F13) and started degradation backoff (level 1, pacing new turns for ~90 s). Nothing the client
+gets names the scenario. `M365_SCENARIO=OfficeWebIncludedCopilot` makes StreamHub serve the account
+(F169, §49 F145). Over Chathub the proxy uses `officeweb` only when `M365_SCENARIO` names it.
+
+### F171 — the paid scenario on a non-premium account: no `InvalidCopilotLicense` either, and every tone the proxy routes there gets its model refusal 🟢 (n=1 per tone)
+§22 F46 (Oct 1) found every tone tried on `OfficeWebPaidCopilot` (`Gpt_5_6_Chat`, `Claude_Sonnet`,
+`Claude_Opus`, agent attached) refused with `ForbiddenRequest` / `InvalidCopilotLicense`. On the F167
+account on 2026-11-23 at 01:49–01:51Z (Chathub, `OfficeWebPaidCopilot` + `Premium`, agent-less, direct
+through `_probe-chat.mjs`):
+
+| tone | outcome |
+|---|---|
+| `Claude_Opus`, `Claude_Sonnet` (Sonnet 5.5 here), `Claude_Sonnet_5` | `ForbiddenRequest` / `ClaudeUnavailableForLicense`, "Claude isn't available with your current license…", 1.7–1.9 s, no metering |
+| `Gpt_6_Reasoning`, `Gpt_6_Astra_Reasoning` | `ForbiddenRequest` / `PremiumModelUnavailableForLicense`, "This model requires a Premium license…", 1.7–1.9 s, no metering |
+| `Gpt_5_6_Chat` | `Success` with no text and no `errorCode`, F170's EarlyProgress and empty `ReferencesListComplete` messages, 2.5 s, with the metering map |
+
+So the paid scenario treats a non-premium account the way `officeweb` now does (F170): a tone with its
+own licence gate gets the refusal it gets on the included scenario, and a tone without one gets an empty
+turn. The five tones in the first two rows are all the tones the proxy routes to the paid scenario
+(`PAID_SCENARIO_TONES`, and `Claude_Sonnet` for the Sonnet 5.5 model IDs), so by default it meets the
+model refusal there (§49 F146), not the empty turn. The proxy sends an ungated tone there, such as
+`gpt-5.6`'s `Gpt_5_6_Chat`, only under `M365_SCENARIO=OfficeWebPaidCopilot`.
+
+### F172 — StreamHub turns and empty turns don't lower the counter on the F167 account either 🟢
+Day 2 of the study (API doc §7, 193d6c6) found StreamHub turns and licence refusals free on the study's
+account. On the F167 account the counter stood at 878 after the spending run (998 after the day's first
+turn, then 120 Chathub turns; H61a). Between 00:40Z and 01:49Z it then took 12 StreamHub turns (1
+answered under `OfficeWebIncludedCopilot`, 11 empty under `officeweb`; F169, F170), 4 empty Chathub
+turns under `officeweb`, and on the paid scenario 1 licence refusal and 1 empty turn (F171). The 5
+Chathub turns with a metering map read 878, 878, 992, 878 and 878, so none of those 18 turns lowered it.
+The 992 was a stale reading: the value after the day's 6th turn, at 00:01:20Z, about 100 minutes earlier
+(the stale readings in F167 lagged by up to 31 turns).
+
+### H61b — does the tenant set the allowance, through its consumptive-billing setup? 🔴
+The study's tenant has the consumptive-billing flags on in its loki config (`PLGSDKConsumptiveBilling`,
+`EnableConsumptiveBillingCostCommand`, `EnableConsumptiveBillingCreditRequestScenarios`; API doc §7),
+and its Basic account gets 50 turns a day. The F167 account, in another tenant, gets 999, and its other
+47 metering keys hold the same values as the study's. Is the 50 a setting of the study's tenant, and are
+those flags what turn it on? Falsified if an account in a tenant with the flags off gets 50, or an
+account in a tenant with them on gets 999. Probe: read the same three flags in the loki config of a
+tenant whose account gets 999.
