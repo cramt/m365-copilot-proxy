@@ -564,13 +564,27 @@ export function getTransportForModel(model: string): Transport {
  * Sol with `InputTokenLimitExceeded`, as Chathub does (§39 F105), and serves it
  * under `officeweb`. The price is the model-ID distinctions that ride on the
  * scenario: under `officeweb` `Claude_Sonnet` is Sonnet 5.5 (2026-11-11, §40).
+ * With Work IQ off (workIqEnabled) it is the paid scenario, as the web client's.
  * `M365_SCENARIO` / `M365_LICENSE_TYPE` win, as on Chathub.
  */
 export function getStreamHubScenario(): ScenarioRouting {
   return {
-    scenario: process.env.M365_SCENARIO ?? "officeweb",
+    scenario: process.env.M365_SCENARIO ?? (workIqEnabled() ? "officeweb" : PAID_SCENARIO),
     licenseType: process.env.M365_LICENSE_TYPE ?? PAID_LICENSE_TYPE,
   };
+}
+
+/**
+ * `M365_WORK_IQ=0` sends StreamHub turns as the web client does with its Work IQ
+ * switch off: under the paid scenario (getStreamHubScenario) and without the
+ * built-in BizChat entry (`bizchat-as-gpt-scenario`, session.ts). With Work IQ on,
+ * the client's default and the proxy's, M365 searches the user's work files
+ * (OneDrive, SharePoint) on its own and answers from them, other people's
+ * documents included (hypotheses §64 F182). On unless set to 0/off/false.
+ */
+export function workIqEnabled(): boolean {
+  const v = process.env.M365_WORK_IQ?.trim().toLowerCase();
+  return !(v === "0" || v === "off" || v === "false");
 }
 
 /** The included scenario: the one a non-premium account is served under. */

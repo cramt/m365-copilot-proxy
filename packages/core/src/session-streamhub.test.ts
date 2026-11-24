@@ -111,6 +111,16 @@ describe("CopilotSession over StreamHub", () => {
     expect(req.gpts).toEqual([{ id: "bizchat-as-gpt-scenario", source: "BuiltInAgents" }]);
   });
 
+  it("leaves out the BizChat entry under M365_WORK_IQ=0, as the web client's Work IQ switch does (§64 F182)", async () => {
+    process.env.M365_WORK_IQ = "0";
+    try {
+      const { items } = await turn(new CopilotSession(), [restate("a"), part({ w: "one" }), end]);
+      expect(items[1].chatStreamRequest).not.toHaveProperty("gpts");
+    } finally {
+      delete process.env.M365_WORK_IQ;
+    }
+  });
+
   it("subscribes to the same topic with action create on every turn, keeps the conversation, and skips its replay", async () => {
     const session = new CopilotSession();
     const first = await turn(session, [restate("a"), part({ w: "one" }), end]);

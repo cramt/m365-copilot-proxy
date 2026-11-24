@@ -122,6 +122,8 @@ GPT models need more care ([F105](hypotheses.md), §40):
 - For Codex's commentary between steps (the sentence its own models write before a command), set
   `M365_NARRATE=sentence`: the framings otherwise ask for the command alone, and GPT-6.2 Sol then rarely
   writes any ([hypotheses §60 F166](hypotheses.md)).
+- To keep M365 from searching your OneDrive and SharePoint on its own and answering from those files
+  instead of the ones Codex reads, set `M365_WORK_IQ=0` (premium accounts; [hypotheses §64 F182](hypotheses.md)).
 - For a long context, the Cowork and Code backends (on by default) read about three times as much per
   turn as Chat's GPT-6.x, at a charge to your Copilot credits on every turn:
   `m365/claude-opus-5.5(cowork)_640k_credit`, and `m365/gpt-6.2-sol-substrate(cowork)_885k_credit` while the

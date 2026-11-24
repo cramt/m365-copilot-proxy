@@ -7852,7 +7852,7 @@ over Chat had a sentence beside each of its 4 calls. What else reached Codex as 
 
 `narration.test.ts`, and the three paths in `streaming.test.ts`.
 
-### H64a — does M365 Chat search the user's own files on a tool turn? 🔴
+### H64a — does M365 Chat search the user's own files on a tool turn? 🟢
 F181's citation named a file the request never mentioned, in the folder where Cowork had stored the
 documents earlier that night. If M365 retrieves work files on its own, a Codex session on Chat models reasons
 from OneDrive copies as well as the local folder, which the proxy never asked for. The debug log keeps
@@ -7861,3 +7861,28 @@ a Chat tool turn that names documents the user keeps in OneDrive, then the frame
 messages, `sourceAttributions`. If they are there, try the levers that might turn it off (the web client's
 Work/Web switch, `plugins`, `optionsSets`, `entityAnnotationTypes`, H8.11). Falsified if a turn that
 cites such a file shows no search in its frames.
+**Answered: yes (F182).** The proxy's StreamHub turns were the web client's with its Work IQ switch on.
+
+### F182 — the proxy's StreamHub turns were Work IQ turns; `M365_WORK_IQ=0` sends them with it off 🟢
+Probe (Nov 24, premium account, StreamHub, `M365_DUMP_FRAMES=1`): a GPT-6.2 Sol tool turn asking to review a
+project's design notes "in my OneDrive and in the docs folder here". Its chain of thought said it was searching
+OneDrive, and `sourceAttributions` named two Word documents on a team site, one last edited by someone else;
+the reply's sentence was built from them.
+
+The web client (copilot.cloud.microsoft, Chat mode) sends its turns over `wss://copilot.cloud.microsoft/conversation/session/ws`
+as `{type: "chatRequest", transportHint: "streamhub", body: {type: "chat_request", chatStreamRequest}}`,
+after a `warmup` frame; both were read off the page and held back. With its **Work IQ** switch on (the
+default) the request carries `gpts: [{id: "bizchat-as-gpt-scenario", source: "BuiltInAgents"}]` and 130
+enterprise connectors under `message.clientPreferences.executionControls`, and the warmup's
+`sydneyConfig.scenarioName` is `officeweb`. With it off: no `gpts`, no connectors, eight web optionsSets
+(`cwc_flux_v3_prompt_v3`, `web_search_citations_answer_cards`, …) in place of seven work ones, and
+`scenarioName: "OfficeWebPaidCopilot"`. The proxy sent the switch-on shape: `officeweb` and the BizChat entry.
+
+What stopped the search, the same probe each time: `optionsSets: ["nosearchall"]` (H8.9's Bing switch), no;
+the BizChat entry left out, no; that plus the web optionsSets, no; the paid scenario without the entry, yes:
+GPT-6.2 Sol 2 of 2 and Sonnet 5 1 of 1 had no attributions and wrote a local command for the notes, and
+Sonnet 5's chain of thought said "I'm checking whether I actually have an office365 search tool, since I
+don't see one". `M365_WORK_IQ=0` sends StreamHub turns that way (`getStreamHubScenario`, `session.ts`); it
+is off by default. Not measured: whether a metered model (Opus 5.5, Sonnet 5.5, GPT-6.1 Sol) spends its
+budget differently under the paid scenario, a non-premium account (which the paid scenario serves nothing,
+§61 F171), or Chathub.

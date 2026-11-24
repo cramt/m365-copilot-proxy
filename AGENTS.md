@@ -368,6 +368,11 @@ pnpm test:live      # M365_LIVE=1; live tests that hit real M365 (uses quota)
   `M365_SCENARIO`. Don't send it down the empty-reply retries, and don't count it with `noteOutcome(true)`:
   it isn't the thread-rate throttle. The empty-reply path re-checks the tool agent only for a turn that
   carried it (#150).
+- **StreamHub turns are Work IQ turns unless `M365_WORK_IQ=0`.** They are the web client's request with its
+  Work IQ switch on (`officeweb` and the `bizchat-as-gpt-scenario` entry), and M365 then searches the
+  user's OneDrive and SharePoint on its own and answers from them, other people's documents included.
+  `M365_WORK_IQ=0` sends the switch-off shape: the paid scenario, no entry. `nosearchall`, or leaving the
+  entry out alone, didn't stop the search (docs/hypotheses.md §64 F182).
 - **Cowork and Code are another service, and every turn there costs credits.** A model ID with `(cowork)` or
   `(code)` (`<model>(<backend>)[_<window>][_credit]`, `core/src/backends.ts`) runs on Copilot's agent
   runtime (`aether.ts`, API doc §14), not Chat, when `M365_BACKENDS` lists the backend (all three by

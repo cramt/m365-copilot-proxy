@@ -19,6 +19,7 @@ import {
   getToneForModel,
   getTurnRouting,
   toneUsesWebSearch,
+  workIqEnabled,
   type CopilotStream,
   type CapturedImage,
 } from "./copilot.js";
@@ -1215,7 +1216,9 @@ export class CopilotSession {
           isStartOfSession: isFirst,
           clientInfo,
           message: { ...message, locale: "en-us", clientInfo },
-          gpts: [{ id: "bizchat-as-gpt-scenario", source: "BuiltInAgents" }],
+          // The built-in BizChat entry is what the web client's Work IQ switch adds:
+          // with it M365 searches the user's work files on its own (§64 F182).
+          ...(workIqEnabled() ? { gpts: [{ id: "bizchat-as-gpt-scenario", source: "BuiltInAgents" }] } : {}),
           plugins: args.plugins ?? [],
           tone,
           disconnectBehavior: "continue",
