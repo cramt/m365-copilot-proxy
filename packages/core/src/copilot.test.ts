@@ -504,6 +504,17 @@ describe("StreamHub transport routing (§40)", () => {
     process.env.M365_SCENARIO = "SomeOtherScenario";
     expect(getStreamHubScenario().scenario).toBe("SomeOtherScenario");
   });
+
+  it("takes the paid scenario with Work IQ off, as the web client's switch does (§64 F182)", () => {
+    process.env.M365_WORK_IQ = "0";
+    try {
+      expect(getStreamHubScenario().scenario).toBe("OfficeWebPaidCopilot");
+      process.env.M365_SCENARIO = "officeweb";
+      expect(getStreamHubScenario().scenario).toBe("officeweb");
+    } finally {
+      delete process.env.M365_WORK_IQ;
+    }
+  });
 });
 
 describe("Claude_Auto routing (§62)", () => {

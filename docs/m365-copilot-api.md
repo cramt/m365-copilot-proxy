@@ -1118,6 +1118,11 @@ Headers: `Origin: https://copilot.cloud.microsoft` and a browser `User-Agent`.
   `allowedMessageTypes`, `plugins`, `tone`. An unknown tone is rejected as a note (below). A declarative
   agent in place of the built-in one (a MOS3 `gpts` entry and `threadLevelGptId`, as on Chathub) isn't
   applied: the turn is answered as plain chat (hypotheses §49 F144).
+- **Work IQ.** That `gpts` entry and the `officeweb` scenario are the web client's Work IQ switch, on by
+  default: M365 then searches the user's work files (OneDrive, SharePoint) on its own and answers from them,
+  `sourceAttributions` naming them. With the switch off the client sends no `gpts`, no connectors, and the
+  `OfficeWebPaidCopilot` scenario, and the search is gone. `M365_WORK_IQ=0` sends the proxy's turns that way
+  (hypotheses §64 F182).
 - Stop: `{"type":"stop","topicId":"/conversations/<cid>","turnId":"<requestId>","requestId":"<requestId>","reason":"ClientRequested"}`
   as an item on stream `"0"`.
 
