@@ -22,4 +22,24 @@ describe("toolTurnNarration", () => {
     expect(narration.length).toBeLessThanOrEqual(801);
     expect(narration.endsWith("word…")).toBe(true);
   });
+
+  const tools = [{ type: "function" as const, function: { name: "bash", description: "run", parameters: { type: "object", properties: { command: { type: "string" } }, required: ["command"] } } }];
+
+  it("drops M365's citation links, and falls back to the comments when that was all", () => {
+    expect(toolTurnNarration("Your forms differ, so let's find the records. [1](https://contoso-my.sharepoint.com/personal/u/Documents/a.pdf)\n\n```bash\nls\n```", tools))
+      .toBe("Your forms differ, so let's find the records.");
+    expect(toolTurnNarration("[1](https://contoso-my.sharepoint.com/a.pdf)\n```bash\n# List the records\nls\n```", tools)).toBe("List the records");
+  });
+
+  it("takes the lead-in to the tool block, not to an example block ahead of it", () => {
+    expect(toolTurnNarration("It prints a table like this:\n```text\nName Size\n```\nChecking the folder now.\n```bash\nls\n```", tools))
+      .toBe("Checking the folder now.");
+    expect(toolTurnNarration("```python\n# an example only\nprint(1)\n```\n```bash\n# List the files\nls\n```", tools)).toBe("List the files");
+  });
+
+  it("reads the prose from the reply that answered the user when a re-ask produced the call", () => {
+    const again = "Resending it as asked.\n\n```bash\n# List everything\nls -la\n```";
+    expect(toolTurnNarration(again, tools, "I'll list the files first.\n\n```bash\nls -la\n```")).toBe("I'll list the files first.");
+    expect(toolTurnNarration(again, tools, "```bash\nls -la\n```")).toBe("List everything");
+  });
 });

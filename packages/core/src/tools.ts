@@ -640,6 +640,13 @@ export function textAfterFirstToolCall(text: string, tools?: ToolDef[]): string 
   return first ? text.slice(first.end).trim() : "";
 }
 
+/** Where a reply's first tool call starts and ends, by the parser's own rule
+ *  (findFirstToolFence), or null when it has none. */
+export function firstToolCallSpan(text: string, tools?: ToolDef[]): { start: number; end: number } | null {
+  if (!tools || tools.length === 0) return null;
+  return findFirstToolFence(text, buildSpecMap(tools));
+}
+
 export function parseToolCalls(text: string, tools?: ToolDef[]): ParseResult {
   // Fenced is the format: parse ```toolname blocks first. Needs the tool schemas
   // to map header/body args. The JSON parse below is only a tolerance fallback for
