@@ -335,6 +335,11 @@ describe("a tool call the proxy can't read", () => {
     expect(scripted.texts[1]).toContain("couldn't be read as a tool call — its closing ``` never came on a line of its own");
   });
 
+  it("says beside that call what the first reply said, not its answer to the re-ask (§64 F181)", async () => {
+    const msg = await ask([UNCLOSED, "Here it is again, closed.\n```bash\nls -la\n```"]);
+    expect(msg.content).toBe("Let me look at the files.");
+  });
+
   it("asks once: a second unreadable reply goes out as text", async () => {
     const msg = await ask([UNCLOSED, UNCLOSED, "```bash\nls\n```"]);
     expect(msg.tool_calls).toBeUndefined();
@@ -946,6 +951,7 @@ describe("follow-up turns and give-ups (Windows / pi, measured)", () => {
     const m = await ask([{ role: "user", content: `pdf ${Math.random()}` }], new SessionPool());
     expect(scripted.texts).toHaveLength(2); // the forcing retry ran
     expect(m.tool_calls?.[0] && JSON.parse(m.tool_calls[0].function.arguments).command).toBe("ls -la");
+    expect(m.content).toBeNull(); // the give-up isn't the call's commentary
     scripted.queue = [];
   });
 
@@ -2117,6 +2123,12 @@ describe("a PowerShell command that lost a [Type]: to M365's post-processing (§
     expect(res.status).toBe(502);
     expect((await res.json()).error.type).toBe("damaged_tool_call");
     expect(scripted.runs).toBe(2);
+  });
+
+  it("says beside the re-sent call what the first reply said, not its answer to the proxy (§64 F181)", async () => {
+    scripted.queue = [{ fullText: `I'll set the port to 8080.\n\n${damaged}` }, { fullText: `Resending with the full .NET type name.\n\n${whole}` }];
+    const res = await ask();
+    expect((await res.json()).choices[0].message.content).toBe("I'll set the port to 8080.");
   });
 
   it("leaves an intact static call alone", async () => {

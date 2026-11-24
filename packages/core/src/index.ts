@@ -181,6 +181,7 @@ export {
   truncateAtFabricatedToolResponse,
   fabricatedToolResponseAt,
   textAfterFirstToolCall,
+  firstToolCallSpan,
   unreadableToolCall,
   isProseDocument,
   formatToolResponse,

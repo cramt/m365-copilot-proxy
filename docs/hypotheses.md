@@ -7828,3 +7828,36 @@ Probe: the same prompts per tone, agent-less, without Bing, under the scenario t
 compared on what a self-ID doesn't control: the sandbox path in a code-interpreter answer,
 chain-of-thought summaries, and events of early 2026. Falsified for a tone if it matches its mapped
 counterpart in each of these comparisons.
+
+## 64. Nov 24 2026 — Codex's commentary: M365's citations, a re-ask's answer, an example block
+
+### F181 — three things went out as commentary that weren't the model telling the user what it does 🟢
+A day of `M365_NARRATE=sentence` (§60 F166) in Codex: on Nov 23 a document-review session on GPT-6.2 Astra
+over Chat had a sentence beside each of its 4 calls. What else reached Codex as commentary:
+
+- **M365's citation links.** The first sentence ended in `[1](https://…sharepoint-df.com/personal/…/Documents/Cowork/Tasks/…)`,
+  as did the session's final answer: a file in the user's OneDrive, in the folder where Cowork keeps a
+  task's files. The session had started a minute before and nothing in it carried the link, so M365 found
+  the file itself (H64a). The narration now drops `[n](http…)` links, and a lead-in that was only a
+  citation falls back to the block's comments. Final answers keep theirs.
+- **A re-ask's answer.** After the damaged-command re-ask (§40 F111), Sonnet 5's commentary was what it
+  told the proxy: "Resending with the full .NET type name…", on 5 of its 6 first turns in F166's probe.
+  After that re-ask and the unreadable-fence one (§51 F152), the prose now comes from the first reply,
+  and the comments from the block that runs. After a forcing retry it comes from the retry: the first
+  reply was the give-up.
+- **An example block ahead of the call.** The narration stopped at the first fence of any kind, so a reply
+  that opened with a ```text output or a ```python example narrated that block's lead-in, or its
+  comments. It now finds the call by the parser's rule (`firstToolCallSpan`, i.e. `findFirstToolFence`)
+  and takes the prose after the last example block ahead of it. Not seen live.
+
+`narration.test.ts`, and the three paths in `streaming.test.ts`.
+
+### H64a — does M365 Chat search the user's own files on a tool turn? 🔴
+F181's citation named a file the request never mentioned, in the folder where Cowork had stored the
+documents earlier that night. If M365 retrieves work files on its own, a Codex session on Chat models reasons
+from OneDrive copies as well as the local folder, which the proxy never asked for. The debug log keeps
+about 500 characters of each frame, so the search step itself isn't visible. Probe: `M365_DUMP_FRAMES=1`,
+a Chat tool turn that names documents the user keeps in OneDrive, then the frames: search progress
+messages, `sourceAttributions`. If they are there, try the levers that might turn it off (the web client's
+Work/Web switch, `plugins`, `optionsSets`, `entityAnnotationTypes`, H8.11). Falsified if a turn that
+cites such a file shows no search in its frames.

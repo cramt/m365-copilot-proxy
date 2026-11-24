@@ -1555,6 +1555,9 @@ export async function handleChatCompletion(
     if ("error" in result) return failedRequest(result.error);
     conv.sentMessageCount = body.messages.length;
     let fullText = stopAtFabricatedResult(result.fullText);
+    // The reply that answered the client, for what the model says beside its call
+    // (toolTurnNarration): a re-ask's answer talks to the proxy, not the user.
+    let saidIn = fullText;
 
     log.debug("Raw response (tool mode):", trunc(fullText, 1000));
     let { parsed, judged } = parseReply(fullText, body.tools);
@@ -1606,6 +1609,8 @@ export async function handleChatCompletion(
       if ("error" in retry) return { kind: "error", resp: retry.error };
       conv.sentMessageCount = body.messages.length;
       fullText = stopAtFabricatedResult(retry.fullText);
+      // The first reply gave up, so what this one says is the model's to the user.
+      saidIn = fullText;
       ({ parsed, judged } = parseReply(fullText, body.tools));
       log.info(`After forcing retry: hasToolCalls=${parsed.hasToolCalls}, count=${parsed.toolCalls.length}`);
     }
@@ -1737,7 +1742,7 @@ export async function handleChatCompletion(
       if (fixed.some((c, i) => c !== parsed.toolCalls[i])) log.info("A millisecond argument under 1000 read as seconds (e.g. Bash timeout: 30)");
       // What the model said it's doing goes beside the call, as Codex shows its own
       // models' commentary; the text after the call stays stripped (above).
-      const narration = process.env.M365_NO_NARRATION ? null : toolTurnNarration(fullText);
+      const narration = process.env.M365_NO_NARRATION ? null : toolTurnNarration(fullText, body.tools, saidIn);
       return { kind: "tools", toolCalls: fixed, narration };
     }
     return { kind: "text", text: plainFileNames(fullText) };
