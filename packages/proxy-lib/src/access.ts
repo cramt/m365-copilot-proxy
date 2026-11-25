@@ -54,7 +54,7 @@ export function corsHeaders(policy: CorsPolicy, origin: string | null): Record<s
   return {
     "Access-Control-Allow-Origin": policy.kind === "any" ? "*" : origin,
     "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
-    "Access-Control-Allow-Headers": "Content-Type, Authorization, x-api-key",
+    "Access-Control-Allow-Headers": "Content-Type, Authorization, x-api-key, X-Claude-Code-Session-Id, X-OpenCode-Session, Idempotency-Key",
     ...(policy.kind === "list" ? { Vary: "Origin" } : {}),
   };
 }

@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { getTokenForScope } from "./auth.js";
+import { AccountPolicyError, accountKeyFromToken, assertAccountToken } from "./account-policy.js";
 import { runtimeModelFor } from "./backends.js";
 import type { CopilotStream, CapturedImage } from "./copilot.js";
 import { createLogger, trunc } from "./log.js";
@@ -76,13 +77,18 @@ async function defaultToken(): Promise<string> {
   return token;
 }
 
-let endpoint: Promise<string> | null = null;
+const endpoints = new Map<string, Promise<string>>();
+const MAX_ACCOUNT_CACHES = 128;
 
-/** The user's runtime endpoint: M365_AETHER_ENDPOINT, or the routing service's answer, kept for the process. */
+/** The runtime endpoint is scoped to the resolved credential principal. */
 function runtimeEndpoint(token: string, ids: TokenIds): Promise<string> {
+  const key = accountKeyFromToken(token);
   const fixed = process.env.M365_AETHER_ENDPOINT?.trim();
   if (fixed) return Promise.resolve(fixed.replace(/\/+$/, ""));
-  endpoint ??= (async () => {
+  const cached = endpoints.get(key);
+  if (cached) return cached;
+  if (endpoints.size >= MAX_ACCOUNT_CACHES) endpoints.delete(endpoints.keys().next().value!);
+  const pending = (async () => {
     const res = await fetch(ROUTING_URL, {
       headers: { authorization: `Bearer ${token}`, "x-tenant-id": ids.tid, "x-user-id": ids.oid, accept: "application/json" },
     });
@@ -92,16 +98,17 @@ function runtimeEndpoint(token: string, ids: TokenIds): Promise<string> {
     log.info(`Agent runtime endpoint: ${body.endpoint}`);
     return body.endpoint.replace(/\/+$/, "");
   })().catch((err) => {
-    endpoint = null;
+    if (endpoints.get(key) === pending) endpoints.delete(key);
     throw err;
   });
-  return endpoint;
+  endpoints.set(key, pending);
+  return pending;
 }
 
-/** Forget the cached endpoint (tests). */
+/** Forget cached endpoints and catalogs (tests). */
 export function resetRuntimeEndpoint(): void {
-  endpoint = null;
-  catalog = null;
+  endpoints.clear();
+  catalogs.clear();
 }
 
 /** Delete a conversation on the runtime (the web app's `tasks.delete`); true once it's gone. */
@@ -181,7 +188,7 @@ export function resetRuntimeTracking(): void {
 /** How long a fetched catalog is used, and how long a failed fetch waits to be retried. */
 const CATALOG_TTL_MS = 10 * 60_000;
 const CATALOG_RETRY_MS = 60_000;
-let catalog: { at: number; ttl: number; models: Promise<string[] | null> } | null = null;
+const catalogs = new Map<string, { at: number; ttl: number; models: Promise<string[] | null> }>();
 
 /**
  * The runtime's model IDs right now (`GET /v1/models`, the same for Cowork and
@@ -189,12 +196,24 @@ let catalog: { at: number; ttl: number; models: Promise<string[] | null> } | nul
  * every GPT model left it within an afternoon, and a message naming a model
  * that isn't in it is refused (`MODEL_NOT_IN_CATALOG`). Kept 10 minutes.
  */
-export function runtimeCatalog(getToken: () => Promise<string> = defaultToken): Promise<string[] | null> {
-  if (catalog && Date.now() - catalog.at < catalog.ttl) return catalog.models;
+export async function runtimeCatalog(getToken: () => Promise<string> = defaultToken): Promise<string[] | null> {
+  let token: string;
+  let key: string;
+  try {
+    token = await getToken();
+    assertAccountToken(token);
+    key = accountKeyFromToken(token);
+  } catch (err) {
+    if (err instanceof AccountPolicyError) throw err;
+    log.info("Agent runtime catalog token unavailable");
+    return null;
+  }
+  const cached = catalogs.get(key);
+  if (cached && Date.now() - cached.at < cached.ttl) return cached.models;
+  if (catalogs.size >= MAX_ACCOUNT_CACHES && !cached) catalogs.delete(catalogs.keys().next().value!);
   const entry: { at: number; ttl: number; models: Promise<string[] | null> } = { at: Date.now(), ttl: CATALOG_TTL_MS, models: Promise.resolve(null) };
   entry.models = (async () => {
     try {
-      const token = await getToken();
       const ids = tokenIds(token);
       const base = await runtimeEndpoint(token, ids);
       const res = await fetch(`${base}/v1/models`, {
@@ -211,13 +230,13 @@ export function runtimeCatalog(getToken: () => Promise<string> = defaultToken): 
       return null;
     }
   })();
-  catalog = entry;
+  catalogs.set(key, entry);
   return entry.models;
 }
 
-/** Drop the cached catalog, so the next listing asks again. */
-function forgetCatalog(): void {
-  catalog = null;
+/** Drop only the current account's cached catalog when it was refused. */
+function forgetCatalog(key: string): void {
+  catalogs.delete(key);
 }
 
 /** OpenAI's effort names onto the runtime's; null for one it doesn't take. */
@@ -526,6 +545,7 @@ export class AetherSession implements TurnSession {
   private session: string;
   private turns = 0;
   private prewarmed = false;
+  private runtimeAccountKey?: string;
   private readonly discardDelayMs: number;
 
   constructor(options: AetherSessionOptions) {
@@ -579,7 +599,9 @@ export class AetherSession implements TurnSession {
     if (process.env.M365_SAVE_HISTORY === "1") return;
     const mode = this.mode;
     const remove = () => void (async () => {
-      if (await deleteConversation(session, mode, await this.resolveToken())) ledger?.remove(session);
+      const token = await this.resolveToken();
+      if (this.runtimeAccountKey && accountKeyFromToken(token) !== this.runtimeAccountKey) return;
+      if (await deleteConversation(session, mode, token)) ledger?.remove(session);
     })().catch((err) => log.info(`Deleting agent runtime conversation ${session} failed: ${err?.message ?? err}`));
     if (this.discardDelayMs <= 0) return remove();
     setTimeout(remove, this.discardDelayMs).unref?.();
@@ -602,6 +624,10 @@ export class AetherSession implements TurnSession {
       text += `\n\n(Note: ${images.length === 1 ? "an attached file" : `${images.length} attached files`} could not be passed on: this backend doesn't take attachments. Don't describe ${images.length === 1 ? "it" : "them"}; say ${images.length === 1 ? "it" : "they"} didn't arrive.)`;
     }
     const token = await this.resolveToken();
+    assertAccountToken(token);
+    const accountKey = accountKeyFromToken(token);
+    if (this.runtimeAccountKey && accountKey !== this.runtimeAccountKey) throw new AccountPolicyError(409, "account_changed");
+    this.runtimeAccountKey = accountKey;
     const ids = tokenIds(token);
     const base = await runtimeEndpoint(token, ids);
     const runtimeModel = runtimeModelFor(model);
@@ -647,7 +673,7 @@ export class AetherSession implements TurnSession {
       // A model the catalog doesn't have (any more) is the client's to change: a 400, not a 502.
       const detail = parseJson(body)?.detail;
       if (res.status === 400 && detail?.code === "MODEL_NOT_IN_CATALOG") {
-        forgetCatalog();
+        forgetCatalog(accountKey);
         log.info(`Agent runtime: ${runtimeModel} isn't in its catalog`);
         return refusedTurn({ value: "InvalidRequest", errorCode: "ModelNotInCatalog", message: typeof detail.message === "string" ? detail.message : undefined });
       }

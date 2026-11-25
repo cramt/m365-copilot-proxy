@@ -766,6 +766,14 @@ Microsoft has built a full meter UI, though. It's in the PLG SDK strings (`res.p
 
 None of those strings is "daily chat limit"; that text comes from the server. Watch for the **Usage dialog or credit banner appearing on the study's account**: it would mean its tenant moved onto metered credits, and the turn-count assumptions above stop holding.
 
+**Current interpretation:** the earlier thread-only explanation is not an established
+limit. F58's later observations, including a mid-conversation onset, fit a per-turn
+bucket better. The fitted capacity/refill and post-throttle hold are configurable
+client policy, not Microsoft-published limits or guaranteed reset timestamps.
+Account admission counts attempted sends, including reconnects; thread creation and
+full-history replay are separate diagnostics. A new local conversation ID is not
+itself an upstream request. Explicit throttle stops recovery on that account.
+
 ### Account degradation under sustained use (observed June 13 2026)
 
 A full session of heavy use (~80+ messages across probes, bench runs, and logins
@@ -811,6 +819,26 @@ conversation at `1/600`). Characterised behaviour:
 - **M365 doesn't keep an opening prompt of about 500k characters.** It answers the turn, but the conversation's next turn finds nothing there: its `numUserMessagesInConversation` reads 1 and the model answers without context (420k kept, 540k not; every turn on one backend, with or without the routing header; hypotheses §46 F125). Claude too: a 900k opening on Sonnet 5 wasn't kept (§47 F129). So a follow-up turn whose count is 1 has lost its history, and that is how the proxy notices: it stops that turn and re-sends the whole request in a fresh conversation (`handler.ts`). And it never sends a turn over 400,000 UTF-8 bytes (`M365_TURN_CHUNK_BYTES`): a longer history goes up as parts the model acknowledges, then the request (`replay.ts`, F131). The conversation itself lasts: one idle for 21 h still had its history (F126).
 - **How much a model reads (§47).** In one turn: GPT-6.x about 270k tokens (780k characters answered, 900k refused, the Astras included), the Claude models 2M characters or more (Sonnet 5 refused 2.6M). On StreamHub (the transport tested) GPT-6.x refuses with `request_end` `InternalError` from M365's "GHCP runtime", and its message, `turnState: Failed`, carries M365's canned "Sorry, I wasn't able to respond to that…" as text: that is no answer. Claude refuses with `InvalidRequest (InputTokenLimitExceeded)`. Over a conversation of turns M365 keeps: Claude has about 1.6M characters verbatim, and by 2M M365 had dropped the oldest turn whole; past its window GPT-6.x works from a summary of the older turns.
 - The proxy adds `disableMemory=1` to the Chathub URL **by default** — M365's temporary-chat control. Both halves are verified (§16 F28/F29, `scripts/temporary-chat-probe.mjs`): the live `ConversationId` still retains multi-turn context across turns, and the thread never appears in the Copilot history sidebar. Without it the proxy leaves one saved thread per prompt in the user's history. The trade is that a proxy conversation can't be recovered from the UI afterwards; `M365_SAVE_HISTORY=1` opts back into saved history.
+
+**Client identity is distinct from upstream placement.** The proxy validates a
+SHA-256 chain of the canonical client transcript, including tool calls, their
+results and image descriptors. It compares against the assistant response actually
+returned to the client, not raw model output discarded by tool filtering. Divergent
+histories fork rather than resetting another caller's state. Producer admission
+remains owned until completion/cancellation, including after SSE headers return.
+
+Explicit session hints travel through both HTTP entrypoints. They do not authorize
+access or replace an authenticated embedding's trusted principal scope. Identical
+anonymous transcripts are inherently indistinguishable; exact-prefix matching is
+a compatibility fallback, not a multi-tenant security boundary. Upstream bindings
+remain credential-account-specific, retaining the backend routing header above.
+
+Request replay requires an explicit `Idempotency-Key`; identical content alone
+does not distinguish a retry from intentional regeneration. In-memory bounded
+receipts do not promise exactly-once execution across crashes. Neither the low-level
+constructor's ID options nor in-process reconnect tests establish safe remote
+conversation restoration after restart. The proxy starts fresh and replays the
+caller-supplied history instead of sending a delta into uncertain remote state.
 
 ---
 

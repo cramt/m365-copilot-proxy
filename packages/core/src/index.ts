@@ -129,6 +129,8 @@ export {
   type ActionConfirmation,
 } from "./native-actions.js";
 
+export { withAccountContext, AccountPolicyError, assertAccountToken } from "./account-policy.js";
+
 export {
   ModelSession,
   type ModelSessionOptions,

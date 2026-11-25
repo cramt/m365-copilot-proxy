@@ -1,4 +1,5 @@
 import WebSocket from "ws";
+import { retainAccountContext, bindAccountPolicy, currentAccountContext, withAccountContext, assertAccountToken, AccountPolicyError, admitAccountAttempt, renewAccountLeases } from "./account-policy.js";
 import type { ImageAnnotation } from "./image-input.js";
 import type { FileAnnotation } from "./file-upload.js";
 import { appendFileSync, mkdirSync } from "node:fs";
@@ -461,6 +462,8 @@ export interface CopilotSessionOptions {
   sessionId?: string;
   /** Reuse an existing conversation ID so M365 finds the same server-side conversation. */
   conversationId?: string;
+  /** Number of prior turns in the same conversation. */
+  turnCount?: number;
   /**
    * Ask M365 for a temporary chat by adding `disableMemory=1` to the Chathub URL.
    * Temporary chats retain context for their live ConversationId but are not
@@ -575,6 +578,7 @@ export class CopilotSession {
   private sessionId: string;
   private conversationId: string;
   private _turnCount = 0;
+  private accountKey?: string;
   private agentId?: string;
   private nativeActions?: NativeActionConfig;
   private temporaryChat: boolean;
@@ -582,6 +586,7 @@ export class CopilotSession {
   constructor(options?: CopilotSessionOptions) {
     this.sessionId = options?.sessionId ?? crypto.randomUUID();
     this.conversationId = options?.conversationId ?? crypto.randomUUID();
+    this._turnCount = options?.turnCount ?? 0;
     this.agentId = options?.agentId;
     this.nativeActions = options?.nativeActions;
     this.temporaryChat = options?.temporaryChat ?? true;
@@ -598,8 +603,30 @@ export class CopilotSession {
    * Each turn opens a fresh WebSocket with invocationId "0" (per SignalR protocol).
    * Session/conversation IDs are reused so M365 maintains server-side context.
    */
-  chat(token: string, text: string, model: string = "m365-copilot", signal?: AbortSignal, opts?: ChatTurnOptions): Promise<CopilotStream> {
+  async chat(token: string, text: string, model: string = "m365-copilot", signal?: AbortSignal, opts?: ChatTurnOptions): Promise<CopilotStream> {
+    signal?.throwIfAborted();
+    if (!currentAccountContext()) return withAccountContext({ getToken: async () => token }, () => this.chat(token, text, model, signal, opts));
+    assertAccountToken(token);
+    const key = currentAccountContext()!.key;
+    if (this.accountKey && this.accountKey !== key) throw new AccountPolicyError(409, "account_changed");
+    this.accountKey = key;
     const isFirst = this._turnCount === 0;
+    const admissionStart = Date.now();
+    for (;;) {
+      signal?.throwIfAborted();
+      try { admitAccountAttempt(isFirst); break; }
+      catch (error) {
+        const enabled = process.env.M365_AVOID_THROTTLING && process.env.M365_AVOID_THROTTLING !== "0";
+        const raw = Number(process.env.M365_BUDGET_MAX_WAIT_MIN ?? 15);
+        const maxWait = Number.isFinite(raw) && raw >= 0 ? raw * 60000 : 15 * 60000;
+        if (!enabled || !(error instanceof AccountPolicyError) || !["account_turn_budget", "account_throttle_hold"].includes(error.code) || !error.retryAfter || Date.now() - admissionStart + error.retryAfter * 1000 > maxWait) throw error;
+        await new Promise<void>((resolve, reject) => {
+          const abort = () => { clearTimeout(timer); signal?.removeEventListener("abort", abort); reject(signal?.reason ?? new DOMException("Aborted", "AbortError")); };
+          const timer = setTimeout(() => { signal?.removeEventListener("abort", abort); resolve(); }, Math.min(error.retryAfter! * 1000, 15000));
+          if (signal?.aborted) abort(); else signal?.addEventListener("abort", abort, { once: true });
+        });
+      }
+    }
     this._turnCount++;
     const wantImages = opts?.generateImages ?? false;
     const images = opts?.images ?? [];
@@ -850,6 +877,9 @@ export class CopilotSession {
       const ws = new WebSocket(wsUrl, {
         headers: streamHub ? buildStreamHubHeaders() : buildCopilotWebSocketHeaders(conversationId),
       });
+      const releasePolicy = retainAccountContext(error => finish(error));
+      const renewPolicy = bindAccountPolicy(renewAccountLeases);
+      const accountThrottle = bindAccountPolicy(recordThrottle);
 
       let handshakeDone = false;
       let stopped = false;
@@ -889,11 +919,12 @@ export class CopilotSession {
         }
       };
 
-      const cleanup = () => {
+      const cleanup = (): Error | undefined => {
         if (idleTimer) clearTimeout(idleTimer);
         if (stopTimer) clearTimeout(stopTimer);
         if (endGrace) clearTimeout(endGrace);
         signal?.removeEventListener("abort", onAbort);
+        try { releasePolicy(); } catch { return new AccountPolicyError(503, "account_policy_unavailable", 1); }
       };
       // The one way a turn ends, whichever frame, timer or socket event ends
       // it: Chathub's type 2/3/7 frames, StreamHub's `request_end` and `error`
@@ -904,17 +935,18 @@ export class CopilotSession {
       const finish = (error?: Error, closeBy: "close" | "terminate" | "none" = "close") => {
         if (finished) return;
         finished = true;
-        cleanup();
+        const cleanupError = cleanup();
+        const terminalError = error ?? cleanupError;
         if (!handshakeDone) {
-          reject(error ?? new Error("WebSocket closed before handshake"));
+          reject(terminalError ?? new Error("WebSocket closed before handshake"));
         } else {
           settleAnswer();
-          if (error) onError(error); else onDone();
+          if (terminalError) onError(terminalError); else onDone();
         }
         try {
           if (closeBy === "close") ws.close();
           else if (closeBy === "terminate") ws.terminate();
-        } catch {}
+        } catch { try { ws.terminate(); } catch {} }
       };
       const armIdle = () => {
         if (finished || stopped) return;
@@ -953,12 +985,12 @@ export class CopilotSession {
               dumpFrame(requestId, { target: "stop", type: 1 }, "send");
               ws.send(STOP_FRAME);
             }
-            stopTimer = setTimeout(() => { try { ws.close(); } catch {} }, 2_000);
+            stopTimer = setTimeout(() => finish(new DOMException("Aborted", "AbortError"), "terminate"), 2_000);
           } else {
-            finish();
+            finish(new Error("WebSocket closed before handshake"), "terminate");
           }
         } catch {
-          finish();
+          finish(new DOMException("Aborted", "AbortError"), "terminate");
         }
       };
       if (signal) {
@@ -970,11 +1002,14 @@ export class CopilotSession {
       ws.on("open", () => {
         if (finished || stopped) return;
         log.debug("WS connected, sending handshake");
-        ws.send(JSON.stringify({ protocol: "json", version: 1 }) + RS);
+        try { ws.send(JSON.stringify({ protocol: "json", version: 1 }) + RS); }
+        catch { finish(new Error("WebSocket handshake send failed"), "terminate"); }
       });
 
       ws.on("message", (data: WebSocket.RawData) => {
         if (finished) return;
+        try {
+        renewPolicy();
         armIdle();
         const raw = data.toString();
         log.debug("WS recv:", trunc(raw, 500));
@@ -1006,6 +1041,9 @@ export class CopilotSession {
           }
 
           handleMsg(parsed);
+        }
+        } catch (error) {
+          finish(error instanceof AccountPolicyError ? error : new Error("WebSocket frame processing failed"), "terminate");
         }
       });
 
@@ -1283,7 +1321,7 @@ export class CopilotSession {
           ...(message ? { message } : {}),
         };
         if (value !== "Success") log.info(`Turn result: ${value}${errorCode ? ` (${errorCode})` : ""}`);
-        if (value === "Throttled") recordThrottle();
+        if (value === "Throttled") accountThrottle();
       };
 
       // One streaming update: a Chathub `update` invocation's argument, or a

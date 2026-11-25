@@ -1,3 +1,5 @@
+import { withAccountContext, currentAccountContext, assertAccountToken, AccountPolicyError } from "./account-policy.js";
+import { TurnBudgetHold } from "./turn-budget.js";
 import { getToken } from "./auth.js";
 import { CachePersistenceError } from "./storage.js";
 import { getOrCreateAgent } from "./agent.js";
@@ -34,6 +36,8 @@ export interface ModelSessionOptions {
    * Defaults to true. Set false only when persistent Copilot history is wanted.
    */
   temporaryChat?: boolean;
+  /** Stable route protocol/agent/scenario configuration identity (never a credential). */
+  accountRouteScope?: string;
 }
 
 /** Per-turn settings; a backend uses the ones it has. */
@@ -88,6 +92,9 @@ export class ModelSession implements TurnSession {
   private temporaryChat: boolean;
   private copilotSession: CopilotSession | null = null;
   private cachedAgentId: string | null | undefined = undefined;
+  private savedTurnCount = 0;
+  private accountKey: string | undefined;
+  private options: ModelSessionOptions;
 
   /** Stable IDs reused across CopilotSession reconnections. */
   readonly sessionId: string = crypto.randomUUID();
@@ -103,9 +110,11 @@ export class ModelSession implements TurnSession {
   newConversation(): void {
     this._conversationId = crypto.randomUUID();
     this.reset();
+    this.savedTurnCount = 0;
   }
 
   constructor(options: ModelSessionOptions = {}) {
+    this.options = { ...options };
     this.resolveToken = options.getToken ?? getToken;
     this.useAgent = options.useAgent !== false;
     this.temporaryChat =
@@ -114,7 +123,7 @@ export class ModelSession implements TurnSession {
 
   /** Number of turns completed in this session */
   get turnCount(): number {
-    return this.copilotSession?.turnCount ?? 0;
+    return this.copilotSession?.turnCount ?? this.savedTurnCount;
   }
 
   /** Agent id baked into the current copilotSession (undefined = no agent). */
@@ -125,6 +134,7 @@ export class ModelSession implements TurnSession {
       agentId,
       sessionId: this.sessionId,
       conversationId: this.conversationId,
+      turnCount: this.turnCount,
       temporaryChat: this.temporaryChat,
     });
   }
@@ -159,7 +169,12 @@ export class ModelSession implements TurnSession {
     waitForBudget: () => Promise<{ waitedMs: number }> = () => awaitTurnBudget({ signal }),
     turn: TurnOptions = {},
   ): Promise<CopilotStream> {
-    let token = await this.resolveToken();
+    if (!currentAccountContext()) return withAccountContext(this.options, () => this.run(text, model, signal, useAgent, images, waitForBudget, turn));
+    const context = currentAccountContext()!;
+    if (this.accountKey && this.accountKey !== context.key) throw new AccountPolicyError(409, "account_changed");
+    this.accountKey = context.key;
+    let token = context.token;
+    signal?.throwIfAborted();
     // Image input (#39): upload each image for this conversation; the message points at them.
     // Any other data URL is a document, which goes to OneDrive like the web client's (file-upload.ts).
     // A failed upload is said in the text, so the model doesn't answer about a file it never got.
@@ -169,7 +184,7 @@ export class ModelSession implements TurnSession {
       try {
         annotations.push(isImage ? await uploadImage(token, this.conversationId, url) : await uploadFile(url));
       } catch (err: any) {
-        if (err instanceof CachePersistenceError) throw err;
+        if (err instanceof CachePersistenceError || err instanceof AccountPolicyError) throw err;
         const what = isImage ? "image" : "file";
         log.info(`${isImage ? "Image" : "File"} upload failed: ${err.message}`);
         text += `
@@ -180,13 +195,13 @@ export class ModelSession implements TurnSession {
     const wantAgent = this.useAgent && useAgent;
 
     // Resolve agent ID lazily (persists across resets), only when wanted.
-    if (wantAgent && this.cachedAgentId === undefined) {
+    if (wantAgent) {
       try {
         this.cachedAgentId = await getOrCreateAgent();
         if (this.cachedAgentId) log.info(`Using agent: ${this.cachedAgentId}`);
         else log.info("No agent available");
       } catch (error) {
-        if (error instanceof CachePersistenceError) throw error;
+        if (error instanceof CachePersistenceError || error instanceof AccountPolicyError) throw error;
         this.cachedAgentId = null;
       }
     }
@@ -210,8 +225,10 @@ export class ModelSession implements TurnSession {
     const turnOpts = { generateImages: !agentForTurn && !process.env.M365_NO_IMAGE_GEN, images: annotations, onReasoning: turn.onReasoning };
 
     try {
+      assertAccountToken(token);
       return await this.copilotSession.chat(token, text, model, signal, turnOpts);
     } catch (err: any) {
+      if (err instanceof AccountPolicyError || err instanceof TurnBudgetHold || err?.name === "AbortError" || err?.name === "ZodError" || err instanceof SyntaxError || err?.status === 401 || err?.status === 403) throw err;
       // Session might be stale — reconnect with same IDs
       log.info("Session error, reconnecting:", err.message);
       if (signal?.aborted) throw new DOMException("Aborted", "AbortError");
@@ -224,6 +241,7 @@ export class ModelSession implements TurnSession {
       // wait may be near its end, so fetch it again.
       if ((await waitForBudget()).waitedMs > 0) token = await this.resolveToken();
       if (signal?.aborted) throw new DOMException("Aborted", "AbortError");
+      assertAccountToken(token);
       this.copilotSession = this.createCopilotSession(agentForTurn);
       this.currentAgentId = agentForTurn;
       return await this.copilotSession.chat(token, text, model, signal, turnOpts);
@@ -243,17 +261,20 @@ export class ModelSession implements TurnSession {
    */
   async refreshAgent(): Promise<boolean> {
     if (!this.useAgent) return false;
+    if (!currentAccountContext()) return withAccountContext(this.options, () => this.refreshAgent());
+    if (this.accountKey && this.accountKey !== currentAccountContext()!.key) throw new AccountPolicyError(409, "account_changed");
     try {
       const fresh = await getOrCreateAgent({ forceRefresh: true });
       if (fresh !== this.cachedAgentId) {
         log.info(`Agent refreshed: ${this.cachedAgentId ?? "none"} -> ${fresh ?? "none"}`);
         this.cachedAgentId = fresh;
+        this.savedTurnCount = this.turnCount;
         this.copilotSession = null; // reconnect so the new agent id takes effect
         this.currentAgentId = undefined;
         return true;
       }
     } catch (err: any) {
-      if (err instanceof CachePersistenceError) throw err;
+      if (err instanceof CachePersistenceError || err instanceof AccountPolicyError) throw err;
       log.info(`Agent refresh failed: ${err.message}`);
     }
     return false;
@@ -265,6 +286,7 @@ export class ModelSession implements TurnSession {
    * re-resolves it (cheap cache fast-path in the normal case).
    */
   reset() {
+    this.savedTurnCount = this.turnCount;
     this.copilotSession = null;
     this.cachedAgentId = undefined;
     this.currentAgentId = undefined;

@@ -6,7 +6,9 @@ import { AetherSession, containerConfig, resetRuntimeEndpoint, resetRuntimeTrack
 import { RuntimeLedger } from "./runtime-ledger.js";
 
 const RUNTIME = "https://runtime.test";
-const token = `h.${Buffer.from(JSON.stringify({ tid: "t1", oid: "o1" })).toString("base64url")}.s`;
+const tenant = "11111111-1111-1111-1111-111111111111";
+const user = "22222222-2222-2222-2222-222222222222";
+const token = `h.${Buffer.from(JSON.stringify({ tid: tenant, oid: user })).toString("base64url")}.s`;
 
 interface Call {
   url: string;
@@ -80,6 +82,20 @@ beforeEach(() => {
 afterEach(() => vi.unstubAllGlobals());
 
 describe("AetherSession", () => {
+  it("rejects a runtime service credential from a different scoped account before any HTTP", async () => {
+    const { withAccountContext } = await import("./account-policy.js");
+    const tid = "11111111-1111-1111-1111-111111111111";
+    const jwt = (oid: string) => `h.${Buffer.from(JSON.stringify({ tid, oid })).toString("base64url")}.s`;
+    const a = jwt(tid), b = jwt("22222222-2222-2222-2222-222222222222");
+    const dir = mkdtempSync(join(tmpdir(), "runtime-owner-"));
+    vi.stubEnv("M365_ACCOUNT_POLICY_PATH", join(dir, "state.sqlite"));
+    const fetch = vi.fn(); vi.stubGlobal("fetch", fetch);
+    try {
+      const session = new AetherSession({ mode: "cowork", getToken: async () => b });
+      await expect(withAccountContext({ getToken: async () => a }, () => session.run("private"))).rejects.toMatchObject({ code: "account_changed" });
+      expect(fetch).not.toHaveBeenCalled();
+    } finally { vi.unstubAllEnvs(); rmSync(dir, { recursive: true, force: true }); }
+  });
   it("streams a Cowork run's text, with its credits, and nothing from an earlier run", async () => {
     const { calls, fetchImpl } = fakeRuntime([answered(["Hel", "lo"])]);
     vi.stubGlobal("fetch", fetchImpl);
@@ -92,7 +108,7 @@ describe("AetherSession", () => {
     expect(session.turnCount).toBe(1);
 
     const message = calls.find((c) => c.url.endsWith("/v1/messages"))!;
-    expect(message.body).toMatchObject({ content: [{ text: "hi", type: "text" }], conversationId: `t1:o1:${session.conversationId}`, queue: true, role: "user" });
+    expect(message.body).toMatchObject({ content: [{ text: "hi", type: "text" }], conversationId: `${tenant}:${user}:${session.conversationId}`, queue: true, role: "user" });
     expect(message.headers["x-container-config"]).toBe("renderUi=true;durableArtifactsEnabled=true;acceptLanguage=en-us;model=gpt-6.2-sol:copilot");
     expect(message.headers["x-container-type"]).toBeUndefined();
     // The stream is read from the message on, so only this turn comes back.

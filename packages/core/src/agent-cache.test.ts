@@ -43,19 +43,21 @@ it("the real agent provisioning caller publishes a complete private cache", asyn
   await expect(getOrCreateAgent({ forceRefresh: true })).resolves.toBe("synthetic-title.synthetic-bot.gpt.default");
   if (process.platform !== "win32") expect(fs.statSync(path).mode & 0o777).toBe(0o600);
 });
-it("the real model run caller stops at cache failure before opening a chat session", async () => {
+it("the real scoped model run never touches the legacy shared agent cache", async () => {
   const path = join(root, ".config", "opencode-m365", "agent-id.json");
   fs.mkdirSync(path, { recursive: true });
   const { ModelSession } = await import("./model.js");
-  const token = `synthetic.${Buffer.from(JSON.stringify({ tid: "synthetic-tenant", oid: "synthetic-user" })).toString("base64url")}.synthetic`;
+  const token = `synthetic.${Buffer.from(JSON.stringify({ tid: "11111111-1111-1111-1111-111111111111", oid: "22222222-2222-2222-2222-222222222222" })).toString("base64url")}.synthetic`;
   const model = new ModelSession({ getToken: async () => token });
-  await expect(model.run("synthetic request", "m365-copilot", AbortSignal.abort())).rejects.toMatchObject({ name: "CachePersistenceError" });
+  await expect(model.run("synthetic request", "m365-copilot", AbortSignal.abort())).rejects.toMatchObject({ name: "AbortError" });
+  expect(fs.statSync(path).isDirectory()).toBe(true);
 });
-it("the real model refresh caller propagates cache publication failure", async () => {
-  const path = join(root, ".config", "opencode-m365", "agent-id.json");
-  fs.mkdirSync(path, { recursive: true });
+it("the real scoped model refresh propagates auth cache publication failure", async () => {
+  const blocked = join(root, "blocked");
+  fs.writeFileSync(blocked, "not a directory");
+  vi.stubEnv("M365_CACHE_FILE", join(blocked, "msal.json"));
   const { ModelSession } = await import("./model.js");
-  const token = `synthetic.${Buffer.from(JSON.stringify({ tid: "synthetic-tenant", oid: "synthetic-user" })).toString("base64url")}.synthetic`;
+  const token = `synthetic.${Buffer.from(JSON.stringify({ tid: "11111111-1111-1111-1111-111111111111", oid: "22222222-2222-2222-2222-222222222222" })).toString("base64url")}.synthetic`;
   const model = new ModelSession({ getToken: async () => token });
   await expect(model.refreshAgent()).rejects.toMatchObject({ name: "CachePersistenceError" });
 });

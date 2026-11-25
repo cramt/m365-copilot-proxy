@@ -5,7 +5,7 @@ import { ChatCompletionRequest } from "./schemas.js";
 
 // Replace only the physical transport via the native Vitest configuration.
 
-const token = `x.${Buffer.from(JSON.stringify({ oid: "synthetic", tid: "synthetic", aud: "test", iss: "test", exp: 9999999999 })).toString("base64url")}.x`;
+const token = `x.${Buffer.from(JSON.stringify({ oid: "11111111-1111-1111-1111-111111111111", tid: "22222222-2222-2222-2222-222222222222", aud: "test", iss: "test", exp: 9999999999 })).toString("base64url")}.x`;
 const expected = "x = [regex]::Replace(a)\nthen the rest";
 const oldTransport = process.env.M365_TRANSPORT;
 const oldIdle = process.env.M365_TURN_IDLE_MS;

@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { beforeEach, afterEach, describe, expect, it, vi } from "vitest";
 import { EventEmitter } from "node:events";
 
 const wire = vi.hoisted(() => ({ sockets: [] as any[], asyncClose: false }));
@@ -21,7 +21,12 @@ vi.mock("ws", async () => {
 vi.mock("./auth.js", () => ({ getToken: vi.fn() }));
 vi.mock("./agent.js", () => ({ getOrCreateAgent: vi.fn() }));
 import { CopilotSession } from "./session.js";
-const token = `x.${Buffer.from(JSON.stringify({ oid: "oid", tid: "tid", aud: "test", iss: "test", exp: 9999999999 })).toString("base64url")}.x`;
+import { ModelSession } from "./model.js";
+import { mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+beforeEach(() => { process.env.M365_ACCOUNT_POLICY_PATH = join(mkdtempSync(join(tmpdir(), "connection-policy-")), "state.sqlite"); });
+const token = `x.${Buffer.from(JSON.stringify({ oid: "11111111-1111-1111-1111-111111111111", tid: "22222222-2222-2222-2222-222222222222", aud: "test", iss: "test", exp: 9999999999 })).toString("base64url")}.x`;
 const frame = (ws: EventEmitter, value: unknown) => ws.emit("message", Buffer.from(JSON.stringify(value) + "\x1e"));
 afterEach(() => { vi.useRealTimers(); delete process.env.M365_TURN_IDLE_MS; delete process.env.M365_TRANSPORT; wire.sockets = []; wire.asyncClose = false; });
 
@@ -33,6 +38,7 @@ describe("terminal frames with an asynchronous closing handshake", () => {
     const remove = vi.spyOn(controller.signal, "removeEventListener");
     const session = new CopilotSession(nativeActions ? { nativeActions: { capabilities: [] } } : {});
     const pending = session.chat(token, "hello", undefined, controller.signal);
+    await Promise.resolve();
     const ws = wire.sockets[0];
     frame(ws, {});
     return { ws, stream: await pending, controller, remove };
@@ -81,12 +87,12 @@ describe("terminal frames with an asynchronous closing handshake", () => {
     vi.useFakeTimers(); process.env.M365_TURN_IDLE_MS = "100";
     wire.asyncClose = true;
     const controller = new AbortController(); controller.abort();
-    const pending = new CopilotSession().chat(token, "hello", undefined, controller.signal);
-    const rejected = expect(pending).rejects.toThrow(/closed before handshake/);
+    const p = new CopilotSession().chat(token, "hello", undefined, controller.signal);
+    const rejected = expect(p).rejects.toMatchObject({ name: "AbortError" });
     await vi.advanceTimersByTimeAsync(0);
     expect(vi.getTimerCount()).toBe(0);
     await rejected;
-    expect(wire.sockets[0].sent).toEqual([]);
+    expect(wire.sockets).toHaveLength(0);
   });
 
   it("still times out a silent resumed native action", async () => {
@@ -124,6 +130,52 @@ describe("terminal frames with an asynchronous closing handshake", () => {
 });
 
 describe("silent turn recovery", () => {
+  it("keeps isStartOfSession false on the actual wire after a same-conversation reset", async () => {
+    const model = new ModelSession({ useAgent: false, getToken: async () => token });
+    const starts: boolean[] = [];
+    const conversations: string[] = [];
+    for (let i = 0; i < 3; i++) {
+      if (i === 1) model.reset();
+      if (i === 2) model.newConversation();
+      const pending = model.run("hello", "gpt-5.6", undefined, false);
+      // run() first awaits the injected token; no auth or network is involved.
+      await Promise.resolve();
+      const ws = wire.sockets[i];
+      frame(ws, {});
+      const stream = await pending;
+      const chat = ws.sent.flatMap((data: string) => data.split("\x1e").filter(Boolean).map((part) => JSON.parse(part)))
+        .find((message: any) => message.target === "chat");
+      starts.push(chat.arguments[0].isStartOfSession);
+      conversations.push(model.conversationId);
+      frame(ws, { type: 2, item: {} });
+      expect((await stream[Symbol.asyncIterator]().next()).done).toBe(true);
+    }
+    expect(starts).toEqual([true, false, true]);
+    expect(conversations[1]).toBe(conversations[0]);
+    expect(conversations[2]).not.toBe(conversations[0]);
+  });
+  it("forwards reasoning callbacks through the direct model account scope", async () => {
+    const model = new ModelSession({ useAgent: false, getToken: async () => token });
+    const pieces: string[] = [];
+    const pending = model.run("hello", "gpt-5.6", undefined, false, [], undefined, { onReasoning: piece => pieces.push(piece) });
+    await Promise.resolve();
+    const ws = wire.sockets[0]; frame(ws, {}); const stream = await pending;
+    frame(ws, { type: 1, target: "update", arguments: [{ messages: [{ author: "bot", messageId: "thought-1", messageType: "Progress", contentOrigin: "ChainOfThoughtSummary", text: "thinking" }] }] });
+    frame(ws, { type: 2, item: { result: { value: "Success" } } });
+    await stream[Symbol.asyncIterator]().next();
+    expect(pieces).toEqual(["thinking"]);
+  });
+  it("keeps direct-run account scope alive for streamed throttle accounting", async () => {
+    const model = new ModelSession({ useAgent: false, getToken: async () => token });
+    const pending = model.run("hello", "gpt-5.6", undefined, false);
+    await Promise.resolve();
+    const ws = wire.sockets[0]; frame(ws, {}); const stream = await pending;
+    frame(ws, { type: 2, item: { result: { value: "Throttled" } } });
+    await stream[Symbol.asyncIterator]().next();
+    const before = wire.sockets.length;
+    await expect(model.run("again", "gpt-5.6", undefined, false)).rejects.toMatchObject({ code: "account_throttle_hold" });
+    expect(wire.sockets).toHaveLength(before);
+  });
   it("rejects when silent before handshake", async () => {
     vi.useFakeTimers(); process.env.M365_TURN_IDLE_MS = "100";
     const p = new CopilotSession().chat(token, "hello");
@@ -134,6 +186,7 @@ describe("silent turn recovery", () => {
   it("surfaces post-handshake silence to the stream", async () => {
     vi.useFakeTimers(); process.env.M365_TURN_IDLE_MS = "100";
     const p = new CopilotSession().chat(token, "hello");
+    await Promise.resolve();
     frame(wire.sockets[0], {});
     const stream = await p;
     const rejected = expect(stream[Symbol.asyncIterator]().next()).rejects.toThrow(/No response/);
@@ -143,6 +196,7 @@ describe("silent turn recovery", () => {
   it("resets the idle deadline on activity and cleans up on success", async () => {
     vi.useFakeTimers(); process.env.M365_TURN_IDLE_MS = "100";
     const p = new CopilotSession().chat(token, "hello");
+    await Promise.resolve();
     const ws = wire.sockets[0];
     await vi.advanceTimersByTimeAsync(75);
     frame(ws, {});
@@ -158,6 +212,7 @@ describe("silent turn recovery", () => {
   it("cleans up after a socket error", async () => {
     vi.useFakeTimers(); process.env.M365_TURN_IDLE_MS = "100";
     const p = new CopilotSession().chat(token, "hello");
+    await Promise.resolve();
     const ws = wire.sockets[0]; frame(ws, {});
     const stream = await p;
     ws.emit("error", new Error("test failure"));
@@ -169,6 +224,7 @@ describe("silent turn recovery", () => {
     vi.useFakeTimers(); process.env.M365_TURN_IDLE_MS = "100";
     const controller = new AbortController();
     const p = new CopilotSession().chat(token, "hello", undefined, controller.signal);
+    await Promise.resolve();
     const ws = wire.sockets[0]; frame(ws, {});
     const stream = await p;
     controller.abort();
@@ -183,6 +239,7 @@ describe("silent turn recovery", () => {
     const controller = new AbortController();
     const p = new CopilotSession().chat(token, "hello", undefined, controller.signal);
     const rejected = expect(p).rejects.toThrow(/closed before handshake/);
+    await Promise.resolve();
     controller.abort();
     await rejected;
     await vi.advanceTimersByTimeAsync(3000);
@@ -241,6 +298,7 @@ describe("a turn's text is settled the same way however the turn ends", () => {
     if (transport === "streamhub") process.env.M365_TRANSPORT = "streamhub";
     wire.asyncClose = true; // close() leaves the socket open: only the proxy's own ending can finish the turn
     const pending = new CopilotSession().chat(token, "hello");
+    await Promise.resolve();
     const ws = wire.sockets[0];
     frame(ws, {});
     const stream = await pending;
@@ -293,5 +351,128 @@ describe("a turn's text is settled the same way however the turn ends", () => {
     });
     expect(ws.readyState).toBe(2);
     expect(stream.result).toEqual({ value: "Throttled", errorCode: "PerUserThrottled", message: "slow down" });
+  });
+});
+
+describe("native account custody at every public chat boundary", () => {
+  it.each([false, true])("pre-abort leaves no account debit, socket or turn mutation (scoped=%s)", async scoped => {
+    const { withAccountContext } = await import("./account-policy.js");
+    const { DatabaseSync } = await import("node:sqlite");
+    const session = new CopilotSession();
+    const controller = new AbortController(); controller.abort();
+    await withAccountContext({ getToken: async () => token }, async () => {});
+    const chat = () => session.chat(token, "cancelled", undefined, controller.signal);
+    await expect(scoped ? withAccountContext({ getToken: async () => token }, chat) : chat()).rejects.toThrow();
+    const db = new DatabaseSync(process.env.M365_ACCOUNT_POLICY_PATH!);
+    const attempted = db.prepare("SELECT count(*) AS n FROM attempts").get()?.n; db.close();
+    expect(attempted).toBe(0);
+    expect(session.turnCount).toBe(0); expect(wire.sockets).toHaveLength(0);
+    const pending = session.chat(token, "valid"); await Promise.resolve();
+    frame(wire.sockets[0], {}); const stream = await pending;
+    frame(wire.sockets[0], { type: 2, item: {} }); await stream[Symbol.asyncIterator]().next();
+    expect(session.turnCount).toBe(1);
+  });
+  it("does not revive an admission cancelled after its refill timer resolves", async () => {
+    vi.useFakeTimers();
+    const { withAccountContext, admitAccountAttempt } = await import("./account-policy.js");
+    const { DatabaseSync } = await import("node:sqlite");
+    Object.assign(process.env, { M365_AVOID_THROTTLING: "1", M365_BUDGET_CAPACITY: "1", M365_BUDGET_REFILL: "60", M365_BUDGET_RESERVE: "0", M365_BUDGET_MAX_WAIT_MIN: "1" });
+    try {
+      await withAccountContext({ getToken: async () => token }, async () => admitAccountAttempt(true));
+      const abort = new AbortController(); const session = new CopilotSession();
+      const pending = session.chat(token, "wait", undefined, abort.signal);
+      const rejected = expect(pending).rejects.toThrow();
+      await Promise.resolve();
+      vi.advanceTimersByTime(1000);
+      abort.abort();
+      await rejected;
+      const db = new DatabaseSync(process.env.M365_ACCOUNT_POLICY_PATH!);
+      const attempts = db.prepare("SELECT count(*) AS n FROM attempts").get()?.n; db.close();
+      expect(attempts).toBe(1); expect(session.turnCount).toBe(0); expect(wire.sockets).toHaveLength(0);
+      const good = session.chat(token, "next"); await Promise.resolve();
+      frame(wire.sockets[0], {}); const stream = await good; frame(wire.sockets[0], { type: 2, item: {} });
+      await stream[Symbol.asyncIterator]().next(); expect(session.turnCount).toBe(1);
+    } finally { for (const name of ["M365_AVOID_THROTTLING", "M365_BUDGET_CAPACITY", "M365_BUDGET_REFILL", "M365_BUDGET_RESERVE", "M365_BUDGET_MAX_WAIT_MIN"]) delete process.env[name]; }
+  });
+  it("waits for native account refill without double debit and cancels a waiting chat", async () => {
+    vi.useFakeTimers();
+    const {withAccountContext,admitAccountAttempt} = await import("./account-policy.js");
+    const {DatabaseSync} = await import("node:sqlite");
+    Object.assign(process.env,{M365_AVOID_THROTTLING:"1",M365_BUDGET_CAPACITY:"1",M365_BUDGET_REFILL:"60",M365_BUDGET_RESERVE:"0",M365_BUDGET_MAX_WAIT_MIN:"1"});
+    try {
+      await withAccountContext({getToken:async()=>token},async()=>admitAccountAttempt(true));
+      const pending=new CopilotSession().chat(token,"wait"); await Promise.resolve();
+      expect(wire.sockets).toHaveLength(0);
+      await vi.advanceTimersByTimeAsync(1000);
+      const ws=wire.sockets[0]; frame(ws,{}); const stream=await pending;
+      frame(ws,{type:2,item:{}}); await stream[Symbol.asyncIterator]().next();
+      const controller=new AbortController(); const waiting=new CopilotSession().chat(token,"cancel",undefined,controller.signal);
+      const rejection=expect(waiting).rejects.toMatchObject({name:"AbortError"}); await Promise.resolve(); controller.abort(); await rejection;
+      const db=new DatabaseSync(process.env.M365_ACCOUNT_POLICY_PATH!); expect(db.prepare("SELECT count(*) AS n FROM attempts").get()?.n).toBe(2); db.close();
+      expect(wire.sockets).toHaveLength(1); expect(vi.getTimerCount()).toBe(0);
+    } finally { for(const name of ["M365_AVOID_THROTTLING","M365_BUDGET_CAPACITY","M365_BUDGET_REFILL","M365_BUDGET_RESERVE","M365_BUDGET_MAX_WAIT_MIN"]) delete process.env[name]; }
+  });
+
+  it("journals direct and scoped chats once and refuses mismatched principals and exhausted attempts", async () => {
+    const { withAccountContext } = await import("./account-policy.js");
+    const { DatabaseSync } = await import("node:sqlite");
+    const session = new CopilotSession();
+    const p = session.chat(token, "direct"); await Promise.resolve();
+    frame(wire.sockets[0], {}); const direct = await p;
+    frame(wire.sockets[0], { type: 2, item: {} }); await direct[Symbol.asyncIterator]().next();
+    process.env.M365_REQUEST_MAX_ATTEMPTS = "1";
+    try {
+      await withAccountContext({getToken: async () => token}, async () => {
+        const pending = session.chat(token, "scoped"); frame(wire.sockets[1], {});
+        const stream = await pending; frame(wire.sockets[1], {type:2,item:{}}); await stream[Symbol.asyncIterator]().next();
+        await expect(session.chat(token, "over limit")).rejects.toMatchObject({code:"request_attempt_limit"});
+        const other = `x.${Buffer.from(JSON.stringify({tid:"33333333-3333-3333-3333-333333333333",oid:"11111111-1111-1111-1111-111111111111"})).toString("base64url")}.x`;
+        await expect(session.chat(other, "wrong account")).rejects.toMatchObject({code:"account_changed"});
+      });
+    } finally { delete process.env.M365_REQUEST_MAX_ATTEMPTS; }
+    expect(wire.sockets).toHaveLength(2);
+    const db = new DatabaseSync(process.env.M365_ACCOUNT_POLICY_PATH!);
+    expect(db.prepare("SELECT count(*) AS n FROM attempts").get()?.n).toBe(2); db.close();
+  });
+  it("always enforces persisted throttle hold on direct chat with avoidance off", async () => {
+    const { withAccountContext, noteAccountThrottle } = await import("./account-policy.js");
+    await withAccountContext({getToken:async()=>token}, async()=>noteAccountThrottle());
+    await expect(new CopilotSession().chat(token,"held")).rejects.toMatchObject({code:"account_throttle_hold"});
+    expect(wire.sockets).toHaveLength(0);
+  });
+  it.each(["leases", "accounts"])("settles a genuine ModelSession stream and disposes timers after %s storage failure", async table => {
+    vi.useFakeTimers(); wire.asyncClose = true;
+    const { DatabaseSync } = await import("node:sqlite");
+    const controller = new AbortController(); const remove = vi.spyOn(controller.signal,"removeEventListener");
+    const model = new ModelSession({useAgent:false,getToken:async()=>token});
+    const pending = model.run("native",undefined,controller.signal,false); await Promise.resolve();
+    const ws = wire.sockets[0]; frame(ws,{}); const stream = await pending;
+    const iterator = stream[Symbol.asyncIterator](); const result = iterator.next();
+    const rejection = expect(result).rejects.toMatchObject({code:"account_policy_unavailable"});
+    const db = new DatabaseSync(process.env.M365_ACCOUNT_POLICY_PATH!); db.exec(`DROP TABLE ${table}`); db.close();
+    expect(() => frame(ws,{type:2,item:{result:{value:table === "accounts" ? "Throttled" : "Success"}}})).not.toThrow();
+    await rejection;
+    expect(ws.readyState).not.toBe(1); expect(vi.getTimerCount()).toBe(0);
+    expect(remove).toHaveBeenCalledWith("abort",expect.any(Function));
+    expect(() => {ws.emit("close");ws.emit("error",new Error("late"));}).not.toThrow();
+    await expect(iterator.next()).rejects.toMatchObject({code:"account_policy_unavailable"});
+  });
+  it("renews the actual active stream lease across its original expiry and fences stolen generations", async () => {
+    vi.useFakeTimers(); process.env.M365_TURN_IDLE_MS = "60000";
+    const {withAccountContext, leaseAccountRoute, noteAccountRoute, accountRouteDimension} = await import("./account-policy.js");
+    const {DatabaseSync} = await import("node:sqlite");
+    const tone = "Gpt_6_Sol_Reasoning"; let dimension = "";
+    const stream = await withAccountContext({getToken:async()=>token}, async()=>{
+      leaseAccountRoute(tone); dimension = accountRouteDimension(tone);
+      const pending = new CopilotSession().chat(token,"long"); frame(wire.sockets[0],{}); return pending;
+    });
+    const ws = wire.sockets[0];
+    for(let i=0;i<5;i++){ await vi.advanceTimersByTimeAsync(29000); frame(ws,{type:6}); }
+    await expect(withAccountContext({getToken:async()=>token},async()=>leaseAccountRoute(tone))).rejects.toMatchObject({code:"route_probe_busy"});
+    const db = new DatabaseSync(process.env.M365_ACCOUNT_POLICY_PATH!);
+    db.prepare("UPDATE leases SET owner=? WHERE dimension=?").run("99999999-9999-9999-9999-999999999999",dimension); db.close();
+    const failure = expect(stream[Symbol.asyncIterator]().next()).rejects.toMatchObject({code:"account_policy_unavailable"});
+    expect(()=>frame(ws,{type:6})).not.toThrow(); await failure;
+    expect(ws.readyState).toBe(3); expect(vi.getTimerCount()).toBe(0);
   });
 });

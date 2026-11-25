@@ -1,6 +1,12 @@
+import { canonicalHash, validateCanonicalInput } from "./canonical-hash.js";
+export { canonicalHash } from "./canonical-hash.js";
+import { requestContext, RequestContextError, type RequestContext } from "./request-context.js";
 import {
   ModelSession,
   AetherSession,
+  AccountPolicyError,
+  withAccountContext,
+  assertAccountToken,
   type ModelSessionOptions,
   type TurnSession,
   type CopilotStream,
@@ -89,7 +95,7 @@ const log = createLogger("handler");
 async function renderImagesMarkdown(images: CapturedImage[]): Promise<string> {
   if (images.length === 0) return "";
   let artifactToken: string | null = null;
-  try { artifactToken = await getImageArtifactToken(); } catch (e: any) { log.info(`image token failed: ${e.message}`); }
+  try { artifactToken = await getImageArtifactToken(); if (artifactToken) assertAccountToken(artifactToken); } catch (e: any) { if (e instanceof AccountPolicyError) throw e; log.info(`image token failed: ${e.message}`); }
   const parts: string[] = [];
   for (const img of images) {
     const url = img.referenceUrls[0];
@@ -213,6 +219,11 @@ function recoveryPrompt(body: ChatBody, reason: "confab" | "remote" | "halluc", 
 // --- Per-conversation state ---
 
 interface ConversationState {
+  scope: string;
+  accountKey: string;
+  busy?: boolean;
+  expectedHash?: string;
+  expectedLength?: number;
   session: TurnSession;
   sentMessageCount: number;
   lastAccessedAt: number;
@@ -316,13 +327,20 @@ const MAX_CONVERSATIONS = 1000;
  *  M365 kept a 420k-character opening and dropped a 540k one (§46 F125). */
 const UNKEPT_OPENING_MIN_CHARS = 200_000;
 
+
+function lineage(messages: ParsedMessage[]): string[] {
+  let previous = "";
+  return messages.map(m => previous = canonicalHash([previous, { ...m, content: m.content ?? null }]));
+}
+const MAX_IDLE_MS = 30 * 60 * 1000;
+interface StoredResponse { hash: string; status?: number; headers?: [string, string][]; bytes?: Uint8Array; at: number }
 export class SessionPool {
   /** Keyed by fingerprint (first user message + tool names, scoped to
    *  sessionKey when given). Several can share one: two pi sessions opened with
    *  "merhaba", parallel subagents given one prompt, a session resumed after
    *  another started the same way. */
   private conversations = new Map<string, ConversationState[]>();
-  private sessionOptions: ModelSessionOptions;
+  readonly sessionOptions: ModelSessionOptions;
   /** Runs evictStale while the pool holds runtime conversations (RUNTIME_SWEEP_MS). */
   private runtimeSweep: ReturnType<typeof setInterval> | null = null;
   /** Per model: the shortest answered opening (chars, at least
@@ -332,6 +350,25 @@ export class SessionPool {
 
   constructor(sessionOptions: ModelSessionOptions = {}) {
     this.sessionOptions = sessionOptions;
+  }
+  private locks = new Map<string, Promise<void>>();
+  private admissions = 0;
+  readonly receipts = new Map<string, StoredResponse>();
+  async acquire(key: string, signal?: AbortSignal): Promise<() => void> {
+    if (this.admissions >= 1024) throw new RequestContextError("Admission capacity reached", 503, "conversation_capacity");
+    this.admissions++;
+    const prior = this.locks.get(key) ?? Promise.resolve();
+    let release!: () => void;
+    const current = new Promise<void>(r => { release = r; });
+    const tail = prior.then(() => current);
+    this.locks.set(key, tail);
+    let abort!: () => void;
+    const aborted = new Promise<never>((_, reject) => { abort = () => reject(new RequestContextError("Request aborted", 499, "request_aborted")); signal?.addEventListener("abort", abort, { once: true }); });
+    try { if (signal?.aborted) abort(); await Promise.race([prior, aborted]); }
+    catch (err) { this.admissions--; release(); void tail.then(() => { if (this.locks.get(key) === tail) this.locks.delete(key); }); throw err; }
+    finally { signal?.removeEventListener("abort", abort); }
+    let released = false;
+    return () => { if (released) return; released = true; this.admissions--; release(); if (this.locks.get(key) === tail) this.locks.delete(key); };
   }
 
   /** The longest turn M365 has been seen not to keep for `model` (§46 F125).
@@ -375,18 +412,24 @@ export class SessionPool {
    * that rewrites old replies still continues; with several, guessing would put
    * one session's turn into another's thread.
    */
-  resolve(messages: ParsedMessage[], tools?: ChatBody["tools"], sessionKey?: string, backend: Backend = "chat"): ConversationState {
+  resolve(messages: ParsedMessage[], tools?: ChatBody["tools"], context: RequestContext = {}, accountKey = "unscoped", backend: Backend = "chat", sessionKey?: string): ConversationState {
     this.evictStale();
-
-    const fingerprint = this.fingerprint(messages, tools, sessionKey, backend);
-    const bucket = this.conversations.get(fingerprint) ?? [];
-    const candidates = bucket.filter((s) => s.activeRequests === 0 && messages.length > s.sentMessageCount);
-    const own = candidates.find((s) => s.lastReply !== null && s.lastReply === replyKey(messages[s.sentMessageCount]))
-      ?? (bucket.length === 1 ? candidates[0] : undefined);
-    if (own) {
+    const scope = canonicalHash([context.trustedPrincipal ?? "local", context.sessionHint ?? sessionKey ?? null, backend, [...new Set((tools ?? []).map(t => t.function.name))].sort()]);
+    const hashes = lineage(messages);
+    const candidates = [...this.conversations.values()].flat().filter(s => s.scope === scope && !s.busy && s.activeRequests === 0 && s.expectedLength !== undefined && messages.length > s.expectedLength && hashes[s.expectedLength - 1] === s.expectedHash);
+    if (candidates.length === 1) {
+      const own = candidates[0];
       own.lastAccessedAt = Date.now();
+      if (own.accountKey !== accountKey) {
+        own.session.close?.();
+        own.session = backend === "chat" ? new ModelSession(this.sessionOptions) : new AetherSession({ mode: backend });
+        own.sentMessageCount = 0; own.pendingNote = null; own.chain = null; own.lastReply = null;
+        own.servedModel = undefined; own.openingChars = 0; own.openingAnswered = false; own.replayNext = false;
+        own.accountKey = accountKey;
+      }
       return own;
     }
+    const fingerprint = scope;
 
     // Not a continuation of any of them: a new session that shares the first
     // user message — two pi sessions opened with the same prompt, even in
@@ -406,6 +449,8 @@ export class SessionPool {
     else log.info(`New conversation ${fingerprint}, ${this.size} active`);
     const runtime = backend !== "chat";
     const state: ConversationState = {
+      scope,
+      accountKey,
       session: runtime ? new AetherSession({ mode: backend }) : new ModelSession(this.sessionOptions),
       sentMessageCount: 0,
       pendingNote: null,
@@ -449,6 +494,16 @@ export class SessionPool {
     return simpleHash(backend === "chat" ? scoped : `${backend}\u0001${scoped}`);
   }
 
+  commit(state: ConversationState, body: ChatBody, assistant: ParsedMessage) {
+    try {
+      const hashes = lineage([...body.messages, assistant]);
+      state.expectedHash = hashes.at(-1); state.expectedLength = hashes.length; state.lastAccessedAt = Date.now();
+    } catch (err) {
+      if (!(err instanceof RequestContextError) || err.code !== "request_structure_limit") throw err;
+      state.expectedHash = undefined; state.expectedLength = undefined;
+    }
+  }
+
   private evictStale() {
     const now = Date.now();
     const ttl = conversationTtlMs();
@@ -456,7 +511,7 @@ export class SessionPool {
     for (const [key, bucket] of this.conversations) {
       const live: ConversationState[] = [];
       for (const s of bucket) {
-        if (s.activeRequests > 0 || now - s.lastAccessedAt <= (s.runtime ? runtimeTtl : ttl)) {
+        if (s.busy || s.activeRequests > 0 || now - s.lastAccessedAt <= (s.runtime ? runtimeTtl : ttl)) {
           live.push(s);
         } else {
           s.session.close?.();
@@ -489,10 +544,11 @@ export class SessionPool {
     const all: Array<{ key: string; state: ConversationState }> = [];
     for (const [key, bucket] of this.conversations) {
       for (const state of bucket) {
-        if (state.activeRequests === 0) all.push({ key, state });
+        if (!state.busy && state.activeRequests === 0) all.push({ key, state });
       }
     }
     all.sort((a, b) => a.state.lastAccessedAt - b.state.lastAccessedAt);
+    if (all.length < total - MAX_CONVERSATIONS + 1) throw new RequestContextError("Conversation capacity reached", 503, "conversation_capacity");
     for (const { key, state } of all.slice(0, total - MAX_CONVERSATIONS + 1)) {
       log.info(`Evicting conversation ${key} (pool full)`);
       const bucket = this.conversations.get(key);
@@ -667,10 +723,113 @@ export function formatDeltaMessages(messages: ParsedMessage[], history: ParsedMe
  * Handle a chat completion request, returning an OpenAI-compatible Response.
  * The SessionPool routes each conversation to its own ModelSession.
  */
-export async function handleChatCompletion(
+export async function handleChatCompletion(body: ChatBody, pool: SessionPool, opts: RequestContext = {}): Promise<Response> {
+  try {
+    validateCanonicalInput(body);
+    const controller = new AbortController();
+    const combinedSignal = opts.signal ? AbortSignal.any([opts.signal, controller.signal]) : controller.signal;
+    const bodyContext = requestContext(body);
+    const explicitHeaders = new Headers();
+    if (opts.sessionHint !== undefined) explicitHeaders.set("x-opencode-session", opts.sessionHint);
+    if (opts.idempotencyKey !== undefined) explicitHeaders.set("idempotency-key", opts.idempotencyKey);
+    const context = { ...bodyContext, ...opts, ...requestContext(body, explicitHeaders), signal: combinedSignal };
+    // Caller IDs are affinity hints only. Account resolution precedes every state lookup.
+    return await new Promise<Response>((deliver, reject) => {
+    void withAccountContext(pool.sessionOptions, async (accountKey: string) => {
+      let producerStarted = false;
+      let producerDone!: () => void;
+      const completed = new Promise<void>(resolve => { producerDone = resolve; });
+      const dispatch = async (): Promise<Response> => {
+      const scope = canonicalHash([accountKey, context.trustedPrincipal ?? "local"]);
+      const key = context.idempotencyKey ? canonicalHash([scope, context.idempotencyKey]) : undefined;
+      const hash = canonicalHash([body, context.userAgent ?? null, context.sessionHint ?? null]);
+      const now = Date.now();
+      for (const [id, entry] of pool.receipts) if (entry.bytes && now - entry.at > MAX_IDLE_MS) pool.receipts.delete(id);
+      let ownedReceipt: StoredResponse | undefined;
+      const discardReceipt = () => { if (key && pool.receipts.get(key) === ownedReceipt) pool.receipts.delete(key); };
+      if (key) {
+        const receipt = pool.receipts.get(key);
+        if (receipt) {
+          if (context.signal.aborted) return jsonResponse(499, { error: { message: "Request aborted", type: "invalid_request_error", code: "request_aborted" } });
+          if (receipt.hash !== hash) return jsonResponse(409, { error: { message: "Idempotency key used with a different payload", type: "invalid_request_error", code: "idempotency_conflict" } }, { "x-should-retry": "false" });
+          if (receipt.bytes) return new Response(new Uint8Array(receipt.bytes), { status: receipt.status, headers: receipt.headers });
+          return jsonResponse(409, { error: { message: "Request still pending", type: "invalid_request_error", code: "idempotency_pending" } }, { "Retry-After": "1" });
+        }
+        while (pool.receipts.size >= 128) {
+          const oldest = [...pool.receipts].find(([,v]) => v.bytes);
+          if (!oldest) throw new RequestContextError("Idempotency capacity reached", 503, "idempotency_capacity");
+          pool.receipts.delete(oldest[0]);
+        }
+        ownedReceipt = { hash, at: now };
+        pool.receipts.set(key, ownedReceipt);
+      }
+      let release: (() => void) | undefined;
+      let conv: ConversationState | undefined;
+      let finished = false;
+      let successful = false;
+      context.signal.addEventListener("abort", discardReceipt, { once: true });
+      const finish = (success = false) => {
+        if (finished) return; finished = true; successful = success;
+        context.signal.removeEventListener("abort", discardReceipt);
+        if (conv) { conv.busy = false; if (!success) { conv.expectedHash = undefined; conv.expectedLength = undefined; } }
+        release?.(); producerDone();
+      };
+      try {
+        // One admitted producer per logical owner/substream. Anonymous requests use a
+        // common admission lane because no caller-supplied owner can be trusted.
+        release = await pool.acquire(canonicalHash([context.trustedPrincipal ?? "local", context.sessionHint ?? null, [...new Set((body.tools ?? []).map(t => t.function.name))].sort()]), context.signal);
+        if (context.signal?.aborted) throw new RequestContextError("Request aborted", 499, "request_aborted");
+        const route = resolveModelRoute(body.model);
+        if (route.error) { finish(); discardReceipt(); return jsonResponse(400, { error: { message: route.error, type: "invalid_request_error", code: "model_backend_not_enabled", param: "model" } }); }
+        conv = pool.resolve(body.messages, body.tools, context, accountKey, route.backend, body.prompt_cache_key ?? body.user);
+        conv.busy = true; producerStarted = true;
+        const response = await dispatchChatCompletion(body, pool, context, conv, finish, controller, key ? (bytes) => {
+          const receipt = pool.receipts.get(key);
+          if (receipt !== ownedReceipt) return;
+          if (receipt && bytes && successful && !context.signal?.aborted) { receipt.bytes = bytes; receipt.status = 200; receipt.headers = [["Content-Type", "text/event-stream"], ["Cache-Control", "no-cache"]]; }
+          else discardReceipt();
+        } : undefined);
+        const isSse = response.headers.get("Content-Type")?.includes("text/event-stream") === true;
+        if (!key) {
+          if (!isSse) finish(response.ok && !context.signal?.aborted);
+          return response;
+        }
+        if (!isSse) {
+          const bytes = new Uint8Array(await response.arrayBuffer());
+          const buffered = new Response(bytes, { status: response.status, headers: response.headers });
+          const receipt = pool.receipts.get(key);
+          if (receipt === ownedReceipt && receipt && response.ok && !context.signal?.aborted && bytes.byteLength <= 1024 * 1024) {
+            receipt.bytes = bytes; receipt.status = response.status; receipt.headers = [...response.headers];
+          } else discardReceipt();
+          finish(response.ok && !context.signal?.aborted);
+          return buffered;
+        }
+        return response;
+      } catch (err) { finish(); discardReceipt(); throw err; }
+      };
+      const response = await dispatch();
+      deliver(response);
+      // Keep core's account context (including policy storage) alive after HTTP
+      // headers. ALS propagation alone cannot extend its resource lifetime.
+      if (producerStarted) await completed;
+      return response;
+    }).catch(reject);
+    });
+  } catch (err) {
+    if (err instanceof AccountPolicyError) return accountPolicyResponse(err);
+    if (err instanceof RequestContextError) return jsonResponse(err.status, { error: { message: err.message, type: "invalid_request_error", code: err.code } });
+    throw err;
+  }
+}
+
+async function dispatchChatCompletion(
   request: ChatBody,
   pool: SessionPool,
-  opts: { signal?: AbortSignal; userAgent?: string | null } = {},
+  opts: RequestContext,
+  conv: ConversationState,
+  finish: (success?: boolean) => void,
+  cancellation: AbortController,
+  streamComplete?: (bytes: Uint8Array | undefined) => void,
 ): Promise<Response> {
   // copilot-api's Codex tool tips contradict the shell routing; Claude Code's and
   // Codex's identity lines and reminders read as injections (M365_HARNESS_PROMPT,
@@ -692,7 +851,6 @@ export async function handleChatCompletion(
   // Chat's throttle, priority-access budgets, tool agent and Bing plugin don't apply to the agent runtime.
   const chat = route.backend === "chat";
   const noteOutcome = (throttled: boolean, cid: string) => { if (chat) noteRequestOutcome(throttled, cid); };
-  const conv = pool.resolve(body.messages, body.tools, body.prompt_cache_key ?? body.user, route.backend);
   const { session } = conv;
   // The harness saved a long command to a script (longCommandAsScript); run it.
   const last = body.messages[body.messages.length - 1];
@@ -1074,6 +1232,7 @@ export async function handleChatCompletion(
           // ModelSession.run / docs H8.6.
           copilotStream = await session.run(text, model, signal, useToolAgent, inputAttachments, waitForBudget, { ...turnOptions, onReasoning: reasoningSink() });
         } catch (err: any) {
+          if (err instanceof AccountPolicyError) return { error: accountPolicyResponse(err) };
           if (err instanceof TurnBudgetHold) return { error: turnBudgetHoldResponse(err) };
           return { error: jsonResponse(502, { error: { message: err.message, type: "upstream_error" } }) };
         }
@@ -1113,8 +1272,9 @@ export async function handleChatCompletion(
         if (copilotStream.fullText && copilotStream.fullText.length > fullText.length) {
           fullText = copilotStream.fullText;
         }
-      } catch (err: any) {
-        return { error: jsonResponse(502, { error: { message: err.message, type: "upstream_error" } }) };
+      } catch (err: unknown) {
+        if (err instanceof AccountPolicyError) return { error: accountPolicyResponse(err) };
+        return { error: jsonResponse(502, { error: { message: err instanceof Error ? err.message : "upstream error", type: "upstream_error" } }) };
       }
 
       // Image gen (§14): the picture arrives on a GraphicArt frame, usually with NO
@@ -1809,6 +1969,7 @@ export async function handleChatCompletion(
   if (!body.stream) {
     const p = await produceTurn();
     if (p.kind === "error") return p.resp;
+    if (!opts.signal?.aborted) pool.commit(conv, request, p.kind === "tools" ? { role: "assistant", content: p.narration ?? null, tool_calls: p.toolCalls } : { role: "assistant", content: p.text });
     const thought = reasoning ? { reasoning_content: reasoning } : {};
     if (p.kind === "tools") {
       return jsonResponse(200, {
@@ -1835,7 +1996,21 @@ export async function handleChatCompletion(
   return sseResponse(new ReadableStream({
     async start(controller) {
       const enc = new TextEncoder();
-      const send = (obj: unknown) => controller.enqueue(enc.encode(`data: ${JSON.stringify(obj)}\n\n`));
+      let hb: ReturnType<typeof setInterval> | undefined;
+      let completed = false;
+      try {
+      let recorded: Uint8Array[] = [];
+      let recordedSize = 0;
+      let recordable = true;
+      const emit = (bytes: Uint8Array) => {
+        controller.enqueue(bytes);
+        if (streamComplete && recordable) {
+          recordedSize += bytes.length;
+          if (recordedSize <= 1024 * 1024) recorded.push(bytes);
+          else { recordable = false; recorded = []; }
+        }
+      };
+      const send = (obj: unknown) => emit(enc.encode(`data: ${JSON.stringify(obj)}\n\n`));
       const base = { id: completionId, object: "chat.completion.chunk", created, model: responseModel() };
       send({ ...base, choices: [{ index: 0, delta: { role: "assistant" }, finish_reason: null }] });
       // Keepalive: a REAL empty-delta chunk, not an SSE comment. Agents that track
@@ -1843,7 +2018,7 @@ export async function handleChatCompletion(
       // `last_chunk_time`, so a silent turn shows "N s without stream output" and can
       // trip its stale watchdog) see this as activity. No content is added — an empty
       // delta contributes nothing to the assembled message.
-      const hb = setInterval(() => {
+      hb = setInterval(() => {
         try { send({ ...base, choices: [{ index: 0, delta: {}, finish_reason: null }] }); } catch {}
       }, 15000);
       // The chain of thought goes out as it arrives (pi and opencode read
@@ -1873,21 +2048,23 @@ export async function handleChatCompletion(
           gated = false;
           delta = head; // release everything held so far, in order
         }
+        send({ ...base, choices: [{ index: 0, delta: { content: delta }, finish_reason: null }] });
         sent += delta;
-        try { send({ ...base, choices: [{ index: 0, delta: { content: delta }, finish_reason: null }] }); } catch {}
       };
       // A failed turn's text is dropped (runBuffered): the gate starts over for the retry.
       if (liveDelta) liveGate = { released: () => sent.length > 0, discard: () => { if (gated) head = ""; } };
 
       let p: Produced;
       try { p = await produceTurn(liveDelta); }
-      catch (err: any) { p = { kind: "error", resp: jsonResponse(502, { error: { message: err?.message ?? "stream error", type: "upstream_error" } }) }; }
+      catch (err: any) { p = { kind: "error", resp: err instanceof AccountPolicyError ? accountPolicyResponse(err) : jsonResponse(502, { error: { message: err?.message ?? "stream error", type: "upstream_error" } }) }; }
       clearInterval(hb);
-      try {
+      if (p.kind !== "error" && !opts.signal?.aborted) pool.commit(conv, request, p.kind === "tools" ? { role: "assistant", content: p.narration ?? null, tool_calls: p.toolCalls } : { role: "assistant", content: p.text });
         if (p.kind === "error") {
           let message = "upstream error";
           let type = "upstream_error";
           let code: string | undefined;
+          let status: number | undefined;
+          let retryable: boolean | undefined;
           // Carry the structured fields through, not just the prose: a streaming
           // client still has to tell a priority-access wall (back off until the
           // reset) from a transient upstream failure (retry now), and the status
@@ -1897,6 +2074,8 @@ export async function handleChatCompletion(
             if (parsed?.message) message = parsed.message;
             if (parsed?.type) type = parsed.type;
             if (parsed?.code) code = parsed.code;
+            if (typeof parsed?.status === "number") status = parsed.status;
+            if (typeof parsed?.retryable === "boolean") retryable = parsed.retryable;
           } catch {}
           const retryAfter = p.resp.headers.get("Retry-After");
           if (errorsAsText) {
@@ -1907,7 +2086,7 @@ export async function handleChatCompletion(
             send({ ...base, choices: [{ index: 0, delta: {}, finish_reason: "stop" }], ...(includeUsage ? { usage: usage(sent + reason) } : {}) });
           } else {
             // HTTP 200 is already committed, so surface the failure as an in-stream error chunk.
-            send({ ...base, error: { message, type, ...(code ? { code } : {}), ...(retryAfter ? { retry_after: Number(retryAfter) } : {}) } });
+            send({ ...base, error: { message, type, ...(code ? { code } : {}), ...(status !== undefined ? { status } : {}), ...(retryable !== undefined ? { retryable } : {}), ...(retryAfter ? { retry_after: Number(retryAfter) } : {}) } });
           }
         } else if (p.kind === "tools") {
           if (p.narration) send({ ...base, choices: [{ index: 0, delta: { content: p.narration }, finish_reason: null }] });
@@ -1927,13 +2106,34 @@ export async function handleChatCompletion(
           if (remainder) send({ ...base, choices: [{ index: 0, delta: { content: remainder }, finish_reason: null }] });
           send({ ...base, choices: [{ index: 0, delta: {}, finish_reason: outputFinishReason(p.text, chat) }], ...(includeUsage ? { usage: usage(p.text) } : {}) });
         }
-      } catch {
-        // client likely disconnected mid-emit — nothing more to do
+        if (p.kind === "error" || !opts.signal?.aborted) { emit(enc.encode("data: [DONE]\n\n")); controller.close(); }
+        if (streamComplete) {
+          let bytes: Uint8Array | undefined;
+          if (recordable) { bytes = new Uint8Array(recordedSize); let offset = 0; for (const chunk of recorded) { bytes.set(chunk, offset); offset += chunk.length; } }
+          recorded = [];
+          finish(p.kind !== "error" && !opts.signal?.aborted);
+          streamComplete(bytes);
+        } else {
+          finish(p.kind !== "error" && !opts.signal?.aborted);
+        }
+        completed = true;
       } finally {
-        try { controller.enqueue(enc.encode("data: [DONE]\n\n")); controller.close(); } catch {}
+        clearInterval(hb);
+        if (!completed) { finish(); streamComplete?.(undefined); }
       }
     },
+    cancel() { cancellation.abort(); },
   }));
+}
+
+/** Native local policy verdicts must not become transport failures or fresh retries. */
+function accountPolicyResponse(error: AccountPolicyError): Response {
+  const retryable = error.code === "route_probe_busy";
+  const headers: Record<string, string> = { "x-should-retry": String(retryable) };
+  if (error.retryAfter !== undefined && Number.isFinite(error.retryAfter) && error.retryAfter > 0) {
+    headers["Retry-After"] = String(Math.min(Number.MAX_SAFE_INTEGER, Math.ceil(error.retryAfter)));
+  }
+  return jsonResponse(error.status, { error: { message: error.message, type: "account_policy_error", code: error.code, status: error.status, retryable } }, headers);
 }
 
 /**
@@ -2012,6 +2212,7 @@ function jsonResponse(status: number, body: unknown, headers: Record<string, str
  *  the model's answer. Resets at midnight UTC; the weekly budget on Monday. */
 function priorityAccessResponse(exhaustion: PriorityAccessExhaustion, model: string): Response {
   const retryAfter = secondsUntilReset(exhaustion);
+  const detail = exhaustion.source === "local-policy" ? `Local policy: ${exhaustion.message}` : `Upstream said: ${exhaustion.message}`;
   if (exhaustion.scope === "account") {
     return jsonResponse(
       429,
@@ -2020,7 +2221,7 @@ function priorityAccessResponse(exhaustion: PriorityAccessExhaustion, model: str
           message:
             `M365 Copilot's daily chat limit for this account is used up: every model is refused ` +
             `until ${exhaustion.resetsAt.toISOString()} (midnight UTC). Image generation still works. ` +
-            `Upstream said: ${exhaustion.message}`,
+            detail,
           type: "rate_limit_error",
           code: "daily_turn_quota_exhausted",
           param: "day",
@@ -2040,7 +2241,7 @@ function priorityAccessResponse(exhaustion: PriorityAccessExhaustion, model: str
           `(resets ${exhaustion.resetsAt.toISOString()}, i.e. midnight UTC` +
           `${exhaustion.window === "week" ? " on Monday" : ""}). ` +
           `Switch to another model (e.g. claude-sonnet or gpt-5.5-think-deeper) or wait. ` +
-          `Upstream said: ${exhaustion.message}`,
+          detail,
         type: "rate_limit_error",
         code: "priority_access_exhausted",
         param: exhaustion.window,

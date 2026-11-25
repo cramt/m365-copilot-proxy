@@ -3,6 +3,8 @@ import { homedir } from "node:os";
 import { basename, join, resolve } from "node:path";
 import { createLogger, fileLoggingEnabled, LOG_PATH } from "./log.js";
 
+import { currentAccountContext, noteAccountThrottle } from "./account-policy.js";
+
 const log = createLogger("turn-budget");
 
 // Throttle avoidance, OFF unless M365_AVOID_THROTTLING=1: wait before an
@@ -297,6 +299,7 @@ function pruneOwn(nowMs: number): void {
 
 /** An upstream turn starting. CopilotSession.chat calls it where it logs `Chat turn`. */
 export function recordTurn(nowMs = Date.now()): void {
+  if (currentAccountContext()) return; // CopilotSession admission already durably debited this attempt.
   grants.shift();
   ownEvents.push({ t: nowMs, kind: "turn", line: `own:${ownSeq++}` });
   pruneOwn(nowMs);
@@ -304,6 +307,7 @@ export function recordTurn(nowMs = Date.now()): void {
 
 /** A throttled turn. session.ts calls it where it logs `Turn result: Throttled`. */
 export function recordThrottle(nowMs = Date.now()): void {
+  if (currentAccountContext()) { noteAccountThrottle(nowMs); return; }
   ownEvents.push({ t: nowMs, kind: "throttled", line: `own:${ownSeq++}` });
 }
 
@@ -362,6 +366,7 @@ export interface AwaitTurnBudgetOptions {
  * limit, and one whose client went away doesn't keep its place (#77).
  */
 export async function awaitTurnBudget(opts: AwaitTurnBudgetOptions = {}): Promise<{ waitedMs: number }> {
+  if (currentAccountContext()) return { waitedMs: 0 }; // No legacy log replay or duplicate grants in authenticated policy scope.
   const cfg = opts.cfg ?? budgetConfig();
   if (!cfg.enabled) return { waitedMs: 0 };
   const now = opts.now ?? Date.now;

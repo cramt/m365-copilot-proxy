@@ -49,7 +49,7 @@ vi.mock("ws", () => ({ default: fake.FakeWs }));
 import { CopilotSession } from "./session.js";
 
 const b64 = (o: object) => Buffer.from(JSON.stringify(o)).toString("base64url");
-const TOKEN = `${b64({ alg: "none" })}.${b64({ aud: "https://substrate.office.com/sydney", iss: "test", oid: "oid-1", tid: "tid-1", exp: 9999999999 })}.sig`;
+const TOKEN = `${b64({ alg: "none" })}.${b64({ aud: "https://substrate.office.com/sydney", iss: "test", oid: "11111111-1111-1111-1111-111111111111", tid: "22222222-2222-2222-2222-222222222222", exp: 9999999999 })}.sig`;
 
 const item = (it: object) => ({ type: 2, invocationId: "1", item: it });
 const part = (argument: object, requestId = "$RID") => item({ type: "message_part", target: "update", requestId, argument });
@@ -97,9 +97,9 @@ describe("CopilotSession over StreamHub", () => {
 
     const url = new URL(ws.url);
     expect(url.host).toBe("substrate.svc.cloud.microsoft");
-    expect(url.pathname).toBe("/m365Copilot/StreamHub/oid-1@tid-1");
+    expect(url.pathname).toBe("/m365Copilot/StreamHub/11111111-1111-1111-1111-111111111111@22222222-2222-2222-2222-222222222222");
     expect(url.searchParams.get("disableMemory")).toBe("1");
-    expect(url.searchParams.get("XRoutingParameterSessionKey")).toBe("oid-1");
+    expect(url.searchParams.get("XRoutingParameterSessionKey")).toBe("11111111-1111-1111-1111-111111111111");
     expect(url.searchParams.get("scenario")).toBe("officeweb");
     expect(ws.opts.headers.Origin).toBe("https://copilot.cloud.microsoft");
     expect(ws.sent.some((f: any) => f.type === 4 && f.target === "stream" && f.invocationId === "1")).toBe(true);
