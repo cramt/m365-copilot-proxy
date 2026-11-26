@@ -806,12 +806,14 @@ function narrationAsk(): "sentence" | "comment" | null {
 
 /** The relays' request for a block: `what` names it ("a single ```bash block"), and
  *  M365_NARRATE adds the sentence or comment to say beside it — only for a shell block
- *  (`shell`), the one a comment can open. */
+ *  (`shell`), the one a comment can open. The sentence is asked for in the first
+ *  person: asked what it was "about to do", after a failed run the model told the
+ *  user to run the block in their own PowerShell window (3 of 3, §64 F183). */
 function blockRequest(what: string, shell: boolean): string {
   const others = "(or one of the other tool blocks below)";
   switch (shell ? narrationAsk() : null) {
     case "sentence":
-      return `reply with one short sentence saying what you're about to do, then ${what} ${others}`;
+      return `reply with one short sentence in the first person about your next step ("I'll …"), then ${what} ${others}`;
     case "comment":
       return `reply with just ${what} ${others}, opening it with a one-line # comment that says what it does`;
     default:

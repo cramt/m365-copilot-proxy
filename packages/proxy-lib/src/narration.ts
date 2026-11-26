@@ -15,6 +15,23 @@ const COMMENT_LINE = /^[ \t]*#(?!!)[ \t]?(.*)$/;
  *  source, such as a file its own search found in the user's OneDrive
  *  (`[1](https://…sharepoint-df.com/personal/…)`, §64 F181). */
 const CITATION = /[ \t]*\[\d{1,3}\]\(\s*<?https?:\/\/[^\s)>]*>?\s*\)/g;
+/** Text that tells the user to run the block themselves: "paste this into…", "; run
+ *  this in your own PowerShell window", "open PowerShell from the Start menu and…".
+ *  The harness runs the block, so as its commentary that's wrong. The relays'
+ *  "I'll run it" framing invites it after a failed run (§64 F183). First-person
+ *  plans ("I'll fix it, then run the tests") don't match. */
+const RUN_IT_YOURSELF: readonly RegExp[] = [
+  /\bpaste\b/i,
+  /\bstart menu\b/i,
+  /\bneed you to\b/i,
+  /\byou(?:'ll| will| can| could| need to| should| may want to)?\s+(?:run|open|paste|copy|execute)\b/i,
+  /(?:^|[.;:!?]\s+|,\s*so\s+|\bso\s+)(?:please\s+)?(?:run|copy|execute) (?:this|it|that|the (?:block|command|script|check))\b/i,
+  /(?:^|[.;:!?]\s+|,\s*so\s+|\bso\s+)(?:please\s+)?open (?:a |an |the |your )?(?:new |own |local )?(?:\*\*)?(?:windows )?(?:powershell|terminal|command prompt)\b/i,
+];
+
+function tellsUserToRunIt(text: string): boolean {
+  return RUN_IT_YOURSELF.some((re) => re.test(text));
+}
 
 function capped(text: string): string {
   if (text.length <= NARRATION_MAX_CHARS) return text;
@@ -30,7 +47,8 @@ function capped(text: string): string {
  * to its pages`). Claude models wrote a sentence before the block on most calls and
  * GPT-6.2 Astra opened its commands with a comment (§60 F165). The text after the
  * block isn't used: it's written before the call has run. M365's citation links
- * are dropped. Null when there's none.
+ * are dropped, and so is text that tells the user to run the block themselves
+ * (tellsUserToRunIt): the harness runs it. Null when there's none.
  *
  * `tools` finds the block by the parser's rule, so an example block ahead of it
  * (```text, ```python) isn't taken for it. `saidIn` is the reply to read the prose
@@ -43,9 +61,9 @@ export function toolTurnNarration(reply: string, tools?: Tools, saidIn: string =
   if (!block) return null;
   const lead = saidIn === reply ? block.start : ((toolBlock(saidIn, tools) ?? firstFence(saidIn))?.start ?? saidIn.length);
   const said = leadIn(saidIn.slice(0, lead)).replace(CITATION, "").trim();
-  if (said) return capped(said);
+  if (said && !tellsUserToRunIt(said)) return capped(said);
   const comments = openingComments(reply.slice(block.start, block.end));
-  return comments ? capped(comments) : null;
+  return comments && !tellsUserToRunIt(comments) ? capped(comments) : null;
 }
 
 /** The first tool block: by the parser's rule when the tools are known, else the first fence. */

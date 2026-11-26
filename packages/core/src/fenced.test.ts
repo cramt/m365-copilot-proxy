@@ -804,8 +804,8 @@ describe("defaultFramingForTone", () => {
 
     it("asks for a short sentence before the block, or a comment opening it", () => {
       process.env.M365_NARRATE = "sentence";
-      expect(formatFencedToolDefinitions([bash], "relay_batch")).toContain("reply with one short sentence saying what you're about to do, then a single ```bash block");
-      expect(formatFencedToolDefinitions([bash], "relay")).toContain("reply with one short sentence saying what you're about to do, then the command in a single ```bash block");
+      expect(formatFencedToolDefinitions([bash], "relay_batch")).toContain("reply with one short sentence in the first person about your next step (\"I'll …\"), then a single ```bash block");
+      expect(formatFencedToolDefinitions([bash], "relay")).toContain("reply with one short sentence in the first person about your next step (\"I'll …\"), then the command in a single ```bash block");
       process.env.M365_NARRATE = "comment";
       expect(formatFencedToolDefinitions([bash], "relay_batch")).toContain("opening it with a one-line # comment that says what it does. I'll run it");
     });

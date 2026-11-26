@@ -42,4 +42,21 @@ describe("toolTurnNarration", () => {
     expect(toolTurnNarration(again, tools, "I'll list the files first.\n\n```bash\nls -la\n```")).toBe("I'll list the files first.");
     expect(toolTurnNarration(again, tools, "```bash\nls -la\n```")).toBe("List everything");
   });
+
+  it("drops text that tells the user to run the block themselves — the harness runs it (§64 F183)", () => {
+    const block = "\n\n```bash\nls\n```";
+    for (const said of [
+      "`npm test` never started because the runner couldn't open the project folder; run this in your own PowerShell window to check access.",
+      "The runner couldn't open its starting folder, so nothing ran; open **Windows PowerShell** from the Start menu and paste this read-only check there.",
+      "Run this to list the files in the current directory and show which is largest.",
+      "The runner couldn't open the project folder, so open PowerShell in a project checkout you can access.",
+      "I'll need you to open PowerShell in an accessible copy of the project and run this block.",
+    ]) expect(toolTurnNarration(said + block, tools)).toBeNull();
+    expect(toolTurnNarration("Open PowerShell in the project folder first.\n```bash\n# Check access to the project\nls\n```", tools)).toBe("Check access to the project");
+    for (const said of [
+      "I'll fix the parser, then run the tests.",
+      "I'll check whether your own PowerShell session can open the project before diagnosing `npm test`.",
+      "Your two configs differ; this opens the local record so you can check whose entry it is.",
+    ]) expect(toolTurnNarration(said + block, tools)).toBe(said);
+  });
 });

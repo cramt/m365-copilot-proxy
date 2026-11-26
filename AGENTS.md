@@ -210,7 +210,9 @@ pnpm test:live      # M365_LIVE=1; live tests that hit real M365 (uses quota)
   stripped, since it's written before the call ran (§60 F165). The relays ask for the block alone, so
   GPT-6.2 Sol rarely writes any; `M365_NARRATE=sentence|comment` asks for it (off by default, §60 F166).
   M365's citation links are dropped from it, and after a re-ask for a damaged or unreadable call it is the
-  first reply's text, not the re-ask's answer ("Resending with…", §64 F181).
+  first reply's text, not the re-ask's answer ("Resending with…", §64 F181). Text telling the user to run,
+  paste or open a terminal themselves is dropped too (`tellsUserToRunIt`); `sentence` asks in the first
+  person, since "what you're about to do" drew it after a failed run (3 of 3, §64 F183).
 - **`claude-opus` is entitlement-gated and separately metered.** The WS `scenario` decides which
   model serves: `Claude_Opus` is Opus 5.5 on `OfficeWebPaidCopilot` and another model, Opus 4.8 (below), on
   `OfficeWebIncludedCopilot` (`getScenarioForModel`, derived per-turn from the model ID).
