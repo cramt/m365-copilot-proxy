@@ -328,6 +328,44 @@ describe("a tool call the proxy can't read", () => {
   }
   afterEach(() => { delete process.env.M365_NO_FENCE_RETRY; });
 
+  it.each([false, true])("re-asks a duplicate-header call before a later valid call (stream=%s)", async (stream) => {
+    const editTools = [{ type: "function", function: { name: "edit", parameters: { type: "object", properties: { filePath: { type: "string" }, oldString: { type: "string" }, newString: { type: "string" } }, required: ["filePath", "oldString", "newString"] } } }];
+    scripted.texts = [];
+    scripted.result = null;
+    scripted.queue = [
+      { fullText: "```edit\nfilePath: a\noldString: x\nfilePath: wrong\nnewString: y\n```\n```edit\nfilePath: later\noldString: x\nnewString: y\n```" },
+      { fullText: "```edit\nfilePath: correct\noldString: x\nnewString: y\n```" },
+    ];
+    const body = ChatCompletionRequest.parse({ model: "gpt-5.6-think-deeper", stream, tools: editTools, messages: [{ role: "user", content: `edit ${Math.random()}` }] });
+    const res = await handleChatCompletion(body, new SessionPool());
+    expect(res.status).toBe(200);
+    const raw = await res.text();
+    const chunks = stream ? raw.split("\n").filter(l => l.startsWith("data: {")).map(l => JSON.parse(l.slice(6))) : [JSON.parse(raw)];
+    const calls = chunks.flatMap(c => c.choices?.[0]?.message?.tool_calls ?? c.choices?.[0]?.delta?.tool_calls ?? []);
+    expect(scripted.texts).toHaveLength(2);
+    expect(scripted.texts[1]).toContain("couldn't be read as a tool call");
+    expect(JSON.parse(calls.map((c: any) => c.function?.arguments ?? "").join(""))).toEqual({ filePath: "correct", oldString: "x", newString: "y" });
+  });
+
+  it.each([false, true])("re-asks a truncated edit before a later valid call (stream=%s)", async (stream) => {
+    const editTools = [{ type: "function", function: { name: "edit_file", parameters: { type: "object", properties: { path: { type: "string" }, old: { type: "string" }, new: { type: "string" } }, required: ["path"] } } }];
+    scripted.texts = [];
+    scripted.result = null;
+    scripted.queue = [
+      { fullText: "```edit_file\npath: a\n<<<<<<< SEARCH\nx\n=======\ny\n```\n```edit_file\npath: later\n<<<<<<< SEARCH\nx\n=======\ny\n>>>>>>> REPLACE\n```" },
+      { fullText: "```edit_file\npath: correct\n<<<<<<< SEARCH\nx\n=======\ny\n>>>>>>> REPLACE\n```" },
+    ];
+    const body = ChatCompletionRequest.parse({ model: "gpt-5.6-think-deeper", stream, tools: editTools, messages: [{ role: "user", content: `edit ${Math.random()}` }] });
+    const res = await handleChatCompletion(body, new SessionPool());
+    expect(res.status).toBe(200);
+    const raw = await res.text();
+    const chunks = stream ? raw.split("\n").filter(l => l.startsWith("data: {")).map(l => JSON.parse(l.slice(6))) : [JSON.parse(raw)];
+    const calls = chunks.flatMap(c => c.choices?.[0]?.message?.tool_calls ?? c.choices?.[0]?.delta?.tool_calls ?? []);
+    expect(scripted.texts).toHaveLength(2);
+    expect(scripted.texts[1]).toContain("SEARCH/REPLACE markers");
+    expect(JSON.parse(calls.map((c: any) => c.function?.arguments ?? "").join(""))).toEqual({ path: "correct", old: "x", new: "y" });
+  });
+
   it("asks for it again, saying what was wrong, and runs the call it gets", async () => {
     const msg = await ask([UNCLOSED, "```bash\nls -la\n```"]);
     expect(JSON.parse(msg.tool_calls[0].function.arguments)).toEqual({ command: "ls -la" });

@@ -597,6 +597,11 @@ const MAX_PARTS_SENDS = 2;
  *  forcing retry. */
 function parseReply(text: string, tools: Parameters<typeof parseToolCalls>[1]): { parsed: ParseResult; judged: string | null } {
   const parsed = parseToolCalls(text, tools);
+  // A later readable fence must not authorize a guessed step after an earlier
+  // unreadable call. The ordinary unreadable-fence re-ask handles this turn.
+  if (parsed.hasToolCalls && unreadableToolCall(text, tools)) {
+    return { parsed: { hasToolCalls: false, toolCalls: [], textContent: text }, judged: text };
+  }
   if (isProseDocument(parsed, text, tools, { longAnswers: process.env.M365_LONG_ANSWER_GUARD === "1" })) {
     log.info(`Response is a prose document (${parsed.toolCalls.length} embedded fences), returning as text instead of executing`);
     const opening = text.split("```")[0].trim().split(/\n\s*\n/)[0];
