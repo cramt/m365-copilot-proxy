@@ -1,4 +1,17 @@
-import { describe, it, expect, vi, afterEach, beforeEach } from "vitest";
+import { describe, it, expect, vi, afterEach, beforeEach, afterAll } from "vitest";
+import { rmSync } from "node:fs";
+
+const logging = await vi.hoisted(async () => {
+  const { mkdtempSync } = await import("node:fs");
+  const { tmpdir } = await import("node:os");
+  const { join } = await import("node:path");
+  const dir = mkdtempSync(join(tmpdir(), "m365-forbidden-"));
+  process.env.M365_DEBUG = "1";
+  process.env.M365_LOG_STDOUT = "1";
+  process.env.M365_LOG_FILE = join(dir, "debug.log");
+  return { dir };
+});
+afterAll(() => { rmSync(logging.dir, { recursive: true, force: true }); });
 
 // Replace core's ModelSession with a scripted fake so we can exercise the handler's
 // streaming path with no auth/WebSocket. Everything else in core stays real.
@@ -566,6 +579,198 @@ describe("an explicitly Throttled turn (result.value = Throttled)", () => {
     expect(errors).toHaveLength(1);
     expect(errors[0].code).toBe("m365_throttled");
     scripted.result = null;
+  });
+});
+
+describe("a ForbiddenRequest turn (a licence refusal) is a 403, never an answer", () => {
+  // The canned BotConnection reply that comes with it (hypotheses §22 F46).
+  const LICENCE_TEXT = "It looks like you don't have a valid licence. To get access, please check with your administrator.";
+  const UPSTREAM_PROSE = "synthetic upstream detail that must not be echoed";
+  const tools = [{ type: "function", function: { name: "bash", parameters: { type: "object", properties: { command: { type: "string" } } } } }];
+  const forbidden = (errorCode?: string, extra: { messageType?: string; contentOrigin?: string; apology?: boolean } = {}) => ({
+    fullText: LICENCE_TEXT,
+    result: { value: "ForbiddenRequest", ...(errorCode ? { errorCode } : {}), message: UPSTREAM_PROSE },
+    ...extra,
+  });
+  const noScript = () => { scripted.queue = []; scripted.deltas = []; scripted.fullText = undefined; scripted.result = null; scripted.runs = 0; scripted.texts = []; scripted.newConversations = 0; };
+  afterEach(noScript);
+
+  async function ask(stream: boolean, withTools = false, model = "claude-sonnet") {
+    const body = ChatCompletionRequest.parse({
+      model, stream, ...(withTools ? { tools } : {}),
+      messages: [{ role: "user", content: `forbidden ${Math.random()}` }],
+    });
+    return respond(body);
+  }
+
+  for (const [errorCode, code, modelScoped] of [
+    ["PremiumModelUnavailableForLicense", "m365_model_not_licensed", true],
+    ["ClaudeUnavailableForLicense", "m365_model_not_licensed", true],
+    ["InvalidCopilotLicense", "m365_account_not_licensed", false],
+    ["SomethingElse", "m365_forbidden", false],
+    [undefined, "m365_forbidden", false],
+    ["not an identifier!", "m365_forbidden", false],
+  ] as const) {
+    it(`${errorCode ?? "no errorCode"} -> 403 ${code}, terminal, sent once`, async () => {
+      noScript();
+      scripted.queue = [forbidden(errorCode)];
+      const res = await ask(false);
+      expect(res.status).toBe(403);
+      expect(res.headers.get("x-should-retry")).toBe("false");
+      const text = await res.text();
+      const err = JSON.parse(text).error;
+      expect(err).toMatchObject({ type: "permission_error", code, retryable: false });
+      expect(err.param).toBe(modelScoped ? "claude-sonnet" : undefined);
+      expect(text).not.toContain(UPSTREAM_PROSE);
+      expect(text).not.toContain(LICENCE_TEXT);
+      expect(scripted.runs).toBe(1);
+    });
+  }
+
+  it("keeps unknown identifier-shaped codes out of the client but logs them raw", async () => {
+    const secret = "syntheticSecretToken_123456789";
+    const output: string[] = [];
+    const spy = vi.spyOn(process.stdout, "write").mockImplementation(((chunk: unknown) => { output.push(String(chunk)); return true; }) as typeof process.stdout.write);
+    try {
+      for (const streaming of [false, true]) {
+        noScript();
+        scripted.queue = [{ ...forbidden(secret), fullText: "" }];
+        const res = await ask(streaming);
+        const text = await res.text();
+        expect(text).not.toContain(secret);
+        expect(text).not.toContain(UPSTREAM_PROSE);
+        expect(text).not.toContain("m365_error_code");
+      }
+      // The debug log keeps the raw upstream errorCode so a new M365 code surfaces
+      // outside frame dumps (the repo runs on reverse-engineering); only the client
+      // response is allowlisted. The upstream prose message is still never logged.
+      expect(output.join("")).toContain("Upstream ForbiddenRequest");
+      expect(output.join("")).toContain(secret);
+      expect(output.join("")).not.toContain(UPSTREAM_PROSE);
+      noScript();
+      scripted.queue = [{ ...forbidden("InvalidCopilotLicense"), fullText: "" }];
+      await (await ask(false)).text();
+      expect(output.join("")).toContain("Upstream ForbiddenRequest (InvalidCopilotLicense)");
+    } finally { spy.mockRestore(); }
+  });
+
+  it("preserves documented codes in JSON and structured SSE", async () => {
+    for (const code of ["PremiumModelUnavailableForLicense", "ClaudeUnavailableForLicense", "InvalidCopilotLicense"]) {
+      noScript(); scripted.queue = [{ ...forbidden(code), fullText: "" }];
+      expect((await (await ask(false)).json()).error.m365_error_code).toBe(code);
+      noScript(); scripted.queue = [{ ...forbidden(code), fullText: "" }];
+      const text = await (await ask(true)).text();
+      const chunks = text.split("\n").filter(l => l.startsWith("data: ") && l !== "data: [DONE]").map(l => JSON.parse(l.slice(6)));
+      expect(chunks.find(c => c.error)?.error.m365_error_code).toBe(code);
+    }
+  });
+
+  it("Claude CLI text mode ends the forbidden refusal with assistant text and stop", async () => {
+    noScript(); scripted.queue = [{ ...forbidden("InvalidCopilotLicense"), fullText: "" }];
+    const body = ChatCompletionRequest.parse({ model: "claude-sonnet", stream: true, messages: [{ role: "user", content: "forbidden CLI" }] });
+    const text = await (await handleChatCompletion(body, new SessionPool(), { userAgent: "claude-cli/2.1" })).text();
+    const chunks = text.split("\n").filter(l => l.startsWith("data: ") && l !== "data: [DONE]").map(l => JSON.parse(l.slice(6)));
+    expect(chunks.some(c => c.error)).toBe(false);
+    expect(chunks.map(c => c.choices?.[0]?.delta?.content ?? "").join("")).toContain("m365_account_not_licensed");
+    expect(chunks.some(c => c.choices?.[0]?.finish_reason === "stop")).toBe(true);
+    expect(text).not.toContain(UPSTREAM_PROSE);
+  });
+
+  it("is a 403 on the tool path too, without a softened-framing retry", async () => {
+    noScript();
+    scripted.queue = [forbidden("InvalidCopilotLicense")];
+    const res = await ask(false, true);
+    expect(res.status).toBe(403);
+    expect(scripted.runs).toBe(1);
+    expect(scripted.newConversations).toBe(0);
+  });
+
+  it("beats a Disengaged marker or an Apology origin on the same turn: one send, no F22 retry", async () => {
+    for (const extra of [{ messageType: "Disengaged" }, { contentOrigin: "Apology", apology: true }]) {
+      noScript();
+      scripted.queue = [forbidden("InvalidCopilotLicense", extra)];
+      const before = scripted.newConversations;
+      const res = await ask(false, true);
+      expect(res.status).toBe(403);
+      expect((await res.json()).error.code).toBe("m365_account_not_licensed");
+      expect(scripted.runs).toBe(1);
+      expect(scripted.newConversations).toBe(before);
+    }
+  });
+
+  it("streams as one structured error chunk, never a success finish", async () => {
+    noScript();
+    scripted.queue = [{ ...forbidden("ClaudeUnavailableForLicense"), fullText: "" }];
+    const body = ChatCompletionRequest.parse({ model: "claude-sonnet", stream: true, messages: [{ role: "user", content: "forbidden stream" }] });
+    const res = await handleChatCompletion(body, new SessionPool());
+    const text = await res.text();
+    const chunks = text.split("\n").filter((l) => l.startsWith("data: ") && l !== "data: [DONE]").map((l) => JSON.parse(l.slice(6)));
+    const errors = chunks.filter((c) => c.error).map((c) => c.error);
+    expect(errors).toHaveLength(1);
+    expect(errors[0]).toMatchObject({ type: "permission_error", code: "m365_model_not_licensed", param: "claude-sonnet", retryable: false });
+    expect(chunks.some((c) => c.choices?.[0]?.finish_reason === "stop")).toBe(false);
+    expect(text).not.toContain(UPSTREAM_PROSE);
+    expect(scripted.runs).toBe(1);
+  });
+});
+
+describe("terminal refusals are not multiplied by a client's own retry loop", () => {
+  const LICENCE_TEXT = "It looks like you don't have a valid licence.";
+  const WEEKLY = "You\u2019ve used your available priority access to the Opus model for the week. You can choose another available model or wait until Monday to use the Opus model again.";
+  afterEach(() => { scripted.queue = []; scripted.result = null; scripted.deltas = []; scripted.fullText = undefined; scripted.runs = 0; });
+
+  /** An OpenAI SDK's retry policy (openai-node `shouldRetry`, maxRetries 2): the
+   *  `x-should-retry` header decides first; otherwise 408, 409, 429 and 5xx retry.
+   *  Returns the final response and how many times the proxy was called. */
+  async function viaRetryingClient(model: string, content: string, maxRetries = 2) {
+    let sends = 0;
+    let res!: Response;
+    for (let attempt = 0; attempt <= maxRetries; attempt++) {
+      sends++;
+      res = await respond(ChatCompletionRequest.parse({ model, stream: false, messages: [{ role: "user", content }] }));
+      const header = res.headers.get("x-should-retry");
+      const retry = header === "true" ? true : header === "false" ? false
+        : res.status === 408 || res.status === 409 || res.status === 429 || res.status >= 500;
+      if (!retry) break;
+    }
+    return { res, sends };
+  }
+
+  it("dispatches a ForbiddenRequest 403 once", async () => {
+    scripted.queue = [1, 2, 3].map(() => ({ fullText: LICENCE_TEXT, result: { value: "ForbiddenRequest", errorCode: "InvalidCopilotLicense" } }));
+    const { res, sends } = await viaRetryingClient("claude-sonnet", "sdk forbidden");
+    expect(res.status).toBe(403);
+    expect(sends).toBe(1);
+    expect(scripted.runs).toBe(1);
+  });
+
+  it("dispatches a priority-access 429 once", async () => {
+    scripted.queue = [1, 2, 3].map(() => ({ fullText: WEEKLY, result: { value: "OutOfCredits", message: WEEKLY } }));
+    const { res, sends } = await viaRetryingClient("claude-opus", "sdk priority access");
+    expect(res.status).toBe(429);
+    expect(res.headers.get("x-should-retry")).toBe("false");
+    expect((await res.json()).error).toMatchObject({ code: "priority_access_exhausted", retryable: false });
+    expect(sends).toBe(1);
+  });
+
+  it("(control) the same client does retry a Throttled 429, which stays retryable", async () => {
+    // A throttle lifts on its own and the handler paces what follows it
+    // (awaitDegradationBackoff), so it is not marked terminal.
+    scripted.fullText = "";
+    scripted.result = { value: "Throttled", errorCode: "PerUserThrottled" };
+    const { res, sends } = await viaRetryingClient("claude-sonnet", "sdk throttled");
+    expect(res.status).toBe(429);
+    expect(res.headers.has("x-should-retry")).toBe(false);
+    expect(sends).toBe(3);
+  });
+});
+
+describe("a priority-access wall on the streaming path says it is final", () => {
+  it("carries retryable: false in the error chunk, as a streamed response has no header", async () => {
+    const REFUSAL = "You've used your available priority access to the Opus model for today. You can choose another available model or wait until tomorrow to use the Opus model again.";
+    const { errors } = await streamRaw(REFUSAL.match(/.{1,12}/g)!);
+    expect(errors).toHaveLength(1);
+    expect(errors[0]).toMatchObject({ code: "priority_access_exhausted", param: "day", retryable: false });
   });
 });
 
