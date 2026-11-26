@@ -7886,3 +7886,26 @@ don't see one". `M365_WORK_IQ=0` sends StreamHub turns that way (`getStreamHubSc
 is off by default. Not measured: whether a metered model (Opus 5.5, Sonnet 5.5, GPT-6.1 Sol) spends its
 budget differently under the paid scenario, a non-premium account (which the paid scenario serves nothing,
 §61 F171), or Chathub.
+
+### F183 — asked what it's "about to do", the model told the user to run the block after a failed run 🟡
+In Codex (Nov 25, GPT-6.2 Astra over Chat, `M365_NARRATE=sentence`), after the runner couldn't open its
+folder the commentary read "…open **Windows PowerShell** from the Start menu and paste this read-only check
+there", and Codex ran the check itself. The relays say "I'll run it in my project directory", so after a
+failed run the model hands the block to the user's own window. Five ways of asking, on a first turn and on
+the turn after `exec failed: the runner couldn't open the working directory … Nothing ran.` (GPT-6.2 Sol 2
+of each, GPT-6.2 Astra 1 after the failure; `scripts/narrate-probe.mjs`, Nov 26 05:20–05:50Z):
+
+| asked for | after the failure, told the user to run it | first turn |
+|---|---|---|
+| "one short sentence saying what you're about to do" (`sentence` before) | 3/3 | 0/2 |
+| "… saying what the block checks or changes" | 3/3 | 0/2 |
+| "a one-line progress note … (I see it while the block runs)" | 3/3 | 0/2 |
+| `comment` | 2/2 (Sol) | — |
+| "one short sentence in the first person about your next step ("I'll …")" | 1/3 | 0/2 |
+
+`sentence` now asks in the first person, and the narration drops text that tells the user to run, paste or
+open a terminal (`tellsUserToRunIt`), falling back to the block's comments, else to none: the harness runs
+the block, so that text is wrong beside the call. The shipped pair, rerun: none of 5 such sentences reached
+the client, 3 narrated in the first person ("I'll check whether your PowerShell session can access the
+project, then rerun the tests…"), 2 were dropped ("I'll have you run the tests…", "I'll need you to open
+PowerShell…"), and all 5 calls came through, as in every arm.
