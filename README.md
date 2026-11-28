@@ -612,7 +612,10 @@ ran into; a shorter prompt doesn't help. Both budgets reset at **midnight UTC**,
 
 What the proxy does about it:
 - **Shows the budget:** every `claude-opus` response carries `usage.x_m365_opus_daily_remaining` and
-  `usage.x_m365_opus_weekly_remaining`.
+  `usage.x_m365_opus_weekly_remaining`. To read them without a `claude-opus` request, run
+  `node scripts/metering.mjs` inside `nix develop`: it prints Opus's and Sonnet 5.5's budgets, and every
+  other allowance M365 reports for the account, from one Chathub turn on the `Magic` tone, which lowers
+  none of them.
 - **Says when it's used up:** M365 ends the turn with a refusal (*"You've used your available priority
   access to the Opus model for today…"*), which the proxy turns into **HTTP 429**
   (`code: priority_access_exhausted`, `param: day|week`) with a `Retry-After` to the reset — on the
