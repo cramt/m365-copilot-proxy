@@ -1987,7 +1987,7 @@ function buildUsage(
   // §66): one unit per turn, so a client can see how many turns it has left
   // before M365 refuses them (issue #18).
   // `x_m365_opus_*` for Opus 5.5, `x_m365_sonnet55_*` for Sonnet 5.5,
-  // `x_m365_gpt62sol_*` for GPT-6.2 Sol.
+  // `x_m365_gpt61sol_*` for GPT-6.1 Sol, `x_m365_gpt62sol_*` for GPT-6.2 Sol.
   for (const [budget, { usageKey }] of Object.entries(METERED_BUDGETS)) {
     const left = meteredAllowance(metering, budget as MeteredBudget);
     if (left?.daily !== undefined) base[`x_m365_${usageKey}_daily_remaining`] = left.daily;

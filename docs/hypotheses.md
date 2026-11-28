@@ -153,7 +153,8 @@ than "we eyeballed one run." See §M (Methods) for the experimental rig.
   proxy maps (H63a, open)
 - §66 — GPT-6.2 Sol: in the model selector since Nov 25, where GPT-5.6 Sol and GPT-6.1 Sol were (F185); on a
   premium account each of its turns spends its `GPT62SolQuery*` budget on every route, the included
-  scenario's too (F186); its self-ID by route and date (F187); other accounts (H66a) and the included
+  scenario's too (F186); its self-ID by route and date (F187); GPT-6.1 Sol's budget, spent over StreamHub
+  and on the paid scenario but not on the included one (F188); other accounts (H66a) and the included
   scenario's model (H66b), open
 
 ---
@@ -4506,6 +4507,9 @@ based on GPT-6 reasoning model", cutoff 2025-12 agent-less, "unknown" with the a
 **Decision:** `gpt-6.1-sol` routes on the included scenario. That is the only one a non-premium
 account can use (the paid one answers there with `InvalidCopilotLicense`, F68), and it spends nothing.
 The tone stays out of `PAID_SCENARIO_TONES`, and no budget is tracked for it.
+**Nov 28 (§66 F188):** on a premium account an included-scenario turn still lowered nothing, and a StreamHub
+`officeweb` turn lowered both keys by 1, as a paid-scenario turn did. `METERED_BUDGETS` now lists the budget,
+for `usage` and `scripts/metering.mjs`; no model maps to it.
 
 ### H27a — is the included scenario's GPT-6.1 Sol the same model as the paid one's? 🔴
 For every other metered tone the included scenario serves an older model (`Claude_Opus`: Opus 4.5 vs
@@ -4516,6 +4520,9 @@ answer this. **Falsifier:** a behavioural difference between `Gpt_61_Sol_Reasoni
 one model's cutoff, with grounding off). Paid turns cost budget units, so keep it to a handful.
 *(§29 F72 narrows it: agent-less, the included one keeps out of its sandbox when asked and GPT-6 Sol
 doesn't, so it isn't GPT-6 Sol under a new name. Included vs paid is still open.)*
+*(Nov 28, §66 F188: the included scenario's reply named the GPT-5 chat model with a 2024-06 cutoff,
+the paid scenario's and `officeweb`'s the GPT-6 reasoning model with a 2025-12 cutoff. A self-ID
+still doesn't decide it.)*
 
 ### F68 — agent: premium only, on both scenarios; agent-less: included only, every account 🟢
 | account | path | included | paid |
@@ -7959,7 +7966,7 @@ and `DeepResearch`. The premium map lacks `ArtifactGeneration`, `CodeInterpreter
 `ReasoningModelTurnUsage`, `TenantDataAccess`, `TotalTurnUsageDaily` (F167), `VisualCreator` and
 `WXPAgentMode`.
 
-## 66. Nov 28 2026 — GPT-6.2 Sol: the model selector, its priority-access budget, and its self-ID by route
+## 66. Nov 28 2026 — GPT-6.2 Sol and GPT-6.1 Sol: the model selector, their priority-access budgets, their self-IDs by route
 
 Between Nov 23 and Nov 25 the web client's model selector (`RefreshNavPane`, §62 F177) gained
 `Gpt_62_Sol_Reasoning` and lost its GPT-5.6 Sol and GPT-6.1 Sol items (F185). The paid scenario's `metering`
@@ -7968,7 +7975,8 @@ the selector listed the tone. §45 kept `gpt-6.2-sol` on the included scenario, 
 left open whether an included-scenario turn spends that budget (H45a). `METERED_BUDGETS` now lists the two
 keys as GPT-6.2 Sol's budget: `scripts/metering.mjs` prints them in its table, and the proxy reports them as
 `usage.x_m365_gpt62sol_daily_remaining` / `x_m365_gpt62sol_weekly_remaining` on each Chathub turn whose map
-has them. `meteredBudgetOf` maps no model to the budget (H66a).
+has them. `meteredBudgetOf` maps no model to the budget (H66a). GPT-6.1 Sol's `GPT61SolQueryDaily` and
+`GPT61SolQueryWeekly` are listed the same way (`x_m365_gpt61sol_*`), and F188 reads which routes spend them.
 
 ### F185 — the selector lists `Gpt_62_Sol_Reasoning` since Nov 25, and no GPT-5.6 Sol or GPT-6.1 Sol item 🟢 (n=3)
 `scripts/chathub-tones.mjs` on three `RefreshNavPane` replies of a premium account:
@@ -8024,13 +8032,37 @@ the GPT-6 reasoning model with a 2026-06 cutoff; on the included scenario it nam
 date, and on Nov 28 it was the reply F180 recorded there for `Gpt_6_Sol_Chat`. A self-ID doesn't
 establish the model (§27 H27a).
 
+### F188 — GPT-6.1 Sol's budget: an included-scenario turn lowered nothing, a StreamHub and a paid-scenario turn 1 each 🟢 (n=1 per route)
+F186's steps with `Gpt_61_Sol_Reasoning`, on the same account, 2026-11-28 06:03–06:08Z:
+
+| turn | `GPT61SolQueryDaily` / `GPT61SolQueryWeekly` in the reading after it | the turn's own map | reply |
+|---|---|---|---|
+| none (the first reading) | 40 / 75 | – | – |
+| Chathub, `OfficeWebIncludedCopilot` + `Starter` | 40 / 75 | 5 keys: `DeepResearch` and GPT-6.2 Sol's four | "GPT-5 chat model;OpenAI;2024-06" |
+| StreamHub, `officeweb` + `Premium` | 39 / 74 | none (StreamHub) | "Microsoft Copilot powered by GPT-6 reasoning model; Microsoft Corporation; 2025-12" |
+| Chathub, `OfficeWebPaidCopilot` + `Premium` | 38 / 73 | 26 keys, 38 / 73 | the same |
+
+The map's other 24 keys were the same in all four readings, GPT-6.2 Sol's (37 / 69) included. So on a
+premium account the included scenario still spends nothing from this budget, as F67 found on Oct 6, and its
+map doesn't carry the keys, while StreamHub's `officeweb`, which F67 didn't try, spends it as the paid
+scenario does. The proxy sends `gpt-6.1-sol` to the included scenario over Chathub and to `officeweb` over
+StreamHub, so there its StreamHub turns spend this budget and its Chathub turns don't. Neither kind of turn
+reports what is left: the included scenario's map lacks the keys and StreamHub sends no map, so only a
+paid-scenario turn's map shows it, as `scripts/metering.mjs` reads it.
+
+F67 recorded "M365 Copilot based on GPT-6 reasoning model" with a 2025-12 cutoff on both scenarios on Oct 6.
+On Nov 28 the included scenario's reply named the GPT-5 chat model with a 2024-06 cutoff, and the other two
+routes named the GPT-6 reasoning model with a 2025-12 cutoff, where `Gpt_62_Sol_Reasoning` gave 2026-06
+(F187). H27a asks whether the two scenarios serve the same model; a self-ID doesn't decide it.
+
 ### H66a — does a `Gpt_62_Sol_Reasoning` turn lower `GPT62SolQuery*` on every account? 🔴
 F186 read one premium account, which has no Copilot Cowork. Are the tone's turns unmetered on
 another account, for example over StreamHub on an account with Cowork? **Prediction:** on any
 account whose map has the keys, each turn lowers both by 1 on each route. **Falsified** by a route
 on which a turn leaves both unchanged. **Probe:** F186's steps on another account. Until then
 `meteredBudgetOf` maps no model to the budget, and the proxy remembers an `OutOfCredits` on
-`gpt-6.2-sol` under the model ID, as for any model it doesn't map to a budget.
+`gpt-6.2-sol` under the model ID, as for any model it doesn't map to a budget. The same question
+applies to F188's GPT-6.1 Sol readings.
 
 ### H66b — does `Gpt_62_Sol_Reasoning` serve another model on the included scenario than on the paid one and under `officeweb`? 🔴
 F187's replies split by scenario, as F180's did for `Gpt_6_Sol_Chat`, and a self-ID doesn't decide it. If the

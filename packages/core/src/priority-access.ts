@@ -131,7 +131,7 @@ export function secondsUntilReset(
 // metered); in November a premium account's carry GPT-6.2 Sol's keys (below).
 
 /** A separately metered model's priority-access budget. */
-export type MeteredBudget = "opus" | "sonnet-5.5" | "gpt-6.2-sol";
+export type MeteredBudget = "opus" | "sonnet-5.5" | "gpt-6.1-sol" | "gpt-6.2-sol";
 
 /**
  * Where each budget sits in `throttling.metering`, and what to call it.
@@ -139,18 +139,24 @@ export type MeteredBudget = "opus" | "sonnet-5.5" | "gpt-6.2-sol";
  *   reset) and `ClaudeOpusQueryDaily` the daily one (40) (§24 F55).
  * - Sonnet 5.5: `ClaudeSonnet55QueryDaily` (80) and `ClaudeSonnet55QueryWeekly`
  *   (150), read 79/149 after the first turn (§26). Sonnet 5 lowers neither.
+ * - GPT-6.1 Sol: `GPT61SolQueryDaily` (40) and `GPT61SolQueryWeekly` (75). On
+ *   a premium account paid-scenario turns lowered them and included-scenario
+ *   turns didn't (§27 F67, Oct 6); on 2026-11-28 a StreamHub `officeweb` turn
+ *   lowered both by 1 too, and an included-scenario turn still didn't (§66 F188).
  * - GPT-6.2 Sol: `GPT62SolQueryDaily` (40) and `GPT62SolQueryWeekly` (75), in
  *   the paid scenario's map since at least Nov 18 (§45 F121), and in a premium account's
  *   included-scenario maps too (§61 F167). On a premium account on 2026-11-28 a
  *   `Gpt_62_Sol_Reasoning` turn lowered both by 1 on each route tried, the
- *   included scenario's too (§66 F186). Other accounts haven't been read
- *   (H66a), so `meteredBudgetOf` maps no model to this budget: it is here for
- *   `usage` and `scripts/metering.mjs`.
+ *   included scenario's too (§66 F186).
+ * Other accounts haven't been read (H66a), so `meteredBudgetOf` maps no model
+ * to the two GPT-6.x Sol budgets: they are here for `usage` and
+ * `scripts/metering.mjs`.
  */
 export const METERED_BUDGETS: Readonly<Record<MeteredBudget, { label: string; usageKey: string; daily: string; weekly: string }>> = {
   opus: { label: "Opus", usageKey: "opus", daily: "ClaudeOpusQueryDaily", weekly: "ClaudeOpusQuery75" },
   "sonnet-5.5": { label: "Sonnet 5.5", usageKey: "sonnet55", daily: "ClaudeSonnet55QueryDaily", weekly: "ClaudeSonnet55QueryWeekly" },
-  "gpt-6.2-sol": { label: "GPT-6.2 Sol", usageKey: "gpt62sol", daily: "GPT62SolQueryDaily", weekly: "GPT62SolQueryWeekly" },
+  "gpt-6.1-sol": { label: "GPT-6.1 Sol", usageKey: "gpt61sol", daily: "GPT61SolQueryDaily", weekly: "GPT61SolQueryWeekly" },
+  "gpt-6.2-sol":{ label: "GPT-6.2 Sol", usageKey: "gpt62sol", daily: "GPT62SolQueryDaily", weekly: "GPT62SolQueryWeekly" },
 };
 
 /** `throttling.metering` as `{budget: remainingAllowance}`; null when absent or empty. */

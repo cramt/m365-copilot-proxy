@@ -386,10 +386,12 @@ describe("Opus routing", () => {
     delete process.env.M365_SONNET_FALLBACK_MODEL;
   });
 
-  it("has no fallback for GPT-6.2 Sol's budget, whatever the other variables say", () => {
+  it("has no fallback for GPT-6.1 Sol's or GPT-6.2 Sol's budget, whatever the other variables say", () => {
+    expect(PRIORITY_ACCESS_FALLBACK_ENV["gpt-6.1-sol"]).toBeUndefined();
     expect(PRIORITY_ACCESS_FALLBACK_ENV["gpt-6.2-sol"]).toBeUndefined();
     process.env.M365_OPUS_FALLBACK_MODEL = "claude-opus-4.8";
     process.env.M365_SONNET_FALLBACK_MODEL = "claude-sonnet-5";
+    expect(priorityAccessFallbackModel("gpt-6.1-sol")).toBeNull();
     expect(priorityAccessFallbackModel("gpt-6.2-sol")).toBeNull();
     delete process.env.M365_OPUS_FALLBACK_MODEL;
     delete process.env.M365_SONNET_FALLBACK_MODEL;
