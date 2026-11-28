@@ -7909,3 +7909,34 @@ the block, so that text is wrong beside the call. The shipped pair, rerun: none 
 the client, 3 narrated in the first person ("I'll check whether your PowerShell session can access the
 project, then rerun the tests…"), 2 were dropped ("I'll have you run the tests…", "I'll need you to open
 PowerShell…"), and all 5 calls came through, as in every arm.
+
+## 65. Nov 28 2026 — `scripts/metering.mjs`: the metering map from one `Magic` turn
+
+`scripts/metering.mjs` sends one Chathub turn under `OfficeWebPaidCopilot` + `Premium`, agent-less, on
+`Magic` (the web client's "Auto", §63 F179), and prints the turn's `throttling.metering` map: the budgets
+in `METERED_BUDGETS` as a table, every other key as a list. Its numbers equal the allowances before its
+own turn only if a `Magic` turn lowers no key; for the same reason §62 F173 read it with `Gpt_5_5_Chat` turns.
+
+### F184 — a `Magic` turn on Chathub's paid scenario lowered no key, on a premium and on a non-premium account 🟢 (n=3 premium, n=2 non-premium)
+A premium account and a non-premium account, 2026-11-28 03:52–03:55Z, one turn at a time, 45 s or more
+apart, agent-less, with the Bing plugin, "Reply with exactly the single word: pong", read by the script:
+
+| account | turns, in order | outcome | maps after each turn |
+|---|---|---|---|
+| premium | `Gpt_5_5_Chat`, then `Magic` ×3 | `Success`; the last `Magic` turn's reply, the only one recorded, was "pong" | all four the same: Opus 40 / 61, Sonnet 5.5 80 / 147 |
+| non-premium | `Magic` ×3 | `Success`; the last turn's reply, the only one recorded, was empty | all three the same, `TotalTurnUsageDaily` 50 |
+
+So on a premium account a `Magic` turn lowered no key (3 of 3, each read against the reading before it).
+On a non-premium account the second and third turns left `TotalTurnUsageDaily` at 50 (2 of 2). The third
+turn's reply was empty, as F171 found for `Gpt_5_6_Chat` there, and an empty turn doesn't lower the
+counter (F172). The script therefore reads a non-premium account's daily turns left without spending one.
+The Opus and Sonnet 5.5 keys there read 40 / 75 and 80 / 150, their full allowances: a non-premium account
+is refused the Claude tones (§49 F146).
+
+A premium account's map had 26 keys and a non-premium account's 49, and all 26 are among the 49: the four
+budget keys, 13 other `ClaudeOpus*` and `ClaudeSonnet55*` keys, `GPT61SolQuery*` and `GPT62SolQuery*` (8)
+and `DeepResearch`. The premium map lacks `ArtifactGeneration`, `CodeInterpreter`, `CopilotTuning`,
+`CostQuota`, `DeepWork`, `FileReference`, `GPT62AstraQuery*` (4), `Gpt6Query*` (2), `GraphicArt`,
+`ImageAnalysis`, `ImageGeneration`, `LLMOnly`, `NotebookCowork`, `PersonalDataAccess`,
+`ReasoningModelTurnUsage`, `TenantDataAccess`, `TotalTurnUsageDaily` (F167), `VisualCreator` and
+`WXPAgentMode`.

@@ -223,7 +223,8 @@ pnpm test:live      # M365_LIVE=1; live tests that hit real M365 (uses quota)
   item (`result.value: "OutOfCredits"`, `result.message`), so a stream reader sees an empty turn —
   read the result (`priorityAccessExhaustionOf`), not the text. The proxy 429s, remembers the wall
   until the reset (midnight UTC; weekly: Monday) and, with `M365_OPUS_FALLBACK_MODEL=claude-opus-4.8`,
-  serves Opus 4.8 instead. Every paid turn carries `throttling.metering` (surfaced in `usage`).
+  serves Opus 4.8 instead. Every paid turn carries `throttling.metering` (surfaced in `usage`;
+  `scripts/metering.mjs` prints it from one `Magic` turn, which lowers no key, §65 F184).
   **Sonnet 5.5 has the same kind of budget, its own** (80/day `ClaudeSonnet55QueryDaily`, 150/week
   `ClaudeSonnet55QueryWeekly` — which has reset daily, not on Monday, §30; `M365_SONNET_FALLBACK_MODEL`). Budgets live in `METERED_BUDGETS`
   (`priority-access.ts`) and `meteredBudgetOf()` maps a model to one; walls are remembered per budget.
