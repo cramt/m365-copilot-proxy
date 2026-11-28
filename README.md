@@ -640,7 +640,7 @@ and its model selector has no item that sends `Claude_Auto` ([hypotheses §62 F1
 An account without Copilot credits has no credits these turns could be charged to; on an account with
 credits that hasn't been measured, since StreamHub has sent no billing frames for any model since Nov
 20. This depends on how Microsoft meters StreamHub today, which can change without notice:
-`scripts/metering-probe.mjs` checks it in a few turns (`docs/experiments.md`, E-METER).
+`docs/experiments.md` E-METER checks it in a few turns, with `scripts/metering.mjs`.
 
 **Both use the tool agent and the `relay_batch` framing.** On the bench Opus 4.5 solved nearly every
 task whatever the framing, so two other things decided it. M365's jailbreak classifier: the proxy's

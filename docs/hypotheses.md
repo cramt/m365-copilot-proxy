@@ -7730,8 +7730,9 @@ of models that are sent over StreamHub whatever `M365_TRANSPORT` says (`STREAMHU
 `getTransportForModel`, `copilot.ts`): such a model goes under its own scenario pair
 (`getScenarioForModel`, so `M365_SCENARIO` still wins), and `requestUsesAgent` reads its transport, so its
 tool requests go agent-less. `meteredBudgetOf` returns null for it: no 429 once Opus's budget is used up,
-no `x_m365_opus_*` usage fields. Default framing `relay_batch`, as for `Claude_Opus`. The probe is
-`scripts/metering-probe.mjs`, and `docs/experiments.md` E-METER re-runs the check in 7 turns.
+no `x_m365_opus_*` usage fields. Default framing `relay_batch`, as for `Claude_Opus`. The probe was
+`scripts/metering-probe.mjs`, removed on Nov 28 (§65); `docs/experiments.md` E-METER re-runs the check
+in 7 turns with `scripts/metering.mjs` and requests through the proxy.
 
 ### F178 — the reply is JSON only with `Accept: application/json`, the proxy's MSAL client can read the selector, and a non-premium account's list has no Claude items 🟢
 The server picks the reply's format from the `Accept` header: with `Accept: application/json` a request
@@ -7916,6 +7917,17 @@ PowerShell…"), and all 5 calls came through, as in every arm.
 `Magic` (the web client's "Auto", §63 F179), and prints the turn's `throttling.metering` map: the budgets
 in `METERED_BUDGETS` as a table, every other key as a list. Its numbers equal the allowances before its
 own turn only if a `Magic` turn lowers no key; for the same reason §62 F173 read it with `Gpt_5_5_Chat` turns.
+
+`scripts/metering-probe.mjs`, the probe F173 ran, is removed. `docs/experiments.md` E-METER now takes its
+readings with `metering.mjs` and sends its StreamHub turns through the proxy.
+
+**E-METER with that recipe** (premium account, 2026-11-28 04:47–04:52Z, the steps 45 s or more apart): the
+proxy, started with `M365_TRANSPORT=streamhub`, sent each request as one StreamHub turn in a fresh
+conversation, by its debug log: `claude-opus` as `Claude_Opus` under `officeweb`, `claude-auto` as
+`Claude_Auto` under `OfficeWebPaidCopilot`. Each answered "pong". After the `claude-opus` request both Opus
+keys were 1 lower (40 / 61, then 39 / 60), and after each of the two `claude-auto` requests no key changed;
+every other key was the same in all four readings. So, as in F173, M365 charged the StreamHub `Claude_Opus`
+turn to Opus's budget and neither `Claude_Auto` turn.
 
 ### F184 — a `Magic` turn on Chathub's paid scenario lowered no key, on a premium and on a non-premium account 🟢 (n=3 premium, n=2 non-premium)
 A premium account and a non-premium account, 2026-11-28 03:52–03:55Z, one turn at a time, 45 s or more
