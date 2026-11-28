@@ -18,6 +18,7 @@
 //      Budget       Daily  Weekly  Keys (daily / weekly)
 //      Opus            40      61  ClaudeOpusQueryDaily / ClaudeOpusQuery75
 //      Sonnet 5.5      80     147  ClaudeSonnet55QueryDaily / ClaudeSonnet55QueryWeekly
+//      GPT-6.1 Sol     40      75  GPT61SolQueryDaily / GPT61SolQueryWeekly
 //      GPT-6.2 Sol     40      72  GPT62SolQueryDaily / GPT62SolQueryWeekly
 //
 // 3. Every other key in the map, sorted by name, one line each, indented two spaces: the key, then

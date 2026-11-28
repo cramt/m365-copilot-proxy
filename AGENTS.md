@@ -228,9 +228,11 @@ pnpm test:live      # M365_LIVE=1; live tests that hit real M365 (uses quota)
   **Sonnet 5.5 has the same kind of budget, its own** (80/day `ClaudeSonnet55QueryDaily`, 150/week
   `ClaudeSonnet55QueryWeekly` — which has reset daily, not on Monday, §30; `M365_SONNET_FALLBACK_MODEL`). Budgets live in `METERED_BUDGETS`
   (`priority-access.ts`) and `meteredBudgetOf()` maps a model to one; walls are remembered per budget.
-  GPT-6.2 Sol's (`GPT62SolQueryDaily` / `GPT62SolQueryWeekly`) is listed for `usage` and `metering.mjs`, and no
-  model maps to it: on a premium account each `Gpt_62_Sol_Reasoning` turn spent it on every route, the included
-  scenario's too (§66 F186), and other accounts haven't been read (H66a).
+  GPT-6.1 Sol's and GPT-6.2 Sol's (`GPT61SolQuery*` / `GPT62SolQuery*`, daily and weekly) are listed for `usage`
+  and `metering.mjs`, and no model maps to them. On a premium account each `Gpt_62_Sol_Reasoning` turn spent its
+  budget on every route, the included scenario's too (§66 F186), and each `Gpt_61_Sol_Reasoning` turn spent its
+  budget over StreamHub and on the paid scenario, not on the included one (F188); other accounts haven't been
+  read (H66a).
   A new `*Query*` key in `metering` is how a new metered model shows up — add a budget, don't hard-code Opus.
   Don't burn it on sweeps. See docs/hypotheses.md §15, §24 F55, F59 (issue #18), §26.
 - **`claude-opus-4.8` is the same tone on the included scenario — only on a premium account, and
@@ -327,8 +329,9 @@ pnpm test:live      # M365_LIVE=1; live tests that hit real M365 (uses quota)
   sandbox turns; the retest found 13 vs 15, so one small gap is not a reason to hold a default back
   — rerun it. See docs/hypotheses.md §23, §28.
   `Gpt_61_Sol_Reasoning` (`gpt-6.1-sol`) splits the same way and is also routed on the included scenario:
-  its paid scenario serves too but spends a `GPT61Sol*` budget (40/day, 75/week), so don't add it to
-  `PAID_SCENARIO_TONES`. Its default is `relay_batch` too: it didn't add sandbox
+  its paid scenario serves too but spends a `GPT61Sol*` budget (40/day, 75/week), as StreamHub's `officeweb`
+  did on a premium account (§66 F188), so don't add it to `PAID_SCENARIO_TONES`. Its default is `relay_batch`
+  too: it didn't add sandbox
   turns, and it cut turns 17–47% at 40/40 bench, 30/30 real pi. See docs/hypotheses.md §27.
   Agent-less the two are the same to the bench (same solves and turns, framing by framing), except
   that GPT-6.1 Sol stays out of its sandbox when the user-voice note says to (relay_batch: 0 of 80

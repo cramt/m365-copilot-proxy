@@ -1776,9 +1776,17 @@ describe("Priority access (Opus 5.5, Sonnet 5.5): OutOfCredits, remembering it, 
     expect(usage.x_m365_opus_daily_remaining).toBe(12);
   });
 
-  it("surfaces GPT-6.2 Sol's allowances in usage when the map has them (§45 F121)", async () => {
-    scripted.queue = [{ fullText: "```bash\nls\n```", metering: { GPT62SolQueryDaily: 39, GPT62SolQueryDailyWord: 40, GPT62SolQueryWeekly: 71, GPT62SolQueryWeeklyWord: 75 } }];
+  it("surfaces GPT-6.1 Sol's and GPT-6.2 Sol's allowances in usage when the map has them (§27 F67, §45 F121)", async () => {
+    scripted.queue = [{
+      fullText: "```bash\nls\n```",
+      metering: {
+        GPT61SolQueryDaily: 34, GPT61SolQueryDailyWord: 40, GPT61SolQueryWeekly: 69, GPT61SolQueryWeeklyWord: 75,
+        GPT62SolQueryDaily: 39, GPT62SolQueryDailyWord: 40, GPT62SolQueryWeekly: 71, GPT62SolQueryWeeklyWord: 75,
+      },
+    }];
     const usage = (await (await send("gpt-6.2-sol")).json()).usage;
+    expect(usage.x_m365_gpt61sol_daily_remaining).toBe(34);
+    expect(usage.x_m365_gpt61sol_weekly_remaining).toBe(69);
     expect(usage.x_m365_gpt62sol_daily_remaining).toBe(39);
     expect(usage.x_m365_gpt62sol_weekly_remaining).toBe(71);
     expect(usage.x_m365_opus_daily_remaining).toBeUndefined();

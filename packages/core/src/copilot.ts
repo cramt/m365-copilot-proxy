@@ -136,7 +136,10 @@ const MODEL_TONES: Record<string, string> = {
   // tone-probe + agent-tone-probe 2026-10-06, docs §27). The paid scenario
   // serves it too, but every paid turn spends the `GPT61Sol` priority-access
   // budget (40 a day, 75 a week); included turns don't, so it stays out of
-  // PAID_SCENARIO_TONES. Self-IDs as "GPT-6 reasoning model" on both scenarios,
+  // PAID_SCENARIO_TONES. On a premium account on 2026-11-28 a StreamHub
+  // (`officeweb`) turn spent it too, and an included turn still didn't (§66
+  // F188). Self-IDed as "GPT-6 reasoning model" on both scenarios on Oct 6
+  // (on Nov 28 the included one answered "GPT-5 chat model", F188),
   // like GPT-6 Sol, but isn't GPT-6 Sol renamed: agent-less it keeps out of its
   // sandbox when told to and GPT-6 Sol doesn't (docs §29). The tone name has no
   // separator between 6 and 1, and every
@@ -668,7 +671,7 @@ export function meteredBudgetOf(model: string): MeteredBudget | null {
   return null;
 }
 
-/** The env var naming a budget's fallback model. GPT-6.2 Sol's budget has none. */
+/** The env var naming a budget's fallback model. GPT-6.1 Sol's and GPT-6.2 Sol's budgets have none. */
 export const PRIORITY_ACCESS_FALLBACK_ENV: Readonly<Partial<Record<MeteredBudget, string>>> = {
   opus: "M365_OPUS_FALLBACK_MODEL",
   "sonnet-5.5": "M365_SONNET_FALLBACK_MODEL",
