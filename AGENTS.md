@@ -228,6 +228,9 @@ pnpm test:live      # M365_LIVE=1; live tests that hit real M365 (uses quota)
   **Sonnet 5.5 has the same kind of budget, its own** (80/day `ClaudeSonnet55QueryDaily`, 150/week
   `ClaudeSonnet55QueryWeekly` — which has reset daily, not on Monday, §30; `M365_SONNET_FALLBACK_MODEL`). Budgets live in `METERED_BUDGETS`
   (`priority-access.ts`) and `meteredBudgetOf()` maps a model to one; walls are remembered per budget.
+  GPT-6.2 Sol's (`GPT62SolQueryDaily` / `GPT62SolQueryWeekly`) is listed for `usage` and `metering.mjs`, and no
+  model maps to it: on a premium account each `Gpt_62_Sol_Reasoning` turn spent it on every route, the included
+  scenario's too (§66 F186), and other accounts haven't been read (H66a).
   A new `*Query*` key in `metering` is how a new metered model shows up — add a budget, don't hard-code Opus.
   Don't burn it on sweeps. See docs/hypotheses.md §15, §24 F55, F59 (issue #18), §26.
 - **`claude-opus-4.8` is the same tone on the included scenario — only on a premium account, and

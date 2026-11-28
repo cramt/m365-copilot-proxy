@@ -148,7 +148,12 @@ const MODEL_TONES: Record<string, string> = {
   // either sends its tone and no other model field (capture, docs §45 F120).
   // Both serve on the included scenario, where the proxy keeps them, like
   // GPT-6.1 Sol: the paid scenario's metering carries `GPT62SolQuery*` and
-  // `GPT62AstraQuery*` budgets (F121). Over StreamHub every Astra turn reports a
+  // `GPT62AstraQuery*` budgets (F121). On a premium account on 2026-11-28 a
+  // `Gpt_62_Sol_Reasoning` turn lowered `GPT62SolQueryDaily` and
+  // `GPT62SolQueryWeekly` by 1 on the included scenario as well as on the paid
+  // one and over StreamHub (§66 F186), so there the included scenario avoids no
+  // budget. Other accounts haven't been read (H66a), and meteredBudgetOf maps
+  // `gpt-6.2-sol` to no budget. Over StreamHub every Astra turn reports a
   // charge to the user's Copilot credits; Sol's don't (F122). Both self-ID as
   // "the GPT-6 reasoning model", as they do in the web client itself.
   "gpt-6.2-sol": "Gpt_62_Sol_Reasoning",
@@ -663,8 +668,8 @@ export function meteredBudgetOf(model: string): MeteredBudget | null {
   return null;
 }
 
-/** The env var naming each budget's fallback model. */
-export const PRIORITY_ACCESS_FALLBACK_ENV: Readonly<Record<MeteredBudget, string>> = {
+/** The env var naming a budget's fallback model. GPT-6.2 Sol's budget has none. */
+export const PRIORITY_ACCESS_FALLBACK_ENV: Readonly<Partial<Record<MeteredBudget, string>>> = {
   opus: "M365_OPUS_FALLBACK_MODEL",
   "sonnet-5.5": "M365_SONNET_FALLBACK_MODEL",
 };
@@ -675,10 +680,11 @@ export const PRIORITY_ACCESS_FALLBACK_ENV: Readonly<Record<MeteredBudget, string
  * `claude-opus-4.8`), `M365_SONNET_FALLBACK_MODEL` for Sonnet 5.5 (typically
  * `claude-sonnet-5`). Opt-in, because it swaps the model: the response's
  * `model` field then names the one that answered. Ignored when it names a
- * metered model itself.
+ * metered model itself. Null for a budget with no such variable.
  */
 export function priorityAccessFallbackModel(budget: MeteredBudget): string | null {
-  const v = process.env[PRIORITY_ACCESS_FALLBACK_ENV[budget]]?.trim();
+  const name = PRIORITY_ACCESS_FALLBACK_ENV[budget];
+  const v = name ? process.env[name]?.trim() : undefined;
   if (!v || meteredBudgetOf(v)) return null;
   return v;
 }

@@ -142,6 +142,20 @@ describe("parseMetering / meteredAllowance", () => {
     expect(meteredAllowance(parseMetering(METERING), "sonnet-5.5")).toBeNull();
   });
 
+  it("picks out GPT-6.2 Sol's allowances, not its …Word keys (§45 F121)", () => {
+    // A premium account's paid-scenario map on 2026-11-28.
+    const m = parseMetering({
+      ...METERING,
+      GPT62SolQueryDaily: { remainingAllowance: 40 },
+      GPT62SolQueryDailyWord: { remainingAllowance: 40 },
+      GPT62SolQueryWeekly: { remainingAllowance: 72 },
+      GPT62SolQueryWeeklyWord: { remainingAllowance: 75 },
+    })!;
+    expect(meteredAllowance(m, "gpt-6.2-sol")).toEqual({ daily: 40, weekly: 72 });
+    expect(meteredAllowance(m, "opus")).toEqual({ daily: 39, weekly: 74 });
+    expect(meteredAllowance(parseMetering(METERING), "gpt-6.2-sol")).toBeNull();
+  });
+
   it("returns null when there is nothing to read (included scenario: no metering)", () => {
     expect(parseMetering(undefined)).toBeNull();
     expect(parseMetering({})).toBeNull();

@@ -1982,9 +1982,12 @@ function buildUsage(
     if (typeof scores.dea_violation === "number") base.x_m365_dea_score = scores.dea_violation;
     if (typeof scores.BotOffense === "number") base.x_m365_offense_score = scores.BotOffense;
   }
-  // Priority access left after this turn (paid-scenario turns only, §24 F55,
-  // §26): one unit per turn, so a client can see the wall coming (issue #18).
-  // `x_m365_opus_*` for Opus 5.5, `x_m365_sonnet55_*` for Sonnet 5.5.
+  // Priority access left after this turn (paid-scenario turns, §24 F55, §26;
+  // GPT-6.2 Sol's keys come on a premium account's included-scenario turns too,
+  // §66): one unit per turn, so a client can see how many turns it has left
+  // before M365 refuses them (issue #18).
+  // `x_m365_opus_*` for Opus 5.5, `x_m365_sonnet55_*` for Sonnet 5.5,
+  // `x_m365_gpt62sol_*` for GPT-6.2 Sol.
   for (const [budget, { usageKey }] of Object.entries(METERED_BUDGETS)) {
     const left = meteredAllowance(metering, budget as MeteredBudget);
     if (left?.daily !== undefined) base[`x_m365_${usageKey}_daily_remaining`] = left.daily;

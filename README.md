@@ -408,7 +408,7 @@ without NixOS: `nix run github:cramt/m365-copilot-proxy -- 4141`.
 | `gpt-6-think-deeper` | Gpt_6_Reasoning | GPT-6 reasoning. **Needs a paid/premium Copilot seat** (see below); 30/30 on the bench (agent-less, `relay` framing). Defaults to `relay_batch`: 20/20 at 2.1 turns per task (relay: 3.2), 10/10 driving real pi |
 | `gpt-6-sol` | Gpt_6_Sol_Reasoning | GPT-6 Sol ("GPT 6.0 Sol" in the web UI). Needs no paid scenario, but **a premium account**: a non-premium one is refused it by licence ([hypotheses §49 F146](docs/hypotheses.md)). Uses the tool agent (see below). Defaults to `relay_batch`: 40/40 on the bench with the agent, 60/60 without, 30/30 driving real pi, at 2.1 turns per bench task either way |
 | `gpt-6.1-sol` | Gpt_61_Sol_Reasoning | GPT-6.1 Sol ("GPT-6.1 Sol" in the web UI). Like `gpt-6-sol`: **a premium account** (a non-premium one is refused it by licence), and the tool agent. Defaults to `relay_batch`: 40/40 on the bench, 30/30 driving real pi, at 2.7 turns per bench task with the agent and 2.2 without, and without the agent it keeps out of its sandbox, which `gpt-6-sol` doesn't always (see below) |
-| `gpt-6.2-sol` | Gpt_62_Sol_Reasoning | GPT-6.2 Sol ("GPT-6.2 Sol" in the web UI, since 2026-11-17). Serves on the included scenario. Defaults to `relay_batch`, not yet benched; Codex 3/3 over StreamHub ([hypotheses §45](docs/hypotheses.md)) |
+| `gpt-6.2-sol` | Gpt_62_Sol_Reasoning | GPT-6.2 Sol ("GPT-6.2 Sol" in the web UI, since 2026-11-17). Serves on the included scenario. Defaults to `relay_batch`, not yet benched; Codex 3/3 over StreamHub ([hypotheses §45](docs/hypotheses.md)). On a premium account tested on 2026-11-28 each turn spent one from a budget of 40 a day and 75 a week, on Chathub and StreamHub alike; the proxy reports what is left as `usage.x_m365_gpt62sol_daily_remaining` / `x_m365_gpt62sol_weekly_remaining` on Chathub turns (StreamHub turns report none) ([hypotheses §66](docs/hypotheses.md)) |
 | `gpt-6.2-astra` | Gpt_62_Astra_Reasoning | GPT-6.2 Astra (marked "Uses credits" in the web UI): **its turns are charged to the user's Copilot credits.** Serves on the included scenario. Defaults to `relay_batch`, not yet benched |
 | `gpt-6-astra` | Gpt_6_Astra_Reasoning (paid scenario) | GPT-6 Astra, also charged to Copilot credits. **Needs a paid/premium Copilot seat**: the included scenario gives M365's canned apology. The web UI replaced it with GPT-6.2 Astra on 2026-11-17. Defaults to `relay_batch`, not yet benched |
 | `gpt-5.6-think-deeper` | Gpt_5_6_Reasoning | GPT-5.6 reasoning ("GPT-5.6 Sol Think deeper" in the web client's model selector) — 27/30 on the bench, tied with `gpt-5.5-think-deeper`. Defaults to the `relay_batch` framing, which ends its give-ups in pi ([hypotheses §58](docs/hypotheses.md)) |
@@ -613,9 +613,9 @@ ran into; a shorter prompt doesn't help. Both budgets reset at **midnight UTC**,
 What the proxy does about it:
 - **Shows the budget:** every `claude-opus` response carries `usage.x_m365_opus_daily_remaining` and
   `usage.x_m365_opus_weekly_remaining`. To read them without a `claude-opus` request, run
-  `node scripts/metering.mjs` inside `nix develop`: it prints Opus's and Sonnet 5.5's budgets, and every
-  other allowance M365 reports for the account, from one Chathub turn on the `Magic` tone, which lowers
-  none of them.
+  `node scripts/metering.mjs` inside `nix develop`: it prints the Opus, Sonnet 5.5 and GPT-6.2 Sol
+  budgets, and every other allowance M365 reports for the account, from one Chathub turn on the `Magic`
+  tone, which lowers none of them.
 - **Says when it's used up:** M365 ends the turn with a refusal (*"You've used your available priority
   access to the Opus model for today…"*), which the proxy turns into **HTTP 429**
   (`code: priority_access_exhausted`, `param: day|week`) with a `Retry-After` to the reset — on the
