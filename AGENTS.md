@@ -253,7 +253,7 @@ pnpm test:live      # M365_LIVE=1; live tests that hit real M365 (uses quota)
   turns, 37 of them through the proxy), while StreamHub's `Claude_Opus` and `Claude_Sonnet` turns still
   spent their budgets (7 of 7, 3 of 3).
   StreamHub reports no `metering`, so the allowances were read with Chathub paid-scenario turns before
-  and after (`scripts/metering-probe.mjs`). So `claude-auto` is sent over StreamHub whatever
+  and after (E-METER repeats it with `scripts/metering.mjs`). So `claude-auto` is sent over StreamHub whatever
   `M365_TRANSPORT` says (`STREAMHUB_MODELS`, `getTransportForModel`), under the paid scenario
   (`PAID_SCENARIO_TONES`), agent-less, and isn't in `meteredBudgetOf`. Don't route it over Chathub.
   The web client's own "Opus 5.5" item sends `Claude_Opus`, and its selector has no `Claude_Auto` item
