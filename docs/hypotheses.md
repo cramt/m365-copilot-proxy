@@ -107,7 +107,7 @@ than "we eyeballed one run." See §M (Methods) for the experimental rig.
   some users get a StreamHub web client while some still get a Chathub one (F120); all four serve on both
   transports, GPT-6 Astra gated like GPT-6 (F121); credits, and `Claude_Fable` is Fable now (F122);
   harness runs and what shipped (F123); whether included `gpt-6.2-*` turns spend the `GPT62*` budgets
-  (H45a, open)
+  (H45a: yes for `gpt-6.2-sol` on a premium account, §66)
 - §46 — M365 answers an opening prompt of about 500k characters but doesn't keep it, so the turn after a
   long replay has no context (F125); it keeps a conversation for at least 21 h, while the pool evicted
   one after 30 min, forcing that replay (F126); the fix: a 24-h pool, a lost history caught and re-sent,
@@ -151,6 +151,10 @@ than "we eyeballed one run." See §M (Methods) for the experimental rig.
   "GPT-6" is `Gpt_6_Sol_Chat` (F179); `Gpt_6_Sol_Chat` self-IDs as GPT-6 reasoning off the included
   scenario (F180); whether `Gpt_6_Sol_Chat`, `Chat` and `Reasoning` serve other models than the tones the
   proxy maps (H63a, open)
+- §66 — GPT-6.2 Sol: in the model selector since Nov 25, where GPT-5.6 Sol and GPT-6.1 Sol were (F185); on a
+  premium account each of its turns spends its `GPT62SolQuery*` budget on every route, the included
+  scenario's too (F186); its self-ID by route and date (F187); other accounts (H66a) and the included
+  scenario's model (H66b), open
 
 ---
 
@@ -6334,8 +6338,10 @@ on Chathub. `proxy-verify.mjs --tools --multiturn` (agent off) passed on each: a
 used on the next turn, over Chathub for `claude-fable`, `gpt-6.2-sol`, `gpt-6.2-astra` and `gpt-6-astra`
 (paid scenario), and over StreamHub for `gpt-6.2-astra`.
 
-**Open — H45a:** does an included-scenario `gpt-6.2-*` turn spend the `GPT62*Query*` budgets? **Probe:**
+**H45a:** does an included-scenario `gpt-6.2-*` turn spend the `GPT62*Query*` budgets? **Probe:**
 read the paid scenario's `metering` before and after a few included turns, as §27 did for GPT-6.1 Sol.
+**Answered for `gpt-6.2-sol` on a premium account, 2026-11-28 (§66 F186): yes**, 1 from each key per turn, as
+on the paid scenario and over StreamHub. Other accounts: §66 H66a. `gpt-6.2-astra` hasn't been read.
 
 ## 46. Nov 18 2026 — M365 doesn't keep a very long opening prompt; the pool's 30-minute eviction made it bite
 
@@ -7952,3 +7958,83 @@ and `DeepResearch`. The premium map lacks `ArtifactGeneration`, `CodeInterpreter
 `ImageAnalysis`, `ImageGeneration`, `LLMOnly`, `NotebookCowork`, `PersonalDataAccess`,
 `ReasoningModelTurnUsage`, `TenantDataAccess`, `TotalTurnUsageDaily` (F167), `VisualCreator` and
 `WXPAgentMode`.
+
+## 66. Nov 28 2026 — GPT-6.2 Sol: the model selector, its priority-access budget, and its self-ID by route
+
+Between Nov 23 and Nov 25 the web client's model selector (`RefreshNavPane`, §62 F177) gained
+`Gpt_62_Sol_Reasoning` and lost its GPT-5.6 Sol and GPT-6.1 Sol items (F185). The paid scenario's `metering`
+has carried `GPT62SolQueryDaily` (40) and `GPT62SolQueryWeekly` (75) since at least Nov 18 (§45 F121), before
+the selector listed the tone. §45 kept `gpt-6.2-sol` on the included scenario, where GPT-6.1 Sol is kept, and
+left open whether an included-scenario turn spends that budget (H45a). `METERED_BUDGETS` now lists the two
+keys as GPT-6.2 Sol's budget: `scripts/metering.mjs` prints them in its table, and the proxy reports them as
+`usage.x_m365_gpt62sol_daily_remaining` / `x_m365_gpt62sol_weekly_remaining` on each Chathub turn whose map
+has them. `meteredBudgetOf` maps no model to the budget (H66a).
+
+### F185 — the selector lists `Gpt_62_Sol_Reasoning` since Nov 25, and no GPT-5.6 Sol or GPT-6.1 Sol item 🟢 (n=3)
+`scripts/chathub-tones.mjs` on three `RefreshNavPane` replies of a premium account:
+
+| read (UTC) | items |
+|---|---|
+| Nov 23 16:44 | F179's nine: `Magic`, `Chat`, `Reasoning`, `Gpt_5_6_Chat`, `Gpt_5_6_Reasoning`, `Gpt_6_Sol_Chat`, `Gpt_61_Sol_Reasoning`, `Claude_Sonnet`, `Claude_Opus` |
+| Nov 25 06:11 | seven: `Gpt_62_Sol_Reasoning` ("GPT-6.2 Sol") in place of `Gpt_5_6_Chat`, `Gpt_5_6_Reasoning` and `Gpt_61_Sol_Reasoning` |
+| Nov 28 05:01 | the same seven |
+
+Whether `Gpt_61_Sol_Reasoning`, `Gpt_5_6_Chat` and `Gpt_5_6_Reasoning` still serve hasn't been probed since.
+
+### F186 — on a premium account a `Gpt_62_Sol_Reasoning` turn lowers both keys by 1 on each route, the included scenario's too 🟢 (n=1 per route)
+The steps of E-METER (`docs/experiments.md`) on a premium account, 2026-11-28 05:43–05:49Z, one at a time and
+45 s or more apart: a `scripts/metering.mjs` reading (a Chathub paid-scenario `Magic` turn, which lowers no key,
+§65 F184), then one `Gpt_62_Sol_Reasoning` turn per route, each followed by a reading. The turns went through
+`_probe-chat.mjs`, agent-less, with the Bing plugin and F180's prompt (model name, maker, knowledge cutoff):
+
+| turn | `GPT62SolQueryDaily` / `GPT62SolQueryWeekly` in the reading after it | the turn's own map |
+|---|---|---|
+| none (the first reading) | 40 / 72 | – |
+| Chathub, `OfficeWebIncludedCopilot` + `Starter` | 39 / 71 | 5 keys, 39 / 71 |
+| StreamHub, `officeweb` + `Premium` | 38 / 70 | none (StreamHub) |
+| Chathub, `OfficeWebPaidCopilot` + `Premium` | 37 / 69 | 26 keys, 37 / 69 |
+
+The map's other 24 keys were the same in all four readings, `GPT62SolQueryDailyWord` (40) and
+`GPT62SolQueryWeeklyWord` (75) included. So on a premium account H45a is answered yes: each turn
+lowered both keys by exactly 1, on the included scenario as on the paid one and over StreamHub, and
+there no route the proxy can send `gpt-6.2-sol` on avoids the budget. What M365 answers once the
+daily key reaches 0 hasn't been observed.
+
+Before the probe the weekly key read 72 while the daily key read 40 (at 05:34Z and 05:43Z): the 3 units spent
+earlier in the week had not been restored at 00:00 UTC. So this weekly key, unlike Sonnet 5.5's in October
+(§30), was not reset at 00:00 UTC on Nov 28. When it resets hasn't been observed.
+
+### F187 — what `Gpt_62_Sol_Reasoning` says it is, by route and date 🟡
+F180's prompt on a premium account, agent-less: `tone-probe.mjs` runs before Nov 28, F186's turns on Nov 28.
+The runs before Nov 20 didn't record the transport.
+
+| date | transport | scenario | reply |
+|---|---|---|---|
+| Nov 17 | – | `OfficeWebIncludedCopilot` | "GPT-5.5;OpenAI;2024-06" |
+| Nov 17 | – | `OfficeWebPaidCopilot` | "GPT-5.6; Microsoft; 2025-12" |
+| Nov 19 | – | `OfficeWebPaidCopilot` | "Microsoft Copilot powered by GPT-5.6; Microsoft; 2025-12" (2 of 2) |
+| Nov 20 | StreamHub | `officeweb` | the same |
+| Nov 24 | StreamHub | `officeweb`, `OfficeWebPaidCopilot` | "Microsoft Copilot powered by GPT-6 reasoning model; Microsoft Corporation; 2026-06" (1 each) |
+| Nov 24 | StreamHub | `OfficeWebIncludedCopilot` | "GPT-5.5; OpenAI; 2025-08" |
+| Nov 28 | Chathub | `OfficeWebIncludedCopilot` | "Microsoft Copilot powered by GPT-5 chat model; OpenAI; 2024-06" |
+| Nov 28 | StreamHub, Chathub | `officeweb`, `OfficeWebPaidCopilot` | the Nov 24 reply (1 each) |
+
+Between Nov 20 and Nov 24 the reply on the paid scenario and under `officeweb` changed from GPT-5.6 to
+the GPT-6 reasoning model with a 2026-06 cutoff; on the included scenario it named a GPT-5 model on each
+date, and on Nov 28 it was the reply F180 recorded there for `Gpt_6_Sol_Chat`. A self-ID doesn't
+establish the model (§27 H27a).
+
+### H66a — does a `Gpt_62_Sol_Reasoning` turn lower `GPT62SolQuery*` on every account? 🔴
+F186 read one premium account, which has no Copilot Cowork. Are the tone's turns unmetered on
+another account, for example over StreamHub on an account with Cowork? **Prediction:** on any
+account whose map has the keys, each turn lowers both by 1 on each route. **Falsified** by a route
+on which a turn leaves both unchanged. **Probe:** F186's steps on another account. Until then
+`meteredBudgetOf` maps no model to the budget, and the proxy remembers an `OutOfCredits` on
+`gpt-6.2-sol` under the model ID, as for any model it doesn't map to a budget.
+
+### H66b — does `Gpt_62_Sol_Reasoning` serve another model on the included scenario than on the paid one and under `officeweb`? 🔴
+F187's replies split by scenario, as F180's did for `Gpt_6_Sol_Chat`, and a self-ID doesn't decide it. If the
+included scenario serves another model, the proxy's Chathub `gpt-6.2-sol` turns, which go to the included
+scenario, get that model and on a premium account still spend GPT-6.2 Sol's budget (F186). **Probe:** H63a's
+comparisons (the sandbox path in a code-interpreter answer, chain-of-thought summaries, events of early 2026),
+`Gpt_62_Sol_Reasoning` on the included scenario against the paid one. **Falsified** if the two match in each.

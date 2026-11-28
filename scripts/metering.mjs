@@ -15,9 +15,10 @@
 // 2. The budgets in METERED_BUDGETS (priority-access.ts) as a table: each budget's daily and weekly
 //    allowance left and the keys they are read from, "-" for a key the map doesn't have:
 //
-//      Budget      Daily  Weekly  Keys (daily / weekly)
-//      Opus           40      61  ClaudeOpusQueryDaily / ClaudeOpusQuery75
-//      Sonnet 5.5     80     147  ClaudeSonnet55QueryDaily / ClaudeSonnet55QueryWeekly
+//      Budget       Daily  Weekly  Keys (daily / weekly)
+//      Opus            40      61  ClaudeOpusQueryDaily / ClaudeOpusQuery75
+//      Sonnet 5.5      80     147  ClaudeSonnet55QueryDaily / ClaudeSonnet55QueryWeekly
+//      GPT-6.2 Sol     40      72  GPT62SolQueryDaily / GPT62SolQueryWeekly
 //
 // 3. Every other key in the map, sorted by name, one line each, indented two spaces: the key, then
 //    its allowance left, right-aligned in a column of its own, four spaces after the widest key:

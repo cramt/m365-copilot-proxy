@@ -13,6 +13,7 @@ import {
   INCLUDED_SCENARIO_MODELS,
   isIncludedOpusModel,
   meteredBudgetOf,
+  PRIORITY_ACCESS_FALLBACK_ENV,
   priorityAccessFallbackModel,
   isSonnet5Model,
   isSonnet55Model,
@@ -258,8 +259,10 @@ describe("GPT-6.1 Sol routing (§27)", () => {
 });
 
 describe("GPT-6.2 Sol and Astra, GPT-6 Astra, Claude Fable (§45)", () => {
-  it("routes GPT-6.2 on the included scenario, unmetered, and gates GPT-6 Astra on the paid one", () => {
+  it("routes GPT-6.2 on the included scenario, with no budget in meteredBudgetOf, and gates GPT-6 Astra on the paid one", () => {
     // Included: both GPT-6.2 tones serve there; GPT-6 Astra gives the BotConnection apology (F121).
+    // On a premium account a GPT-6.2 Sol turn lowered GPT62SolQuery* there too (§66 F186); other
+    // accounts haven't been read (H66a), so no model maps to that budget.
     for (const id of ["gpt-6.2-sol", "gpt-6.2-astra"]) {
       expect(getScenarioForModel(id)).toEqual(INCLUDED);
       expect(meteredBudgetOf(id)).toBeNull();
@@ -380,6 +383,15 @@ describe("Opus routing", () => {
     expect(priorityAccessFallbackModel("sonnet-5.5")).toBe("claude-sonnet-5");
     process.env.M365_SONNET_FALLBACK_MODEL = "claude-sonnet-5.5";
     expect(priorityAccessFallbackModel("sonnet-5.5")).toBeNull();
+    delete process.env.M365_SONNET_FALLBACK_MODEL;
+  });
+
+  it("has no fallback for GPT-6.2 Sol's budget, whatever the other variables say", () => {
+    expect(PRIORITY_ACCESS_FALLBACK_ENV["gpt-6.2-sol"]).toBeUndefined();
+    process.env.M365_OPUS_FALLBACK_MODEL = "claude-opus-4.8";
+    process.env.M365_SONNET_FALLBACK_MODEL = "claude-sonnet-5";
+    expect(priorityAccessFallbackModel("gpt-6.2-sol")).toBeNull();
+    delete process.env.M365_OPUS_FALLBACK_MODEL;
     delete process.env.M365_SONNET_FALLBACK_MODEL;
   });
 
